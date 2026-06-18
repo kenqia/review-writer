@@ -1,0 +1,23 @@
+{
+  "default_rule_pack": "allenation",
+  "rule_packs": {
+    "allenation": {
+      "description": "Rules for organic chemistry reviews centered on allenation, allene synthesis, propargylic alcohols, and propargylic derivatives.",
+      "path": "references/rule_packs/allenation",
+      "files": [
+        "source-to-review-rules.md",
+        "rewrite-rubric.md",
+        "organic-review-style.md"
+      ],
+      "topic_signals": [
+        "allene",
+        "allenation",
+        "propargylic",
+        "propargyl",
+        "SN2'",
+        "allenylidene",
+        "axial chirality"
+      ]
+    }
+  }
+}
