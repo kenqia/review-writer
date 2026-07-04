@@ -49,15 +49,49 @@ Follow the template review paragraph mode:
 5. close with a review-level judgment or transition
 ```
 
-Paragraph must include:
+Each paragraph must carry a stable `paragraph_id` and explicit citation IDs.
+This is the anchor the merge stage uses to bind figures and aggregate citations.
 
 ```text
-paper_id
+paragraph_id           e.g. sec3-p2, unique inside section_drafts.json
+paper_id               primary paper for that paragraph
+cited_paper_ids        list of every paper_id the paragraph relies on
 claim or topic sentence
 main work of the paper
 why it matters to the review topic
 figure reference or no_figure_reason
+inline citation callout `[n]` keyed to the section reference list
 ```
+
+## Paragraph ID Markers
+
+Every paragraph in `sections/<section_id>.md` must end with an HTML comment
+that exposes its `paragraph_id`, for example:
+
+```markdown
+... last sentence of the paragraph. [3]
+
+<!-- paragraph_id: sec3-p2 -->
+```
+
+The merge stage uses these markers (not free-text matching) to anchor
+figures. Missing markers will silently fall back to heading-level placement.
+
+## Hard Output Requirements
+
+Every section Markdown file must satisfy all of:
+
+```text
+at least one image reference using ![](...) when figure_need is not explicitly "none"
+every paragraph that cites a paper carries an inline `[n]` callout
+the section file ends with (or is accompanied by) a numbered reference list
+  so that downstream merge can collect callouts and assemble the global
+  References section.
+```
+
+Without these the merge stage will produce a draft that fails the final
+audit's hard gate (`draft_has_no_figures`,
+`draft_has_no_citation_callouts`, `missing_references_section`).
 
 ## Figure Rules
 
@@ -91,6 +125,10 @@ paper_figure_candidates.json
 figure_candidates.json
 section_drafting_report.md
 ```
+
+`section_drafts.json` must contain, for every section, a `paragraphs` list. Each paragraph item carries `paragraph_id`, `paper_id`, `cited_paper_ids`, and (when applicable) `figure_candidate_id`. The aggregated `draft_md` is still kept for preview.
+
+`figure_candidates.json` items must carry `target_paragraph_id` (the paragraph_id this figure should attach to). Free-text `fits_paragraph_or_claim` stays optional and human-readable.
 
 `section_tasks.json` must be a list. Each item must contain:
 

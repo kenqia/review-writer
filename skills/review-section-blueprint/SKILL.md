@@ -7,6 +7,10 @@ description: Middle-layer writing-rule skill that converts the selected outline 
 
 Goal: create the writing blueprint used by section subagents.
 
+Boundary: this is a pure rule/plan skill. It consumes the outline and
+literature matrix and emits paragraph-level/claim-level constraints; it
+does not re-derive section structure or paper assignments.
+
 ## Inputs
 
 ```text

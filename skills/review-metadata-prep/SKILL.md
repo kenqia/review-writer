@@ -17,7 +17,7 @@ The skill assumes PDFs have already been parsed by MinerU and that a `mineru-out
 python /home/ps/review-writer/skills/review-metadata-prep/scripts/prepare_metadata.py \
   --review-root /home/ps/review-writer \
   --mineru-output /home/ps/review-writer/mineru-outputs \
-  --pdf-root /home/ps/review-writer/source-paper/Progargylic \
+  --pdf-root /home/ps/review-writer/source-paper/<your-subfolder> \
   --discover-from-pdf-root \
   --append-registry
 ```
@@ -64,7 +64,7 @@ reaction_type
 document_scope
 ```
 
-Each tag value must be selected from `/home/ps/review-writer/allene_classification_rules.py` under the matching category, or `not specified`.
+Each tag value must be selected from your project's classification rules file (e.g. `<your-classification-rules>.py`) under the matching category, or `not specified`. This repo ships `/home/ps/review-writer/allene_classification_rules.py` as the default example.
 
 To enable LLM enhancement, set:
 
@@ -78,7 +78,7 @@ Then run:
 python /home/ps/review-writer/skills/review-metadata-prep/scripts/prepare_metadata.py \
   --review-root /home/ps/review-writer \
   --mineru-output /home/ps/review-writer/mineru-outputs \
-  --pdf-root /home/ps/review-writer/source-paper/Progargylic \
+  --pdf-root /home/ps/review-writer/source-paper/<your-subfolder> \
   --discover-from-pdf-root \
   --append-registry \
   --use-llm \

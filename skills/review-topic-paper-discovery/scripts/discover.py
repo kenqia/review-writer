@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import os
 import re
 import ssl
 import sys
@@ -13,6 +14,8 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from sciatlas_client import SciAtlasClient, load_config, papers_from_response
 
 
 def utc_now() -> str:
@@ -397,6 +400,142 @@ def format_crossref_authors(authors: list[dict[str, Any]]) -> list[str]:
     return out
 
 
+
+
+def normalize_sciatlas_paper(item: dict[str, Any]) -> dict[str, Any]:
+    # SciAtlas /v1/search nests the canonical record in `paper`; fall back to top-level keys.
+    nested = item.get("paper") if isinstance(item.get("paper"), dict) else {}
+    def first(*keys):
+        for src in (item, nested):
+            for k in keys:
+                v = src.get(k)
+                if v not in (None, "", []):
+                    return v
+        return None
+    title = first("title", "paper_title") or "(untitled)"
+    if isinstance(title, str):
+        title = title.replace("\n", " ").strip()
+    authors = first("authors", "author_names") or []
+    if isinstance(authors, list):
+        normalized_authors: list[str] = []
+        for entry in authors:
+            if isinstance(entry, str):
+                normalized_authors.append(entry)
+            elif isinstance(entry, dict):
+                name = entry.get("name") or entry.get("display_name")
+                if not name:
+                    parts = [entry.get("given"), entry.get("family")]
+                    name = " ".join(x for x in parts if x).strip()
+                if name:
+                    normalized_authors.append(name)
+        authors = normalized_authors
+    else:
+        authors = []
+    year = first("year", "publication_year")
+    journal = first("journal", "venue", "container_title", "venue_source_display_name") or ""
+    doi = first("doi", "DOI") or ""
+    if isinstance(doi, str) and doi.startswith("https://doi.org/"):
+        doi = doi[len("https://doi.org/"):]
+    paper_url = first("paper_url", "pdf_url", "url", "html_url")
+    url = paper_url or (f"https://doi.org/{doi}" if doi else "")
+    abstract = first("abstract") or ""
+    raw_score = item.get("score") or item.get("relevance_score") or item.get("graph_score") or 0.0
+    try:
+        raw_score = float(raw_score)
+    except (TypeError, ValueError):
+        raw_score = 0.0
+    # SciAtlas scores can exceed 1; clamp + soft normalize for UI consistency.
+    norm = min(round(raw_score / 10.0, 4) if raw_score > 1 else round(raw_score, 4), 1.0)
+    return {
+        "title": title,
+        "authors": authors,
+        "year": year,
+        "journal": journal,
+        "doi": doi,
+        "url": url,
+        "abstract": abstract[:600],
+        "score": norm,
+        "raw_score": raw_score,
+        "reason": "SciAtlas KG retrieval (hybrid)",
+        "keep": norm > 0,
+        "source": "sciatlas",
+    }
+
+
+def sciatlas_search(
+    client: SciAtlasClient,
+    keyword: str,
+    topic: str,
+    limit: int,
+    time_range: str | None,
+    domain: str | None,
+) -> list[dict[str, Any]]:
+    try:
+        response = client.search_papers(
+            query=topic or keyword,
+            keyword=keyword,
+            top_k=max(limit, 1),
+            retrieval_mode="hybrid",
+            time_range=time_range,
+            domain=domain,
+        )
+    except Exception as exc:
+        return [{"title": f"SCIATLAS_SEARCH_FAILED: {type(exc).__name__}", "url": "", "score": 0, "reason": str(exc), "keep": False, "source": "sciatlas"}]
+    results = [normalize_sciatlas_paper(item) for item in papers_from_response(response)]
+    results.sort(key=lambda r: (r.get("score", 0), r.get("year") or 0), reverse=True)
+    return results
+
+
+
+def _result_dedupe_key(row: dict[str, Any]) -> str:
+    doi = (row.get("doi") or "").strip().lower()
+    if doi:
+        return "doi:" + doi
+    url = (row.get("url") or "").strip().lower()
+    if url:
+        return "url:" + url
+    title = re.sub(r"\s+", " ", str(row.get("title") or "").strip().lower())
+    return "title:" + title
+
+
+def merge_external_results(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        key = _result_dedupe_key(row)
+        if not key:
+            continue
+        if key not in merged:
+            merged[key] = {**row, "sources": [row.get("source", "external")]}
+            order.append(key)
+            continue
+        existing = merged[key]
+        src = row.get("source", "external")
+        if src not in existing.get("sources", []):
+            existing.setdefault("sources", []).append(src)
+        if (row.get("score") or 0) > (existing.get("score") or 0):
+            # Promote the higher-scoring record while keeping merged source list.
+            sources = existing.get("sources", [])
+            merged[key] = {**row, "sources": sources}
+        if not existing.get("doi") and row.get("doi"):
+            existing["doi"] = row.get("doi")
+        if not existing.get("url") and row.get("url"):
+            existing["url"] = row.get("url")
+        if not existing.get("abstract") and row.get("abstract"):
+            existing["abstract"] = row.get("abstract")
+    out: list[dict[str, Any]] = []
+    for key in order:
+        row = merged[key]
+        sources = row.get("sources") or [row.get("source", "external")]
+        # Keep `source` as the primary (highest-scoring) one for backward compat.
+        row["source"] = sources[0] if len(sources) == 1 else "+".join(sources)
+        row["sources"] = sources
+        out.append(row)
+    out.sort(key=lambda r: (r.get("score") or 0, r.get("year") or 0), reverse=True)
+    return out
+
 def combine_results(local_grouped: list[dict[str, Any]], web_grouped: list[dict[str, Any]]) -> list[dict[str, Any]]:
     web_map = {g["keyword"]: g for g in web_grouped}
     combined = []
@@ -477,8 +616,26 @@ def write_report(out_dir: Path, topic: str, keyword_set: dict[str, Any], combine
     (out_dir / "discovery_report.md").write_text("\n".join(lines), encoding="utf-8")
 
 
+def _load_dotenv_if_present(review_root: Path) -> None:
+    env_path = review_root / ".env"
+    if not env_path.exists():
+        return
+    try:
+        for raw in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            os.environ.setdefault(key, value)
+    except Exception:
+        pass
+
+
 def run(args: argparse.Namespace) -> int:
     review_root = Path(args.review_root).resolve()
+    _load_dotenv_if_present(review_root)
     user_keywords = split_keywords(args.keywords)
     project_id = args.project_id or slugify(args.topic)
     project = review_root / "review-projects" / project_id
@@ -494,13 +651,85 @@ def run(args: argparse.Namespace) -> int:
     classification_rules = load_classification_rules(review_root)
     local_grouped = local_search_by_keyword(papers, keyword_set["merged_keywords"], args.topic, classification_rules)
     write_json(out_dir / "local_results_by_keyword.json", {"project_id": project_id, "results": local_grouped})
-    web_grouped = []
-    if args.web_search:
-        for group in local_grouped:
-            web_grouped.append({"keyword": group["keyword"], "web_results": web_search(group["keyword"], args.topic, args.web_limit)})
+    sciatlas_requested = bool(args.sciatlas_search)
+    crossref_requested = bool(args.web_search)
+    sciatlas_client: SciAtlasClient | None = None
+    sciatlas_status = "disabled"
+    if sciatlas_requested:
+        config = load_config(
+            base_url=args.sciatlas_base_url or None,
+            api_key=args.sciatlas_api_key or None,
+            timeout=args.sciatlas_timeout or None,
+        )
+        if not config.configured:
+            sciatlas_status = "missing_api_key"
+        else:
+            sciatlas_client = SciAtlasClient(config=config)
+            try:
+                sciatlas_client.health()
+                sciatlas_status = "ok"
+            except Exception as exc:
+                sciatlas_status = f"health_failed: {exc}"
+                sciatlas_client = None
+
+    external_grouped: list[dict[str, Any]] = []
+    sources_used: list[str] = []
+    for group in local_grouped:
+        rows: list[dict[str, Any]] = []
+        if sciatlas_client is not None:
+            sciatlas_rows = sciatlas_search(
+                sciatlas_client,
+                group["keyword"],
+                args.topic,
+                args.sciatlas_limit,
+                args.sciatlas_time_range or None,
+                args.sciatlas_domain or None,
+            )
+            rows.extend(sciatlas_rows)
+            if sciatlas_rows and "sciatlas" not in sources_used:
+                sources_used.append("sciatlas")
             if args.web_delay:
                 time.sleep(args.web_delay)
-    write_json(out_dir / "web_results_by_keyword.json", {"project_id": project_id, "enabled": bool(args.web_search), "results": web_grouped})
+        if crossref_requested:
+            crossref_rows = web_search(group["keyword"], args.topic, args.web_limit)
+            rows.extend(crossref_rows)
+            if crossref_rows and "crossref" not in sources_used:
+                sources_used.append("crossref")
+            if args.web_delay:
+                time.sleep(args.web_delay)
+        merged = merge_external_results(rows)
+        if merged:
+            external_grouped.append({"keyword": group["keyword"], "web_results": merged})
+
+    if sciatlas_requested and sciatlas_client is None and not crossref_requested:
+        external_status = sciatlas_status
+    elif sciatlas_requested and crossref_requested and sciatlas_client is None:
+        external_status = f"sciatlas_unavailable({sciatlas_status}); crossref_active"
+    elif sciatlas_client is not None and crossref_requested:
+        external_status = "sciatlas+crossref"
+    elif sciatlas_client is not None:
+        external_status = "sciatlas"
+    elif crossref_requested:
+        external_status = "crossref"
+    else:
+        external_status = "disabled"
+
+    if not sources_used:
+        external_source = "none"
+    elif len(sources_used) == 1:
+        external_source = sources_used[0]
+    else:
+        external_source = "+".join(sources_used)
+
+    write_json(out_dir / "web_results_by_keyword.json", {
+        "project_id": project_id,
+        "enabled": bool(external_grouped),
+        "source": external_source,
+        "status": external_status,
+        "sources": sources_used,
+        "results": external_grouped,
+    })
+    web_grouped = external_grouped
     combined = combine_results(local_grouped, web_grouped)
     write_json(out_dir / "combined_results_by_keyword.json", {"project_id": project_id, "topic": args.topic, "results": combined})
     selected = selected_from_combined(combined)
@@ -529,9 +758,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--project-id", default="")
     parser.add_argument("--topic", required=True)
     parser.add_argument("--keywords", default="")
-    parser.add_argument("--web-search", action="store_true")
+    parser.add_argument("--web-search", action="store_true", help="Fallback: query Crossref when SciAtlas is unavailable.")
     parser.add_argument("--web-limit", type=int, default=8)
     parser.add_argument("--web-delay", type=float, default=0.2)
+    parser.add_argument("--sciatlas-search", action="store_true", help="Query the hosted SciAtlas KG /v1/search per keyword.")
+    parser.add_argument("--sciatlas-limit", type=int, default=8)
+    parser.add_argument("--sciatlas-api-key", default="", help="Overrides SCIATLAS_API_KEY env var.")
+    parser.add_argument("--sciatlas-base-url", default="", help="Overrides SCIATLAS_API_BASE_URL env var.")
+    parser.add_argument("--sciatlas-timeout", type=int, default=0, help="HTTP timeout in seconds. 0 = use env/default.")
+    parser.add_argument("--sciatlas-time-range", default="", help="Optional year range like 2018-2025.")
+    parser.add_argument("--sciatlas-domain", default="", help="Optional domain hint, e.g. 'organic chemistry'.")
     return parser.parse_args()
 
 

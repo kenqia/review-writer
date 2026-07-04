@@ -107,7 +107,7 @@ Relative image paths in the Markdown are resolved against the Markdown file's di
 ```text
 use only after review content is stable
 do not rewrite, polish, or revise content
-do not use this skill to read or normalize MinerU output
+do not modify or polish manuscript content
 do not run this skill in place of the final audit skill
 ```
 

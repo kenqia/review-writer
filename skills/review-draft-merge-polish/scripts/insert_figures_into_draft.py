@@ -83,6 +83,17 @@ def heading_aliases(section_id: str, section_heading: str) -> list[str]:
     return [a for a in aliases if a]
 
 
+PARAGRAPH_ID_RE = re.compile(r"<!--\s*paragraph_id:\s*([A-Za-z0-9_\-:.]+)\s*-->")
+
+def insert_after_paragraph(text: str, paragraph_id: str, block: str) -> tuple[str, bool]:
+    if not paragraph_id:
+        return text, False
+    for match in PARAGRAPH_ID_RE.finditer(text):
+        if match.group(1) == paragraph_id:
+            insert_at = match.end()
+            return text[:insert_at] + block + text[insert_at:], True
+    return text, False
+
 def insert_after_section(text: str, section_id: str, section_heading: str, block: str) -> tuple[str, bool]:
     for alias in heading_aliases(section_id, section_heading):
         escaped = re.escape(alias)
@@ -138,7 +149,11 @@ def main() -> int:
             continue
         heading = figure.get("section_heading") or ""
         block = figure_markdown(figure, rel, index, mode)
-        text, matched = insert_after_section(text, str(figure.get("section_id") or ""), heading, block)
+        target_pid = str(figure.get("target_paragraph_id") or "")
+        text, matched = insert_after_paragraph(text, target_pid, block)
+        anchor_mode = "paragraph" if matched else "section"
+        if not matched:
+            text, matched = insert_after_section(text, str(figure.get("section_id") or ""), heading, block)
         inserted.append(
             {
                 "figure_number": index,
@@ -147,6 +162,8 @@ def main() -> int:
                 "source_label": figure.get("source_label"),
                 "inserted_path": rel,
                 "mode": mode,
+                "anchor_mode": anchor_mode,
+                "target_paragraph_id": target_pid,
                 "matched_heading": matched,
             }
         )

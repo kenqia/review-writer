@@ -55,3 +55,28 @@ Pause after:
 ```
 
 Do not skip a human check unless the user explicitly says to continue.
+
+## Hard Gates
+
+The status script will not let `first_draft`, `final_audit`, or
+`docx_export` be marked complete when any of these blockers are present:
+
+```text
+draft_has_no_figures                  draft contains zero ![](...) figures
+                                      and 03_figure_redraw/skip_reason.md is absent.
+draft_has_no_citation_callouts        draft contains zero inline [n] callouts.
+missing_references_section            no References / Reference List / Bibliography /
+                                      Cited Literature / 参考文献 heading.
+empty_references_section              References heading exists but no items follow.
+reference_callouts_missing_from_reference_list
+                                      inline [n] not represented in the list.
+broken_markdown_image_paths           an image path does not resolve.
+source_figure_placeholders_need_redraw_or_permission_check
+                                      source-paper placeholders still in the manuscript.
+final_audit_has_blocking_issues       format_scan.json reports blocking_issues; resolve
+                                      before generating the DOCX.
+```
+
+To intentionally produce a no-figure manuscript, write
+`review-projects/<project_id>/03_figure_redraw/skip_reason.md` with a
+one-line justification before re-running the draft merge.

@@ -7,6 +7,10 @@ description: Read the 20-30 selected papers, build a concise fixed-field literat
 
 Goal: read selected papers and create the literature matrix plus outline options.
 
+Boundary: this skill produces high-level structure (sections, purposes,
+assigned papers, expected figures). It does NOT emit per-paragraph or
+per-claim constraints; that is `review-section-blueprint`'s job.
+
 ## Inputs
 
 ```text
@@ -49,6 +53,10 @@ most_relevant_figure: the figure/scheme/table that best reflects the principle o
 ```
 
 Do not omit any field. Do not exclude a paper only because its abstract is poor.
+
+External `web_papers` (SciAtlas/Crossref) from discovery are reference-only:
+they may be cited in the manuscript with a reference list entry, but they do
+not get a `paper_id` and do not become matrix rows.
 
 ## Outline Rules
 

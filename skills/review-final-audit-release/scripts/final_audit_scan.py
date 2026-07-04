@@ -36,9 +36,31 @@ def expand_ref_callouts(text: str) -> set[int]:
     return refs
 
 
+REFERENCES_HEADING_RE = re.compile(
+    r"^\s*#{1,6}\s*(references|reference list|bibliography|cited literature|参考文献)\s*$",
+    re.I | re.M,
+)
+
+
+def detect_references_section(text: str) -> dict[str, Any]:
+    match = REFERENCES_HEADING_RE.search(text or "")
+    if not match:
+        return {"present": False, "start_line": None, "item_count": 0}
+    tail = text[match.end():]
+    items = [m for m in REF_ITEM_RE.finditer(tail) if m.group(1) is not None or m.group(0).strip()]
+    return {
+        "present": True,
+        "start_line": text[: match.start()].count("\n") + 1,
+        "item_count": len(items),
+    }
+
+
 def scan_draft(project: Path) -> dict[str, Any]:
-    draft = project / "04_first_draft" / "first_draft.md"
+    final_path = project / "05_final_audit" / "final_draft.md"
+    first_path = project / "04_first_draft" / "first_draft.md"
+    draft = final_path if final_path.exists() else first_path
     text = read_text(draft) if draft.exists() else ""
+    target = "final_draft" if draft == final_path and final_path.exists() else "first_draft"
     headings = [{"level": len(m.group(1)), "title": m.group(2).strip()} for m in HEADING_RE.finditer(text)]
     duplicate_headings = sorted(
         {h["title"] for h in headings if [x["title"] for x in headings].count(h["title"]) > 1}
@@ -60,7 +82,11 @@ def scan_draft(project: Path) -> dict[str, Any]:
         candidate = (draft.parent / raw).resolve()
         if not candidate.exists():
             broken_images.append(raw)
-    figure_insert_report = project / "04_first_draft" / "figure_insertion_report.json"
+    figure_insert_report_candidates = [
+        project / "05_final_audit" / "figure_insertion_report.json",
+        project / "04_first_draft" / "figure_insertion_report.json",
+    ]
+    figure_insert_report = next((p for p in figure_insert_report_candidates if p.exists()), figure_insert_report_candidates[-1])
     source_placeholder_mode = False
     if figure_insert_report.exists():
         try:
@@ -76,11 +102,47 @@ def scan_draft(project: Path) -> dict[str, Any]:
         if prev and level > prev + 1:
             heading_jumps.append({"from": prev, "to": level, "title": h["title"]})
         prev = level
-    issues = []
+    references_section = detect_references_section(text)
+    citations_path = project / "04_first_draft" / "citations.json"
+    citations_payload = None
+    if citations_path.exists():
+        try:
+            citations_payload = json.loads(citations_path.read_text(encoding="utf-8"))
+        except Exception:
+            citations_payload = None
+    matrix_path = project / "01_matrix_outline" / "literature_matrix.json"
+    matrix_paper_ids: set[str] = set()
+    if matrix_path.exists():
+        try:
+            matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
+            rows = matrix.get("rows") if isinstance(matrix, dict) else matrix
+            if isinstance(rows, list):
+                for row in rows:
+                    if isinstance(row, dict) and row.get("paper_id"):
+                        matrix_paper_ids.add(str(row["paper_id"]))
+        except Exception:
+            matrix_paper_ids = set()
+    unknown_cited_papers: list[str] = []
+    if isinstance(citations_payload, dict):
+        entries = citations_payload.get("entries") or citations_payload.get("citations") or []
+        for entry in entries if isinstance(entries, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            for pid in entry.get("cited_paper_ids") or entry.get("paper_ids") or []:
+                if pid and matrix_paper_ids and str(pid) not in matrix_paper_ids:
+                    unknown_cited_papers.append(str(pid))
+    unknown_cited_papers = sorted(set(unknown_cited_papers))
+    skip_reason_path = project / "03_figure_redraw" / "skip_reason.md"
+    figures_skipped_with_reason = skip_reason_path.exists() and bool(read_text(skip_reason_path).strip())
+
+    issues: list[str] = []
+    blocking_issues: list[str] = []
     if not draft.exists():
         issues.append("missing_first_draft")
+        blocking_issues.append("missing_draft")
     if placeholder_hits:
         issues.append("placeholder_or_verification_notes_present")
+        blocking_issues.append("placeholder_or_verification_notes_present")
     if duplicate_headings:
         issues.append("duplicate_headings")
     if empty_heading_titles:
@@ -89,10 +151,30 @@ def scan_draft(project: Path) -> dict[str, Any]:
         issues.append("heading_level_jumps")
     if missing_listed_refs:
         issues.append("reference_callouts_missing_from_reference_list")
+        blocking_issues.append("reference_callouts_missing_from_reference_list")
     if broken_images:
         issues.append("broken_markdown_image_paths")
+        blocking_issues.append("broken_markdown_image_paths")
     if source_placeholder_mode:
         issues.append("source_figure_placeholders_need_redraw_or_permission_check")
+        blocking_issues.append("source_figure_placeholders_need_redraw_or_permission_check")
+    # Hard requirement: a final review must have at least one figure unless the user has
+    # explicitly opted out via 03_figure_redraw/skip_reason.md.
+    if not image_paths and not figures_skipped_with_reason:
+        issues.append("draft_has_no_figures")
+        blocking_issues.append("draft_has_no_figures")
+    # Hard requirement: a final review must cite literature in a recognizable way.
+    if unknown_cited_papers:
+        issues.append("citations_reference_unknown_papers")
+    if not called_refs:
+        issues.append("draft_has_no_citation_callouts")
+        blocking_issues.append("draft_has_no_citation_callouts")
+    if not references_section["present"]:
+        issues.append("missing_references_section")
+        blocking_issues.append("missing_references_section")
+    elif references_section["item_count"] == 0:
+        issues.append("empty_references_section")
+        blocking_issues.append("empty_references_section")
     return {
         "project_dir": str(project),
         "draft_path": str(draft),
@@ -110,7 +192,13 @@ def scan_draft(project: Path) -> dict[str, Any]:
         "image_paths": image_paths,
         "broken_images": broken_images,
         "source_placeholder_mode": source_placeholder_mode,
+        "references_section": references_section,
+        "figures_skipped_with_reason": figures_skipped_with_reason,
+        "citations_payload_present": isinstance(citations_payload, dict),
+        "unknown_cited_papers": unknown_cited_papers,
+        "target_draft": target,
         "issues": issues,
+        "blocking_issues": blocking_issues,
     }
 
 
@@ -126,7 +214,12 @@ def write_reports(out_dir: Path, scan: dict[str, Any]) -> None:
         f"- Draft exists: {scan['draft_exists']}",
         f"- Word-like count: {scan['word_like_count']}",
         f"- Heading count: {scan['heading_count']}",
+        f"- Target draft: {scan.get('target_draft', 'first_draft')}",
         f"- Issues: {', '.join(scan['issues']) if scan['issues'] else 'none'}",
+        f"- Blocking issues: {', '.join(scan['blocking_issues']) if scan['blocking_issues'] else 'none'}",
+        f"- References section present: {scan.get('references_section', {}).get('present')}",
+        f"- References section item count: {scan.get('references_section', {}).get('item_count')}",
+        f"- Figures explicitly skipped (with reason): {scan.get('figures_skipped_with_reason')}",
         "",
         "## Placeholder Hits",
         "",
@@ -166,6 +259,11 @@ def main() -> int:
     write_reports(out_dir, scan)
     print(f"Wrote final audit scan to {out_dir}")
     print(f"Issues: {len(scan['issues'])}")
+    if scan["blocking_issues"]:
+        print("BLOCKING ISSUES:")
+        for issue in scan["blocking_issues"]:
+            print(f"- {issue}")
+        return 1
     return 0
 
 

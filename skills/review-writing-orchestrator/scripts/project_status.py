@@ -48,7 +48,7 @@ STAGES: list[dict[str, Any]] = [
             "section_writing_plan.md",
         ],
         "human_check": "Check section_blueprint.json and section_writing_plan.md before section drafting.",
-        "confirmed_by": [],
+        "confirmed_by": ["human_check.json"],
     },
     {
         "id": "section_drafting",
@@ -65,7 +65,7 @@ STAGES: list[dict[str, Any]] = [
             "section_drafting_report.md",
         ],
         "human_check": "Check section drafts and figure candidates before redraw.",
-        "confirmed_by": [],
+        "confirmed_by": ["human_check.json"],
     },
     {
         "id": "figure_redraw",
@@ -79,8 +79,8 @@ STAGES: list[dict[str, Any]] = [
             "figure_redraw_report.md",
         ],
         "human_check": "Compare every redrawn figure with its source before merging.",
-        "confirmed_by": [],
-        "optional_skip": True,
+        "confirmed_by": ["human_check.json"],
+        "skip_anchor": "skip_reason.md",
     },
     {
         "id": "first_draft",
@@ -94,7 +94,7 @@ STAGES: list[dict[str, Any]] = [
             "remaining_issues.md",
         ],
         "human_check": "Review the unified first draft in http://127.0.0.1:8765/draft.",
-        "confirmed_by": [],
+        "confirmed_by": ["human_check.json"],
     },
     {
         "id": "final_audit",
@@ -111,7 +111,7 @@ STAGES: list[dict[str, Any]] = [
             "release_report.md",
         ],
         "human_check": "Check final_draft.md and release_report.md before export.",
-        "confirmed_by": [],
+        "confirmed_by": ["human_check.json"],
     },
     {
         "id": "docx_export",
@@ -122,7 +122,7 @@ STAGES: list[dict[str, Any]] = [
             "final_draft.docx",
         ],
         "human_check": "Download final_draft.docx from /final and open it in Word to confirm styling.",
-        "confirmed_by": [],
+        "confirmed_by": ["human_check.json"],
     },
 ]
 
@@ -146,15 +146,21 @@ def stage_status(project: Path, stage: dict[str, Any]) -> dict[str, Any]:
     missing = [name for name in stage["required"] if not (stage_dir / name).exists()]
     semantic_issues: list[str] = []
     if stage["id"] == "figure_redraw":
-        manifest = read_json(stage_dir / "redrawn_figure_manifest.json")
-        if isinstance(manifest, dict):
-            if manifest.get("status") == "skipped":
-                semantic_issues.append("figure_redraw_skipped")
-            figures = manifest.get("figures")
-            if isinstance(figures, list) and not any(isinstance(f, dict) and f.get("status") == "redrawn" for f in figures):
-                semantic_issues.append("no_redrawn_figures")
-        elif not missing:
-            semantic_issues.append("invalid_redrawn_figure_manifest")
+        skip_anchor = stage_dir / stage.get("skip_anchor", "skip_reason.md")
+        skip_active = skip_anchor.exists() and bool(skip_anchor.read_text(encoding="utf-8", errors="ignore").strip())
+        if skip_active:
+            # User explicitly opted out. Clear `missing` so the stage can complete.
+            missing = []
+        else:
+            manifest = read_json(stage_dir / "redrawn_figure_manifest.json")
+            if isinstance(manifest, dict):
+                if manifest.get("status") == "skipped":
+                    semantic_issues.append("figure_redraw_skipped_without_reason")
+                figures = manifest.get("figures")
+                if isinstance(figures, list) and not any(isinstance(f, dict) and f.get("status") == "redrawn" for f in figures):
+                    semantic_issues.append("no_redrawn_figures")
+            elif not missing:
+                semantic_issues.append("invalid_redrawn_figure_manifest")
     if stage["id"] == "section_drafting":
         candidates = read_json(stage_dir / "figure_candidates.json")
         if isinstance(candidates, dict):
@@ -165,9 +171,53 @@ def stage_status(project: Path, stage: dict[str, Any]) -> dict[str, Any]:
             semantic_issues.append("empty_figure_candidates")
         elif not isinstance(figures, list) and "figure_candidates.json" not in missing:
             semantic_issues.append("invalid_figure_candidates")
-    complete = not missing
-    if semantic_issues:
-        complete = False
+        sections_dir = stage_dir / "sections"
+        section_files = sorted(sections_dir.glob("*.md")) if sections_dir.exists() else []
+        if not section_files:
+            semantic_issues.append("sections_directory_empty")
+        tasks = read_json(stage_dir / "section_tasks.json")
+        task_list = tasks if isinstance(tasks, list) else (tasks.get("sections") if isinstance(tasks, dict) else None)
+        if isinstance(task_list, list) and section_files:
+            have = {p.stem for p in section_files}
+            missing_ids = [t.get("section_id") for t in task_list if isinstance(t, dict) and t.get("section_id") and t["section_id"] not in have]
+            if missing_ids:
+                semantic_issues.append("section_files_missing_for_tasks")
+    if stage["id"] == "docx_export":
+        # DOCX is only valid when the final audit passed all blocking checks.
+        final_scan = read_json(project / "05_final_audit" / "format_scan.json")
+        if isinstance(final_scan, dict) and final_scan.get("blocking_issues"):
+            semantic_issues.append("final_audit_has_blocking_issues")
+        elif not (project / "05_final_audit" / "final_draft.md").exists():
+            semantic_issues.append("final_draft_md_missing")
+    if stage["id"] in {"first_draft", "final_audit"}:
+        draft_path = stage_dir / ("first_draft.md" if stage["id"] == "first_draft" else "final_draft.md")
+        if draft_path.exists():
+            draft_text = draft_path.read_text(encoding="utf-8", errors="ignore")
+            import re as _re
+            has_image = bool(_re.search(r"!\[[^\]]*\]\(([^)]+)\)", draft_text))
+            has_citation = bool(_re.search(r"\[\d+(?:\s*[-,]\s*\d+)*\]", draft_text))
+            has_references = bool(_re.search(
+                r"^\s*#{1,6}\s*(references|reference list|bibliography|cited literature|参考文献)\s*$",
+                draft_text,
+                _re.I | _re.M,
+            ))
+            skip_reason = project / "03_figure_redraw" / "skip_reason.md"
+            figures_skipped_with_reason = skip_reason.exists() and bool(skip_reason.read_text(encoding="utf-8", errors="ignore").strip())
+            if not has_image and not figures_skipped_with_reason:
+                semantic_issues.append("draft_has_no_figures")
+            if not has_citation:
+                semantic_issues.append("draft_has_no_citation_callouts")
+            if not has_references:
+                semantic_issues.append("missing_references_section")
+        if stage["id"] == "final_audit":
+            scan = read_json(stage_dir / "format_scan.json")
+            if isinstance(scan, dict):
+                blockers = scan.get("blocking_issues") or []
+                for issue in blockers:
+                    if issue not in semantic_issues:
+                        semantic_issues.append(issue)
+    complete = not missing and not semantic_issues
+    expects_confirmation = bool(stage.get("confirmed_by"))
     confirmed = False
     confirmation_notes: list[str] = []
     for name in stage.get("confirmed_by", []):
@@ -184,18 +234,21 @@ def stage_status(project: Path, stage: dict[str, Any]) -> dict[str, Any]:
             if path.read_text(encoding="utf-8", errors="ignore").strip():
                 confirmed = True
                 confirmation_notes.append(name)
+    if expects_confirmation and not confirmed:
+        complete = False
     return {
         "id": stage["id"],
         "name": stage["name"],
         "skill": stage["skill"],
         "directory": str(stage_dir),
         "complete": complete,
+        "expects_confirmation": expects_confirmation,
         "missing": missing,
         "semantic_issues": semantic_issues,
         "human_check": stage["human_check"],
         "confirmed": confirmed,
         "confirmation_notes": confirmation_notes,
-        "optional_skip": bool(stage.get("optional_skip")),
+        "skipped_by_user": bool(stage.get("skip_anchor")) and (stage_dir / stage.get("skip_anchor", "")).exists(),
     }
 
 
@@ -211,17 +264,19 @@ def summarize(review_root: Path, project_id: str) -> dict[str, Any]:
 
     stages = [stage_status(project, stage) for stage in STAGES]
     completed = [s for s in stages if s["complete"]]
-    next_stage = next((s for s in stages if not s["complete"]), None)
+    # Skip stages explicitly opted out by the user (skip_reason.md present).
+    next_stage = next((s for s in stages if not s["complete"] and not s.get("skipped_by_user")), None)
     blocking_check = None
-
-    if next_stage is None:
+    # A stage that has all artifacts/checks done but is still waiting for human
+    # confirmation should drive the blocking message uniformly.
+    for stage in stages:
+        if stage.get("expects_confirmation") and not stage["confirmed"]:
+            inputs_ready = not stage["missing"] and not stage["semantic_issues"]
+            if inputs_ready:
+                blocking_check = stage["human_check"]
+                break
+    if blocking_check is None and next_stage is None:
         blocking_check = stages[-1]["human_check"]
-    else:
-        idx = stages.index(next_stage)
-        if idx > 0:
-            previous = stages[idx - 1]
-            if previous["complete"] and previous["human_check"] and not previous["confirmed"]:
-                blocking_check = previous["human_check"]
 
     return {
         "project_id": project_id,

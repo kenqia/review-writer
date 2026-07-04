@@ -455,7 +455,7 @@
           <div class="k-title">${esc(g.keyword)}</div>
           <div class="meta">${esc(centerLabel(classifyCenter(g.keyword)))} · ${esc(g.category || '')}</div>
           <span class="pill">${(g.local_results||[]).filter(r=>r.keep!==false).length} local</span>
-          <span class="pill web">${(g.web_results||[]).filter(r=>r.keep!==false).length} web</span>
+          <span class="pill web">${(g.web_results||[]).filter(r=>r.keep!==false).length} external</span>
         </button>`).join('');
     }
     function renderResults() {
@@ -468,7 +468,7 @@
         const id = r.kind === 'local' ? r.paper_id : `web-${r.webIndex}`;
         return `<div class="result ${r.keep===false?'drop':''}">
           <div class="r-title">${esc(r.title || '(untitled)')}</div>
-          <div class="meta">${esc([r.paper_id, r.year, r.journal, `score=${r.score}`].filter(Boolean).join(' · '))}</div>
+          <div class="meta">${esc([r.paper_id, r.year, r.journal, `score=${r.score}`, (Array.isArray(r.sources) && r.sources.length) ? `source=${r.sources.join('+')}` : (r.source ? `source=${r.source}` : null)].filter(Boolean).join(' · '))}</div>
           <div class="meta">${esc(r.reason || '')} ${r.url ? `<a href="${esc(r.url)}" target="_blank">Open link</a>` : ''}</div>
           <div class="r-actions">
             <button class="btn ${r.keep===false?'primary':'red'}" data-action="toggle" data-kind="${r.kind}" data-id="${esc(id)}">${r.keep===false?'Restore':'Delete'}</button>

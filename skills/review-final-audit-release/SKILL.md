@@ -9,6 +9,33 @@ Use this skill after `review-draft-merge-polish` has produced `04_first_draft/fi
 
 This is the final quality gate. It should not create new arguments casually. Its job is to check, correct, and release a defensible final manuscript.
 
+## Hard Gate
+
+`final_draft.md` is rejected if any of these are missing. The status script
+will not let the project advance past this stage when a blocker exists:
+
+```text
+draft_has_no_figures               at least one ![](path) figure or scheme is required;
+                                   to override, write 03_figure_redraw/skip_reason.md
+                                   with a one-line justification before re-running.
+draft_has_no_citation_callouts     at least one inline `[n]` citation callout is required.
+missing_references_section         the draft must end with a heading named "References",
+                                   "Reference List", "Bibliography", "Cited Literature",
+                                   or "参考文献".
+empty_references_section           the References section must list at least one item
+                                   formatted as "1. Author ..." or "[1] Author ...".
+reference_callouts_missing_from_reference_list
+                                   every `[n]` referenced inline must appear in the list.
+broken_markdown_image_paths        every image path must resolve to a real file.
+citations_reference_unknown_papers any cited_paper_id in citations.json must be present
+                                   in literature_matrix.json.
+source_figure_placeholders_need_redraw_or_permission_check
+                                   source-paper placeholders must be redrawn or removed.
+```
+
+Run `final_audit_scan.py` first; resolve every entry in `blocking_issues`
+before declaring the audit complete.
+
 ## Required Inputs
 
 Read:
