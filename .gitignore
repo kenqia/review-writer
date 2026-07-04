@@ -5,6 +5,8 @@
 !/skills/**
 !/view/
 !/view/**
+!/review-library/
+!/review-library/**
 
 /.env
 /.env.*
@@ -14,4 +16,4 @@
 
 !/allene_classification_rules.py
 !/template/
-!/template/综述模板写作方式与风格总结.md
+!/template/**
