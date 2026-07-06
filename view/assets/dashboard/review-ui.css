@@ -402,6 +402,16 @@ textarea.editor {
     min-height: calc(100vh - 124px);
     grid-template-columns: 1fr !important;
   }
+  .page-library .app,
+  .page-discovery .app,
+  .page-matrix .app,
+  .page-blueprint .app,
+  .page-sections .app,
+  .page-figures .app,
+  .page-draft .app,
+  .page-final .app {
+    grid-template-columns: 1fr !important;
+  }
   .panel { min-height: 340px; }
 }
 
