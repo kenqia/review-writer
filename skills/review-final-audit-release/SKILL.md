@@ -31,6 +31,8 @@ citations_reference_unknown_papers any cited_paper_id in citations.json must be 
                                    in literature_matrix.json.
 source_figure_placeholders_need_redraw_or_permission_check
                                    source-paper placeholders must be redrawn or removed.
+quality_report_has_errors          chemistry review quality gate found blocking errors
+quality_report_scan_failed         chemistry quality validator could not run cleanly
 ```
 
 Run `final_audit_scan.py` first; resolve every entry in `blocking_issues`
@@ -65,7 +67,7 @@ For high-risk claims, reopen the relevant local paper metadata and Markdown/PDF 
 Follow this order:
 
 ```text
-1. Run the deterministic format scan script.
+1. Run the deterministic format scan and chemistry quality validator scripts.
 2. Read the first draft and upstream evidence files.
 3. Audit content: evidence support, citation fit, chemistry accuracy, overclaiming, missing caveats, outline fit.
 4. Audit review quality: synthesis vs paper listing, comparison axes, scheme/table integration, organic-review style.
@@ -145,6 +147,8 @@ Create:
 ```text
 format_scan.json
 format_scan.md
+quality_report.json
+quality_report.md
 content_audit_report.md
 format_audit_report.md
 final_draft.md
@@ -170,6 +174,7 @@ chemistry-specific risks
 format scan summary
 manual format fixes made
 remaining formatting issues
+quality_report status, blocking errors, LLM judge tasks, and human review tasks
 ```
 
 `final_draft.md` must be the clean manuscript without inline TODOs, verification notes, or editor-only comments.

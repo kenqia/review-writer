@@ -399,9 +399,10 @@ def build_llm_title_tasks(text: str) -> list[dict[str, Any]]:
         }
     )
     skip_titles = {"references", "reference list", "bibliography", "cited literature", "参考文献", "acknowledgments", "acknowledgements"}
-    section_heads = [h for h in headings if len(h.group(1)) == 2 and h.group(2).strip().lower() not in skip_titles]
-    for idx, head in enumerate(section_heads):
-        next_start = section_heads[idx + 1].start() if idx + 1 < len(section_heads) else len(text)
+    all_h2 = [h for h in headings if len(h.group(1)) == 2]
+    section_heads = [h for h in all_h2 if h.group(2).strip().lower() not in skip_titles]
+    for head in section_heads:
+        next_start = next((candidate.start() for candidate in all_h2 if candidate.start() > head.start()), len(text))
         tasks.append(
             {
                 "rule_id": RULE_SECTION_TITLE,

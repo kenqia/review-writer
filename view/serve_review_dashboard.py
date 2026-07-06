@@ -622,6 +622,8 @@ def project_final_payload(review_root: Path, project_id: str) -> dict[str, Any]:
         "summary": project_summary(review_root, project_id),
         "final_draft_md": read_text_if_exists(stage / "final_draft.md"),
         "final_audit_report_md": read_text_if_exists(stage / "final_audit_report.md"),
+        "quality_report_md": read_text_if_exists(stage / "quality_report.md"),
+        "quality_report": read_json_if_exists(stage / "quality_report.json"),
         "release_report_md": read_text_if_exists(stage / "release_report.md"),
         "final_draft_docx_path": str(docx_path),
         "final_draft_docx_exists": docx_path.exists(),
