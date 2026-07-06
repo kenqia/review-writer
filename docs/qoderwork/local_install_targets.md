@@ -22,7 +22,8 @@ The WSL-side directory also does not currently exist:
 /home/kenqia/.qoderwork/skills
 ```
 
-No real install was performed during this QA pass.
+The five `chem-review-*` skills have been installed into the QoderWork CN
+directory and QoderWork CN has successfully loaded `chem-review-orchestrator`.
 
 ## Candidate Status
 
@@ -62,6 +63,65 @@ Reason:
 - The D drive QoderWork CN project root exists, but `/mnt/d/qodework/QoderWork CN/skills` does not.
 - Desktop QoderWork on this machine is more likely to read the Windows user
   directory than the WSL home directory.
+
+## Installed Skill Status
+
+Installed QoderWork CN target:
+
+```text
+/mnt/c/Users/26960/.qoderworkcn/skills
+```
+
+Installed skills:
+
+```text
+chem-review-orchestrator
+chem-review-library-prep
+chem-review-planning
+chem-review-drafting
+chem-review-quality-release
+```
+
+QoderWork CN successfully loaded `chem-review-orchestrator` from:
+
+```text
+C:\Users\26960\.qoderworkcn\skills\chem-review-orchestrator
+```
+
+The installed `chem-review-*` skill files matched the repository source files
+by SHA256 at install validation time.
+
+## Runtime Smoke Result
+
+QoderWork CN can access the real WSL repository through `wsl.exe`. The source of
+truth remains:
+
+```text
+/home/kenqia/my_folder/review-writer
+```
+
+Use WSL paths or `wsl.exe --cd` when asking QoderWork CN to run repo commands:
+
+```powershell
+wsl.exe --cd /home/kenqia/my_folder/review-writer bash -lc "make smoke && make quality-check && make qoderwork-check && git status --short"
+```
+
+The real repository smoke passed for:
+
+```text
+make smoke
+make quality-check
+make qoderwork-check
+```
+
+Do not use this empty Windows Desktop directory as `review_root`:
+
+```text
+C:\Users\26960\Desktop\review-writer
+```
+
+That path was used once during an incorrect smoke attempt and led to false
+missing-file findings for `Makefile`, `scripts/`, and `skills/`.
 
 ## Dry-Run Commands
 

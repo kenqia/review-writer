@@ -8,9 +8,8 @@
 
 This PR documents and validates QoderWork CN skill install targets for a
 Windows + WSL machine. It adds installer candidate discovery, improves dry-run
-output, and records a controlled install plan without performing a real install.
-
-No global QoderWork directory was modified.
+output, records the controlled QoderWork CN install, and documents the
+successful runtime smoke result.
 
 ## Repository State
 
@@ -112,7 +111,53 @@ python scripts/install_qoderwork_skills.py \
   --apply
 ```
 
-Do not run this command until the user explicitly confirms `apply install`.
+This command was run only after the user explicitly confirmed `apply install`.
+
+## Real Install And Runtime Smoke Result
+
+Installed target:
+
+```text
+/mnt/c/Users/26960/.qoderworkcn/skills
+```
+
+Installed skills:
+
+```text
+chem-review-orchestrator
+chem-review-library-prep
+chem-review-planning
+chem-review-drafting
+chem-review-quality-release
+```
+
+QoderWork CN successfully loaded `chem-review-orchestrator`.
+
+QoderWork CN can reach the real WSL repository with:
+
+```powershell
+wsl.exe --cd /home/kenqia/my_folder/review-writer bash -lc "make smoke && make quality-check && make qoderwork-check && git status --short"
+```
+
+Real repo smoke passed:
+
+```text
+make smoke
+make quality-check
+make qoderwork-check
+```
+
+Do not use this incorrect empty directory as `review_root`:
+
+```text
+C:\Users\26960\Desktop\review-writer
+```
+
+The source of truth remains:
+
+```text
+/home/kenqia/my_folder/review-writer
+```
 
 ## Rollback Plan
 
@@ -160,7 +205,6 @@ clean after committing.
 
 ## Not Included
 
-- no real `--apply` install
 - no overwrite of existing skills
 - no QoderWork config changes
 - no Codex auth/config changes
@@ -169,6 +213,5 @@ clean after committing.
 
 ## Next Stage
 
-After explicit user confirmation, run the Windows CN real install command, open
-QoderWork CN, and run the manual smoke prompt. If discovery succeeds, proceed to
-Alibaba adapter skeletons with offline fallback.
+After the successful QoderWork CN install and smoke, proceed to Alibaba adapter
+skeletons with offline fallback.
