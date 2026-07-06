@@ -13,7 +13,9 @@ DEFAULT_TARGET = Path.home() / ".qoderwork" / "skills"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Install review-writer QoderWork skills.")
-    parser.add_argument("--target", type=Path, default=DEFAULT_TARGET)
+    parser.add_argument("--skills-dir", type=Path, default=SOURCE)
+    parser.add_argument("--target", type=Path, dest="target_dir", default=DEFAULT_TARGET)
+    parser.add_argument("--target-dir", type=Path, dest="target_dir")
     parser.add_argument("--dry-run", action="store_true", help="Preview actions without copying files. This is the default.")
     parser.add_argument("--apply", action="store_true", help="Actually copy files. Default is dry-run.")
     args = parser.parse_args()
@@ -24,14 +26,16 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    if not SOURCE.exists():
-        raise SystemExit(f"missing source skill directory: {SOURCE}")
-    skills = sorted(p for p in SOURCE.iterdir() if (p / "SKILL.md").exists())
-    print(f"source: {SOURCE}")
-    print(f"target: {args.target}")
+    source = args.skills_dir.resolve()
+    target = args.target_dir.expanduser()
+    if not source.exists():
+        raise SystemExit(f"missing source skill directory: {source}")
+    skills = sorted(p for p in source.iterdir() if (p / "SKILL.md").exists())
+    print(f"source: {source}")
+    print(f"target: {target}")
     print(f"mode: {'apply' if args.apply else 'dry-run'}")
     for skill in skills:
-        dest = args.target / skill.name
+        dest = target / skill.name
         print(f"- {skill.name}: {skill} -> {dest}")
         if args.apply:
             if dest.exists():

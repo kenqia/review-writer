@@ -34,6 +34,22 @@ skip_figures=false
 3. Stop at every human checkpoint unless the user explicitly approves continuation.
 4. Never silently produce a no-figure final review.
 5. Prefer deterministic scripts for status, format gates, exports, and offline smoke checks.
+6. Do not read, print, or persist real credentials; report only missing or risky paths.
+7. Do not call real LLM, DashScope, MinerU, retrieval, or image APIs by default.
+8. Do not skip the final quality gate before release or export.
+
+## Deterministic Scripts
+
+Use repo scripts and Makefile targets before model-driven work:
+
+```text
+make smoke
+make quality-check
+make qoderwork-check
+python skills/review-writing-orchestrator/scripts/project_status.py
+python skills/review-final-audit-release/scripts/final_audit_scan.py
+python scripts/validators/validate_review_quality.py
+```
 
 ## Human Checkpoints
 
