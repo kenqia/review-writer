@@ -1,4 +1,4 @@
-.PHONY: smoke quality-check qoderwork-check provider-check
+.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run
 
 PYTHON ?= python3
 
@@ -30,3 +30,9 @@ provider-check:
 		--output-json /tmp/provider_check.json \
 		--output-md /tmp/provider_check.md \
 		--strict
+
+qwen-hello-dry-run:
+	$(PYTHON) scripts/hello_qwen_openai_compatible.py \
+		--dry-run \
+		--output-json /tmp/qwen_hello_dry.json \
+		--output-md /tmp/qwen_hello_dry.md

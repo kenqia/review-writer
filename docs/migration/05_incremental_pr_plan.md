@@ -86,6 +86,22 @@ make provider-check
 
 Phase 4b should stay narrow: one controlled hello-Qwen call with temporary env only, no key printing, no shell rc changes, no paper upload, and explicit user approval before network access.
 
+Phase 4b controlled hello Qwen scope:
+
+```text
+scripts/hello_qwen_openai_compatible.py
+tests/test_hello_qwen_safety.py
+docs/providers/hello_qwen_runbook.md
+```
+
+Gate:
+
+```bash
+make qwen-hello-dry-run
+```
+
+The only permitted real call is a single fixed prompt expecting `QWEN_HELLO_OK`. The call is blocked unless the user explicitly replies `allow hello qwen`; missing env or dependency failures are classified without modifying config.
+
 ## 风险
 
 - PR 过大导致 review 困难。
