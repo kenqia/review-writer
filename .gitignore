@@ -20,6 +20,8 @@
 !/skills/**
 !/view/
 !/view/**
+!/review_writer/
+!/review_writer/**
 
 /.env
 /.env.*
@@ -30,6 +32,7 @@
 /skills/**/__pycache__/
 /view/**/__pycache__/
 /scripts/**/__pycache__/
+/review_writer/**/__pycache__/
 
 !/allene_classification_rules.py
 !/template/

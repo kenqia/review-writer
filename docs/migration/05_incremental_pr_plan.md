@@ -65,6 +65,27 @@ docs/quality/chem_review_quality_rules.md
 - 有 key 时只通过 adapter 调用。
 - 不配置图像 provider 时终稿不能假装图文并茂。
 
+Phase 4a adapter skeleton implemented:
+
+```text
+review_writer/providers/
+review_writer/retrieval/
+review_writer/image/
+review_writer/config/load_providers.py
+scripts/check_providers.py
+tests/test_provider_adapters.py
+config/providers.example.yaml
+docs/providers/alibaba_adapter_design.md
+```
+
+New gate:
+
+```bash
+make provider-check
+```
+
+Phase 4b should stay narrow: one controlled hello-Qwen call with temporary env only, no key printing, no shell rc changes, no paper upload, and explicit user approval before network access.
+
 ## 风险
 
 - PR 过大导致 review 困难。

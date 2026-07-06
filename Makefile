@@ -1,4 +1,4 @@
-.PHONY: smoke quality-check qoderwork-check
+.PHONY: smoke quality-check qoderwork-check provider-check
 
 PYTHON ?= python3
 
@@ -22,3 +22,11 @@ qoderwork-check:
 		--output-md /tmp/qoderwork_skill_check.md \
 		--strict
 	$(PYTHON) scripts/install_qoderwork_skills.py --dry-run
+
+provider-check:
+	$(PYTHON) tests/test_provider_adapters.py
+	$(PYTHON) scripts/check_providers.py \
+		--config config/providers.example.yaml \
+		--output-json /tmp/provider_check.json \
+		--output-md /tmp/provider_check.md \
+		--strict

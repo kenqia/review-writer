@@ -1,55 +1,47 @@
 # Example provider config. Do not put real keys in this file.
+# Do not commit .env files.
+# Do not write DashScope keys into shell rc files.
+# Real network/API calls require explicit user confirmation.
+# Smoke checks must pass without keys.
 
-llm:
-  default: local
-  providers:
-    openai:
-      type: openai-compatible
-      base_url: https://api.openai.com/v1
-      api_key_env: OPENAI_API_KEY
-      model: gpt-4.1
-    dashscope_qwen:
-      type: dashscope
-      base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-      api_key_env: DASHSCOPE_API_KEY
-      model: qwen-plus
-    local:
-      type: openai-compatible
-      base_url_env: LOCAL_LLM_BASE_URL
-      api_key_env: LOCAL_LLM_API_KEY
-      model: local-open-source
+default_provider: offline
+
+providers:
+  offline:
+    enabled: true
+    model: offline-deterministic
+  alibaba_openai_compatible:
+    enabled: false
+    env_key: DASHSCOPE_API_KEY
+    workspace_id_env: ALIBABA_WORKSPACE_ID
+    region: cn-beijing
+    base_url_template: https://{workspace_id}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+    model: qwen-plus
+  dashscope:
+    enabled: false
+    env_key: DASHSCOPE_API_KEY
+    model: qwen-plus
 
 retrieval:
-  default: local_library
-  providers:
-    local_library:
-      type: filesystem
-      library_dir: ${REVIEW_WRITER_DATA_ROOT}/review-library
-    alibaba_bailian_kb:
-      type: bailian-knowledge-base
-      api_key_env: DASHSCOPE_API_KEY
-      kb_id_env: ALIBABA_BAILIAN_KB_ID
-    mcp_paper_search:
-      type: optional-mcp
-      enabled: false
+  local:
+    enabled: true
+    registry_path: review-library/registry/papers.jsonl
+  bailian:
+    enabled: false
+    env_key: DASHSCOPE_API_KEY
+    knowledge_base_id_env: BAILIAN_KNOWLEDGE_BASE_ID
 
 image:
-  default: noop
-  providers:
-    source_figure_extraction:
-      type: local-mineru-assets
-    redraw_existing_source_figure:
-      type: image-edit
-      provider: openai-compatible
-      api_key_env: OPENAI_API_KEY
-    alibaba_wan_qwen_image:
-      type: alibaba-image
-      api_key_env: ALIBABA_IMAGE_API_KEY
-    noop:
-      type: noop
-      behavior: warn-and-skip
+  source_figure:
+    enabled: true
+  alibaba_image:
+    enabled: false
+    env_key: DASHSCOPE_API_KEY
 
 fallback:
   offline_smoke_required: true
   missing_figures_policy: warning_then_block_final_release
   allow_no_figure_final: false
+  no_key_smoke_must_pass: true
+  do_not_upload_papers: true
+  do_not_create_bailian_knowledge_base: true

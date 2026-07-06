@@ -75,3 +75,35 @@ generate(prompt, constraints)
 - provider 错误进入报告，不进入正文。
 - 所有真实调用集中在 adapter 层。
 - no-op image fallback 不能制造“已有图片”的假象。
+
+## Phase 4a Skeleton Status
+
+已落地 offline-first adapter skeleton：
+
+```text
+review_writer/providers/offline_provider.py
+review_writer/providers/openai_compatible_provider.py
+review_writer/providers/dashscope_provider.py
+review_writer/retrieval/local_library.py
+review_writer/retrieval/bailian_retrieval.py
+review_writer/image/source_figure.py
+review_writer/image/alibaba_image.py
+scripts/check_providers.py
+tests/test_provider_adapters.py
+```
+
+当前边界：
+
+- `offline` provider 默认启用，并返回 deterministic mock response。
+- Alibaba OpenAI-compatible / DashScope / Bailian / Alibaba image 默认 disabled。
+- `local_library` 只读取本地 registry/metadata，不读取 PDF 正文。
+- Bailian placeholder 不创建知识库，不上传文件。
+- Alibaba image placeholder 不生图，不上传图片。
+
+新增验收：
+
+```bash
+make provider-check
+```
+
+真实调用前仍需用户显式确认 `workspace_id`、`region`、`model`、临时 `DASHSCOPE_API_KEY`、是否允许网络调用。不得把 key 写入 repo 或 shell rc。
