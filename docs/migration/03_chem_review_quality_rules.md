@@ -2,7 +2,7 @@
 
 ## 结论
 
-现有 final audit 已覆盖基础格式 gate，但化学综述质量需要拆成 static check、LLM judge、human audit 三层。第一阶段应先把可确定规则脚本化，再把标题对应、化学准确性、prompt leakage 等交给 LLM/human。
+现有 final audit 已覆盖基础格式 gate。Phase 2 已新增离线 validator：`scripts/validators/validate_review_quality.py`，把引用顺序、重复图注、图片路径、prompt/workflow 泄漏、参考文献弱检查、化学式风险提示落成 static/heuristic check；标题与正文一致性仍作为 LLM judge placeholder 输出，不调用真实 API。
 
 ## 证据
 
@@ -32,15 +32,31 @@ TODO verify mechanism           # editor note 泄漏
 Use this pattern when...         # rule pack 泄漏
 ```
 
+## Phase 2 落地状态
+
+已实现：
+
+- `CRQ001_SOURCE_FIGURE_TRACEABILITY`: Markdown image path 和 manifest source path 存在性检查。
+- `CRQ002_CITATION_CALLOUT_ORDER`: `[3,1]`、`[5, 2, 4]`、`[7-5]` 检查。
+- `CRQ003_DUPLICATE_CAPTIONS`: `Figure X.` / `图 X` caption 规范化重复检查。
+- `CRQ004_CHEMICAL_FORMULA_TYPOGRAPHY`: `CO2`、`H2O`、`Fe3+`、`SO4 2-` 等风险提示与人工任务。
+- `CRQ005_REFERENCE_FORMAT_COMPLETENESS`: references.md / references.bib 非空与 author/year/DOI 弱检查。
+- `CRQ008_PROMPT_WORKFLOW_LEAKAGE`: workflow、rule pack、blueprint、请生成、本节应当等泄漏词检查。
+
+placeholder：
+
+- `CRQ006_SECTION_HEADING_FIT`: 生成 `llm_judge_tasks`，不调用 LLM。
+- `CRQ007_REVIEW_TITLE_FIT`: 生成 `llm_judge_tasks`，不调用 LLM。
+
 ## 推荐放置
 
-- 新增 `scripts/validators/chem_review_static_scan.py`。
-- `review-final-audit-release` 调用 static validators 后再进行 LLM judge。
-- dashboard `Final` 页面显示 `quality_scan.md`。
+- CLI: `scripts/validators/validate_review_quality.py`。
+- Tests: `tests/test_quality_validators.py` and `tests/fixtures/quality/*`.
+- Future integration: `review-final-audit-release` can call the validator and surface `quality_report.md` in the dashboard.
 
 ## 验收标准
 
-- static scan 无项目数据时能显示用法。
+- static scan 无项目数据时能显示用法或清楚的 missing-file 错误。
 - 有 draft 时输出 JSON + Markdown 报告。
 - blocking issues 会阻止 release ready。
 - LLM judge 缺 provider 时降级为 warning，不阻塞 offline smoke。

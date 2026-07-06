@@ -9,3 +9,8 @@ smoke:
 
 quality-check:
 	$(PYTHON) scripts/repo_safety_check.py
+	$(PYTHON) tests/test_quality_validators.py
+	$(PYTHON) scripts/validators/validate_review_quality.py \
+		--draft tests/fixtures/quality/good_minimal_review.md \
+		--output-json /tmp/review_writer_quality_check.json \
+		--output-md /tmp/review_writer_quality_check.md

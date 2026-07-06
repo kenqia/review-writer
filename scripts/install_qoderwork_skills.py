@@ -14,8 +14,12 @@ DEFAULT_TARGET = Path.home() / ".qoderwork" / "skills"
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Install review-writer QoderWork skills.")
     parser.add_argument("--target", type=Path, default=DEFAULT_TARGET)
+    parser.add_argument("--dry-run", action="store_true", help="Preview actions without copying files. This is the default.")
     parser.add_argument("--apply", action="store_true", help="Actually copy files. Default is dry-run.")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.apply and args.dry_run:
+        parser.error("--apply and --dry-run cannot be used together")
+    return args
 
 
 def main() -> int:

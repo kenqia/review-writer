@@ -28,9 +28,9 @@ python3 scripts/install_qoderwork_skills.py
 目标：
 
 - 新增 static validators
-- 扩展 final audit
-- 输出 `quality_scan.json/md`
-- dashboard final 页面显示质量报告
+- 输出 `quality_report.json/md`
+- 增加 fixture tests
+- 接入 `make quality-check`
 
 验收：
 
@@ -38,6 +38,17 @@ python3 scripts/install_qoderwork_skills.py
 - 重复图注报告。
 - broken/missing source image 报告。
 - prompt leakage 示例被捕获。
+- good minimal fixture 通过。
+- 标题一致性作为 LLM judge task 输出但不调用 API。
+
+Phase 2 first batch implemented:
+
+```text
+scripts/validators/validate_review_quality.py
+tests/test_quality_validators.py
+tests/fixtures/quality/*.md
+docs/quality/chem_review_quality_rules.md
+```
 
 ## PR 3: Adapter And Export Expansion
 
