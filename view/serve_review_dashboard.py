@@ -347,6 +347,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not path:
             self.send_error(HTTPStatus.BAD_REQUEST, "invalid path")
             return
+        allowed_roots = [self.review_root.resolve()]
         if not path.is_absolute():
             resolved = None
             if paper_id:
@@ -355,9 +356,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if md_value:
                     md_dir = Path(md_value).resolve().parent
                     candidate = (md_dir / path).resolve()
-                    if candidate.exists():
+                    try:
+                        candidate.relative_to(md_dir)
+                    except ValueError:
+                        candidate = None
+                    if candidate and candidate.exists():
                         resolved = candidate
+                        allowed_roots.append(md_dir)
             path = resolved or (self.review_root / path).resolve()
+        else:
+            path = path.resolve()
+        if not any(is_relative_to(path, root) for root in allowed_roots):
+            self.send_error(HTTPStatus.FORBIDDEN, "file path outside allowed roots")
+            return
         if not path.exists() or not path.is_file():
             self.send_error(HTTPStatus.NOT_FOUND, "file not found")
             return
@@ -407,6 +418,14 @@ def safe_abs_path(raw: str) -> Path | None:
     # Keep spaces and unicode; only normalize separators.
     raw = posixpath.normpath(raw)
     return Path(raw).expanduser().resolve() if raw.startswith("/") else Path(raw)
+
+
+def is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 def rebuild_registry(review_root: Path) -> None:
