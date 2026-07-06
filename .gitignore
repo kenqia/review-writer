@@ -1,19 +1,44 @@
 /*
 !/.gitignore
+!/.agents/
+!/.agents/skills
+!/AGENTS.md
 !/README.md
+!/Makefile
+!/.env.example
+!/config/
+!/config/**
+!/docs/
+!/docs/**
+!/qoderwork/
+!/qoderwork/**
+!/scripts/
+!/scripts/**
 !/skills/
 !/skills/**
 !/view/
 !/view/**
-!/review-library/
-!/review-library/**
 
 /.env
 /.env.*
+!/.env.example
+/config/*.yaml
+!/config/*.example.yaml
 
 /skills/**/__pycache__/
 /view/**/__pycache__/
+/scripts/**/__pycache__/
 
 !/allene_classification_rules.py
 !/template/
-!/template/**
+!/template/template_summary.md
+
+/chem_papers/
+/source-paper/
+/mineru-outputs/
+/review-projects/
+/review-library/
+/template/*.pdf
+/skills/mineru-precise-parse-review-writer/config/mineru_api_token.txt
+/skills/mineru-precise-parse-review-writer/config/*token*
+!/skills/mineru-precise-parse-review-writer/config/mineru_api_token.example.txt

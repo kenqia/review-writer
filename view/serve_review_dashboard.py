@@ -133,7 +133,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.BAD_REQUEST, "final_draft.md not found")
             return
         docx_path = stage / "final_draft.docx"
-        script = Path("/home/ps/review-writer/skills/review-export-docx/scripts/md2docx.py")
+        script = self.review_root / "skills" / "review-export-docx" / "scripts" / "md2docx.py"
         if not script.exists():
             self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "md2docx.py not found")
             return
@@ -714,7 +714,7 @@ def run(args: argparse.Namespace) -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Serve local review metadata dashboard.")
-    parser.add_argument("--review-root", default="/home/ps/review-writer")
+    parser.add_argument("--review-root", default=str(Path(__file__).resolve().parents[1]))
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     return parser.parse_args()

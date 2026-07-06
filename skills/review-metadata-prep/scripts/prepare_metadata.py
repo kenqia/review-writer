@@ -1099,9 +1099,10 @@ def run(args: argparse.Namespace) -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Prepare review paper metadata from MinerU outputs.")
-    parser.add_argument("--review-root", default="/home/ps/review-writer")
-    parser.add_argument("--mineru-output", default="/home/ps/review-writer/mineru-outputs")
-    parser.add_argument("--pdf-root", default="/home/ps/review-writer/source-paper/Progargylic")
+    default_root = Path(__file__).resolve().parents[3]
+    parser.add_argument("--review-root", default=str(default_root))
+    parser.add_argument("--mineru-output", default=str(default_root / "mineru-outputs"))
+    parser.add_argument("--pdf-root", default=str(default_root / "source-paper" / "Progargylic"))
     parser.add_argument(
         "--discover-from-pdf-root",
         action="store_true",

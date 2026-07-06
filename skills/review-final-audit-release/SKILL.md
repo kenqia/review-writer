@@ -125,8 +125,8 @@ front matter style inappropriate for a chemistry review
 Run:
 
 ```bash
-python /home/ps/review-writer/skills/review-final-audit-release/scripts/final_audit_scan.py \
-  --review-root /home/ps/review-writer \
+python <review_root>/skills/review-final-audit-release/scripts/final_audit_scan.py \
+  --review-root <review_root> \
   --project-id <project_id>
 ```
 

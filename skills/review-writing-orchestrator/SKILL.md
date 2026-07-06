@@ -34,8 +34,8 @@ Merge: combine section files into one polished first draft.
 ## Status
 
 ```bash
-python /home/ps/review-writer/skills/review-writing-orchestrator/scripts/project_status.py \
-  --review-root /home/ps/review-writer \
+python <review_root>/skills/review-writing-orchestrator/scripts/project_status.py \
+  --review-root <review_root> \
   --project-id <project_id>
 ```
 
