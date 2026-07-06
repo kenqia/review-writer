@@ -6,7 +6,7 @@
 
 ## Summary
 
-This PR documents and validates QoderWork skill install targets for a
+This PR documents and validates QoderWork CN skill install targets for a
 Windows + WSL machine. It adds installer candidate discovery, improves dry-run
 output, and records a controlled install plan without performing a real install.
 
@@ -31,14 +31,17 @@ No global QoderWork directory was modified.
 | --- | --- | ---: | --- |
 | `/home/kenqia/.qoderwork/skills` | not found | 0 | none |
 | `/mnt/c/Users/26960/.qoderwork/skills` | exists | 10 | none |
+| `/mnt/c/Users/26960/.qoderworkcn/skills` | exists | 10 | none |
+| `/mnt/d/qodework/QoderWork CN/skills` | not found | 0 | none |
 
-The Windows-side target is more likely to be read by desktop QoderWork because
-it already contains built-in QoderWork skills. The WSL-side target does not
-exist.
+The Windows-side QoderWork CN user target is more likely to be read by the
+active client because it already contains built-in QoderWork CN skills. The
+WSL-side target does not exist. The D drive QoderWork CN project root exists at
+`/mnt/d/qodework/QoderWork CN`, but it does not currently contain a `skills`
+directory.
 
-Related Windows-side directories were also observed, including `.qoderworkcn`
-and AppData QoderWork directories. If QoderWork CN is the active client, verify
-the CN directory separately before installing.
+Related Windows-side directories were also observed, including `.qoderwork`,
+`.qoderworkcn`, and AppData QoderWork directories.
 
 ## Installer Changes
 
@@ -59,7 +62,7 @@ Behavior:
 - `--apply` is required to copy files
 - dry-run prints source, target, target existence, parent existence, and per-skill destination status
 - existing target skill directories are not overwritten
-- `--list-candidates` prints likely WSL and Windows targets without writing files
+- `--list-candidates` prints likely WSL, Windows, Windows CN, and D drive project-derived targets without writing files
 
 ## Dry-Run Results
 
@@ -76,21 +79,36 @@ Windows target:
 - all five review-writer skill destinations do not yet exist
 - no files copied
 
+Windows CN target:
+
+- target exists: true
+- target parent exists: true
+- all five review-writer skill destinations do not yet exist
+- no files copied
+
+D drive project-derived target:
+
+- target exists: false
+- target parent exists: true
+- not recommended unless QoderWork CN runtime discovery proves it reads this path
+
 Candidate listing:
 
 ```text
 wsl: /home/kenqia/.qoderwork/skills (exists=False, parent_exists=False, skill_count=0)
 windows: /mnt/c/Users/26960/.qoderwork/skills (exists=True, parent_exists=True, skill_count=10)
+windows-cn: /mnt/c/Users/26960/.qoderworkcn/skills (exists=True, parent_exists=True, skill_count=10)
+windows-cn-project: /mnt/d/qodework/QoderWork CN/skills (exists=False, parent_exists=True, skill_count=0)
 ```
 
 ## Recommended Install Target
 
-Use the Windows-side target:
+Use the Windows-side QoderWork CN target:
 
 ```bash
 python scripts/install_qoderwork_skills.py \
   --skills-dir qoderwork/skills \
-  --target-dir /mnt/c/Users/26960/.qoderwork/skills \
+  --target-dir /mnt/c/Users/26960/.qoderworkcn/skills \
   --apply
 ```
 
@@ -108,6 +126,16 @@ rm -rf /mnt/c/Users/26960/.qoderwork/skills/chem-review-drafting
 rm -rf /mnt/c/Users/26960/.qoderwork/skills/chem-review-quality-release
 ```
 
+For QoderWork CN, use:
+
+```bash
+rm -rf /mnt/c/Users/26960/.qoderworkcn/skills/chem-review-orchestrator
+rm -rf /mnt/c/Users/26960/.qoderworkcn/skills/chem-review-library-prep
+rm -rf /mnt/c/Users/26960/.qoderworkcn/skills/chem-review-planning
+rm -rf /mnt/c/Users/26960/.qoderworkcn/skills/chem-review-drafting
+rm -rf /mnt/c/Users/26960/.qoderworkcn/skills/chem-review-quality-release
+```
+
 ## Manual Smoke Prompt
 
 ```text
@@ -123,6 +151,7 @@ make qoderwork-check
 python scripts/install_qoderwork_skills.py --list-candidates
 python scripts/install_qoderwork_skills.py --skills-dir qoderwork/skills --target-dir "$HOME/.qoderwork/skills" --dry-run
 python scripts/install_qoderwork_skills.py --skills-dir qoderwork/skills --target-dir /mnt/c/Users/26960/.qoderwork/skills --dry-run
+python scripts/install_qoderwork_skills.py --skills-dir qoderwork/skills --target-dir /mnt/c/Users/26960/.qoderworkcn/skills --dry-run
 git status --short
 ```
 
@@ -140,6 +169,6 @@ clean after committing.
 
 ## Next Stage
 
-After explicit user confirmation, run the Windows-side real install command,
-open QoderWork, and run the manual smoke prompt. If discovery succeeds, proceed
-to Alibaba adapter skeletons with offline fallback.
+After explicit user confirmation, run the Windows CN real install command, open
+QoderWork CN, and run the manual smoke prompt. If discovery succeeds, proceed to
+Alibaba adapter skeletons with offline fallback.

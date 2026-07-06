@@ -10,6 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "qoderwork" / "skills"
 DEFAULT_TARGET = Path.home() / ".qoderwork" / "skills"
 WINDOWS_TARGET = Path("/mnt/c/Users/26960/.qoderwork/skills")
+WINDOWS_CN_TARGET = Path("/mnt/c/Users/26960/.qoderworkcn/skills")
+WINDOWS_CN_PROJECT_TARGET = Path("/mnt/d/qodework/QoderWork CN/skills")
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,6 +32,8 @@ def list_candidates() -> None:
     candidates = [
         ("wsl", DEFAULT_TARGET.expanduser()),
         ("windows", WINDOWS_TARGET),
+        ("windows-cn", WINDOWS_CN_TARGET),
+        ("windows-cn-project", WINDOWS_CN_PROJECT_TARGET),
     ]
     for label, path in candidates:
         print(
