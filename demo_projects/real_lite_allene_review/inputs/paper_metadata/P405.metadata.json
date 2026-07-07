@@ -56,10 +56,10 @@
     "human_checked": false
   },
   "source_paths": {
-    "pdf": "/home/kenqia/my_folder/review-writer/chem_papers/sutro-fürstner-2024-total-synthesis-of-the-allenic-macrolide-(-)-archangiumide.pdf",
-    "markdown": "/home/kenqia/my_folder/review-writer/mineru-outputs/markdown/sutro-furstner-2024-total-synthesis-of-the-allenic-macrolide-archangiumide.md",
-    "content_list": "/home/kenqia/my_folder/review-writer/mineru-outputs/extracted/sutro-furstner-2024-total-synthesis-of-the-allenic-macrolide-archangiumide/d6613566-54bf-4193-b633-c66502b968bf_content_list.json",
-    "extracted_dir": "/home/kenqia/my_folder/review-writer/mineru-outputs/extracted/sutro-furstner-2024-total-synthesis-of-the-allenic-macrolide-archangiumide"
+    "pdf": "<PAPER_LIBRARY>/P405.pdf",
+    "markdown": "<MINERU_MARKDOWN_ROOT>/P405/full.md",
+    "content_list": "<MINERU_CONTENT_LIST_ROOT>/P405/content_list.json",
+    "extracted_dir": "<MINERU_OUTPUT_ROOT>/P405"
   },
   "source_file": {
     "pdf_name": "sutro-fürstner-2024-total-synthesis-of-the-allenic-macrolide-(-)-archangiumide.pdf",
@@ -71,7 +71,7 @@
     "model": null,
     "created_at": "2026-07-05T08:55:38Z",
     "inputs": {
-      "manifest": "/home/kenqia/my_folder/review-writer/mineru-outputs/manifest.json",
+      "manifest": "<MINERU_OUTPUT_ROOT>/manifest.json",
       "content_blocks": 143,
       "markdown_chars_used": 14000
     },
@@ -91,6 +91,7 @@
       "structured_tag_not_specified_leaving_group"
     ],
     "overall_confidence": 0.613,
-    "needs_human_check": true
+    "needs_human_check": true,
+    "manifest": "<MINERU_OUTPUT_ROOT>/manifest.json"
   }
 }

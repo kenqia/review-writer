@@ -18,6 +18,10 @@ section blueprint
 
 ## Rules
 
+- Resolve `<REPO_ROOT>`, `<REVIEW_ROOT>`, `<PAPER_LIBRARY>`, and
+  `<OUTPUT_ROOT>` from user input before running commands; never guess personal
+  paths.
+- If required paths are missing, ask for them or use a repo-relative demo.
 - Local retrieval uses the fixed structured chemistry tags before any external search.
 - External retrieval is optional and must degrade to local-only mode.
 - The selected outline and section blueprint require human approval before drafting.

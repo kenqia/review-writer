@@ -18,7 +18,7 @@ def main() -> int:
             sys.executable,
             str(SCRIPT),
             "--search-root",
-            "/home/kenqia/my_folder",
+            str(ROOT.parent),
             "--repo-root",
             str(ROOT),
             "--output-json",

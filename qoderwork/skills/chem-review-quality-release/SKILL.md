@@ -13,6 +13,11 @@ Default to offline smoke and deterministic validation. Do not call real LLM,
 DashScope, MinerU, retrieval, or image APIs unless the user explicitly approves
 that provider step. Do not read, print, or persist real credentials.
 
+Resolve `<REPO_ROOT>`, `<REVIEW_ROOT>`, `<OUTPUT_ROOT>`, and
+`<PROVIDER_CONFIG>` from user input before running commands. Never guess
+personal paths; if required paths are missing, ask for them or use a
+repo-relative demo.
+
 ## Required Checks
 
 ```text

@@ -1,6 +1,9 @@
-.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check eval-baseline-check
+.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check eval-baseline-check portability-check
 
 PYTHON ?= python3
+REPO_ROOT ?= $(CURDIR)
+SEARCH_ROOT ?= $(abspath $(REPO_ROOT)/..)
+REAL_LITE_OUTPUT_ROOT ?= /tmp/review_writer_real_lite_e2e
 
 smoke:
 	$(PYTHON) -m py_compile $$(find skills view scripts -name '*.py' -type f)
@@ -58,8 +61,8 @@ tiny-e2e-check:
 
 real-lite-preflight:
 	$(PYTHON) scripts/demo/build_real_lite_manifest.py \
-		--search-root /home/kenqia/my_folder \
-		--repo-root /home/kenqia/my_folder/review-writer \
+		--search-root "$(SEARCH_ROOT)" \
+		--repo-root "$(REPO_ROOT)" \
 		--output-json /tmp/real_lite_asset_manifest.json \
 		--output-md /tmp/real_lite_asset_manifest.md \
 		--max-papers 5 \
@@ -70,7 +73,7 @@ real-lite-e2e-check:
 	$(PYTHON) tests/test_real_lite_e2e_workflow.py
 	$(PYTHON) scripts/demo/run_real_lite_e2e.py \
 		--demo-root demo_projects/real_lite_allene_review \
-		--output-root /tmp/review_writer_real_lite_e2e \
+		--output-root "$(REAL_LITE_OUTPUT_ROOT)" \
 		--strict
 
 dashboard-real-lite-check:
@@ -79,9 +82,16 @@ dashboard-real-lite-check:
 eval-baseline-check:
 	$(PYTHON) tests/test_eval_baseline.py
 	$(PYTHON) scripts/eval/run_eval_baseline.py \
-		--output-root /tmp/review_writer_real_lite_e2e \
+		--output-root "$(REAL_LITE_OUTPUT_ROOT)" \
 		--baseline evals/baselines/real_lite_v1.yaml \
 		--expected evals/fixtures/real_lite_expected_metrics.json \
 		--output-json /tmp/real_lite_eval_report.json \
 		--output-md /tmp/real_lite_eval_report.md \
+		--strict
+
+portability-check:
+	$(PYTHON) tests/test_portability.py
+	$(PYTHON) scripts/check_portability.py \
+		--output-json /tmp/portability_report.json \
+		--output-md /tmp/portability_report.md \
 		--strict

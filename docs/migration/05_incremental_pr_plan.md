@@ -391,6 +391,53 @@ Next:
 - Phase 5f: optional promptfoo integration.
 - Phase 6: Bailian RAG preflight.
 
+## PR 9: Portability Hardening
+
+目标：
+
+- Remove personal paths from generic QoderWork docs, skills, scripts, and demo assets.
+- Keep Kenqia-specific local validation notes isolated under `docs/local/`.
+- Add a portability checker that fails on machine-specific paths in generic files.
+
+Implemented Phase 5f files:
+
+```text
+docs/local/KENQIA_LOCAL_VALIDATION.md
+docs/portability/portable_skill_guidelines.md
+docs/pr/phase5f_portability_hardening_pr.md
+scripts/check_portability.py
+tests/test_portability.py
+```
+
+Gate:
+
+```bash
+make portability-check
+```
+
+Default placeholder strategy:
+
+- `<REPO_ROOT>`
+- `<REVIEW_ROOT>`
+- `<PAPER_LIBRARY>`
+- `<OUTPUT_ROOT>`
+- `<PROVIDER_CONFIG>`
+- `<QODERWORK_SKILLS_DIR>`
+
+Safety boundary:
+
+- no PDF body read
+- no MinerU API
+- no Qwen/API call
+- no upload
+- no Bailian knowledge base
+- no image generation
+
+Next:
+
+- Phase 5g: PR review / merge readiness.
+- Phase 6a: Bailian RAG preflight.
+
 ## 风险
 
 - PR 过大导致 review 困难。

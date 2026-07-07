@@ -60,10 +60,10 @@
     "human_checked": false
   },
   "source_paths": {
-    "pdf": "/home/kenqia/my_folder/review-writer/chem_papers/ligand-controlled-preparation-of-aryl-substituted-allenes-enabled-by-nickel-catalyzed-reductive-coupling-of-secondary.pdf",
-    "markdown": "/home/kenqia/my_folder/review-writer/mineru-outputs/markdown/ligand-controlled-preparation-of-aryl-substituted-allenes-enabled-by-nickel-catalyzed-reductive-coupling-of-secondary.md",
-    "content_list": "/home/kenqia/my_folder/review-writer/mineru-outputs/extracted/ligand-controlled-preparation-of-aryl-substituted-allenes-enabled-by-nickel-catalyzed-reductive-coupling-of-secondary/db8ebda1-09cf-4446-acb7-82c5197212dd_content_list.json",
-    "extracted_dir": "/home/kenqia/my_folder/review-writer/mineru-outputs/extracted/ligand-controlled-preparation-of-aryl-substituted-allenes-enabled-by-nickel-catalyzed-reductive-coupling-of-secondary"
+    "pdf": "<PAPER_LIBRARY>/P401.pdf",
+    "markdown": "<MINERU_MARKDOWN_ROOT>/P401/full.md",
+    "content_list": "<MINERU_CONTENT_LIST_ROOT>/P401/content_list.json",
+    "extracted_dir": "<MINERU_OUTPUT_ROOT>/P401"
   },
   "source_file": {
     "pdf_name": "ligand-controlled-preparation-of-aryl-substituted-allenes-enabled-by-nickel-catalyzed-reductive-coupling-of-secondary.pdf",
@@ -75,7 +75,7 @@
     "model": null,
     "created_at": "2026-07-05T08:55:38Z",
     "inputs": {
-      "manifest": "/home/kenqia/my_folder/review-writer/mineru-outputs/manifest.json",
+      "manifest": "<MINERU_OUTPUT_ROOT>/manifest.json",
       "content_blocks": 128,
       "markdown_chars_used": 14000
     },
@@ -95,6 +95,7 @@
       "structured_tag_not_specified_leaving_group"
     ],
     "overall_confidence": 0.613,
-    "needs_human_check": true
+    "needs_human_check": true,
+    "manifest": "<MINERU_OUTPUT_ROOT>/manifest.json"
   }
 }

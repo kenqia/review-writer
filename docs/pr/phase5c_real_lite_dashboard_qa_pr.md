@@ -6,7 +6,9 @@
 
 ## Summary
 
-This PR adds dashboard support and tests for the real-lite E2E output root. The dashboard can now expose a direct output package such as `/tmp/review_writer_real_lite_e2e` without requiring a nested `review-projects/<project_id>` layout.
+This PR adds dashboard support and tests for the real-lite E2E output root. The
+dashboard can now expose a direct output package such as `<OUTPUT_ROOT>` without
+requiring a nested `review-projects/<project_id>` layout.
 
 ## Added Files
 

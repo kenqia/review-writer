@@ -30,8 +30,9 @@ def main() -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build real-lite asset manifest without reading PDFs or calling APIs.")
-    parser.add_argument("--search-root", type=Path, default=Path("/home/kenqia/my_folder"))
-    parser.add_argument("--repo-root", type=Path, default=Path("/home/kenqia/my_folder/review-writer"))
+    default_repo = Path(__file__).resolve().parents[2]
+    parser.add_argument("--search-root", type=Path, default=default_repo.parent)
+    parser.add_argument("--repo-root", type=Path, default=default_repo)
     parser.add_argument("--output-json", type=Path, default=Path("/tmp/real_lite_asset_manifest.json"))
     parser.add_argument("--output-md", type=Path, default=Path("/tmp/real_lite_asset_manifest.md"))
     parser.add_argument("--max-papers", type=int, default=5)
@@ -280,43 +281,73 @@ def build_input_package(repo_root: Path, report: dict[str, Any]) -> None:
         "# Real-Lite Topic\n\nAllene-based chiral ligands in asymmetric catalysis.\n",
         encoding="utf-8",
     )
-    selected = report["selected_papers"]
+    selected = [portable_selected_row(row) for row in report["selected_papers"]]
     write_json(package / "inputs/selected_papers.json", {"selected_papers": selected, "source_manifest": "/tmp/real_lite_asset_manifest.json"})
     with (package / "inputs/paper_registry.jsonl").open("w", encoding="utf-8") as handle:
         for row in selected:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-    for row in selected:
+    for source_row, row in zip(report["selected_papers"], selected):
         paper_id = row["paper_id"]
-        metadata_path = Path(row["metadata_path"])
+        metadata_path = Path(source_row["metadata_path"])
         if metadata_path.exists():
-            shutil.copyfile(metadata_path, package / "inputs/paper_metadata" / f"{paper_id}.metadata.json")
-        markdown_path = Path(row["mineru_markdown_path"])
+            metadata = load_json(metadata_path)
+            write_json(package / "inputs/paper_metadata" / f"{paper_id}.metadata.json", sanitize_metadata(metadata, paper_id))
+        markdown_path = Path(source_row["mineru_markdown_path"])
         if markdown_path.exists():
             excerpt = markdown_path.read_text(encoding="utf-8", errors="ignore")[:EXCERPT_CHARS]
             (package / "inputs/mineru_markdown" / f"{paper_id}.excerpt.md").write_text(
-                f"<!-- source_path: {markdown_path} -->\n<!-- trimmed_chars: {EXCERPT_CHARS} -->\n\n{excerpt}\n",
+                f"<!-- source_path: <MINERU_MARKDOWN_ROOT>/{paper_id}/full.md -->\n<!-- trimmed_chars: {EXCERPT_CHARS} -->\n\n{excerpt}\n",
                 encoding="utf-8",
             )
-        content_path = Path(row["content_list_path"]) if row.get("content_list_path") else None
         write_json(
             package / "inputs/content_list" / f"{paper_id}.content_list.pointer.json",
             {
                 "paper_id": paper_id,
-                "source_path": str(content_path) if content_path else "",
+                "source_path": f"<MINERU_CONTENT_LIST_ROOT>/{paper_id}/content_list.json",
                 "copied_content": False,
                 "reason": "Real-lite preflight stores pointer only to avoid committing large MinerU content_list outputs.",
             },
         )
-        image_dir = Path(row["image_dir"]) if row.get("image_dir") else None
         write_json(
             package / "inputs/figures" / f"{paper_id}.figures.pointer.json",
             {
                 "paper_id": paper_id,
-                "source_path": str(image_dir) if image_dir else "",
+                "source_path": f"<MINERU_IMAGE_ROOT>/{paper_id}/images",
                 "copied_images": False,
                 "reason": "Real-lite preflight stores image directory pointer only.",
             },
         )
+
+
+def portable_selected_row(row: dict[str, Any]) -> dict[str, Any]:
+    out = dict(row)
+    paper_id = str(row.get("paper_id") or "paper")
+    replacements = {
+        "source_pdf_path": f"<PAPER_LIBRARY>/{paper_id}.pdf",
+        "mineru_markdown_path": f"<MINERU_MARKDOWN_ROOT>/{paper_id}/full.md",
+        "content_list_path": f"<MINERU_CONTENT_LIST_ROOT>/{paper_id}/content_list.json",
+        "image_dir": f"<MINERU_IMAGE_ROOT>/{paper_id}/images",
+        "metadata_path": f"<REVIEW_LIBRARY_METADATA>/{paper_id}.metadata.json",
+        "registry_path": "<REVIEW_LIBRARY_REGISTRY>/papers.jsonl",
+    }
+    out.update(replacements)
+    return out
+
+
+def sanitize_metadata(metadata: dict[str, Any], paper_id: str) -> dict[str, Any]:
+    out = json.loads(json.dumps(metadata, ensure_ascii=False))
+    out["source_paths"] = {
+        "pdf": f"<PAPER_LIBRARY>/{paper_id}.pdf",
+        "markdown": f"<MINERU_MARKDOWN_ROOT>/{paper_id}/full.md",
+        "content_list": f"<MINERU_CONTENT_LIST_ROOT>/{paper_id}/content_list.json",
+        "extracted_dir": f"<MINERU_OUTPUT_ROOT>/{paper_id}",
+    }
+    if isinstance(out.get("quality"), dict):
+        out["quality"]["manifest"] = "<MINERU_OUTPUT_ROOT>/manifest.json"
+    extraction = out.get("extraction")
+    if isinstance(extraction, dict) and isinstance(extraction.get("inputs"), dict):
+        extraction["inputs"]["manifest"] = "<MINERU_OUTPUT_ROOT>/manifest.json"
+    return out
 
 
 def write_gap_report(repo_root: Path, report: dict[str, Any]) -> None:

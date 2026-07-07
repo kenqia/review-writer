@@ -60,10 +60,10 @@
     "human_checked": false
   },
   "source_paths": {
-    "pdf": "/home/kenqia/my_folder/review-writer/chem_papers/zhang-et-al-2024-synthesis-of-multisubstituted-2-3-allenamides-via-palladium-catalyzed-carbonylation-of-propargylic.pdf",
-    "markdown": "/home/kenqia/my_folder/review-writer/mineru-outputs/markdown/zhang-et-al-2024-synthesis-of-multisubstituted-2-3-allenamides-via-palladium-catalyzed-carbonylation-of-propargylic.md",
-    "content_list": "/home/kenqia/my_folder/review-writer/mineru-outputs/extracted/zhang-et-al-2024-synthesis-of-multisubstituted-2-3-allenamides-via-palladium-catalyzed-carbonylation-of-propargylic/f8cac93f-9956-4687-adf4-1b73c79b278c_content_list.json",
-    "extracted_dir": "/home/kenqia/my_folder/review-writer/mineru-outputs/extracted/zhang-et-al-2024-synthesis-of-multisubstituted-2-3-allenamides-via-palladium-catalyzed-carbonylation-of-propargylic"
+    "pdf": "<PAPER_LIBRARY>/P410.pdf",
+    "markdown": "<MINERU_MARKDOWN_ROOT>/P410/full.md",
+    "content_list": "<MINERU_CONTENT_LIST_ROOT>/P410/content_list.json",
+    "extracted_dir": "<MINERU_OUTPUT_ROOT>/P410"
   },
   "source_file": {
     "pdf_name": "zhang-et-al-2024-synthesis-of-multisubstituted-2-3-allenamides-via-palladium-catalyzed-carbonylation-of-propargylic.pdf",
@@ -75,7 +75,7 @@
     "model": null,
     "created_at": "2026-07-05T08:55:38Z",
     "inputs": {
-      "manifest": "/home/kenqia/my_folder/review-writer/mineru-outputs/manifest.json",
+      "manifest": "<MINERU_OUTPUT_ROOT>/manifest.json",
       "content_blocks": 180,
       "markdown_chars_used": 14000
     },
@@ -95,6 +95,7 @@
       "structured_tag_not_specified_leaving_group"
     ],
     "overall_confidence": 0.613,
-    "needs_human_check": true
+    "needs_human_check": true,
+    "manifest": "<MINERU_OUTPUT_ROOT>/manifest.json"
   }
 }

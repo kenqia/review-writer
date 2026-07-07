@@ -2,10 +2,11 @@
 
 ## Goal
 
-Phase 5c verifies that the local dashboard can display the real-lite E2E output package generated under:
+Phase 5c verifies that the local dashboard can display the real-lite E2E output
+package generated under:
 
 ```text
-/tmp/review_writer_real_lite_e2e
+<OUTPUT_ROOT>
 ```
 
 The QA target is dashboard payload coverage and local file-access safety. It does not attempt a full scientific review.
@@ -43,7 +44,7 @@ Validated cases:
 
 - `/file?path=/etc/passwd` returns `403`
 - `/file?path=../../../../etc/passwd` returns `403`
-- a file inside `/tmp/review_writer_real_lite_e2e` is readable
+- a file inside `<OUTPUT_ROOT>` is readable
 
 ## Run
 

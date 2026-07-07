@@ -15,6 +15,9 @@ PDF -> MinerU outputs -> metadata -> validation -> human audit
 
 ## Rules
 
+- Resolve `<REPO_ROOT>`, `<REVIEW_ROOT>`, and `<PAPER_LIBRARY>` from user input
+  before running commands; never guess personal paths.
+- If the user has not provided paths, ask for them or use a repo-relative demo.
 - Read tokens only from environment variables or local untracked files.
 - Do not commit PDF libraries, MinerU outputs, metadata, raw zips, or real tokens.
 - If API access is unavailable, run deterministic metadata validation and report the missing API capability.

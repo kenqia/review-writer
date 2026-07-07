@@ -22,9 +22,19 @@ output_format
 Optional:
 
 ```text
-provider_config
+provider_config / <PROVIDER_CONFIG>
 data_root
 skip_figures=false
+```
+
+Use placeholders in portable instructions:
+
+```text
+<REPO_ROOT>
+<REVIEW_ROOT>
+<PAPER_LIBRARY>
+<OUTPUT_ROOT>
+<QODERWORK_SKILLS_DIR>
 ```
 
 ## Contract
@@ -37,6 +47,14 @@ skip_figures=false
 6. Do not read, print, or persist real credentials; report only missing or risky paths.
 7. Do not call real LLM, DashScope, MinerU, retrieval, or image APIs by default.
 8. Do not skip the final quality gate before release or export.
+9. Resolve user-provided paths before running commands; never guess personal paths.
+10. If required paths are missing, ask the user or use a repo-relative demo.
+
+Windows/WSL is only an optional runtime example:
+
+```powershell
+wsl.exe --cd <REPO_ROOT_IN_WSL> bash -lc "make smoke"
+```
 
 ## Deterministic Scripts
 

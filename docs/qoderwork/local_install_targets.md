@@ -1,229 +1,79 @@
-# QoderWork Local Install Targets
+# QoderWork Skill Install Targets
 
 ## Summary
 
-This machine is a Windows + WSL setup using QoderWork CN. The likely QoderWork
-CN skill directory is the Windows-side CN user directory exposed through WSL:
+QoderWork skill installation is user-environment specific. Do not assume a
+particular Windows user directory, WSL home directory, or QoderWork CN path.
+
+Use these placeholders in generic instructions:
 
 ```text
-/mnt/c/Users/26960/.qoderworkcn/skills
+<REPO_ROOT>
+<QODERWORK_SKILLS_DIR>
+<QODERWORK_CN_SKILLS_DIR>
 ```
 
-The Windows project root exists here, but it does not currently contain a
-`skills` directory:
+Kenqia's local validation paths are recorded separately in
+`docs/local/KENQIA_LOCAL_VALIDATION.md`. They are not defaults for general
+users.
 
-```text
-/mnt/d/qodework/QoderWork CN
-```
+## Candidate Discovery
 
-The WSL-side directory also does not currently exist:
-
-```text
-/home/kenqia/.qoderwork/skills
-```
-
-The five `chem-review-*` skills have been installed into the QoderWork CN
-directory and QoderWork CN has successfully loaded `chem-review-orchestrator`.
-
-## Candidate Status
-
-| target | exists | parent exists | observed skills | same-name conflicts |
-| --- | --- | --- | ---: | --- |
-| `/home/kenqia/.qoderwork/skills` | no | no | 0 | none |
-| `/mnt/c/Users/26960/.qoderwork/skills` | yes | yes | 10 | none |
-| `/mnt/c/Users/26960/.qoderworkcn/skills` | yes | yes | 10 | none |
-| `/mnt/d/qodework/QoderWork CN/skills` | no | yes | 0 | none |
-
-Additional related Windows-side directories were observed:
-
-```text
-/mnt/c/Users/26960/.qoderwork
-/mnt/c/Users/26960/.qoderworkcn
-/mnt/c/Users/26960/AppData/Roaming/QoderWork
-/mnt/c/Users/26960/AppData/Roaming/QoderWork CN
-```
-
-If using QoderWork CN specifically, verify whether it reads
-`.qoderworkcn/skills` before installing.
-
-## Recommended Target
-
-Use the Windows-side QoderWork CN user target first:
-
-```text
-/mnt/c/Users/26960/.qoderworkcn/skills
-```
-
-Reason:
-
-- The active client is QoderWork CN.
-- The Windows CN target already exists.
-- It contains QoderWork CN built-in skills such as `qoderwork-guidance`.
-- The WSL target does not exist.
-- The D drive QoderWork CN project root exists, but `/mnt/d/qodework/QoderWork CN/skills` does not.
-- Desktop QoderWork on this machine is more likely to read the Windows user
-  directory than the WSL home directory.
-
-## Installed Skill Status
-
-Installed QoderWork CN target:
-
-```text
-/mnt/c/Users/26960/.qoderworkcn/skills
-```
-
-Installed skills:
-
-```text
-chem-review-orchestrator
-chem-review-library-prep
-chem-review-planning
-chem-review-drafting
-chem-review-quality-release
-```
-
-QoderWork CN successfully loaded `chem-review-orchestrator` from:
-
-```text
-C:\Users\26960\.qoderworkcn\skills\chem-review-orchestrator
-```
-
-The installed `chem-review-*` skill files matched the repository source files
-by SHA256 at install validation time.
-
-## Runtime Smoke Result
-
-QoderWork CN can access the real WSL repository through `wsl.exe`. The source of
-truth remains:
-
-```text
-/home/kenqia/my_folder/review-writer
-```
-
-Use WSL paths or `wsl.exe --cd` when asking QoderWork CN to run repo commands:
-
-```powershell
-wsl.exe --cd /home/kenqia/my_folder/review-writer bash -lc "make smoke && make quality-check && make qoderwork-check && git status --short"
-```
-
-The real repository smoke passed for:
-
-```text
-make smoke
-make quality-check
-make qoderwork-check
-```
-
-Do not use this empty Windows Desktop directory as `review_root`:
-
-```text
-C:\Users\26960\Desktop\review-writer
-```
-
-That path was used once during an incorrect smoke attempt and led to false
-missing-file findings for `Makefile`, `scripts/`, and `skills/`.
-
-## Dry-Run Commands
-
-WSL target dry-run:
+Use dry-run mode first:
 
 ```bash
 python scripts/install_qoderwork_skills.py \
   --skills-dir qoderwork/skills \
-  --target-dir "$HOME/.qoderwork/skills" \
+  --target-dir <QODERWORK_SKILLS_DIR> \
   --dry-run
 ```
 
-Windows target dry-run:
+Optional environment variables can help list local candidates without hardcoding
+machine-specific paths:
 
 ```bash
-python scripts/install_qoderwork_skills.py \
-  --skills-dir qoderwork/skills \
-  --target-dir /mnt/c/Users/26960/.qoderwork/skills \
-  --dry-run
-```
-
-Windows CN target dry-run:
-
-```bash
-python scripts/install_qoderwork_skills.py \
-  --skills-dir qoderwork/skills \
-  --target-dir /mnt/c/Users/26960/.qoderworkcn/skills \
-  --dry-run
-```
-
-Candidate listing:
-
-```bash
+export QODERWORK_SKILLS_DIR="<QODERWORK_SKILLS_DIR>"
+export QODERWORK_CN_SKILLS_DIR="<QODERWORK_CN_SKILLS_DIR>"
 python scripts/install_qoderwork_skills.py --list-candidates
 ```
 
-Dry-run does not create directories or copy files.
+## Install
 
-## Real Install Commands
-
-Do not run either command without explicit human confirmation.
-
-WSL target:
+Only install after explicit human confirmation:
 
 ```bash
 python scripts/install_qoderwork_skills.py \
   --skills-dir qoderwork/skills \
-  --target-dir "$HOME/.qoderwork/skills" \
-  --apply
-```
-
-Windows target:
-
-```bash
-python scripts/install_qoderwork_skills.py \
-  --skills-dir qoderwork/skills \
-  --target-dir /mnt/c/Users/26960/.qoderwork/skills \
-  --apply
-```
-
-Windows CN target:
-
-```bash
-python scripts/install_qoderwork_skills.py \
-  --skills-dir qoderwork/skills \
-  --target-dir /mnt/c/Users/26960/.qoderworkcn/skills \
+  --target-dir <QODERWORK_SKILLS_DIR> \
   --apply
 ```
 
 The installer refuses to overwrite an existing skill directory.
 
-## Rollback Commands
+## Windows / WSL Notes
+
+Windows and WSL setups should pass explicit paths. If QoderWork runs on Windows
+but the repository is inside WSL, use an environment-specific command such as:
+
+```powershell
+wsl.exe --cd <REPO_ROOT_IN_WSL> bash -lc "make smoke"
+```
+
+Do not treat WSL as the only supported runtime. Native Linux, WSL, and other
+local setups should all provide their own `<REPO_ROOT>` and
+`<QODERWORK_SKILLS_DIR>`.
+
+## Rollback
 
 Rollback should remove only the five review-writer skill directories installed
-by this repository. Verify the paths before running:
+by this repository. Verify `<QODERWORK_SKILLS_DIR>` before running:
 
 ```bash
-rm -rf /mnt/c/Users/26960/.qoderwork/skills/chem-review-orchestrator
-rm -rf /mnt/c/Users/26960/.qoderwork/skills/chem-review-library-prep
-rm -rf /mnt/c/Users/26960/.qoderwork/skills/chem-review-planning
-rm -rf /mnt/c/Users/26960/.qoderwork/skills/chem-review-drafting
-rm -rf /mnt/c/Users/26960/.qoderwork/skills/chem-review-quality-release
-```
-
-QoderWork CN rollback:
-
-```bash
-rm -rf /mnt/c/Users/26960/.qoderworkcn/skills/chem-review-orchestrator
-rm -rf /mnt/c/Users/26960/.qoderworkcn/skills/chem-review-library-prep
-rm -rf /mnt/c/Users/26960/.qoderworkcn/skills/chem-review-planning
-rm -rf /mnt/c/Users/26960/.qoderworkcn/skills/chem-review-drafting
-rm -rf /mnt/c/Users/26960/.qoderworkcn/skills/chem-review-quality-release
-```
-
-WSL rollback, if the WSL target is used:
-
-```bash
-rm -rf "$HOME/.qoderwork/skills/chem-review-orchestrator"
-rm -rf "$HOME/.qoderwork/skills/chem-review-library-prep"
-rm -rf "$HOME/.qoderwork/skills/chem-review-planning"
-rm -rf "$HOME/.qoderwork/skills/chem-review-drafting"
-rm -rf "$HOME/.qoderwork/skills/chem-review-quality-release"
+rm -rf "<QODERWORK_SKILLS_DIR>/chem-review-orchestrator"
+rm -rf "<QODERWORK_SKILLS_DIR>/chem-review-library-prep"
+rm -rf "<QODERWORK_SKILLS_DIR>/chem-review-planning"
+rm -rf "<QODERWORK_SKILLS_DIR>/chem-review-drafting"
+rm -rf "<QODERWORK_SKILLS_DIR>/chem-review-quality-release"
 ```
 
 ## Manual QoderWork Smoke Prompt
@@ -246,15 +96,6 @@ Expected behavior:
 
 ## Known Limits
 
-- This QA pass discovers local directory candidates; it does not prove runtime
-  discovery inside QoderWork until the manual smoke prompt is run.
-- QoderWork CN appears to have its own `.qoderworkcn/skills` directory.
-- The D drive project root is not treated as the install target unless a future
-  QoderWork CN runtime check proves it reads `D:\qodework\QoderWork CN\skills`.
+- Directory discovery is local to each user.
 - No real API, retrieval, MinerU, or image generation call is required for
   installation discovery.
-
-## Next Stage
-
-After controlled install and manual smoke pass, add Alibaba provider adapter
-skeletons with offline fallback and no committed credentials.

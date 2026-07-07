@@ -10,14 +10,15 @@ The repository now has an offline tiny E2E demo. Before running a real-lite work
 
 ## Asset Summary
 
-The preflight found:
+The local validation preflight found parsed assets. Use placeholders in generic
+documentation:
 
-- MinerU outputs: present under `/home/kenqia/my_folder/review-writer old/mineru-outputs`
+- MinerU outputs: `<MINERU_OUTPUT_ROOT>`
 - MinerU markdown: present
 - content_list JSON: present
 - images directories: present
-- metadata JSON: present under `/home/kenqia/my_folder/review-writer-data/review-library/metadata`
-- registry JSONL: present under `/home/kenqia/my_folder/review-writer-data/review-library/registry`
+- metadata JSON: `<REVIEW_LIBRARY>/metadata`
+- registry JSONL: `<REVIEW_LIBRARY>/registry`
 
 Latest preflight selected 5 allene-related records from 410 registry/metadata records.
 
@@ -31,8 +32,8 @@ Equivalent command:
 
 ```bash
 python scripts/demo/build_real_lite_manifest.py \
-  --search-root /home/kenqia/my_folder \
-  --repo-root /home/kenqia/my_folder/review-writer \
+  --search-root <DATA_SEARCH_ROOT> \
+  --repo-root <REPO_ROOT> \
   --output-json /tmp/real_lite_asset_manifest.json \
   --output-md /tmp/real_lite_asset_manifest.md \
   --max-papers 5 \

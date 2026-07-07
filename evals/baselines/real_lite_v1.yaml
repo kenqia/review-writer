@@ -1,8 +1,8 @@
-# Offline custom baseline for /tmp/review_writer_real_lite_e2e.
+# Offline custom baseline for <OUTPUT_ROOT>.
 # This file is intentionally simple YAML so it can be read without third-party dependencies.
 name: real_lite_v1
 description: Offline real-lite workflow quality baseline for selected allene records.
-output_root: /tmp/review_writer_real_lite_e2e
+output_root: <OUTPUT_ROOT>
 offline_only: true
 metrics:
   - id: workflow_completeness

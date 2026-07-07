@@ -15,10 +15,10 @@ Generated paper libraries, MinerU outputs, project outputs, real PDFs, API token
 
 ## Data Layout
 
-Default external data root:
+Default external data root placeholder:
 
 ```text
-/home/kenqia/my_folder/review-writer-data/
+<DATA_ROOT>/
 ```
 
 Recommended local data directories under that root:

@@ -11,6 +11,11 @@ Windows + WSL machine. It adds installer candidate discovery, improves dry-run
 output, records the controlled QoderWork CN install, and documents the
 successful runtime smoke result.
 
+Local validation record: this file records Kenqia's one-machine QoderWork CN
+install QA. The paths below are not generic defaults. Do not copy them into
+QoderWork skills or product docs; use placeholders such as `<REPO_ROOT>` and
+`<QODERWORK_SKILLS_DIR>` in generic instructions.
+
 ## Repository State
 
 - Branch: `feat/chem-review-quality-gates`

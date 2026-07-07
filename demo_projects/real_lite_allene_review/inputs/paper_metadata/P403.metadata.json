@@ -65,10 +65,10 @@
     "human_checked": false
   },
   "source_paths": {
-    "pdf": "/home/kenqia/my_folder/review-writer/chem_papers/pd-catalyzed-asymmetric-allenylation-of-secondary-phosphine-oxides-with-enyne-type-propargylic-carbamates-for-the.pdf",
-    "markdown": "/home/kenqia/my_folder/review-writer/mineru-outputs/markdown/pd-catalyzed-asymmetric-allenylation-of-secondary-phosphine-oxides-with-enyne-type-propargylic-carbamates-for-the.md",
-    "content_list": "/home/kenqia/my_folder/review-writer/mineru-outputs/extracted/pd-catalyzed-asymmetric-allenylation-of-secondary-phosphine-oxides-with-enyne-type-propargylic-carbamates-for-the/be1a3ad4-86a4-495d-98b4-9c5419aa43b5_content_list.json",
-    "extracted_dir": "/home/kenqia/my_folder/review-writer/mineru-outputs/extracted/pd-catalyzed-asymmetric-allenylation-of-secondary-phosphine-oxides-with-enyne-type-propargylic-carbamates-for-the"
+    "pdf": "<PAPER_LIBRARY>/P403.pdf",
+    "markdown": "<MINERU_MARKDOWN_ROOT>/P403/full.md",
+    "content_list": "<MINERU_CONTENT_LIST_ROOT>/P403/content_list.json",
+    "extracted_dir": "<MINERU_OUTPUT_ROOT>/P403"
   },
   "source_file": {
     "pdf_name": "pd-catalyzed-asymmetric-allenylation-of-secondary-phosphine-oxides-with-enyne-type-propargylic-carbamates-for-the.pdf",
@@ -80,7 +80,7 @@
     "model": null,
     "created_at": "2026-07-05T08:55:38Z",
     "inputs": {
-      "manifest": "/home/kenqia/my_folder/review-writer/mineru-outputs/manifest.json",
+      "manifest": "<MINERU_OUTPUT_ROOT>/manifest.json",
       "content_blocks": 146,
       "markdown_chars_used": 14000
     },
@@ -100,6 +100,7 @@
       "structured_tag_not_specified_leaving_group"
     ],
     "overall_confidence": 0.613,
-    "needs_human_check": true
+    "needs_human_check": true,
+    "manifest": "<MINERU_OUTPUT_ROOT>/manifest.json"
   }
 }

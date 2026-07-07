@@ -19,6 +19,10 @@ first draft merge
 
 ## Rules
 
+- Resolve `<REPO_ROOT>`, `<REVIEW_ROOT>`, `<PAPER_LIBRARY>`, and
+  `<OUTPUT_ROOT>` from user input before running commands; never guess personal
+  paths.
+- If required paths are missing, ask for them or use a repo-relative demo.
 - Every paragraph that cites papers should expose a stable paragraph ID.
 - Figure candidates must point to real source figures, tables, schemes, or an explicit no-figure reason.
 - Redrawn figures need human verification against source figures.

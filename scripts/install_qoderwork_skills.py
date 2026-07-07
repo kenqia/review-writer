@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 from pathlib import Path
 
@@ -9,9 +10,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "qoderwork" / "skills"
 DEFAULT_TARGET = Path.home() / ".qoderwork" / "skills"
-WINDOWS_TARGET = Path("/mnt/c/Users/26960/.qoderwork/skills")
-WINDOWS_CN_TARGET = Path("/mnt/c/Users/26960/.qoderworkcn/skills")
-WINDOWS_CN_PROJECT_TARGET = Path("/mnt/d/qodework/QoderWork CN/skills")
 
 
 def parse_args() -> argparse.Namespace:
@@ -29,12 +27,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def list_candidates() -> None:
-    candidates = [
-        ("wsl", DEFAULT_TARGET.expanduser()),
-        ("windows", WINDOWS_TARGET),
-        ("windows-cn", WINDOWS_CN_TARGET),
-        ("windows-cn-project", WINDOWS_CN_PROJECT_TARGET),
-    ]
+    candidates = [("default", DEFAULT_TARGET.expanduser())]
+    for env_name in ["QODERWORK_SKILLS_DIR", "QODERWORK_CN_SKILLS_DIR", "QODERWORK_PROJECT_SKILLS_DIR"]:
+        raw = os.environ.get(env_name)
+        if raw:
+            candidates.append((env_name.lower(), Path(raw).expanduser()))
     for label, path in candidates:
         print(
             f"{label}: {path} "

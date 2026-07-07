@@ -42,7 +42,7 @@ The runner does not read original PDFs or full paper bodies. It only reads commi
 ```bash
 python scripts/demo/run_real_lite_e2e.py \
   --demo-root demo_projects/real_lite_allene_review \
-  --output-root /tmp/review_writer_real_lite_e2e \
+  --output-root <OUTPUT_ROOT> \
   --strict
 ```
 
@@ -55,7 +55,7 @@ make real-lite-e2e-check
 ## Output Structure
 
 ```text
-/tmp/review_writer_real_lite_e2e/
+<OUTPUT_ROOT>/
   project_status_before.json
   checkpoint_log.json
   00_discovery/discovery_candidates.json
