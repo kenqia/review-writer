@@ -1,4 +1,4 @@
-.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check
+.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check
 
 PYTHON ?= python3
 
@@ -72,3 +72,6 @@ real-lite-e2e-check:
 		--demo-root demo_projects/real_lite_allene_review \
 		--output-root /tmp/review_writer_real_lite_e2e \
 		--strict
+
+dashboard-real-lite-check:
+	$(PYTHON) tests/test_dashboard_real_lite_payload.py

@@ -270,6 +270,65 @@ Next:
 - Phase 5d: promptfoo or custom eval baseline.
 - Phase 6: Bailian knowledge-base RAG preflight.
 
+## PR 7: Real-Lite Dashboard QA
+
+目标：
+
+- Serve the real-lite output root directly in the dashboard.
+- Verify Final, Figures, Matrix, Blueprint, Sections, and Checkpoint payloads.
+- Regress `/file?path=` sandbox behavior.
+- Keep the run local and offline.
+
+Implemented Phase 5c files:
+
+```text
+tests/test_dashboard_real_lite_payload.py
+docs/demo/real_lite_dashboard_qa.md
+docs/pr/phase5c_real_lite_dashboard_qa_pr.md
+```
+
+Updated dashboard files:
+
+```text
+view/serve_review_dashboard.py
+view/assets/dashboard/final.html
+view/assets/dashboard/figures.html
+view/assets/dashboard/matrix.html
+view/assets/dashboard/blueprint.html
+```
+
+Gate:
+
+```bash
+make dashboard-real-lite-check
+```
+
+Validated payload coverage:
+
+- `final_draft_md`
+- `quality_report` and `quality_report_md`
+- `figure_manifest`
+- `literature_matrix.rows`
+- `section_blueprint`
+- `section_files`
+- 9 checkpoint records
+
+Safety boundary:
+
+- no network except localhost loopback
+- no PDF body read
+- no MinerU API
+- no Qwen/API call
+- no upload
+- no Bailian knowledge base
+- no image generation
+
+Next:
+
+- Phase 5d: eval baseline.
+- Phase 5e: QoderWork CN manual real-lite flow.
+- Phase 6: Bailian RAG preflight.
+
 ## 风险
 
 - PR 过大导致 review 困难。
