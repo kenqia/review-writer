@@ -95,6 +95,39 @@ For the next real retry, the user must explicitly reply:
 allow qwen judge retry once
 ```
 
+## Retry Validation Result
+
+The controlled retry succeeded after hardening. The run used a synthetic fixture, compact prompt, `--timeout-seconds 90`, `--max-output-tokens 128`, and `--task-limit 1`.
+
+Safe summary:
+
+- status: `pass`
+- judge_mode: `qwen`
+- task_id: `dry_run_title_alignment`
+- rule_id: `CRQ007_REVIEW_TITLE_FIT`
+- result_status: `ok`
+- verdict: `fail`
+- model: `qwen3.7-plus`
+- region: `cn-beijing`
+- prompt_chars: `676`
+- input_excerpt_chars: `413`
+- rubric_chars: `75`
+- elapsed_seconds: `27.937`
+- network_attempts: `1`
+
+The `verdict=fail` result matches the expected direction for `tests/fixtures/judge/bad_title_alignment.md`.
+
+Safety boundaries held:
+
+- No key was printed or recorded.
+- No paper正文 or PDF was read.
+- No file was uploaded.
+- No Bailian knowledge base was created.
+- No image API was called.
+- No automatic retry was performed.
+
+Phase 4 conclusion: Alibaba OpenAI-compatible hello provider is usable, and Qwen-backed judge is usable for small quality-gate excerpts. Real calls must remain explicitly user-authorized.
+
 ## Not Allowed
 
 - No PDF reading.

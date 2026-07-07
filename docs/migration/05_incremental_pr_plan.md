@@ -126,6 +126,16 @@ Phase 4c-bis timeout hardening:
 - Judge request hardening added compact prompt mode, `--timeout-seconds`, `--max-output-tokens`, `--task-limit`, prompt-size telemetry, elapsed-time telemetry, and `client_timeout` / `server_overloaded_503` classification.
 - Any real retry must be limited to one attempt and must wait for the exact confirmation: `allow qwen judge retry once`.
 
+Phase 4 closeout:
+
+- Phase 4b hello Qwen passed with the fixed hello prompt.
+- Phase 4c first real judge call timed out.
+- Phase 4c-bis hardening was added.
+- The single controlled retry passed with compact prompt, 90 second timeout, 128 max output tokens, and task limit 1.
+- The bad title alignment fixture received `verdict=fail`, matching the expected quality-gate direction.
+- Safety boundaries held: no key printing, no paper正文/PDF read, no upload, no Bailian knowledge base creation, no image API, and no automatic retry.
+- Conclusion: Alibaba OpenAI-compatible provider and Qwen-backed judge are usable, but every real call must remain explicitly user-authorized.
+
 ## 风险
 
 - PR 过大导致 review 困难。

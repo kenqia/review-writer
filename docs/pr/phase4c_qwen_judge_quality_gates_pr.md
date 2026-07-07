@@ -96,3 +96,32 @@ The next real retry must wait for the exact user confirmation:
 ```text
 allow qwen judge retry once
 ```
+
+## Retry Validation Result
+
+After timeout hardening, the single controlled retry succeeded:
+
+- status: `pass`
+- summary: `1 judge tasks, 0 errors, 0 disabled`
+- judge_mode: `qwen`
+- result_status: `ok`
+- verdict: `fail`
+- model: `qwen3.7-plus`
+- region: `cn-beijing`
+- prompt_chars: `676`
+- timeout_seconds: `90.0`
+- max_output_tokens: `128`
+- compact_mode: `True`
+- elapsed_seconds: `27.937`
+- network_attempts: `1`
+
+The `bad_title_alignment.md` fixture received `verdict=fail`, which is the expected direction.
+
+No key was printed or committed, no paper正文/PDF was read, no file was uploaded, no Bailian knowledge base was created, no image API was called, and no automatic retry was performed.
+
+Phase 4 is now validated at two levels:
+
+- Alibaba OpenAI-compatible hello provider works.
+- Qwen-backed judge works for controlled quality-gate excerpts.
+
+All future real calls must continue to require explicit user authorization.
