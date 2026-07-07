@@ -1,4 +1,4 @@
-.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight
+.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check
 
 PYTHON ?= python3
 
@@ -65,3 +65,10 @@ real-lite-preflight:
 		--max-papers 5 \
 		--strict
 	$(PYTHON) tests/test_real_lite_manifest.py
+
+real-lite-e2e-check:
+	$(PYTHON) tests/test_real_lite_e2e_workflow.py
+	$(PYTHON) scripts/demo/run_real_lite_e2e.py \
+		--demo-root demo_projects/real_lite_allene_review \
+		--output-root /tmp/review_writer_real_lite_e2e \
+		--strict

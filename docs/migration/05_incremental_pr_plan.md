@@ -219,6 +219,57 @@ Next:
 - Phase 5c: promptfoo or custom eval baseline.
 - Phase 6: Bailian knowledge-base RAG preflight.
 
+## PR 6: Real-Lite Offline E2E Run
+
+目标：
+
+- Run a small offline end-to-end skeleton with the prepared real-lite allene package.
+- Validate stage artifacts from Library through Export.
+- Enforce the Final quality gate in offline mode.
+- Keep figure handling explicit with a non-empty pointer/placeholder manifest.
+
+Implemented Phase 5b files:
+
+```text
+scripts/demo/run_real_lite_e2e.py
+tests/test_real_lite_e2e_workflow.py
+docs/demo/real_lite_e2e_runbook.md
+docs/pr/phase5b_real_lite_e2e_pr.md
+```
+
+Gate:
+
+```bash
+make real-lite-e2e-check
+```
+
+Selected papers:
+
+```text
+P410, P406, P405, P403, P401
+```
+
+Safety boundary:
+
+- no PDF body read
+- no MinerU API
+- no Qwen/API call
+- no upload
+- no Bailian knowledge base
+- no image generation
+
+Current limits:
+
+- text is trimmed excerpt based rather than a full review
+- figure output is a pointer placeholder, not a real redraw
+- judge mode is offline
+
+Next:
+
+- Phase 5c: real-lite dashboard QA.
+- Phase 5d: promptfoo or custom eval baseline.
+- Phase 6: Bailian knowledge-base RAG preflight.
+
 ## 风险
 
 - PR 过大导致 review 困难。
