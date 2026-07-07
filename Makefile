@@ -1,4 +1,4 @@
-.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check
+.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check
 
 PYTHON ?= python3
 
@@ -48,3 +48,10 @@ judge-check:
 		--output-md /tmp/quality_with_judge.md \
 		--judge-output-json /tmp/judge_report.json \
 		--judge-output-md /tmp/judge_report.md
+
+tiny-e2e-check:
+	$(PYTHON) tests/test_tiny_e2e_workflow.py
+	$(PYTHON) scripts/demo/run_tiny_e2e.py \
+		--demo-root demo_projects/tiny_allene_review \
+		--output-root /tmp/review_writer_tiny_e2e \
+		--strict

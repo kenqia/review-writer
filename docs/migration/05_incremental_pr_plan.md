@@ -136,6 +136,46 @@ Phase 4 closeout:
 - Safety boundaries held: no key printing, no paper正文/PDF read, no upload, no Bailian knowledge base creation, no image API, and no automatic retry.
 - Conclusion: Alibaba OpenAI-compatible provider and Qwen-backed judge are usable, but every real call must remain explicitly user-authorized.
 
+## PR 4: Tiny Offline E2E Demo
+
+目标：
+
+- Add a tiny synthetic allene-review demo project.
+- Exercise workflow skeleton from Library through Export.
+- Keep the run offline and deterministic.
+- Verify checkpoint log, final quality gate, figure manifest, and Markdown export.
+
+Implemented Phase 5a files:
+
+```text
+demo_projects/tiny_allene_review/
+scripts/demo/run_tiny_e2e.py
+tests/test_tiny_e2e_workflow.py
+docs/demo/tiny_e2e_runbook.md
+docs/pr/phase5a_tiny_e2e_demo_pr.md
+```
+
+Gate:
+
+```bash
+make tiny-e2e-check
+```
+
+Safety boundary:
+
+- no full `chem_papers` scan
+- no real PDF body read
+- no MinerU API
+- no Qwen call
+- no upload
+- no Bailian knowledge base
+- no image generation
+
+Next:
+
+- Phase 5b: real-lite run with 3-5 already parsed MinerU markdown files.
+- Phase 5c: promptfoo or custom eval baseline.
+
 ## 风险
 
 - PR 过大导致 review 困难。

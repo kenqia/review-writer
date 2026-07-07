@@ -22,6 +22,8 @@
 !/view/**
 !/review_writer/
 !/review_writer/**
+!/demo_projects/
+!/demo_projects/**
 
 /.env
 /.env.*
