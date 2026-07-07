@@ -1,4 +1,4 @@
-.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check
+.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight
 
 PYTHON ?= python3
 
@@ -55,3 +55,13 @@ tiny-e2e-check:
 		--demo-root demo_projects/tiny_allene_review \
 		--output-root /tmp/review_writer_tiny_e2e \
 		--strict
+
+real-lite-preflight:
+	$(PYTHON) scripts/demo/build_real_lite_manifest.py \
+		--search-root /home/kenqia/my_folder \
+		--repo-root /home/kenqia/my_folder/review-writer \
+		--output-json /tmp/real_lite_asset_manifest.json \
+		--output-md /tmp/real_lite_asset_manifest.md \
+		--max-papers 5 \
+		--strict
+	$(PYTHON) tests/test_real_lite_manifest.py

@@ -176,6 +176,49 @@ Next:
 - Phase 5b: real-lite run with 3-5 already parsed MinerU markdown files.
 - Phase 5c: promptfoo or custom eval baseline.
 
+## PR 5: Real-Lite Data Preflight
+
+目标：
+
+- Inventory existing parsed real assets without reading PDFs.
+- Build a 3-5 paper allene real-lite input package.
+- Keep the package small enough for Git.
+- Preserve source paths for traceability.
+
+Implemented Phase 5b-preflight files:
+
+```text
+scripts/demo/build_real_lite_manifest.py
+tests/test_real_lite_manifest.py
+demo_projects/real_lite_allene_review/
+docs/demo/real_lite_preflight_runbook.md
+docs/pr/phase5b_real_lite_preflight_pr.md
+```
+
+Gate:
+
+```bash
+make real-lite-preflight
+```
+
+Latest preflight found MinerU markdown, content_list JSON, image directories, metadata JSON, and registry JSONL. It selected 5 allene-related parsed records from 410 registry/metadata records.
+
+Safety boundary:
+
+- no full `chem_papers` scan beyond file count
+- no real PDF body read
+- no MinerU API
+- no Qwen/API call
+- no upload
+- no Bailian knowledge base
+- no image generation
+
+Next:
+
+- Phase 5b: run real-lite E2E using `demo_projects/real_lite_allene_review`.
+- Phase 5c: promptfoo or custom eval baseline.
+- Phase 6: Bailian knowledge-base RAG preflight.
+
 ## 风险
 
 - PR 过大导致 review 困难。
