@@ -20,6 +20,10 @@ def main() -> int:
     parser.add_argument("--judge-mode", choices=["offline", "qwen"], default="offline")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--allow-network", action="store_true")
+    parser.add_argument("--timeout-seconds", type=float, default=90.0)
+    parser.add_argument("--max-output-tokens", type=int, default=128)
+    parser.add_argument("--compact", action="store_true")
+    parser.add_argument("--task-limit", type=int, default=1)
     parser.add_argument("--output-json", type=Path)
     parser.add_argument("--output-md", type=Path)
     args = parser.parse_args()
@@ -41,7 +45,16 @@ def main() -> int:
             rubric="Judge whether the title matches the body. Do not generate manuscript prose.",
         )
     ]
-    report = run_tasks(tasks, judge_mode=args.judge_mode, allow_network=args.allow_network, dry_run=args.dry_run)
+    report = run_tasks(
+        tasks,
+        judge_mode=args.judge_mode,
+        allow_network=args.allow_network,
+        dry_run=args.dry_run,
+        timeout_seconds=args.timeout_seconds,
+        max_output_tokens=args.max_output_tokens,
+        compact=args.compact,
+        task_limit=args.task_limit,
+    )
     write_outputs(report, args.output_json, args.output_md)
     print(f"qwen-review-quality-judge: {report['status']} ({report['summary']})")
     return 1 if report["status"] == "fail" else 0
@@ -53,25 +66,43 @@ def run_tasks(
     judge_mode: str = "offline",
     allow_network: bool = False,
     dry_run: bool = False,
+    timeout_seconds: float = 90.0,
+    max_output_tokens: int = 128,
+    compact: bool = False,
+    task_limit: int = 1,
 ) -> dict[str, Any]:
-    if judge_mode == "qwen":
-        judge = QwenJudge(enabled=not dry_run, allow_network=allow_network)
+    selected_tasks = tasks[: max(0, task_limit)]
+    if judge_mode == "qwen" or dry_run:
+        judge = QwenJudge(
+            enabled=not dry_run,
+            allow_network=allow_network,
+            timeout_seconds=timeout_seconds,
+            max_output_tokens=max_output_tokens,
+            compact=compact,
+        )
     else:
         judge = OfflineJudge()
-    results = [judge.judge(task).to_dict() for task in tasks]
+    results = [judge.judge(task).to_dict() for task in selected_tasks]
     errors = [row for row in results if row["status"] == "error"]
     disabled = [row for row in results if row["status"] == "disabled"]
     status = "fail" if errors else ("warn" if disabled else "pass")
+    network_values = {row.get("metadata", {}).get("network") for row in results}
+    network = "used_once" if "used_once" in network_values else ("attempted_once" if "attempted_once" in network_values else "not_used")
     return {
         "status": status,
         "summary": f"{len(results)} judge tasks, {len(errors)} errors, {len(disabled)} disabled",
         "judge_mode": judge_mode,
         "allow_network": allow_network,
+        "dry_run": dry_run,
+        "timeout_seconds": timeout_seconds,
+        "max_output_tokens": max_output_tokens,
+        "compact_mode": compact,
+        "task_limit": task_limit,
         "results": results,
         "errors": errors,
         "warnings": disabled,
         "metadata": {
-            "network": "not_used" if not allow_network else "allowed_by_flag",
+            "network": network,
             "paper_body_read": "not_read",
             "uploads": "not_used",
             "knowledge_base_created": "not_used",
@@ -97,13 +128,35 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Summary: {report['summary']}",
         f"- Judge mode: {report['judge_mode']}",
         f"- Allow network: {report['allow_network']}",
+        f"- Dry run: {report['dry_run']}",
+        f"- Timeout seconds: {report['timeout_seconds']}",
+        f"- Max output tokens: {report['max_output_tokens']}",
+        f"- Compact mode: {report['compact_mode']}",
+        f"- Task limit: {report['task_limit']}",
         f"- Network: {report['metadata']['network']}",
         "",
         "## Results",
         "",
     ]
     for row in report["results"]:
+        md = row.get("metadata", {})
         lines.append(f"- `{row['task_id']}` {row['status']} / {row['verdict']}: {row['rationale']}")
+        lines.append(
+            "  "
+            + "; ".join(
+                [
+                    f"prompt_chars={md.get('prompt_chars', 'MISSING')}",
+                    f"input_excerpt_chars={md.get('input_excerpt_chars', 'MISSING')}",
+                    f"rubric_chars={md.get('rubric_chars', 'MISSING')}",
+                    f"timeout_seconds={md.get('timeout_seconds', 'MISSING')}",
+                    f"max_output_tokens={md.get('max_output_tokens', 'MISSING')}",
+                    f"compact_mode={md.get('compact_mode', 'MISSING')}",
+                    f"elapsed_seconds={md.get('elapsed_seconds', 'MISSING')}",
+                    f"error_category={md.get('error_category', 'MISSING')}",
+                    f"network_attempts={md.get('network_attempts', 'MISSING')}",
+                ]
+            )
+        )
     if not report["results"]:
         lines.append("None.")
     return "\n".join(lines) + "\n"

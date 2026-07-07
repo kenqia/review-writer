@@ -70,3 +70,29 @@ python tests/test_qwen_judge_safety.py
 - Offline judge does not make semantic claims; it only records deterministic placeholder results.
 - Qwen judge currently handles small markdown excerpts/fixtures, not full project-scale review artifacts.
 - Real Qwen judge calls should be manually approved one run at a time.
+
+## Timeout Hardening Addendum
+
+The first controlled real Qwen judge call timed out, while the earlier hello Qwen smoke passed. This suggests the endpoint and key path are usable, and the immediate hardening target is the judge request shape.
+
+Added:
+
+- `--timeout-seconds 90`
+- `--max-output-tokens 128`
+- `--compact`
+- `--task-limit 1`
+- `prompt_chars`
+- `input_excerpt_chars`
+- `rubric_chars`
+- `timeout_seconds`
+- `max_output_tokens`
+- `compact_mode`
+- `elapsed_seconds`
+- `error_category`
+- `network_attempts`
+
+The next real retry must wait for the exact user confirmation:
+
+```text
+allow qwen judge retry once
+```

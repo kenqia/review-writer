@@ -28,6 +28,35 @@ make judge-check
 
 This runs the safety tests, the judge CLI dry-run, and validator integration with offline judge output.
 
+## Timeout Triage
+
+The first controlled real Qwen judge call reached the provider path but returned `timeout`. A separate hello Qwen call had already returned `QWEN_HELLO_OK`, so the provider/key/endpoint path is broadly usable. The initial timeout is therefore treated as a judge request-layer issue until proven otherwise.
+
+Hardening added after that timeout:
+
+- `--timeout-seconds`, default `90`
+- `--max-output-tokens`, default `128`
+- `--compact`
+- `--task-limit`, default `1`
+- prompt size telemetry
+- elapsed time telemetry
+- network attempt count
+- `client_timeout` classification
+- `server_overloaded_503` classification
+
+Dry-run hardened command:
+
+```bash
+python scripts/llm_judges/qwen_review_quality_judge.py \
+  --dry-run \
+  --compact \
+  --task-limit 1 \
+  --timeout-seconds 90 \
+  --max-output-tokens 128 \
+  --output-json /tmp/qwen_judge_dry_hardened.json \
+  --output-md /tmp/qwen_judge_dry_hardened.md
+```
+
 ## Qwen Judge Scope
 
 Only these placeholder task types may be sent to Qwen:
@@ -60,6 +89,12 @@ python scripts/validators/validate_review_quality.py \
   --judge-output-md /tmp/qwen_judge_report.md
 ```
 
+For the next real retry, the user must explicitly reply:
+
+```text
+allow qwen judge retry once
+```
+
 ## Not Allowed
 
 - No PDF reading.
@@ -78,7 +113,8 @@ Qwen judge reports structured failures, including:
 - `missing_env`
 - `auth_error_401`
 - `rate_limit_or_quota_429`
-- `timeout`
+- `client_timeout`
+- `server_overloaded_503`
 - `server_error_5xx`
 - `network_error`
 - `unexpected_error`

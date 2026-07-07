@@ -119,6 +119,13 @@ make judge-check
 
 The validator now supports `--judge-mode offline|qwen`, `--allow-network`, and judge report outputs. Offline remains the default. Qwen judge is limited to title alignment, semantic prompt leakage, and formula review assistance tasks; it does not generate review prose, read PDFs, upload papers, create Bailian knowledge bases, or call image APIs.
 
+Phase 4c-bis timeout hardening:
+
+- First real Qwen judge call reached the provider path but timed out.
+- Hello Qwen had already passed, so key/endpoint connectivity is not treated as the primary suspect.
+- Judge request hardening added compact prompt mode, `--timeout-seconds`, `--max-output-tokens`, `--task-limit`, prompt-size telemetry, elapsed-time telemetry, and `client_timeout` / `server_overloaded_503` classification.
+- Any real retry must be limited to one attempt and must wait for the exact confirmation: `allow qwen judge retry once`.
+
 ## 风险
 
 - PR 过大导致 review 困难。

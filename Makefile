@@ -39,6 +39,7 @@ qwen-hello-dry-run:
 
 judge-check:
 	$(PYTHON) tests/test_qwen_judge_safety.py
+	$(PYTHON) tests/test_qwen_judge_timeout_hardening.py
 	$(PYTHON) scripts/llm_judges/qwen_review_quality_judge.py --dry-run
 	$(PYTHON) scripts/validators/validate_review_quality.py \
 		--draft tests/fixtures/judge/bad_title_alignment.md \
