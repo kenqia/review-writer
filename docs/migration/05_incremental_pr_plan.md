@@ -102,6 +102,23 @@ make qwen-hello-dry-run
 
 The only permitted real call is a single fixed prompt expecting `QWEN_HELLO_OK`. The call is blocked unless the user explicitly replies `allow hello qwen`; missing env or dependency failures are classified without modifying config.
 
+Phase 4c Qwen judge quality gate scope:
+
+```text
+review_writer/judges/
+scripts/llm_judges/qwen_review_quality_judge.py
+tests/test_qwen_judge_safety.py
+docs/providers/qwen_judge_runbook.md
+```
+
+Gate:
+
+```bash
+make judge-check
+```
+
+The validator now supports `--judge-mode offline|qwen`, `--allow-network`, and judge report outputs. Offline remains the default. Qwen judge is limited to title alignment, semantic prompt leakage, and formula review assistance tasks; it does not generate review prose, read PDFs, upload papers, create Bailian knowledge bases, or call image APIs.
+
 ## 风险
 
 - PR 过大导致 review 困难。

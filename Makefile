@@ -1,4 +1,4 @@
-.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run
+.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check
 
 PYTHON ?= python3
 
@@ -36,3 +36,14 @@ qwen-hello-dry-run:
 		--dry-run \
 		--output-json /tmp/qwen_hello_dry.json \
 		--output-md /tmp/qwen_hello_dry.md
+
+judge-check:
+	$(PYTHON) tests/test_qwen_judge_safety.py
+	$(PYTHON) scripts/llm_judges/qwen_review_quality_judge.py --dry-run
+	$(PYTHON) scripts/validators/validate_review_quality.py \
+		--draft tests/fixtures/judge/bad_title_alignment.md \
+		--judge-mode offline \
+		--output-json /tmp/quality_with_judge.json \
+		--output-md /tmp/quality_with_judge.md \
+		--judge-output-json /tmp/judge_report.json \
+		--judge-output-md /tmp/judge_report.md

@@ -11,6 +11,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from review_writer.judges import JudgeTask, OfflineJudge, QwenJudge
+
 
 RULE_SOURCE_FIGURE = "CRQ001_SOURCE_FIGURE_TRACEABILITY"
 RULE_CITATION_ORDER = "CRQ002_CITATION_CALLOUT_ORDER"
@@ -80,6 +86,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--references", type=Path, default=None, help="references.md or references.bib")
     parser.add_argument("--output-json", type=Path, default=None)
     parser.add_argument("--output-md", type=Path, default=None)
+    parser.add_argument("--judge-mode", choices=["offline", "qwen"], default="offline")
+    parser.add_argument("--allow-network", action="store_true", help="Allow Qwen judge network calls when --judge-mode qwen.")
+    parser.add_argument("--judge-output-json", type=Path, default=None)
+    parser.add_argument("--judge-output-md", type=Path, default=None)
     parser.add_argument("--strict", action="store_true", help="Treat warnings as failing status.")
     return parser.parse_args()
 
@@ -415,6 +425,120 @@ def build_llm_title_tasks(text: str) -> list[dict[str, Any]]:
     return tasks
 
 
+def build_semantic_leakage_task(leakage_summary: dict[str, Any]) -> list[dict[str, Any]]:
+    hits = leakage_summary.get("leakage_hits") or []
+    if not hits:
+        return []
+    preview = "\n".join(f"line {row.get('line')}: {row.get('text', '')}" for row in hits[:12])
+    return [
+        {
+            "rule_id": RULE_LEAKAGE,
+            "task_type": "prompt_leakage_semantic",
+            "task": "Judge whether the cited lines are manuscript content or leaked workflow/prompt instructions.",
+            "input_preview": preview,
+            "rubric": "Warn or fail if writing instructions, workflow language, or hidden planning guidance appears as manuscript prose.",
+        }
+    ]
+
+
+def build_formula_assist_task(formula_summary: dict[str, Any]) -> list[dict[str, Any]]:
+    risks = formula_summary.get("formula_risks") or []
+    if not risks:
+        return []
+    preview = "\n".join(f"line {row.get('line')}: {row.get('formula')}" for row in risks[:30])
+    return [
+        {
+            "rule_id": RULE_FORMULA,
+            "task_type": "chem_formula_review_assist",
+            "task": "Assist a human reviewer by flagging likely subscript, superscript, and charge typography issues.",
+            "input_preview": preview,
+            "rubric": "Do not rewrite the manuscript. Identify whether each formula likely needs chemical typography review.",
+        }
+    ]
+
+
+def to_judge_task(row: dict[str, Any], index: int) -> JudgeTask:
+    rule_id = row["rule_id"]
+    if rule_id == RULE_SECTION_TITLE:
+        task_type = "section_title_alignment"
+        input_text = "\n".join(
+            [
+                f"Section title: {row.get('section_title', '')}",
+                "Section body preview:",
+                row.get("section_body_preview", ""),
+            ]
+        )
+    elif rule_id == RULE_REVIEW_TITLE:
+        task_type = "review_title_alignment"
+        input_text = "\n".join(
+            [
+                f"Review title: {row.get('title', '')}",
+                "Body preview:",
+                row.get("body_preview", ""),
+            ]
+        )
+    else:
+        task_type = row.get("task_type", "quality_judge")
+        input_text = row.get("input_preview", "")
+    return JudgeTask(
+        task_id=f"{task_type}_{index:03d}",
+        rule_id=rule_id,
+        task_type=task_type,
+        input_text=input_text[:3500],
+        rubric=row.get("rubric", row.get("task", "")),
+        metadata={k: v for k, v in row.items() if k not in {"body_preview", "section_body_preview", "input_preview", "rubric"}},
+    )
+
+
+def run_judge_tasks(tasks: list[dict[str, Any]], judge_mode: str, allow_network: bool) -> dict[str, Any]:
+    allowed_types = {"section_title_alignment", "review_title_alignment", "prompt_leakage_semantic", "chem_formula_review_assist"}
+    judge_tasks = [to_judge_task(task, index) for index, task in enumerate(tasks, start=1)]
+    judge_tasks = [task for task in judge_tasks if task.task_type in allowed_types]
+    judge = QwenJudge(enabled=True, allow_network=allow_network) if judge_mode == "qwen" else OfflineJudge()
+    results = [judge.judge(task).to_dict() for task in judge_tasks]
+    errors = [row for row in results if row["status"] == "error"]
+    disabled = [row for row in results if row["status"] == "disabled"]
+    status = "fail" if errors else ("warn" if disabled else "pass")
+    network_values = {row.get("metadata", {}).get("network") for row in results}
+    return {
+        "status": status,
+        "summary": f"{len(results)} judge tasks, {len(errors)} errors, {len(disabled)} disabled",
+        "judge_mode": judge_mode,
+        "allow_network": allow_network,
+        "results": results,
+        "errors": errors,
+        "warnings": disabled,
+        "metadata": {
+            "network": "used_once" if "used_once" in network_values else ("attempted_once" if "attempted_once" in network_values else "not_used"),
+            "paper_body_read": "not_read",
+            "uploads": "not_used",
+            "knowledge_base_created": "not_used",
+            "image_api": "not_used",
+        },
+    }
+
+
+def write_judge_markdown(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "# Review Quality Judge Report",
+        "",
+        f"- Status: {payload['status']}",
+        f"- Summary: {payload['summary']}",
+        f"- Judge mode: {payload['judge_mode']}",
+        f"- Allow network: {payload['allow_network']}",
+        f"- Network: {payload['metadata']['network']}",
+        "",
+        "## Results",
+        "",
+    ]
+    for row in payload["results"]:
+        lines.append(f"- `{row['task_id']}` `{row['rule_id']}` {row['status']} / {row['verdict']}: {row['rationale']}")
+    if not payload["results"]:
+        lines.append("None.")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def status_from_findings(findings: list[Finding], strict: bool) -> str:
     if any(f.severity == "error" for f in findings):
         return "fail"
@@ -472,15 +596,17 @@ def build_report(args: argparse.Namespace) -> tuple[dict[str, Any] | None, int]:
     summary: dict[str, Any] = {"draft": str(args.draft)}
     llm_tasks = build_llm_title_tasks(text)
     human_tasks: list[dict[str, Any]] = []
+    leakage_summary: dict[str, Any] = {}
 
-    for check_findings, check_summary in [
-        check_citation_order(text),
-        check_captions(text),
-        check_leakage(text),
-        check_references(args.references),
-    ]:
+    for check_findings, check_summary in [check_citation_order(text), check_captions(text)]:
         findings.extend(check_findings)
         summary.update(check_summary)
+    leakage_findings, leakage_summary = check_leakage(text)
+    findings.extend(leakage_findings)
+    summary.update(leakage_summary)
+    reference_findings, reference_summary = check_references(args.references)
+    findings.extend(reference_findings)
+    summary.update(reference_summary)
 
     image_findings, image_summary, image_human = check_images(text, args.draft, args.figure_manifest)
     formula_findings, formula_summary, formula_human = check_formula_risks(text)
@@ -490,6 +616,9 @@ def build_report(args: argparse.Namespace) -> tuple[dict[str, Any] | None, int]:
     summary.update(formula_summary)
     human_tasks.extend(image_human)
     human_tasks.extend(formula_human)
+    llm_tasks.extend(build_semantic_leakage_task(leakage_summary))
+    llm_tasks.extend(build_formula_assist_task(formula_summary))
+    judge_report = run_judge_tasks(llm_tasks, args.judge_mode, args.allow_network)
 
     checks = [f.to_dict() for f in findings]
     errors = [row for row in checks if row["severity"] == "error"]
@@ -502,7 +631,18 @@ def build_report(args: argparse.Namespace) -> tuple[dict[str, Any] | None, int]:
         "warnings": warnings,
         "llm_judge_tasks": llm_tasks,
         "human_review_tasks": human_tasks,
+        "judge_report": {
+            "status": judge_report["status"],
+            "summary": judge_report["summary"],
+            "judge_mode": judge_report["judge_mode"],
+            "allow_network": judge_report["allow_network"],
+            "metadata": judge_report["metadata"],
+        },
     }
+    if args.judge_output_json:
+        write_json(args.judge_output_json, judge_report)
+    if args.judge_output_md:
+        write_judge_markdown(args.judge_output_md, judge_report)
     return report, 0 if report["status"] in {"pass", "warn"} and not args.strict else (1 if report["status"] == "fail" else 0)
 
 
