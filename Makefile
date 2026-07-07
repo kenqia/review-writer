@@ -1,4 +1,4 @@
-.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check eval-baseline-check portability-check
+.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check eval-baseline-check portability-check release-readiness-check
 
 PYTHON ?= python3
 REPO_ROOT ?= $(CURDIR)
@@ -95,3 +95,17 @@ portability-check:
 		--output-json /tmp/portability_report.json \
 		--output-md /tmp/portability_report.md \
 		--strict
+
+release-readiness-check:
+	$(MAKE) smoke
+	$(MAKE) quality-check
+	$(MAKE) qoderwork-check
+	$(MAKE) provider-check
+	$(MAKE) qwen-hello-dry-run
+	$(MAKE) judge-check
+	$(MAKE) tiny-e2e-check
+	$(MAKE) real-lite-preflight
+	$(MAKE) real-lite-e2e-check
+	$(MAKE) dashboard-real-lite-check
+	$(MAKE) eval-baseline-check
+	$(MAKE) portability-check
