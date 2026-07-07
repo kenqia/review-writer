@@ -329,6 +329,68 @@ Next:
 - Phase 5e: QoderWork CN manual real-lite flow.
 - Phase 6: Bailian RAG preflight.
 
+## PR 8: Real-Lite Eval Baseline
+
+目标：
+
+- Add an offline custom eval baseline for the real-lite output package.
+- Score workflow completeness, artifact completeness, quality gate health, figure integrity, citation/reference structure, prompt leakage absence, evidence coverage, and safety boundary.
+- Keep promptfoo as a future-compatible draft only; do not install or run it.
+
+Implemented Phase 5d files:
+
+```text
+evals/README.md
+evals/baselines/real_lite_v1.yaml
+evals/fixtures/real_lite_expected_metrics.json
+evals/reports/.gitkeep
+evals/promptfoo/real_lite_v1.promptfooconfig.yaml
+scripts/eval/run_eval_baseline.py
+tests/test_eval_baseline.py
+docs/eval/real_lite_eval_baseline.md
+docs/pr/phase5d_eval_baseline_pr.md
+```
+
+Gate:
+
+```bash
+make eval-baseline-check
+```
+
+Metrics:
+
+- `workflow_completeness`
+- `artifact_completeness`
+- `quality_gate_health`
+- `figure_integrity`
+- `citation_and_reference_integrity`
+- `prompt_leakage_absence`
+- `evidence_coverage`
+- `safety_boundary`
+
+Current real-lite v1 result:
+
+```text
+status: pass
+score_total: 100.0
+```
+
+Safety boundary:
+
+- no promptfoo dependency
+- no network/API call
+- no PDF body read
+- no Qwen call
+- no upload
+- no Bailian knowledge base
+- no image generation
+
+Next:
+
+- Phase 5e: QoderWork CN manual real-lite flow.
+- Phase 5f: optional promptfoo integration.
+- Phase 6: Bailian RAG preflight.
+
 ## 风险
 
 - PR 过大导致 review 困难。

@@ -1,4 +1,4 @@
-.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check
+.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check eval-baseline-check
 
 PYTHON ?= python3
 
@@ -75,3 +75,13 @@ real-lite-e2e-check:
 
 dashboard-real-lite-check:
 	$(PYTHON) tests/test_dashboard_real_lite_payload.py
+
+eval-baseline-check:
+	$(PYTHON) tests/test_eval_baseline.py
+	$(PYTHON) scripts/eval/run_eval_baseline.py \
+		--output-root /tmp/review_writer_real_lite_e2e \
+		--baseline evals/baselines/real_lite_v1.yaml \
+		--expected evals/fixtures/real_lite_expected_metrics.json \
+		--output-json /tmp/real_lite_eval_report.json \
+		--output-md /tmp/real_lite_eval_report.md \
+		--strict

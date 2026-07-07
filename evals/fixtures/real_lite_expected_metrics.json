@@ -1,0 +1,19 @@
+{
+  "baseline_id": "real_lite_v1",
+  "minimum_score": 90,
+  "required_metrics": [
+    "workflow_completeness",
+    "artifact_completeness",
+    "quality_gate_health",
+    "figure_integrity",
+    "citation_and_reference_integrity",
+    "prompt_leakage_absence",
+    "evidence_coverage",
+    "safety_boundary"
+  ],
+  "required_metric_statuses": ["pass"],
+  "notes": [
+    "This threshold evaluates workflow wiring and safety boundaries, not final scientific review quality.",
+    "Reports should be generated under /tmp and should not be committed."
+  ]
+}
