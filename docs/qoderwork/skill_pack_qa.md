@@ -109,7 +109,10 @@ offline or local-only checks when unavailable.
 
 ## Known Limits
 
-- QoderWork runtime behavior is represented by source-level QA and staging copy tests in this repository.
+- Early QoderWork runtime behavior was represented by source-level QA and
+  staging copy tests. Phase 5i later records one actual QoderWork CN product
+  run at HEAD `7b9a8af`.
+- Latest-HEAD QoderWork CN product revalidation remains optional.
 - Semantic title and section-content alignment remains an LLM judge task placeholder.
 - Alibaba provider adapters are documented but not implemented in this phase.
 - PDF/LaTeX export remains a later skeleton target.

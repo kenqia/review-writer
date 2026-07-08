@@ -108,10 +108,26 @@ python scripts/audit/audit_real_lite_outputs.py \
 - figure-grounded final manuscript QA
 - user-facing chemistry conclusion validation
 
+## QoderWork CN Validation Note
+
+After this audit, the owner ran an actual QoderWork CN product-environment
+validation of the `chem-review-orchestrator` skill. That run is recorded in
+`docs/qoderwork/actual_qoderwork_cn_product_run_validation.md`.
+
+Important distinction:
+
+- Codex-simulated QoderWork manual-flow QA checked the repository/script-level
+  flow.
+- Actual QoderWork CN product-run validation checked that QoderWork CN could
+  load the installed skill and run the offline real-lite gates against the WSL
+  repository.
+
+The actual QoderWork CN run used HEAD `7b9a8af`, before the Phase 5h
+reality-audit commit. It does not change the data-quality conclusion above:
+real-lite is still engineering-fixture quality, not scientific-review quality.
+
 ## Next Actions
 
-- Phase 5i: Actual QoderWork CN product-run validation. The user must run the
-  installed skill inside QoderWork CN and paste the result.
 - Phase 5j: Clean 3-paper human-verified dataset with corrected metadata,
   source excerpts, figure candidates, and human approval notes.
 - Phase 6a: Bailian RAG no-upload preflight, without creating a knowledge base

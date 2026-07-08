@@ -74,5 +74,6 @@ This test starts the dashboard on `127.0.0.1`, verifies payloads, checks file sa
 ## Next Stages
 
 - Phase 5d: eval baseline.
-- Phase 5e: QoderWork CN manual real-lite flow.
+- Phase 5e: Codex-simulated QoderWork manual flow QA.
+- Phase 5i: Actual QoderWork CN product-run validation record.
 - Phase 6: Bailian RAG preflight.

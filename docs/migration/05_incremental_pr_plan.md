@@ -442,7 +442,8 @@ Next:
 - Phase 5g: PR review / merge readiness.
 - Phase 5h: Reality audit / data provenance / output quality inspection.
 - Phase 5i: Actual QoderWork CN product-run validation.
-- Phase 6a: Bailian RAG preflight.
+- Phase 5j: Clean 3-paper human-verified dataset.
+- Phase 6a: Bailian RAG no-upload preflight.
 
 ## PR 10: Reality Audit / Data Provenance / Output Quality Inspection
 
@@ -492,11 +493,66 @@ Safety boundary:
 
 Next:
 
-- Phase 5i: Actual QoderWork CN product-run validation. The user must run the
-  installed skills in QoderWork CN and paste the result; Codex-simulated runs do
-  not prove the real product experience.
+- Phase 5i: Actual QoderWork CN product-run validation. The user later ran the
+  installed skill in QoderWork CN and pasted the result. That run validates
+  product loading/execution for the offline real-lite flow, but used HEAD
+  `7b9a8af`, before the Phase 5h commit.
 - Phase 5j: Clean 3-paper human-verified dataset.
 - Phase 6a: Bailian RAG no-upload preflight.
+
+## PR 11: Actual QoderWork CN Product-Run Validation Record
+
+目标：
+
+- Record actual QoderWork CN product-environment validation separately from
+  Codex-simulated manual-flow QA.
+- Clarify checkpoint interpretation for mock/demo output versus a true
+  production review start.
+- Preserve the Phase 5h reality-audit conclusion that engineering pass does not
+  imply scientific quality pass.
+
+Implemented Phase 5i files:
+
+```text
+docs/qoderwork/actual_qoderwork_cn_product_run_validation.md
+docs/pr/phase5i_actual_qoderwork_cn_validation_pr.md
+```
+
+Validation record:
+
+- Product: QoderWork CN.
+- Skill: `chem-review-orchestrator`.
+- Repo: WSL path `<REPO_ROOT_IN_WSL>`; Kenqia's concrete local path is kept in
+  `docs/local/KENQIA_LOCAL_VALIDATION.md`.
+- Runtime branch: `feat/chem-review-quality-gates`.
+- Runtime HEAD: `7b9a8af docs: add merge readiness audit`.
+- 11 offline make gates passed.
+- real-lite output root existed.
+- checkpoint count was 9.
+- all checkpoints had `human_review_required=True`.
+- eval score was `100.0`.
+- safety fields were `not_used` for network, PDF read, Qwen, MinerU API, and
+  upload.
+
+Checkpoint conclusion:
+
+- Mock/demo output can be inspected at Export because generated real-lite
+  artifacts already exist.
+- True production review should stop at Library until paper inputs, MinerU
+  parse outputs, metadata, and human checks are trustworthy.
+
+Limits:
+
+- This validation was not run at the latest Phase 5h HEAD.
+- It does not prove scientific review quality.
+- It does not prove full `chem_papers` readiness.
+
+Next:
+
+- Optional latest-HEAD QoderWork CN read-only revalidation.
+- Phase 5j: Clean 3-paper human-verified dataset.
+- Phase 6a: Bailian RAG no-upload preflight only after or alongside clean
+  dataset work; no upload or knowledge-base creation.
 
 ## 风险
 

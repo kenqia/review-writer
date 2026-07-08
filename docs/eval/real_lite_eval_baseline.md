@@ -86,6 +86,7 @@ Do not commit generated reports unless a release artifact is explicitly requeste
 
 ## Next Stages
 
-- Phase 5e: QoderWork CN manual real-lite flow.
+- Phase 5e: Codex-simulated QoderWork manual flow QA.
+- Phase 5i: Actual QoderWork CN product-run validation record.
 - Phase 5f: optional promptfoo integration.
 - Phase 6: Bailian RAG preflight.

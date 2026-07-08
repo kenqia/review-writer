@@ -75,7 +75,8 @@ python tests/test_real_lite_output_audit.py
 
 ## Follow-Ups
 
-- Phase 5i: Actual QoderWork CN product-run validation. The user must run the
-  installed skills inside QoderWork CN and paste the result.
+- Phase 5i: Actual QoderWork CN product-run validation was later recorded at
+  runtime HEAD `7b9a8af`, before the Phase 5h commit. It validates product
+  loading/execution for the offline flow, not scientific quality.
 - Phase 5j: Clean 3-paper human-verified dataset.
 - Phase 6a: Bailian RAG no-upload preflight.
