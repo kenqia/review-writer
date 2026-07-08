@@ -98,6 +98,9 @@ The user-facing docs now explain:
   default gates. Default checks remain offline and should stay that way.
 - Real-lite inputs use trimmed excerpts and pointer manifests, not full-paper
   quality evidence.
+- Phase 5e is only Codex-simulated QoderWork manual flow QA. It should not be
+  cited as proof of the actual QoderWork CN product experience until the user
+  runs the installed skill inside QoderWork CN and pastes the result.
 
 ## Reviewer Starting Points
 
@@ -115,3 +118,5 @@ The user-facing docs now explain:
 Recommended next step: keep the PR as Draft but mark it ready for human review
 after the owner confirms the large-scope review plan. No blocking release gate
 failure was found.
+
+Actual QoderWork CN product-run validation remains a follow-up Phase 5i item.

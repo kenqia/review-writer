@@ -83,5 +83,7 @@ make dashboard-real-lite-check
 ## Next Stage
 
 - Phase 5d: eval baseline.
-- Phase 5e: QoderWork CN manual real-lite flow.
+- Phase 5e: Codex-simulated QoderWork manual flow QA.
+- Phase 5i: Actual QoderWork CN product-run validation, run by the user inside
+  QoderWork CN with pasted results.
 - Phase 6: Bailian RAG preflight.

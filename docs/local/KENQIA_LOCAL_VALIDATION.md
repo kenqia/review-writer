@@ -36,9 +36,14 @@ C:\Users\26960\Desktop\review-writer
 
 Do not use that path as a generic `review_root`.
 
-## Real-Lite Manual Flow Result
+## Codex-Simulated QoderWork Manual Flow Result
 
-During local validation, the real-lite output root contained 9 checkpoints:
+During local validation, Codex simulated the QoderWork manual-flow questions
+against the real-lite output root. This is not proof of QoderWork CN product UX;
+actual QoderWork CN product-run validation still requires the user to run the
+installed skills inside QoderWork CN and paste the resulting transcript.
+
+The real-lite output root contained 9 checkpoints:
 
 ```text
 Library -> Discovery -> Matrix -> Blueprint -> Sections -> Figures -> Draft -> Final -> Export
@@ -46,3 +51,10 @@ Library -> Discovery -> Matrix -> Blueprint -> Sections -> Figures -> Draft -> F
 
 The run summary recorded no network, PDF read, Qwen call, MinerU API call, or
 upload.
+
+## Pending Actual QoderWork CN Validation
+
+Phase 5i should run inside QoderWork CN itself, using the installed
+`chem-review-orchestrator` skill and the WSL repository path above. The user
+should paste the result back into the repository review thread. Until then,
+the repository can only claim Codex-simulated QoderWork manual flow QA.

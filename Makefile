@@ -1,4 +1,4 @@
-.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check eval-baseline-check portability-check release-readiness-check
+.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check eval-baseline-check portability-check reality-audit-check release-readiness-check
 
 PYTHON ?= python3
 REPO_ROOT ?= $(CURDIR)
@@ -94,6 +94,21 @@ portability-check:
 	$(PYTHON) scripts/check_portability.py \
 		--output-json /tmp/portability_report.json \
 		--output-md /tmp/portability_report.md \
+		--strict
+
+reality-audit-check:
+	$(PYTHON) tests/test_real_lite_input_audit.py
+	$(PYTHON) tests/test_real_lite_output_audit.py
+	$(PYTHON) scripts/audit/audit_real_lite_inputs.py \
+		--demo-root demo_projects/real_lite_allene_review \
+		--output-json /tmp/real_lite_input_audit.json \
+		--output-md /tmp/real_lite_input_audit.md \
+		--strict
+	$(PYTHON) scripts/audit/audit_real_lite_outputs.py \
+		--output-root /tmp/review_writer_real_lite_e2e \
+		--input-demo-root demo_projects/real_lite_allene_review \
+		--output-json /tmp/real_lite_output_audit.json \
+		--output-md /tmp/real_lite_output_audit.md \
 		--strict
 
 release-readiness-check:

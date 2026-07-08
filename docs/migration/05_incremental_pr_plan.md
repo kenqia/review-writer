@@ -326,7 +326,8 @@ Safety boundary:
 Next:
 
 - Phase 5d: eval baseline.
-- Phase 5e: QoderWork CN manual real-lite flow.
+- Phase 5e: Codex-simulated QoderWork manual flow QA.
+- Phase 5i: Actual QoderWork CN product-run validation.
 - Phase 6: Bailian RAG preflight.
 
 ## PR 8: Real-Lite Eval Baseline
@@ -387,8 +388,11 @@ Safety boundary:
 
 Next:
 
-- Phase 5e: QoderWork CN manual real-lite flow.
-- Phase 5f: optional promptfoo integration.
+- Phase 5e: Codex-simulated QoderWork manual flow QA.
+- Phase 5f: portability hardening.
+- Phase 5h: reality audit for data provenance and output quality limits.
+- Phase 5i: Actual QoderWork CN product-run validation.
+- Phase 5j: Clean 3-paper human-verified dataset.
 - Phase 6: Bailian RAG preflight.
 
 ## PR 9: Portability Hardening
@@ -436,7 +440,63 @@ Safety boundary:
 Next:
 
 - Phase 5g: PR review / merge readiness.
+- Phase 5h: Reality audit / data provenance / output quality inspection.
+- Phase 5i: Actual QoderWork CN product-run validation.
 - Phase 6a: Bailian RAG preflight.
+
+## PR 10: Reality Audit / Data Provenance / Output Quality Inspection
+
+目标：
+
+- Separate engineering pass from scientific-quality pass.
+- Audit the committed real-lite input package for DOI gaps, metadata
+  human-check status, page-chrome pollution, trimmed excerpts, pointer-only
+  content lists, pointer-only figures, and placeholder source paths.
+- Audit the generated real-lite E2E output for draft size, section/reference
+  structure, paper signals, skeleton/placeholder signals, matrix/blueprint
+  completeness, figure manifest quality, quality gate result, eval result, and
+  checkpoint count.
+
+Implemented Phase 5h files:
+
+```text
+scripts/audit/audit_real_lite_inputs.py
+scripts/audit/audit_real_lite_outputs.py
+tests/test_real_lite_input_audit.py
+tests/test_real_lite_output_audit.py
+docs/audit/real_lite_reality_audit.md
+docs/pr/phase5h_reality_audit_pr.md
+```
+
+Gate:
+
+```bash
+make reality-audit-check
+```
+
+Current conclusion:
+
+- real-lite inputs are trusted for engineering fixture use.
+- real-lite inputs are not trusted for final scientific review quality.
+- real-lite outputs are trusted for demo workflow and dashboard payload QA.
+- real-lite outputs need human review and are not citation-accurate review
+  evidence.
+
+Safety boundary:
+
+- no PDF body read
+- no MinerU API
+- no Qwen or Bailian call
+- no upload
+- no image generation
+
+Next:
+
+- Phase 5i: Actual QoderWork CN product-run validation. The user must run the
+  installed skills in QoderWork CN and paste the result; Codex-simulated runs do
+  not prove the real product experience.
+- Phase 5j: Clean 3-paper human-verified dataset.
+- Phase 6a: Bailian RAG no-upload preflight.
 
 ## 风险
 

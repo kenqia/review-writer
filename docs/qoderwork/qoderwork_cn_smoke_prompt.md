@@ -53,3 +53,6 @@ wsl.exe --cd <REPO_ROOT_IN_WSL> bash -lc "make smoke && make quality-check && ma
   generation APIs.
 - Kenqia-specific QoderWork CN validation notes live in
   `docs/local/KENQIA_LOCAL_VALIDATION.md`.
+- Codex-simulated QoderWork manual flow QA is not the same as actual QoderWork
+  CN product-run validation. Phase 5i must be run by the user inside QoderWork
+  CN, and the user should paste the result back into the PR review thread.
