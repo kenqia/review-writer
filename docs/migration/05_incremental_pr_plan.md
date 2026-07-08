@@ -608,6 +608,62 @@ Next:
   verified metadata draft.
 - Phase 5k: Clean 3-paper E2E.
 
+## PR 13: Clean 3-Paper Candidate Approval Pack
+
+目标：
+
+- Convert the Phase 5j-A recommendation into a lightweight approval pack.
+- Let the user choose Option A/B/C without acting as a chemistry domain expert.
+- Keep all papers as candidates; do not mark anything as human-verified.
+- Explicitly define the next authorization text before any PDF verification.
+
+Implemented Phase 5j-B files:
+
+```text
+demo_projects/clean_3paper_allene_review/inputs/candidate_approval_pack.json
+demo_projects/clean_3paper_allene_review/inputs/candidate_approval_pack.md
+scripts/demo/check_clean_3paper_approval_pack.py
+tests/test_clean_3paper_approval_pack.py
+docs/demo/clean_3paper_candidate_approval.md
+docs/pr/phase5j_clean_3paper_candidate_approval_pr.md
+```
+
+Gate:
+
+```bash
+make clean-3paper-approval-check
+```
+
+User options:
+
+```text
+Option A: accept Top 3
+Option B: replace candidate ___ with alternative ___
+Option C: regenerate candidates with changed topic focus
+```
+
+Next-stage authorization text:
+
+```text
+allow read-only verify top 3 PDFs
+```
+
+Safety boundary:
+
+- no PDF body read
+- no MinerU API
+- no Qwen or Bailian call
+- no upload
+- no knowledge-base creation
+- no image generation
+- all candidates remain `human_verified=false`
+
+Next:
+
+- Wait for the user to choose Option A/B/C.
+- Only after explicit authorization, Phase 5j-C may read only the approved 3
+  PDFs and generate a verified metadata draft that still requires human review.
+
 ## 风险
 
 - PR 过大导致 review 困难。

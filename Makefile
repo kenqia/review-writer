@@ -1,4 +1,4 @@
-.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check eval-baseline-check portability-check reality-audit-check clean-3paper-recommend-check release-readiness-check
+.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check eval-baseline-check portability-check reality-audit-check clean-3paper-recommend-check clean-3paper-approval-check release-readiness-check
 
 PYTHON ?= python3
 REPO_ROOT ?= $(CURDIR)
@@ -118,6 +118,12 @@ clean-3paper-recommend-check:
 		--real-lite-root demo_projects/real_lite_allene_review \
 		--output-json /tmp/clean_3paper_recommendations.json \
 		--output-md /tmp/clean_3paper_recommendations.md \
+		--strict
+
+clean-3paper-approval-check:
+	$(PYTHON) tests/test_clean_3paper_approval_pack.py
+	$(PYTHON) scripts/demo/check_clean_3paper_approval_pack.py \
+		--dataset-root demo_projects/clean_3paper_allene_review \
 		--strict
 
 release-readiness-check:
