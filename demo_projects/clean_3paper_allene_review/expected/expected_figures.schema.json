@@ -1,0 +1,26 @@
+{
+  "description": "Draft schema for future verified figure candidates. This is a TODO schema, not extracted figures.",
+  "type": "object",
+  "required": ["paper_id", "figures", "human_verified"],
+  "properties": {
+    "paper_id": {
+      "type": "string"
+    },
+    "figures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["figure_id", "caption", "source_location", "needs_human_check"],
+        "properties": {
+          "figure_id": {"type": "string"},
+          "caption": {"type": "string"},
+          "source_location": {"type": "string"},
+          "needs_human_check": {"type": "boolean"}
+        }
+      }
+    },
+    "human_verified": {
+      "const": false
+    }
+  }
+}

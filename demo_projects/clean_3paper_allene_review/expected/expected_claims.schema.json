@@ -1,0 +1,26 @@
+{
+  "description": "Draft schema for future human-verified key claims. This is a TODO schema, not extracted claims.",
+  "type": "object",
+  "required": ["paper_id", "claims", "human_verified"],
+  "properties": {
+    "paper_id": {
+      "type": "string"
+    },
+    "claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["claim_id", "claim_text", "evidence_location", "needs_human_check"],
+        "properties": {
+          "claim_id": {"type": "string"},
+          "claim_text": {"type": "string"},
+          "evidence_location": {"type": "string"},
+          "needs_human_check": {"type": "boolean"}
+        }
+      }
+    },
+    "human_verified": {
+      "const": false
+    }
+  }
+}

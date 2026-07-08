@@ -442,7 +442,9 @@ Next:
 - Phase 5g: PR review / merge readiness.
 - Phase 5h: Reality audit / data provenance / output quality inspection.
 - Phase 5i: Actual QoderWork CN product-run validation.
-- Phase 5j: Clean 3-paper human-verified dataset.
+- Phase 5j-A: Clean 3-paper candidate recommendation.
+- Phase 5j-B: User approves Top 3 or requests replacements.
+- Phase 5j-C: Read-only parsing for only the approved 3 PDFs.
 - Phase 6a: Bailian RAG no-upload preflight.
 
 ## PR 10: Reality Audit / Data Provenance / Output Quality Inspection
@@ -550,9 +552,61 @@ Limits:
 Next:
 
 - Optional latest-HEAD QoderWork CN read-only revalidation.
-- Phase 5j: Clean 3-paper human-verified dataset.
+- Phase 5j-A: Clean 3-paper candidate recommendation.
+- Phase 5j-B: User approves Top 3 or requests replacements.
+- Phase 5j-C: Read-only parsing for only the approved 3 PDFs.
 - Phase 6a: Bailian RAG no-upload preflight only after or alongside clean
   dataset work; no upload or knowledge-base creation.
+
+## PR 12: Clean 3-Paper Candidate Recommendation
+
+目标：
+
+- Help a non-specialist user choose three candidate papers without manually
+  reading 205 PDFs.
+- Recommend a balanced Top 3 from PDF filenames, committed real-lite metadata,
+  topic-match heuristics, and verifiability signals.
+- Keep every item as a candidate only; do not mark any paper as clean or
+  human-verified.
+
+Implemented Phase 5j-A files:
+
+```text
+scripts/demo/recommend_clean_3paper_candidates.py
+tests/test_clean_3paper_recommendation.py
+demo_projects/clean_3paper_allene_review/
+docs/demo/clean_3paper_candidate_recommendation.md
+docs/pr/phase5j_clean_3paper_candidate_recommendation_pr.md
+```
+
+Gate:
+
+```bash
+make clean-3paper-recommend-check
+```
+
+Recommended Top 3:
+
+- `F3I`: review/background candidate.
+- `F47A`: representative asymmetric/chiral allene method candidate.
+- `P403`: 2025 recent-progress candidate from real-lite metadata.
+
+Safety boundary:
+
+- no PDF body read
+- no MinerU API
+- no Qwen or Bailian call
+- no upload
+- no knowledge-base creation
+- no image generation
+- all candidates remain `human_verified=false`
+
+Next:
+
+- Phase 5j-B: User approves Top 3 or requests replacements.
+- Phase 5j-C: Read-only parsing of only the approved 3 PDFs to generate a
+  verified metadata draft.
+- Phase 5k: Clean 3-paper E2E.
 
 ## 风险
 
