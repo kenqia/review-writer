@@ -1,7 +1,7 @@
 {
   "description": "Draft schema for future verified figure candidates. This is a TODO schema, not extracted figures.",
   "type": "object",
-  "required": ["paper_id", "figures", "human_verified"],
+  "required": ["paper_id", "figures", "human_verified", "verification_status", "needs_human_review"],
   "properties": {
     "paper_id": {
       "type": "string"
@@ -20,6 +20,15 @@
       }
     },
     "human_verified": {
+      "const": false
+    },
+    "verification_status": {
+      "enum": ["todo", "verified_draft", "needs_human_review"]
+    },
+    "needs_human_review": {
+      "const": true
+    },
+    "copied_source_images": {
       "const": false
     }
   }

@@ -1,0 +1,18 @@
+{
+  "candidate_id": "F47A",
+  "verification_status": "verified_draft",
+  "human_verified": false,
+  "needs_human_review": true,
+  "pdf_read_scope": "filename_metadata_or_first_page_only",
+  "upload_status": "not_uploaded",
+  "api_used": false,
+  "title_draft": "Palladium-catalyzed asymmetric synthesis of axially chiral allenes",
+  "authors_draft": "unknown",
+  "year_draft": "unknown",
+  "journal_draft": "unknown",
+  "doi_draft": "unknown",
+  "role": "representative_method",
+  "claim_status": "not_extracted",
+  "figure_status": "not_extracted",
+  "notes": "Filename confirms the palladium/asymmetric/axially chiral allene method signal, but the full title and bibliographic fields remain unverified."
+}

@@ -1,0 +1,18 @@
+{
+  "candidate_id": "P403",
+  "verification_status": "verified_draft",
+  "human_verified": false,
+  "needs_human_review": true,
+  "pdf_read_scope": "filename_metadata_or_first_page_only",
+  "upload_status": "not_uploaded",
+  "api_used": false,
+  "title_draft": "Pd-Catalyzed Asymmetric Allenylation of Secondary Phosphine Oxides with Enyne-Type Propargylic Carbamates for the Construction of Chiral Allenyl Phosphine Oxides",
+  "authors_draft": "unknown",
+  "year_draft": 2025,
+  "journal_draft": "ACS Catal.",
+  "doi_draft": "unknown",
+  "role": "recent_progress",
+  "claim_status": "not_extracted",
+  "figure_status": "not_extracted",
+  "notes": "Filename and prior real-lite metadata support the recent-progress role, but claims, DOI, and figure mapping remain unverified."
+}

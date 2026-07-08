@@ -1,0 +1,110 @@
+{
+  "dataset_id": "clean_3paper_allene_v1_verified_draft",
+  "status": "verified_draft_needs_human_review",
+  "source": "Phase 5j-C read-only PDF filename/filesystem verification",
+  "trusted_for_engineering_fixture": true,
+  "trusted_for_scientific_quality": false,
+  "human_verified": false,
+  "verification_scope": {
+    "allowed_pdf_count": 3,
+    "allowed_paper_ids": ["F3I", "F47A", "P403"],
+    "pdf_read_scope": "filename_metadata_or_first_page_only",
+    "full_chem_papers_scan": "not_used",
+    "long_pdf_body_saved": false
+  },
+  "papers": [
+    {
+      "candidate_id": "F3I",
+      "filename": "chem_papers/3i-Angew Chem Int Ed - 2012 - Yu - Allenes in Catalytic Asymmetric Synthesis and Natural Product Syntheses.pdf",
+      "title_draft": "Allenes in Catalytic Asymmetric Synthesis and Natural Product Syntheses",
+      "authors_draft": "unknown",
+      "year_draft": 2012,
+      "journal_draft": "Angew. Chem. Int. Ed.",
+      "doi_draft": "unknown",
+      "role": "review_background",
+      "verification_status": "verified_draft",
+      "human_verified": false,
+      "needs_human_review": true,
+      "needs_pdf_read_verification": true,
+      "pdf_read_scope": "filename_metadata_or_first_page_only",
+      "upload_status": "not_uploaded",
+      "api_used": false,
+      "trusted_for_scientific_quality": false,
+      "metadata_confidence": "medium",
+      "key_claims_draft": [],
+      "figure_notes_path": "inputs/figure_notes/F3I.figure_notes.md",
+      "verified_metadata_path": "inputs/verified_metadata/F3I.metadata.verified_draft.json",
+      "verified_excerpt_path": "inputs/verified_excerpts/F3I.excerpt_note.md",
+      "risks": [
+        "authors and DOI are not verified",
+        "key claims are not extracted",
+        "figure candidates are not verified"
+      ]
+    },
+    {
+      "candidate_id": "F47A",
+      "filename": "chem_papers/47a-palladium-catalyzed-asymmetric-synthesis-of-axially-chiral-allenes-a-synergistic-effect-of-dibenzalacetone-on-high.pdf",
+      "title_draft": "Palladium-catalyzed asymmetric synthesis of axially chiral allenes",
+      "authors_draft": "unknown",
+      "year_draft": "unknown",
+      "journal_draft": "unknown",
+      "doi_draft": "unknown",
+      "role": "representative_method",
+      "verification_status": "verified_draft",
+      "human_verified": false,
+      "needs_human_review": true,
+      "needs_pdf_read_verification": true,
+      "pdf_read_scope": "filename_metadata_or_first_page_only",
+      "upload_status": "not_uploaded",
+      "api_used": false,
+      "trusted_for_scientific_quality": false,
+      "metadata_confidence": "low",
+      "key_claims_draft": [],
+      "figure_notes_path": "inputs/figure_notes/F47A.figure_notes.md",
+      "verified_metadata_path": "inputs/verified_metadata/F47A.metadata.verified_draft.json",
+      "verified_excerpt_path": "inputs/verified_excerpts/F47A.excerpt_note.md",
+      "risks": [
+        "year, journal, authors, and DOI are not verified",
+        "filename appears truncated after 'on high'",
+        "key claims are not extracted"
+      ]
+    },
+    {
+      "candidate_id": "P403",
+      "filename": "chem_papers/pd-catalyzed-asymmetric-allenylation-of-secondary-phosphine-oxides-with-enyne-type-propargylic-carbamates-for-the.pdf",
+      "title_draft": "Pd-Catalyzed Asymmetric Allenylation of Secondary Phosphine Oxides with Enyne-Type Propargylic Carbamates for the Construction of Chiral Allenyl Phosphine Oxides",
+      "authors_draft": "unknown",
+      "year_draft": 2025,
+      "journal_draft": "ACS Catal.",
+      "doi_draft": "unknown",
+      "role": "recent_progress",
+      "verification_status": "verified_draft",
+      "human_verified": false,
+      "needs_human_review": true,
+      "needs_pdf_read_verification": true,
+      "pdf_read_scope": "filename_metadata_or_first_page_only",
+      "upload_status": "not_uploaded",
+      "api_used": false,
+      "trusted_for_scientific_quality": false,
+      "metadata_confidence": "medium",
+      "key_claims_draft": [],
+      "figure_notes_path": "inputs/figure_notes/P403.figure_notes.md",
+      "verified_metadata_path": "inputs/verified_metadata/P403.metadata.verified_draft.json",
+      "verified_excerpt_path": "inputs/verified_excerpts/P403.excerpt_note.md",
+      "risks": [
+        "authors and DOI are not verified",
+        "title tail may need PDF title-page confirmation",
+        "key claims and figures are not extracted"
+      ]
+    }
+  ],
+  "safety": {
+    "network": "not_used",
+    "qwen": "not_used",
+    "mineru_api": "not_used",
+    "bailian": "not_used",
+    "upload": "not_used",
+    "knowledge_base": "not_created",
+    "image_api": "not_used"
+  }
+}

@@ -1,7 +1,7 @@
 {
   "description": "Draft schema for future human-verified key claims. This is a TODO schema, not extracted claims.",
   "type": "object",
-  "required": ["paper_id", "claims", "human_verified"],
+  "required": ["paper_id", "claims", "human_verified", "verification_status", "needs_human_review"],
   "properties": {
     "paper_id": {
       "type": "string"
@@ -21,6 +21,15 @@
     },
     "human_verified": {
       "const": false
+    },
+    "verification_status": {
+      "enum": ["todo", "verified_draft", "needs_human_review"]
+    },
+    "needs_human_review": {
+      "const": true
+    },
+    "pdf_read_scope": {
+      "enum": ["filename_metadata_or_first_page_only", "limited_readonly"]
     }
   }
 }

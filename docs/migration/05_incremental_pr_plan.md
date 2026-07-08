@@ -664,6 +664,58 @@ Next:
 - Only after explicit authorization, Phase 5j-C may read only the approved 3
   PDFs and generate a verified metadata draft that still requires human review.
 
+## PR 14: Clean 3-Paper PDF Verification Draft
+
+目标：
+
+- Use the user-approved Top 3 candidates from Phase 5j-B.
+- Perform a narrow read-only PDF existence and filename/metadata verification.
+- Generate `verified_draft` metadata, excerpt notes, and figure notes.
+- Keep all entries outside final scientific trust until human review.
+
+Implemented Phase 5j-C files:
+
+```text
+scripts/demo/verify_clean_3paper_pdfs.py
+scripts/audit/audit_clean_3paper_dataset.py
+tests/test_clean_3paper_pdf_verification.py
+tests/test_clean_3paper_audit.py
+demo_projects/clean_3paper_allene_review/inputs/selected_papers.verified_draft.json
+demo_projects/clean_3paper_allene_review/inputs/verified_metadata/
+demo_projects/clean_3paper_allene_review/inputs/verified_excerpts/
+demo_projects/clean_3paper_allene_review/inputs/figure_notes/
+docs/demo/clean_3paper_pdf_verification.md
+docs/pr/phase5j_clean_3paper_pdf_verification_pr.md
+```
+
+Gate:
+
+```bash
+make clean-3paper-pdf-verify-check
+```
+
+Top 3 verification status:
+
+- `F3I`: `verified_draft`
+- `F47A`: `verified_draft`
+- `P403`: `verified_draft`
+
+Safety boundary:
+
+- no full `chem_papers` read
+- only approved Top 3 paths are touched
+- no MinerU API
+- no Qwen or Bailian call
+- no upload
+- no knowledge-base creation
+- no image generation
+- all entries remain `human_verified=false`
+
+Next:
+
+- Phase 5j-D: optional manual metadata correction.
+- Phase 5k: Clean 3-paper E2E using this verified-draft package.
+
 ## 风险
 
 - PR 过大导致 review 困难。

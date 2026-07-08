@@ -1,0 +1,18 @@
+{
+  "candidate_id": "F3I",
+  "verification_status": "verified_draft",
+  "human_verified": false,
+  "needs_human_review": true,
+  "pdf_read_scope": "filename_metadata_or_first_page_only",
+  "upload_status": "not_uploaded",
+  "api_used": false,
+  "title_draft": "Allenes in Catalytic Asymmetric Synthesis and Natural Product Syntheses",
+  "authors_draft": "unknown",
+  "year_draft": 2012,
+  "journal_draft": "Angew. Chem. Int. Ed.",
+  "doi_draft": "unknown",
+  "role": "review_background",
+  "claim_status": "not_extracted",
+  "figure_status": "not_extracted",
+  "notes": "Filename confirms strong title/year/journal signal, but citation details and claims still need human PDF review."
+}
