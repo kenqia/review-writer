@@ -716,6 +716,63 @@ Next:
 - Phase 5j-D: optional manual metadata correction.
 - Phase 5k: Clean 3-paper E2E using this verified-draft package.
 
+## PR 15: Clean 3-Paper Bibliographic Metadata Verification
+
+目标：
+
+- Verify bibliographic metadata for the approved Top 3 without making the user
+  act as a chemistry metadata expert.
+- Use Crossref, OpenAlex, and Semantic Scholar only as optional public metadata
+  aids, not as a single source of truth.
+- Record source matches, confidence, missing fields, and conflicts.
+- Keep final scientific trust gated on human review.
+
+Implemented Phase 5j-D files:
+
+```text
+review_writer/metadata_sources/
+scripts/demo/verify_clean_3paper_bibliography.py
+tests/test_clean_3paper_bibliography_verification.py
+demo_projects/clean_3paper_allene_review/inputs/bibliography_verification_summary.json
+demo_projects/clean_3paper_allene_review/inputs/bibliography_verification_summary.md
+docs/demo/clean_3paper_bibliography_verification.md
+docs/pr/phase5j_clean_3paper_bibliography_verification_pr.md
+```
+
+Offline gate:
+
+```bash
+make clean-3paper-biblio-check
+```
+
+Manual public metadata gate:
+
+```bash
+make clean-3paper-biblio-web-check
+```
+
+Current metadata draft:
+
+- `F3I`: `bibliographic_verified_draft`, medium confidence.
+- `F47A`: `bibliographic_verified_draft`, medium confidence.
+- `P403`: `bibliographic_verified_draft`, medium confidence; authors and DOI still need human confirmation.
+
+Safety boundary:
+
+- no full `chem_papers` read
+- no non-Top-3 PDF access
+- no PDF upload
+- no MinerU API
+- no Qwen or Bailian call
+- no knowledge-base creation
+- no image generation
+- all entries remain `human_verified=false`
+
+Next:
+
+- Phase 5j-E: key claims and figure notes extraction from only the Top 3 PDFs.
+- Phase 5k: Clean 3-paper E2E after accepting remaining metadata caveats.
+
 ## 风险
 
 - PR 过大导致 review 困难。

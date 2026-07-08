@@ -42,6 +42,7 @@ def main() -> int:
         test_no_forbidden_content,
         test_safety_markers,
         test_verified_draft_file,
+        test_bibliography_summary_audited,
     ]
     failures: list[str] = []
     for check in checks:
@@ -88,6 +89,17 @@ def test_verified_draft_file(report: dict) -> None:
     payload = json.loads((DATASET_ROOT / "inputs/selected_papers.verified_draft.json").read_text(encoding="utf-8"))
     assert [row["candidate_id"] for row in payload["papers"]] == ["F3I", "F47A", "P403"]
     assert all(row["human_verified"] is False for row in payload["papers"])
+
+
+def test_bibliography_summary_audited(report: dict) -> None:
+    assert report["summary"]["bibliography_summary_exists"] is True
+    assert report["summary"]["phase5k_ready"] in {True, False}
+    summary = json.loads((DATASET_ROOT / "inputs/bibliography_verification_summary.json").read_text(encoding="utf-8"))
+    assert [row["candidate_id"] for row in summary["papers"]] == ["F3I", "F47A", "P403"]
+    assert all(row["human_verified"] is False for row in summary["papers"])
+    assert all(row["needs_human_review"] is True for row in summary["papers"])
+    assert all(row["metadata_confidence"] in {"low", "medium", "high"} for row in summary["papers"])
+    assert all("conflicts" in row for row in summary["papers"])
 
 
 if __name__ == "__main__":

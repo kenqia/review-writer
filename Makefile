@@ -1,4 +1,4 @@
-.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check eval-baseline-check portability-check reality-audit-check clean-3paper-recommend-check clean-3paper-approval-check clean-3paper-pdf-verify-check release-readiness-check
+.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check eval-baseline-check portability-check reality-audit-check clean-3paper-recommend-check clean-3paper-approval-check clean-3paper-pdf-verify-check clean-3paper-biblio-check clean-3paper-biblio-web-check release-readiness-check
 
 PYTHON ?= python3
 REPO_ROOT ?= $(CURDIR)
@@ -139,6 +139,24 @@ clean-3paper-pdf-verify-check:
 		--dataset-root demo_projects/clean_3paper_allene_review \
 		--output-json /tmp/clean_3paper_audit.json \
 		--output-md /tmp/clean_3paper_audit.md \
+		--strict
+
+clean-3paper-biblio-check:
+	$(PYTHON) tests/test_clean_3paper_bibliography_verification.py
+	$(PYTHON) scripts/demo/verify_clean_3paper_bibliography.py \
+		--dataset-root demo_projects/clean_3paper_allene_review \
+		--paper-root chem_papers \
+		--output-json /tmp/clean_3paper_bibliography_verification.json \
+		--output-md /tmp/clean_3paper_bibliography_verification.md \
+		--strict
+
+clean-3paper-biblio-web-check:
+	$(PYTHON) scripts/demo/verify_clean_3paper_bibliography.py \
+		--dataset-root demo_projects/clean_3paper_allene_review \
+		--paper-root chem_papers \
+		--allow-network-metadata \
+		--output-json /tmp/clean_3paper_bibliography_verification_web.json \
+		--output-md /tmp/clean_3paper_bibliography_verification_web.md \
 		--strict
 
 release-readiness-check:

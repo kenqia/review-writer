@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Any
 
 EXPECTED_TOP3 = ["F3I", "F47A", "P403"]
-MAX_TEXT_CHARS = 2500
+MAX_TEXT_CHARS = 10000
+DOI_RE = re.compile(r"^10\.\S+/\S+$", re.I)
 SECRET_PATTERNS = [
     re.compile(r"sk-[A-Za-z0-9]{12,}"),
     re.compile(r"api[_-]?key\s*[:=]\s*[^<\s]+", re.I),
@@ -55,9 +56,11 @@ def parse_args() -> argparse.Namespace:
 def audit_dataset(dataset_root: Path) -> dict[str, Any]:
     inputs = dataset_root / "inputs"
     verified_path = inputs / "selected_papers.verified_draft.json"
+    bibliography_path = inputs / "bibliography_verification_summary.json"
     if not verified_path.exists():
         raise AuditError(f"missing verified draft: {verified_path}")
     payload = load_json(verified_path)
+    bibliography = load_json(bibliography_path) if bibliography_path.exists() else None
     papers = payload.get("papers") or []
     blocking: list[str] = []
     warnings: list[str] = []
@@ -80,6 +83,16 @@ def audit_dataset(dataset_root: Path) -> dict[str, Any]:
             blocking.append(f"{paper_id}: invalid verification_status")
         if row.get("trusted_for_scientific_quality") is not False:
             blocking.append(f"{paper_id}: scientific quality trust must remain false")
+        confidence = row.get("metadata_confidence")
+        if confidence not in {"low", "medium", "high"}:
+            blocking.append(f"{paper_id}: missing or invalid metadata_confidence")
+        if row.get("needs_human_review") is not True:
+            blocking.append(f"{paper_id}: needs_human_review must be true")
+        doi = row.get("doi_draft")
+        if doi not in (None, "", "unknown") and not DOI_RE.match(str(doi)):
+            blocking.append(f"{paper_id}: doi_draft is not a DOI-shaped value")
+        if "source_conflicts" not in row:
+            blocking.append(f"{paper_id}: source_conflicts field is missing")
 
     text_files = list(inputs.glob("verified_metadata/*")) + list(inputs.glob("verified_excerpts/*")) + list(inputs.glob("figure_notes/*"))
     for path in text_files:
@@ -98,6 +111,32 @@ def audit_dataset(dataset_root: Path) -> dict[str, Any]:
         blocking.append("dataset-level trusted_for_scientific_quality must remain false")
     if payload.get("trusted_for_engineering_fixture") is not True:
         warnings.append("dataset is not marked as trusted_for_engineering_fixture")
+    if bibliography is None:
+        blocking.append(f"missing bibliography verification summary: {bibliography_path}")
+    else:
+        bibliography_papers = bibliography.get("papers") or []
+        if [row.get("candidate_id") for row in bibliography_papers] != EXPECTED_TOP3:
+            blocking.append("bibliography verification summary does not contain the expected Top 3")
+        insufficient = [
+            row.get("candidate_id")
+            for row in bibliography_papers
+            if row.get("verification_status") == "insufficient_metadata"
+        ]
+        if insufficient and bibliography.get("summary", {}).get("phase5k_ready") is not False:
+            blocking.append("insufficient metadata must set phase5k_ready=false")
+        for row in bibliography_papers:
+            paper_id = row.get("candidate_id")
+            if row.get("metadata_confidence") not in {"low", "medium", "high"}:
+                blocking.append(f"{paper_id}: bibliography metadata_confidence missing")
+            if row.get("human_verified") is not False:
+                blocking.append(f"{paper_id}: bibliography human_verified must be false")
+            if row.get("needs_human_review") is not True:
+                blocking.append(f"{paper_id}: bibliography needs_human_review must be true")
+            if "conflicts" not in row:
+                blocking.append(f"{paper_id}: bibliography conflicts field missing")
+            doi = row.get("doi_draft")
+            if doi not in (None, "", "unknown") and not DOI_RE.match(str(doi)):
+                blocking.append(f"{paper_id}: bibliography doi_draft is not DOI-shaped")
 
     status = "fail" if blocking else "warn" if warnings else "pass"
     return {
@@ -108,6 +147,11 @@ def audit_dataset(dataset_root: Path) -> dict[str, Any]:
             "human_verified_false_count": sum(1 for row in papers if row.get("human_verified") is False),
             "upload_not_used_count": sum(1 for row in papers if row.get("upload_status") == "not_uploaded"),
             "api_unused_count": sum(1 for row in papers if row.get("api_used") is False),
+            "bibliography_summary_exists": bibliography is not None,
+            "insufficient_metadata_count": (
+                bibliography.get("summary", {}).get("insufficient_metadata_count", 0) if bibliography else None
+            ),
+            "phase5k_ready": bibliography.get("summary", {}).get("phase5k_ready") if bibliography else False,
         },
         "trusted_for_engineering_fixture": payload.get("trusted_for_engineering_fixture") is True,
         "trusted_for_scientific_quality": False,

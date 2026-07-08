@@ -1,0 +1,331 @@
+{
+  "status": "pass",
+  "summary": {
+    "top3": [
+      "F3I",
+      "F47A",
+      "P403"
+    ],
+    "allow_network_metadata": true,
+    "network_metadata": "used",
+    "insufficient_metadata_count": 0,
+    "conflict_count": 2,
+    "phase5k_ready": true,
+    "phase5k_gate_reason": "ready_for_human_review"
+  },
+  "papers": [
+    {
+      "candidate_id": "F3I",
+      "filename": "chem_papers/3i-Angew Chem Int Ed - 2012 - Yu - Allenes in Catalytic Asymmetric Synthesis and Natural Product Syntheses.pdf",
+      "pdf_exists": true,
+      "verified_title_draft": "Allenes in Catalytic Asymmetric Synthesis and Natural Product Syntheses",
+      "authors_draft": [
+        "Shichao Yu",
+        "Shengming Ma"
+      ],
+      "year_draft": 2012,
+      "journal_draft": "Angewandte Chemie International Edition",
+      "doi_draft": "10.1002/anie.201101460",
+      "publication_type_draft": "review_or_background",
+      "source_matches": [
+        {
+          "source_name": "local_verified_draft",
+          "query": "Allenes in Catalytic Asymmetric Synthesis and Natural Product Syntheses",
+          "matched_title": "Allenes in Catalytic Asymmetric Synthesis and Natural Product Syntheses",
+          "authors": [],
+          "year": 2012,
+          "venue": "Angew. Chem. Int. Ed.",
+          "doi": "unknown",
+          "url": "",
+          "confidence": 0.55,
+          "warnings": [
+            "offline seed only; public metadata lookup disabled"
+          ]
+        },
+        {
+          "source_name": "crossref",
+          "query": "Angew Chem Int Ed 2012 Yu Allenes in Catalytic Asymmetric Synthesis and Natural Product Syntheses",
+          "matched_title": "Allenes in Catalytic Asymmetric Synthesis and Natural Product Syntheses",
+          "authors": [
+            "Shichao Yu",
+            "Shengming Ma"
+          ],
+          "year": 2012,
+          "venue": "Angewandte Chemie International Edition",
+          "doi": "10.1002/anie.201101460",
+          "url": "https://doi.org/10.1002/anie.201101460",
+          "confidence": 0.636,
+          "warnings": []
+        },
+        {
+          "source_name": "openalex",
+          "query": "Angew Chem Int Ed 2012 Yu Allenes in Catalytic Asymmetric Synthesis and Natural Product Syntheses",
+          "matched_title": "Allenes in Catalytic Asymmetric Synthesis and Natural Product Syntheses",
+          "authors": [
+            "Shichao Yu",
+            "Shengming Ma"
+          ],
+          "year": 2012,
+          "venue": "Angewandte Chemie International Edition",
+          "doi": "10.1002/anie.201101460",
+          "url": "https://openalex.org/W2140026331",
+          "confidence": 0.636,
+          "warnings": []
+        },
+        {
+          "source_name": "semantic_scholar",
+          "query": "Angew Chem Int Ed 2012 Yu Allenes in Catalytic Asymmetric Synthesis and Natural Product Syntheses",
+          "matched_title": "",
+          "authors": [],
+          "year": null,
+          "venue": "",
+          "doi": "",
+          "url": "",
+          "confidence": 0.0,
+          "warnings": [
+            "network_warning: HTTPError"
+          ]
+        }
+      ],
+      "metadata_confidence": "medium",
+      "conflicts": [],
+      "missing_fields": [],
+      "needs_human_review": true,
+      "human_verified": false,
+      "verification_status": "bibliographic_verified_draft",
+      "upload_status": "not_uploaded",
+      "api_used": false,
+      "trusted_for_scientific_quality": false,
+      "notes": [
+        "Metadata is a draft based on filename/local draft and optional public bibliographic sources.",
+        "No long PDF body text was saved.",
+        "Human review remains required before scientific-quality use."
+      ]
+    },
+    {
+      "candidate_id": "F47A",
+      "filename": "chem_papers/47a-palladium-catalyzed-asymmetric-synthesis-of-axially-chiral-allenes-a-synergistic-effect-of-dibenzalacetone-on-high.pdf",
+      "pdf_exists": true,
+      "verified_title_draft": "Palladium-Catalyzed Asymmetric Synthesis of Axially Chiral Allenes:  A Synergistic Effect of Dibenzalacetone on High Enantioselectivity",
+      "authors_draft": [
+        "Masamichi Ogasawara",
+        "Hisashi Ikeda",
+        "Takashi Nagano",
+        "Tamio Hayashi"
+      ],
+      "year_draft": 2001,
+      "journal_draft": "Journal of the American Chemical Society",
+      "doi_draft": "10.1021/ja005921o",
+      "publication_type_draft": "research_article",
+      "source_matches": [
+        {
+          "source_name": "local_verified_draft",
+          "query": "Palladium-catalyzed asymmetric synthesis of axially chiral allenes",
+          "matched_title": "Palladium-catalyzed asymmetric synthesis of axially chiral allenes",
+          "authors": [],
+          "year": null,
+          "venue": "unknown",
+          "doi": "unknown",
+          "url": "",
+          "confidence": 0.55,
+          "warnings": [
+            "offline seed only; public metadata lookup disabled"
+          ]
+        },
+        {
+          "source_name": "crossref",
+          "query": "Palladium catalyzed asymmetric synthesis of axially chiral allenes a synergistic effect of dibenzalacetone on high",
+          "matched_title": "Palladium-Catalyzed Asymmetric Synthesis of Axially Chiral Allenes:  A Synergistic Effect of Dibenzalacetone on High Enantioselectivity",
+          "authors": [
+            "Masamichi Ogasawara",
+            "Hisashi Ikeda",
+            "Takashi Nagano",
+            "Tamio Hayashi"
+          ],
+          "year": 2001,
+          "venue": "Journal of the American Chemical Society",
+          "doi": "10.1021/ja005921o",
+          "url": "https://doi.org/10.1021/ja005921o",
+          "confidence": 0.917,
+          "warnings": []
+        },
+        {
+          "source_name": "openalex",
+          "query": "Palladium catalyzed asymmetric synthesis of axially chiral allenes a synergistic effect of dibenzalacetone on high",
+          "matched_title": "Palladium-Catalyzed Asymmetric Synthesis of Axially Chiral Allenes:  A Synergistic Effect of Dibenzalacetone on High Enantioselectivity",
+          "authors": [
+            "Masamichi Ogasawara",
+            "Hisashi Ikeda",
+            "Takashi Nagano",
+            "Tamio Hayashi"
+          ],
+          "year": 2001,
+          "venue": "Journal of the American Chemical Society",
+          "doi": "10.1021/ja005921o",
+          "url": "https://openalex.org/W1966392014",
+          "confidence": 0.917,
+          "warnings": []
+        },
+        {
+          "source_name": "semantic_scholar",
+          "query": "Palladium catalyzed asymmetric synthesis of axially chiral allenes a synergistic effect of dibenzalacetone on high",
+          "matched_title": "",
+          "authors": [],
+          "year": null,
+          "venue": "",
+          "doi": "",
+          "url": "",
+          "confidence": 0.0,
+          "warnings": [
+            "network_warning: HTTPError"
+          ]
+        }
+      ],
+      "metadata_confidence": "medium",
+      "conflicts": [
+        {
+          "field": "title",
+          "values": [
+            "Palladium-catalyzed asymmetric synthesis of axially chiral allenes",
+            "Palladium-Catalyzed Asymmetric Synthesis of Axially Chiral Allenes:  A Synergistic Effect of Dibenzalacetone on High Enantioselectivity",
+            "Palladium-Catalyzed Asymmetric Synthesis of Axially Chiral Allenes:  A Synergistic Effect of Dibenzalacetone on High Enantioselectivity"
+          ],
+          "reason": "title similarity below threshold"
+        }
+      ],
+      "missing_fields": [],
+      "needs_human_review": true,
+      "human_verified": false,
+      "verification_status": "bibliographic_verified_draft",
+      "upload_status": "not_uploaded",
+      "api_used": false,
+      "trusted_for_scientific_quality": false,
+      "notes": [
+        "Metadata is a draft based on filename/local draft and optional public bibliographic sources.",
+        "No long PDF body text was saved.",
+        "Human review remains required before scientific-quality use."
+      ]
+    },
+    {
+      "candidate_id": "P403",
+      "filename": "chem_papers/pd-catalyzed-asymmetric-allenylation-of-secondary-phosphine-oxides-with-enyne-type-propargylic-carbamates-for-the.pdf",
+      "pdf_exists": true,
+      "verified_title_draft": "Pd-Catalyzed Asymmetric Allenylation of Secondary Phosphine Oxides with Enyne-Type Propargylic Carbamates for the Construction of Chiral Allenyl Phosphine Oxides",
+      "authors_draft": [],
+      "year_draft": 2025,
+      "journal_draft": "ACS Catal. 2025",
+      "doi_draft": "unknown",
+      "publication_type_draft": "research_article",
+      "source_matches": [
+        {
+          "source_name": "local_verified_draft",
+          "query": "Pd-Catalyzed Asymmetric Allenylation of Secondary Phosphine Oxides with Enyne-Type Propargylic Carbamates for the Construction of Chiral Allenyl Phosphine Oxides",
+          "matched_title": "Pd-Catalyzed Asymmetric Allenylation of Secondary Phosphine Oxides with Enyne-Type Propargylic Carbamates for the Construction of Chiral Allenyl Phosphine Oxides",
+          "authors": [],
+          "year": 2025,
+          "venue": "ACS Catal.",
+          "doi": "unknown",
+          "url": "",
+          "confidence": 0.55,
+          "warnings": [
+            "offline seed only; public metadata lookup disabled"
+          ]
+        },
+        {
+          "source_name": "crossref",
+          "query": "Pd-Catalyzed Asymmetric Allenylation of Secondary Phosphine Oxides with Enyne-Type Propargylic Carbamates for the Construction of Chiral Allenyl Phosphine Oxides",
+          "matched_title": "Pd-Catalyzed Asymmetric Allenylation of Secondary Phosphine Oxides with Enyne-Type Propargylic Carbamates for the Construction of Chiral Allenyl Phosphine Oxides",
+          "authors": [],
+          "year": null,
+          "venue": "",
+          "doi": "10.1021/acscatal.5c05571.s001",
+          "url": "https://doi.org/10.1021/acscatal.5c05571.s001",
+          "confidence": 1.0,
+          "warnings": []
+        },
+        {
+          "source_name": "openalex",
+          "query": "Pd-Catalyzed Asymmetric Allenylation of Secondary Phosphine Oxides with Enyne-Type Propargylic Carbamates for the Construction of Chiral Allenyl Phosphine Oxides",
+          "matched_title": "Pd-Catalyzed Asymmetric Allenylation of Secondary Phosphine Oxides with Enyne-Type Propargylic Carbamates for the Construction of Chiral Allenyl Phosphine Oxides",
+          "authors": [
+            "Yujie Dong",
+            "Nianci Zhang",
+            "Fazhou Yang",
+            "Jinbao Wang",
+            "Bo Wang",
+            "Jun Liu",
+            "Bing Zheng",
+            "Cheng Zhang",
+            "Leijie Zhou",
+            "Hongchao Guo"
+          ],
+          "year": 2025,
+          "venue": "ACS Catalysis",
+          "doi": "10.1021/acscatal.5c05571",
+          "url": "https://openalex.org/W4414697023",
+          "confidence": 1.0,
+          "warnings": []
+        },
+        {
+          "source_name": "semantic_scholar",
+          "query": "Pd-Catalyzed Asymmetric Allenylation of Secondary Phosphine Oxides with Enyne-Type Propargylic Carbamates for the Construction of Chiral Allenyl Phosphine Oxides",
+          "matched_title": "",
+          "authors": [],
+          "year": null,
+          "venue": "",
+          "doi": "",
+          "url": "",
+          "confidence": 0.0,
+          "warnings": [
+            "network_warning: HTTPError"
+          ]
+        }
+      ],
+      "metadata_confidence": "medium",
+      "conflicts": [
+        {
+          "field": "doi",
+          "values": [
+            "10.1021/acscatal.5c05571",
+            "10.1021/acscatal.5c05571.s001"
+          ],
+          "reason": "metadata sources disagree"
+        },
+        {
+          "field": "doi",
+          "values": [
+            "10.1021/acscatal.5c05571.s001"
+          ],
+          "reason": "matched DOI appears to identify supporting information"
+        }
+      ],
+      "missing_fields": [
+        "authors",
+        "doi"
+      ],
+      "needs_human_review": true,
+      "human_verified": false,
+      "verification_status": "bibliographic_verified_draft",
+      "upload_status": "not_uploaded",
+      "api_used": false,
+      "trusted_for_scientific_quality": false,
+      "notes": [
+        "Metadata is a draft based on filename/local draft and optional public bibliographic sources.",
+        "No long PDF body text was saved.",
+        "Human review remains required before scientific-quality use."
+      ]
+    }
+  ],
+  "errors": [],
+  "warnings": [],
+  "safety": {
+    "network": "used_for_public_metadata_only",
+    "pdf_body_read": "not_used",
+    "pdf_upload": "not_used",
+    "qwen": "not_used",
+    "mineru_api": "not_used",
+    "bailian": "not_used",
+    "knowledge_base": "not_created",
+    "image_api": "not_used"
+  }
+}
