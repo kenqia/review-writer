@@ -17,6 +17,8 @@ make clean-3paper-eval-check
 make dashboard-clean-3paper-check
 make bailian-rag-preflight-check
 make rag-local-retrieval-check
+make bailian-small-kb-payload-check
+make bailian-small-kb-pilot-dry-run
 ```
 
 ## Bailian RAG No-upload Preflight
@@ -38,3 +40,5 @@ make rag-local-retrieval-check
 ```
 
 This check uses token matching only. It does not call Bailian, create a knowledge base, call Qwen, upload files, or mark the clean 3-paper draft as scientifically verified.
+
+Phase 6c adds dry-run gates for a possible Bailian small-KB pilot. Default make targets only build a sanitized `/tmp` payload and verify the pilot wrapper; they do not upload data or create a knowledge base.

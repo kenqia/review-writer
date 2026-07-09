@@ -983,6 +983,55 @@ Next:
 
 - Phase 6c: Bailian small KB pilot only after the exact authorization `allow bailian small kb pilot`.
 
+## PR 20: Bailian Small KB Pilot Wrapper
+
+目标：
+
+- 生成只包含允许字段的 small KB sanitized payload。
+- 默认 dry-run，不联网、不上传、不创建知识库。
+- 只有同时传 `--allow-network` 和 `--allow-upload` 才进入真实 pilot wrapper。
+- 如果百炼 KB API 合同未实现，安全阻塞为 `blocked_manual_console_required`，不乱传文件。
+
+Implemented Phase 6c files:
+
+```text
+scripts/rag/build_bailian_small_kb_payload.py
+scripts/rag/bailian_small_kb_pilot.py
+tests/test_bailian_small_kb_payload.py
+tests/test_bailian_small_kb_pilot_safety.py
+docs/rag/bailian_small_kb_pilot_runbook.md
+docs/pr/phase6c_bailian_small_kb_pilot_pr.md
+```
+
+Gates:
+
+```bash
+make bailian-small-kb-payload-check
+make bailian-small-kb-pilot-dry-run
+```
+
+Current result:
+
+- payload check: pass
+- sanitized records: 3
+- dry-run: pass
+- real-mode wrapper: `blocked_manual_console_required`
+- error type: `missing_dependency_or_api_contract`
+- real upload: not attempted
+- KB id: not created and not written to repo
+
+Safety boundary:
+
+- no PDF/raw image/full markdown/local path/secret in payload
+- no default network call
+- no default upload
+- no default knowledge-base creation
+- `trusted_for_scientific_quality=false`
+
+Next:
+
+- Phase 6d: retrieval QA after an actual small KB exists, either via reviewed API contract or manual console run.
+
 ## 风险
 
 - PR 过大导致 review 困难。
