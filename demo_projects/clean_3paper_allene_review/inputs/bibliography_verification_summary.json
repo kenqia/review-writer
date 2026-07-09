@@ -6,8 +6,8 @@
       "F47A",
       "P403"
     ],
-    "allow_network_metadata": true,
-    "network_metadata": "used",
+    "allow_network_metadata": false,
+    "network_metadata": "not_used",
     "insufficient_metadata_count": 0,
     "conflict_count": 2,
     "phase5k_ready": true,
@@ -319,7 +319,7 @@
   "errors": [],
   "warnings": [],
   "safety": {
-    "network": "used_for_public_metadata_only",
+    "network": "not_used",
     "pdf_body_read": "not_used",
     "pdf_upload": "not_used",
     "qwen": "not_used",

@@ -773,6 +773,57 @@ Next:
 - Phase 5j-E: key claims and figure notes extraction from only the Top 3 PDFs.
 - Phase 5k: Clean 3-paper E2E after accepting remaining metadata caveats.
 
+## PR 16: Clean 3-Paper Claims and Figure Notes Draft
+
+目标：
+
+- Generate a small, human-reviewable claim and figure-note draft package for the
+  approved Top 3 papers.
+- Avoid pretending metadata/title cues are final scientific evidence.
+- Keep every claim and figure note gated by human review.
+- Prepare inputs for a later clean 3-paper E2E run.
+
+Implemented Phase 5j-E files:
+
+```text
+scripts/demo/extract_clean_3paper_claims_figures.py
+tests/test_clean_3paper_claims_figures.py
+demo_projects/clean_3paper_allene_review/expected/expected_claims.draft.json
+demo_projects/clean_3paper_allene_review/expected/expected_figures.draft.json
+docs/demo/clean_3paper_claims_figures_extraction.md
+docs/pr/phase5j_clean_3paper_claims_figures_pr.md
+```
+
+Gate:
+
+```bash
+make clean-3paper-claims-check
+```
+
+Current draft counts:
+
+- `F3I`: 3 claim drafts, 1 figure note draft.
+- `F47A`: 2 claim drafts, 1 figure note draft.
+- `P403`: 2 claim drafts, 1 figure note draft.
+
+Safety boundary:
+
+- no full `chem_papers` read
+- only approved Top 3 PDF paths are touched
+- no long PDF body text saved
+- no MinerU API
+- no Qwen or Bailian call
+- no upload
+- no knowledge-base creation
+- no image generation
+- all claims and figure notes remain `human_verified=false`
+- all claims and figure notes remain `needs_human_review=true`
+
+Next:
+
+- Phase 5j-F: user review / accept metadata and claims draft.
+- Phase 5k: Clean 3-paper E2E.
+
 ## 风险
 
 - PR 过大导致 review 困难。

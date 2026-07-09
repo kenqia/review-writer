@@ -43,6 +43,7 @@ def main() -> int:
         test_safety_markers,
         test_verified_draft_file,
         test_bibliography_summary_audited,
+        test_claims_and_figures_drafts_audited,
     ]
     failures: list[str] = []
     for check in checks:
@@ -100,6 +101,21 @@ def test_bibliography_summary_audited(report: dict) -> None:
     assert all(row["needs_human_review"] is True for row in summary["papers"])
     assert all(row["metadata_confidence"] in {"low", "medium", "high"} for row in summary["papers"])
     assert all("conflicts" in row for row in summary["papers"])
+
+
+def test_claims_and_figures_drafts_audited(report: dict) -> None:
+    assert report["summary"]["claims_draft_exists"] is True
+    assert report["summary"]["figures_draft_exists"] is True
+    assert report["summary"]["claim_count"] >= 6
+    assert report["summary"]["figure_note_count"] == 3
+    claims = json.loads((DATASET_ROOT / "expected/expected_claims.draft.json").read_text(encoding="utf-8"))
+    figures = json.loads((DATASET_ROOT / "expected/expected_figures.draft.json").read_text(encoding="utf-8"))
+    assert claims["trusted_for_scientific_quality"] is False
+    assert figures["trusted_for_scientific_quality"] is False
+    assert all(item["human_verified"] is False for item in claims["claims"])
+    assert all(item["needs_human_review"] is True for item in claims["claims"])
+    assert all(item["human_verified"] is False for item in figures["figure_notes"])
+    assert all(item["needs_human_review"] is True for item in figures["figure_notes"])
 
 
 if __name__ == "__main__":

@@ -57,10 +57,14 @@ def audit_dataset(dataset_root: Path) -> dict[str, Any]:
     inputs = dataset_root / "inputs"
     verified_path = inputs / "selected_papers.verified_draft.json"
     bibliography_path = inputs / "bibliography_verification_summary.json"
+    claims_path = dataset_root / "expected" / "expected_claims.draft.json"
+    figures_path = dataset_root / "expected" / "expected_figures.draft.json"
     if not verified_path.exists():
         raise AuditError(f"missing verified draft: {verified_path}")
     payload = load_json(verified_path)
     bibliography = load_json(bibliography_path) if bibliography_path.exists() else None
+    claims_payload = load_json(claims_path) if claims_path.exists() else None
+    figures_payload = load_json(figures_path) if figures_path.exists() else None
     papers = payload.get("papers") or []
     blocking: list[str] = []
     warnings: list[str] = []
@@ -94,7 +98,13 @@ def audit_dataset(dataset_root: Path) -> dict[str, Any]:
         if "source_conflicts" not in row:
             blocking.append(f"{paper_id}: source_conflicts field is missing")
 
-    text_files = list(inputs.glob("verified_metadata/*")) + list(inputs.glob("verified_excerpts/*")) + list(inputs.glob("figure_notes/*"))
+    text_files = (
+        list(inputs.glob("verified_metadata/*"))
+        + list(inputs.glob("verified_excerpts/*"))
+        + list(inputs.glob("figure_notes/*"))
+        + ([claims_path] if claims_path.exists() else [])
+        + ([figures_path] if figures_path.exists() else [])
+    )
     for path in text_files:
         if path.suffix.lower() in RAW_IMAGE_SUFFIXES:
             blocking.append(f"raw image file found in draft inputs: {path}")
@@ -137,6 +147,14 @@ def audit_dataset(dataset_root: Path) -> dict[str, Any]:
             doi = row.get("doi_draft")
             if doi not in (None, "", "unknown") and not DOI_RE.match(str(doi)):
                 blocking.append(f"{paper_id}: bibliography doi_draft is not DOI-shaped")
+    if claims_payload is None:
+        blocking.append(f"missing claims draft: {claims_path}")
+    else:
+        audit_claims(claims_payload, blocking)
+    if figures_payload is None:
+        blocking.append(f"missing figure notes draft: {figures_path}")
+    else:
+        audit_figures(figures_payload, blocking)
 
     status = "fail" if blocking else "warn" if warnings else "pass"
     return {
@@ -152,6 +170,10 @@ def audit_dataset(dataset_root: Path) -> dict[str, Any]:
                 bibliography.get("summary", {}).get("insufficient_metadata_count", 0) if bibliography else None
             ),
             "phase5k_ready": bibliography.get("summary", {}).get("phase5k_ready") if bibliography else False,
+            "claims_draft_exists": claims_payload is not None,
+            "figures_draft_exists": figures_payload is not None,
+            "claim_count": len(claims_payload.get("claims", [])) if claims_payload else None,
+            "figure_note_count": len(figures_payload.get("figure_notes", [])) if figures_payload else None,
         },
         "trusted_for_engineering_fixture": payload.get("trusted_for_engineering_fixture") is True,
         "trusted_for_scientific_quality": False,
@@ -168,6 +190,58 @@ def audit_dataset(dataset_root: Path) -> dict[str, Any]:
             "image_api": "not_used",
         },
     }
+
+
+def audit_claims(payload: dict[str, Any], blocking: list[str]) -> None:
+    claims = payload.get("claims") or []
+    if payload.get("trusted_for_scientific_quality") is not False:
+        blocking.append("claims draft must not be trusted_for_scientific_quality")
+    counts = count_by_paper(claims)
+    for paper_id in EXPECTED_TOP3:
+        count = counts.get(paper_id, 0)
+        if count > 4:
+            blocking.append(f"{paper_id}: too many claim drafts ({count})")
+    for item in claims:
+        claim_id = item.get("claim_id", "unknown")
+        if item.get("paper_id") not in EXPECTED_TOP3:
+            blocking.append(f"{claim_id}: unexpected paper_id")
+        if item.get("human_verified") is not False:
+            blocking.append(f"{claim_id}: human_verified must be false")
+        if item.get("needs_human_review") is not True:
+            blocking.append(f"{claim_id}: needs_human_review must be true")
+        if item.get("confidence") not in {"low", "medium", "high"}:
+            blocking.append(f"{claim_id}: invalid confidence")
+        if len(str(item.get("claim_text_draft") or "")) > 700:
+            blocking.append(f"{claim_id}: claim_text_draft is too long")
+
+
+def audit_figures(payload: dict[str, Any], blocking: list[str]) -> None:
+    notes = payload.get("figure_notes") or []
+    if payload.get("trusted_for_scientific_quality") is not False:
+        blocking.append("figure notes draft must not be trusted_for_scientific_quality")
+    counts = count_by_paper(notes)
+    for paper_id in EXPECTED_TOP3:
+        count = counts.get(paper_id, 0)
+        if count > 3:
+            blocking.append(f"{paper_id}: too many figure note drafts ({count})")
+    for item in notes:
+        note_id = item.get("figure_note_id", "unknown")
+        if item.get("paper_id") not in EXPECTED_TOP3:
+            blocking.append(f"{note_id}: unexpected paper_id")
+        if item.get("human_verified") is not False:
+            blocking.append(f"{note_id}: human_verified must be false")
+        if item.get("needs_human_review") is not True:
+            blocking.append(f"{note_id}: needs_human_review must be true")
+        if len(str(item.get("note_draft") or "")) > 700:
+            blocking.append(f"{note_id}: note_draft is too long")
+
+
+def count_by_paper(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        paper_id = str(row.get("paper_id") or "")
+        counts[paper_id] = counts.get(paper_id, 0) + 1
+    return counts
 
 
 def load_json(path: Path) -> Any:

@@ -1,7 +1,7 @@
 # Clean 3-Paper Bibliography Verification
 
 Status: `pass`
-Network metadata: `used`
+Network metadata: `not_used`
 Phase 5k ready: `True`
 
 | candidate | title draft | year | journal | DOI | confidence | status |
