@@ -1,0 +1,17 @@
+{
+  "minimum_score": 90,
+  "required_metrics": [
+    "workflow_completeness",
+    "artifact_completeness",
+    "bibliographic_completeness",
+    "claim_traceability",
+    "figure_note_integrity",
+    "warning_visibility",
+    "prompt_leakage_absence",
+    "safety_boundary",
+    "human_review_flags"
+  ],
+  "required_metric_statuses": ["pass"],
+  "trusted_for_scientific_quality": false,
+  "needs_human_review": true
+}

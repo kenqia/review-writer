@@ -824,6 +824,64 @@ Next:
 - Phase 5j-F: user review / accept metadata and claims draft.
 - Phase 5k: Clean 3-paper E2E.
 
+## PR 17: Clean 3-Paper Vertical Slice E2E
+
+目标：
+
+- Move from real-lite engineering proof to a curated clean 3-paper vertical
+  slice.
+- Use only the approved Top 3 draft package from Phase 5j-A/B/C/D/E.
+- Generate a complete offline run with checkpoints, quality report, eval,
+  dashboard payload, export skeleton, and user-facing review pack.
+- Keep scientific trust gated on human acceptance.
+
+Implemented Phase 5k files:
+
+```text
+scripts/demo/run_clean_3paper_e2e.py
+tests/test_clean_3paper_e2e_workflow.py
+scripts/eval/run_clean_3paper_eval.py
+tests/test_clean_3paper_eval.py
+tests/test_dashboard_clean_3paper_payload.py
+evals/baselines/clean_3paper_v1.yaml
+evals/fixtures/clean_3paper_expected_metrics.json
+docs/demo/clean_3paper_e2e_runbook.md
+docs/eval/clean_3paper_eval_baseline.md
+docs/pr/phase5k_clean_3paper_vertical_slice_pr.md
+```
+
+Gates:
+
+```bash
+make clean-3paper-e2e-check
+make clean-3paper-eval-check
+make dashboard-clean-3paper-check
+```
+
+Current result:
+
+- clean E2E: pass
+- clean eval score: 100
+- dashboard QA: pass
+- quality report: warn because metadata warnings remain visible
+
+Safety boundary:
+
+- no full `chem_papers` read
+- no long PDF body text saved
+- no MinerU API
+- no Qwen or Bailian call
+- no upload
+- no knowledge-base creation
+- no image generation
+- all entries remain `human_verified=false`
+- `trusted_for_scientific_quality=false`
+
+Next:
+
+- Phase 5l: user-facing review pack and manual acceptance.
+- Phase 6a: Bailian RAG no-upload preflight.
+
 ## 风险
 
 - PR 过大导致 review 困难。

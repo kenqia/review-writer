@@ -1,0 +1,29 @@
+{
+  "paper_id": "F47A",
+  "claims": [
+    {
+      "claim_id": "F47A-C1",
+      "paper_id": "F47A",
+      "claim_text_draft": "The paper is a representative method candidate for palladium-catalyzed asymmetric synthesis of axially chiral allenes, based on the verified draft title 'Palladium-Catalyzed Asymmetric Synthesis of Axially Chiral Allenes:  A Synergistic Effect of Dibenzalacetone on High Enantioselectivity'.",
+      "support_type": "method",
+      "evidence_source": "bibliographic_metadata",
+      "confidence": "medium",
+      "needs_human_review": true,
+      "human_verified": false
+    },
+    {
+      "claim_id": "F47A-C2",
+      "paper_id": "F47A",
+      "claim_text_draft": "The title indicates a dibenzalacetone-related effect on enantioselectivity; the detailed mechanistic or optimization claim still needs manual PDF extraction.",
+      "support_type": "method",
+      "evidence_source": "needs_manual_extraction",
+      "confidence": "low",
+      "needs_human_review": true,
+      "human_verified": false
+    }
+  ],
+  "verification_status": "clean_draft",
+  "human_verified": false,
+  "needs_human_review": true,
+  "trusted_for_scientific_quality": false
+}

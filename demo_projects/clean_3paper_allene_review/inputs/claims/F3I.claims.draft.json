@@ -1,0 +1,39 @@
+{
+  "paper_id": "F3I",
+  "claims": [
+    {
+      "claim_id": "F3I-C1",
+      "paper_id": "F3I",
+      "claim_text_draft": "The paper can serve as background for allene-centered catalytic asymmetric synthesis because its verified draft title is 'Allenes in Catalytic Asymmetric Synthesis and Natural Product Syntheses'.",
+      "support_type": "background",
+      "evidence_source": "bibliographic_metadata",
+      "confidence": "medium",
+      "needs_human_review": true,
+      "human_verified": false
+    },
+    {
+      "claim_id": "F3I-C2",
+      "paper_id": "F3I",
+      "claim_text_draft": "The title also signals relevance to natural product synthesis context, but specific examples still require manual extraction from the PDF.",
+      "support_type": "background",
+      "evidence_source": "needs_manual_extraction",
+      "confidence": "low",
+      "needs_human_review": true,
+      "human_verified": false
+    },
+    {
+      "claim_id": "F3I-C3",
+      "paper_id": "F3I",
+      "claim_text_draft": "The publication type draft marks this item as review/background rather than a single-method evidence source.",
+      "support_type": "background",
+      "evidence_source": "bibliographic_metadata",
+      "confidence": "medium",
+      "needs_human_review": true,
+      "human_verified": false
+    }
+  ],
+  "verification_status": "clean_draft",
+  "human_verified": false,
+  "needs_human_review": true,
+  "trusted_for_scientific_quality": false
+}

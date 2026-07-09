@@ -691,6 +691,7 @@ def project_final_payload(review_root: Path, project_id: str) -> dict[str, Any]:
         "final_audit_report_md": read_text_if_exists(stage / "final_audit_report.md"),
         "quality_report_md": read_text_if_exists(stage / "quality_report.md"),
         "quality_report": read_json_if_exists(stage / "quality_report.json"),
+        "clean_3paper_review_pack": read_text_if_exists(stage / "clean_3paper_review_pack.md"),
         "checkpoint_log": read_json_if_exists(project / "checkpoint_log.json"),
         "final_audit_report": read_json_if_exists(stage / "final_audit_report.json"),
         "release_report_md": read_text_if_exists(stage / "release_report.md"),
