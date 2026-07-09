@@ -92,6 +92,8 @@ def run_preflight(clean_root: Path, config_path: Path) -> dict[str, Any]:
         "upload_status": "not_uploaded",
         "api_used": False,
         "knowledge_base_created": False,
+        "trusted_for_scientific_quality": False,
+        "needs_human_review": True,
         "items": manifest_items,
         "safety": {
             "network": "not_used",
@@ -363,4 +365,3 @@ def write_markdown(path: Path, report: dict[str, Any]) -> None:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

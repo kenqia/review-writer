@@ -1,49 +1,62 @@
 {
   "fixture_id": "clean_3paper_allene_rag_expected_questions_v1",
-  "status": "draft_for_no_upload_preflight",
+  "status": "draft_for_local_retrieval_baseline",
   "questions": [
     {
       "question_id": "RAG-Q001",
-      "query": "Which clean draft paper should be consulted for the broad allene-based chiral ligand framing?",
+      "query": "Which clean draft paper should be consulted for review background on allene catalytic asymmetric synthesis and natural product syntheses?",
       "expected_paper_ids": ["F3I"],
       "expected_reason": "F3I is the designated overview/framing paper in the clean draft pack.",
       "answer_must_cite": true
     },
     {
       "question_id": "RAG-Q002",
-      "query": "Which paper is expected to support discussion of catalytic application details?",
+      "query": "Which paper supports palladium-catalyzed asymmetric synthesis of axially chiral allenes with dibenzalacetone and high enantioselectivity?",
       "expected_paper_ids": ["F47A"],
       "expected_reason": "F47A carries the method/application role in the clean draft data.",
       "answer_must_cite": true
     },
     {
       "question_id": "RAG-Q003",
-      "query": "Which selected paper has the strongest metadata warning and must be handled conservatively?",
+      "query": "Which paper discusses secondary phosphine oxide asymmetric allenylation with enyne-type propargylic carbamates?",
       "expected_paper_ids": ["P403"],
-      "expected_reason": "P403 retains missing metadata/source-warning notes and is not trusted for scientific quality.",
+      "expected_reason": "P403 is the secondary phosphine oxide allenylation clean draft record.",
       "answer_must_cite": true
     },
     {
       "question_id": "RAG-Q004",
-      "query": "Which papers should be cited when answering a comparison question across the whole clean draft pack?",
-      "expected_paper_ids": ["F3I", "F47A", "P403"],
-      "expected_reason": "A cross-paper answer should retrieve all three clean draft records.",
+      "query": "Which selected paper represents recent progress in Pd-catalyzed asymmetric allenylation chemistry?",
+      "expected_paper_ids": ["P403"],
+      "expected_reason": "P403 has the recent_progress role and Pd-catalyzed allenylation title signal.",
       "answer_must_cite": true
     },
     {
       "question_id": "RAG-Q005",
-      "query": "Which records are safe for engineering RAG preflight but not final scientific claims?",
-      "expected_paper_ids": ["F3I", "F47A", "P403"],
-      "expected_reason": "All records preserve needs_human_review=true and trusted_for_scientific_quality=false.",
+      "query": "Which record has useful figure or scheme evidence for a reaction scheme involving secondary phosphine oxides?",
+      "expected_paper_ids": ["P403"],
+      "expected_reason": "P403 has the figure note about a reaction scheme for secondary phosphine oxides.",
       "answer_must_cite": true
     },
     {
       "question_id": "RAG-Q006",
-      "query": "Which retrieved item should warn the reviewer before using bibliographic details?",
+      "query": "Which papers should be compared for broad review framing versus palladium axially chiral allene method detail?",
+      "expected_paper_ids": ["F3I", "F47A"],
+      "expected_reason": "F3I covers the broad framing and F47A covers a representative palladium method.",
+      "answer_must_cite": true
+    },
+    {
+      "question_id": "RAG-Q007",
+      "query": "Which item should be treated as a limitation or human-review warning before relying on its metadata?",
       "expected_paper_ids": ["P403"],
-      "expected_reason": "P403 is intentionally kept as a cautionary metadata case.",
+      "expected_reason": "P403 retains source and metadata warnings for human review.",
+      "answer_must_cite": true
+    },
+    {
+      "question_id": "RAG-Q008",
+      "query": "Which retrieved item has a DOI or bibliographic caveat with missing authors or DOI warning?",
+      "expected_paper_ids": ["P403"],
+      "expected_reason": "P403 preserves the DOI/authors caveat in the no-upload manifest warning.",
       "answer_must_cite": true
     }
   ]
 }
-

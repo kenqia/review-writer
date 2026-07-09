@@ -16,6 +16,7 @@ make clean-3paper-e2e-check
 make clean-3paper-eval-check
 make dashboard-clean-3paper-check
 make bailian-rag-preflight-check
+make rag-local-retrieval-check
 ```
 
 ## Bailian RAG No-upload Preflight
@@ -30,3 +31,10 @@ make bailian-rag-preflight-check
 
 The generated manifest is written to `/tmp/bailian_no_upload_corpus_manifest.json` and is intentionally not committed. A real Bailian pilot remains blocked until explicit user authorization in a later phase.
 
+Phase 6b adds an offline local retrieval sanity check over that manifest:
+
+```bash
+make rag-local-retrieval-check
+```
+
+This check uses token matching only. It does not call Bailian, create a knowledge base, call Qwen, upload files, or mark the clean 3-paper draft as scientifically verified.

@@ -935,6 +935,54 @@ Next:
 - Phase 6b: optional small Bailian KB pilot only after explicit user authorization.
 - Phase 6c: retrieval-answer eval with citation checks, still gated by data policy.
 
+## PR 19: Local RAG Retrieval Baseline
+
+目标：
+
+- 在任何百炼 KB pilot 前，先用本地简单检索验证 no-upload corpus 是否能找回预期 paper。
+- 使用 clean 3-paper manifest 和 RAG expected questions。
+- 输出 recall@1、recall@3、citation coverage、missed questions。
+- 保持 offline-first，不上传、不建库、不调用 Qwen/百炼/MinerU。
+
+Implemented Phase 6b files:
+
+```text
+scripts/rag/local_retrieval_baseline.py
+tests/test_local_retrieval_baseline.py
+evals/baselines/rag_local_retrieval_v1.yaml
+evals/fixtures/rag_expected_metrics.json
+docs/rag/local_retrieval_baseline.md
+docs/pr/phase6b_local_retrieval_baseline_pr.md
+```
+
+Gate:
+
+```bash
+make rag-local-retrieval-check
+```
+
+Current result:
+
+- local retrieval status: pass
+- recall@1: 0.8125
+- recall@3: 1.0
+- citation coverage: 1.0
+- missed questions: none
+- recommendation: proceed_to_bailian_pilot
+
+Safety boundary:
+
+- no network
+- no Qwen, Bailian, MinerU, or image API call
+- no upload
+- no knowledge-base creation
+- no PDF read
+- `trusted_for_scientific_quality=false`
+
+Next:
+
+- Phase 6c: Bailian small KB pilot only after the exact authorization `allow bailian small kb pilot`.
+
 ## 风险
 
 - PR 过大导致 review 困难。

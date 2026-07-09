@@ -1,4 +1,4 @@
-.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check eval-baseline-check portability-check reality-audit-check clean-3paper-recommend-check clean-3paper-approval-check clean-3paper-pdf-verify-check clean-3paper-biblio-check clean-3paper-biblio-web-check clean-3paper-claims-check clean-3paper-e2e-check clean-3paper-eval-check dashboard-clean-3paper-check bailian-rag-preflight-check release-readiness-check
+.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check eval-baseline-check portability-check reality-audit-check clean-3paper-recommend-check clean-3paper-approval-check clean-3paper-pdf-verify-check clean-3paper-biblio-check clean-3paper-biblio-web-check clean-3paper-claims-check clean-3paper-e2e-check clean-3paper-eval-check dashboard-clean-3paper-check bailian-rag-preflight-check rag-local-retrieval-check release-readiness-check
 
 PYTHON ?= python3
 REPO_ROOT ?= $(CURDIR)
@@ -201,6 +201,15 @@ bailian-rag-preflight-check:
 		--config rag/bailian/preflight_config.example.yaml \
 		--output-json /tmp/bailian_rag_preflight.json \
 		--output-md /tmp/bailian_rag_preflight.md \
+		--strict
+
+rag-local-retrieval-check:
+	$(PYTHON) tests/test_local_retrieval_baseline.py
+	$(PYTHON) scripts/rag/local_retrieval_baseline.py \
+		--manifest /tmp/bailian_no_upload_corpus_manifest.json \
+		--questions evals/fixtures/rag_expected_questions.json \
+		--output-json /tmp/local_retrieval_baseline_report.json \
+		--output-md /tmp/local_retrieval_baseline_report.md \
 		--strict
 
 release-readiness-check:

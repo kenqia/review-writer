@@ -61,3 +61,13 @@ make bailian-rag-preflight-check
 
 Phase 6b may run a small Bailian knowledge-base pilot only after explicit user authorization. It should still start with a single tiny corpus and a rollback/cleanup plan.
 
+## Phase 6b Local Baseline
+
+Before any Bailian KB pilot, run:
+
+```bash
+make rag-local-retrieval-check
+```
+
+This local baseline checks whether the no-upload manifest can answer expected retrieval questions using simple token matching. Passing this check is only a sanity signal; it does not prove Bailian retrieval quality or scientific correctness.
+
