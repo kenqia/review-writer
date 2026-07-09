@@ -1079,6 +1079,46 @@ Next:
 
 - Real SDK pilot only after exact authorization: `allow official bailian sdk pilot`.
 
+## PR 22: Bailian SDK Environment Bridge
+
+目标：
+
+- 解释为什么 Codex 非交互 shell 看不到只写在 `~/.zshrc` 的云环境变量。
+- 明确不建议把 AccessKey 移到 `~/.zshenv`。
+- 增加官方 SDK/env SET-MISSING 检查脚本。
+- 增加默认非 strict gate，避免普通贡献者必须有阿里云 key。
+- 记录本机 `zsh -ic` manual bridge 可看到官方 KB env。
+
+Implemented Phase 6c-ter files:
+
+```text
+scripts/rag/check_bailian_sdk_env.py
+tests/test_bailian_sdk_env_check.py
+docs/rag/bailian_sdk_environment.md
+docs/pr/phase6c_ter_bailian_sdk_environment_pr.md
+```
+
+Gates:
+
+```bash
+make bailian-sdk-env-check
+make bailian-sdk-env-strict-check
+```
+
+Current result:
+
+- default env check: pass/warn and returns 0
+- strict env check: may return nonzero when SDK/env missing
+- current Codex shell: official SDK/env missing
+- `zsh -ic` manual bridge: official KB env SET
+- no key values printed
+- no API call, upload, or KB creation
+
+Next:
+
+- User may create isolated conda env and install official SDK.
+- Real SDK pilot still waits for exact authorization: `allow official bailian sdk pilot`.
+
 ## 风险
 
 - PR 过大导致 review 困难。
