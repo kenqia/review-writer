@@ -4,6 +4,7 @@ import hashlib
 import importlib
 import json
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +32,11 @@ OFFICIAL_STEPS = [
     "GetIndexJobStatus",
     "Retrieve",
 ]
+SENSITIVE_RE = re.compile(
+    r"(LTAI[A-Za-z0-9]+|sk-[A-Za-z0-9_-]+|AKIA[A-Za-z0-9]+|"
+    r"(?i:access[_-]?key|secret|token|authorization|x-bailian-extra|signature)"
+    r"\s*[:=]\s*['\"]?[^'\"\\s,}]+)"
+)
 
 
 @dataclass(frozen=True)
@@ -239,6 +245,109 @@ class BailianOfficialClient:
         client.delete_index_with_options(workspace_id, request, {}, self._runtime_options())
         return {"status": "delete_requested", "index_id": index_id}
 
+    def run_lease_probe(
+        self,
+        *,
+        payload_md: Path,
+        allow_network: bool,
+        use_official_sdk: bool,
+    ) -> dict[str, Any]:
+        base = {
+            "provider_name": self.provider_name,
+            "region": os.environ.get("BAILIAN_REGION") or self.config.region,
+            "endpoint": self.config.endpoint,
+            "operation_name": "ApplyFileUploadLease",
+            "first_failed_phase": None,
+            "dependency_presence": self.dependency_presence(),
+            "env_presence": self.env_presence(),
+            "payload_md": str(payload_md),
+            "file_name": payload_md.name,
+            "file_size": get_file_size(payload_md) if payload_md.exists() else 0,
+            "md5_prefix": calculate_md5(payload_md)[:8] if payload_md.exists() else None,
+            "lease_obtained": False,
+            "lease_id_present": False,
+            "upload_url_present": False,
+            "headers_present": False,
+            "network_attempted": False,
+            "upload_attempted": False,
+            "knowledge_base_created": False,
+            "safe_error": None,
+            "recommended_fix": None,
+        }
+        if not allow_network or not use_official_sdk:
+            return {
+                **base,
+                "status": "dry_run",
+                "error_type": None,
+                "summary": "lease probe dry-run only; no network call was made",
+            }
+        readiness = self._readiness_error(base)
+        if readiness:
+            return {
+                **readiness,
+                "operation_name": "ApplyFileUploadLease",
+                "first_failed_phase": "readiness",
+                "recommended_fix": recommended_fix(readiness.get("error_type")),
+            }
+        if payload_md.resolve() != OFFICIAL_UPLOAD_MD.resolve():
+            return {
+                **base,
+                "status": "fail",
+                "error_type": "upload_rejected",
+                "summary": "lease probe only allows /tmp/bailian_small_kb_upload_payload.md",
+                "first_failed_phase": "payload_guard",
+                "recommended_fix": recommended_fix("upload_rejected"),
+            }
+        if not payload_md.exists():
+            return {
+                **base,
+                "status": "fail",
+                "error_type": "upload_rejected",
+                "summary": "lease probe payload markdown is missing",
+                "first_failed_phase": "payload_guard",
+                "recommended_fix": recommended_fix("upload_rejected"),
+            }
+        phase = "create_client"
+        try:
+            client = self.create_client()
+            workspace_id = os.environ["WORKSPACE_ID"]
+            phase = "apply_file_upload_lease"
+            lease = self.apply_file_upload_lease(client, workspace_id, payload_md)
+            headers = lease.get("headers") or {}
+            return {
+                **base,
+                "status": "pass",
+                "error_type": None,
+                "summary": "ApplyFileUploadLease succeeded; no upload was attempted",
+                "lease_obtained": True,
+                "lease_id_present": bool(lease.get("lease_id")),
+                "upload_url_present": bool(lease.get("url")),
+                "headers_present": bool(headers),
+                "network_attempted": True,
+                "upload_attempted": False,
+                "knowledge_base_created": False,
+            }
+        except Exception as exc:  # noqa: BLE001 - forensic report must classify SDK exceptions.
+            safe_error = safe_error_from_exception(
+                exc,
+                operation_name="ApplyFileUploadLease",
+                phase=phase,
+                endpoint=self.config.endpoint,
+            )
+            return {
+                **base,
+                "status": "fail",
+                "error_type": safe_error["error_type"],
+                "summary": safe_error["message_redacted"] or safe_error["exception_class"],
+                "first_failed_phase": phase,
+                "operation_name": "ApplyFileUploadLease",
+                "safe_error": safe_error,
+                "recommended_fix": recommended_fix(safe_error["error_type"]),
+                "network_attempted": phase != "create_client",
+                "upload_attempted": False,
+                "knowledge_base_created": False,
+            }
+
     def run_small_kb_pilot(
         self,
         *,
@@ -292,6 +401,8 @@ class BailianOfficialClient:
             "knowledge_base_created": False,
             "index_created": False,
         }
+        phase = "create_client"
+        operation_name = "create_client"
         try:
             client = self.create_client()
             workspace_id = os.environ["WORKSPACE_ID"]
@@ -322,21 +433,37 @@ class BailianOfficialClient:
             if not upload_file.exists():
                 return {**base, "status": "fail", "error_type": "upload_rejected", "summary": "upload markdown is missing"}
             state["network_attempted"] = True
+            phase = "apply_file_upload_lease"
+            operation_name = "ApplyFileUploadLease"
             lease = self.apply_file_upload_lease(client, workspace_id, upload_file)
             state["upload_attempted"] = True
+            phase = "upload_file_to_presigned_url"
+            operation_name = "PUT pre-signed upload URL"
             upload_result = self.upload_file_to_presigned_url(lease, upload_file)
+            phase = "add_file"
+            operation_name = "AddFile"
             add_result = self.add_file(client, workspace_id, lease["lease_id"])
+            phase = "describe_file_until_parsed"
+            operation_name = "DescribeFile"
             parse_result = self.describe_file_until_parsed(client, workspace_id, add_result["file_id"])
+            phase = "create_index"
+            operation_name = "CreateIndex"
             index_result = self.create_index(client, workspace_id, add_result["file_id"])
             state["knowledge_base_created"] = True
             state["index_created"] = True
+            phase = "submit_index_job"
+            operation_name = "SubmitIndexJob"
             submit_result = self.submit_index_job(client, workspace_id, index_result["index_id"])
+            phase = "wait_index_completed"
+            operation_name = "GetIndexJobStatus"
             index_status = self.wait_index_completed(
                 client,
                 workspace_id,
                 index_result["index_id"],
                 submit_result["job_id"],
             )
+            phase = "retrieve_index"
+            operation_name = "Retrieve"
             retrieval = self._run_retrieval(client, workspace_id, index_result["index_id"], questions)
             return {
                 **base,
@@ -365,9 +492,42 @@ class BailianOfficialClient:
                 ),
             }
         except BailianPilotError as exc:
-            return {**base, **state, "status": "fail", "error_type": exc.error_type, "summary": exc.safe_summary}
+            safe_error = safe_error_from_exception(
+                exc,
+                operation_name=operation_name,
+                phase=phase,
+                endpoint=self.config.endpoint,
+                error_type=exc.error_type,
+            )
+            return {
+                **base,
+                **state,
+                "status": "fail",
+                "error_type": exc.error_type,
+                "summary": exc.safe_summary,
+                "first_failed_phase": phase,
+                "operation_name": operation_name,
+                "safe_error": safe_error,
+                "recommended_fix": recommended_fix(exc.error_type),
+            }
         except Exception as exc:  # noqa: BLE001 - report a safe error category without leaking values.
-            return {**base, **state, "status": "fail", "error_type": classify_exception(exc), "summary": type(exc).__name__}
+            safe_error = safe_error_from_exception(
+                exc,
+                operation_name=operation_name,
+                phase=phase,
+                endpoint=self.config.endpoint,
+            )
+            return {
+                **base,
+                **state,
+                "status": "fail",
+                "error_type": safe_error["error_type"],
+                "summary": safe_error["message_redacted"] or safe_error["exception_class"],
+                "first_failed_phase": phase,
+                "operation_name": operation_name,
+                "safe_error": safe_error,
+                "recommended_fix": recommended_fix(safe_error["error_type"]),
+            }
 
     def _run_retrieval(
         self,
@@ -476,6 +636,16 @@ def classify_exception(exc: Exception) -> str:
     text = f"{type(exc).__name__} {str(exc)}".lower()
     if "timeout" in text or "timed out" in text:
         return "timeout"
+    if "accessdenied" in text or "access denied" in text:
+        return "access_denied_workspace"
+    if "workspace" in text and ("invalid" in text or "not found" in text):
+        return "invalid_workspace"
+    if "category" in text and ("invalid" in text or "not found" in text):
+        return "invalid_category"
+    if "endpoint" in text or "region" in text or "host" in text:
+        return "endpoint_or_region_error"
+    if "model" in text or "parameter" in text or "argument" in text or "request" in text:
+        return "invalid_request_model"
     if "401" in text or "unauthorized" in text or "forbidden" in text:
         return "auth_error_401"
     if "429" in text or "quota" in text or "rate" in text:
@@ -483,6 +653,66 @@ def classify_exception(exc: Exception) -> str:
     if "503" in text or "server" in text:
         return "server_error_5xx"
     return "unexpected_error"
+
+
+def safe_error_from_exception(
+    exc: Exception,
+    *,
+    operation_name: str,
+    phase: str,
+    endpoint: str,
+    error_type: str | None = None,
+) -> dict[str, Any]:
+    data = _safe_get(exc, "data")
+    if data is None:
+        data = _safe_get(exc, "body", "data")
+    return {
+        "error_type": error_type or classify_exception(exc),
+        "exception_class": type(exc).__name__,
+        "error_code": _first_present(exc, ["error_code", "code", "errorCode"]),
+        "status_code": _first_present(exc, ["status_code", "statusCode", "status"]),
+        "request_id": _first_present(exc, ["request_id", "requestId", "RequestId"]),
+        "message_redacted": redact_sensitive(
+            str(_first_present(exc, ["message", "description"]) or str(exc) or type(exc).__name__)
+        ),
+        "data_keys": sorted(data.keys()) if isinstance(data, dict) else [],
+        "endpoint": endpoint,
+        "operation_name": operation_name,
+        "phase": phase,
+    }
+
+
+def redact_sensitive(text: str) -> str:
+    text = SENSITIVE_RE.sub("[REDACTED]", text)
+    text = re.sub(r"https://[^\\s]+", "[REDACTED_URL]", text)
+    return text[:500]
+
+
+def recommended_fix(error_type: str | None) -> str:
+    mapping = {
+        "auth_error_401": "Verify Alibaba Cloud AccessKey permissions and that the key is active; do not paste key values into logs.",
+        "access_denied_workspace": "Grant the AccessKey principal Bailian workspace permissions for the target WORKSPACE_ID.",
+        "invalid_workspace": "Check WORKSPACE_ID and region; the workspace must exist in the selected Bailian endpoint region.",
+        "invalid_category": "Check category_id/category_type; create or select a valid category before full upload.",
+        "invalid_request_model": "Compare SDK request fields with the installed SDK version and official API contract.",
+        "endpoint_or_region_error": "Verify endpoint and BAILIAN_REGION alignment, especially cn-beijing versus other regions.",
+        "missing_env": "Set required env only in a temporary shell or isolated manual bridge; do not commit secrets.",
+        "missing_dependency_or_api_contract": "Run inside the isolated conda env with official Bailian SDK packages installed.",
+        "upload_rejected": "Regenerate the sanitized /tmp payload and ensure only the allowed markdown path is used.",
+        "timeout": "Check network/proxy reachability and consider a lease-only retry only after review.",
+        "unexpected_error": "Inspect safe_error fields, then decide whether endpoint, workspace, category, or request model needs adjustment.",
+    }
+    return mapping.get(error_type or "", "Inspect safe_error fields and avoid retrying full upload until the cause is clear.")
+
+
+def _first_present(obj: Any, names: list[str]) -> Any:
+    for name in names:
+        if isinstance(obj, dict) and obj.get(name) is not None:
+            return obj.get(name)
+        value = getattr(obj, name, None)
+        if value is not None:
+            return value
+    return None
 
 
 def _classify_status_code(status_code: int) -> str:

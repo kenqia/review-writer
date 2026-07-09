@@ -106,6 +106,33 @@ One authorized official SDK pilot was attempted after the implementation was add
 
 No retry was performed. No key value was printed, no PDF or raw image was uploaded, and no KB/index id was written to the repo.
 
+## Phase 6c-quin Lease-only Probe
+
+The next diagnostic step is intentionally smaller than the full pilot. It calls only `ApplyFileUploadLease` and stops before any PUT upload, `AddFile`, `CreateIndex`, `SubmitIndexJob`, or retrieval call.
+
+Dry-run:
+
+```bash
+make bailian-lease-probe-dry-run
+make bailian-lease-probe-real-command
+```
+
+Real lease-only probe, after explicit authorization:
+
+```bash
+zsh -ic 'cd <REPO_ROOT> && conda run -n review-writer-bailian python scripts/rag/bailian_lease_probe.py \
+  --payload-md /tmp/bailian_small_kb_upload_payload.md \
+  --output-json /tmp/bailian_lease_probe_real.json \
+  --output-md /tmp/bailian_lease_probe_real.md \
+  --allow-network \
+  --use-official-sdk \
+  --strict'
+```
+
+The report includes `safe_error`, `first_failed_phase`, `operation_name`, and `recommended_fix`. It never writes the lease id, pre-signed URL, signed headers, or key values.
+
+The authorized Phase 6c-quin probe failed safely at `ApplyFileUploadLease` with `endpoint_or_region_error` / `UnretryableException`. No lease was obtained, no upload was attempted, and no knowledge base was created. Fix endpoint/region alignment before considering a full pilot retry.
+
 ## Manual Cleanup
 
 If a temporary KB is created manually or by the official SDK pilot:

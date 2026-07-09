@@ -57,6 +57,26 @@ Authorized real pilot attempt:
 - no retry was performed
 - no cleanup required because no temporary index id was created
 
+Phase 6c-quin adds a narrower diagnostic path:
+
+- safe SDK exception forensics fields
+- lease-only probe script
+- dry-run make target
+- real probe command print target
+- no upload, no AddFile, no index creation, no retrieval
+- no pre-signed URL or signed header output
+
+Authorized lease-only probe result:
+
+- status: `fail`
+- error type: `endpoint_or_region_error`
+- exception class: `UnretryableException`
+- failed phase: `apply_file_upload_lease`
+- operation: `ApplyFileUploadLease`
+- lease obtained: `false`
+- upload: not attempted
+- knowledge base: not created
+
 Implemented official SDK lifecycle:
 
 - ApplyFileUploadLease
@@ -80,6 +100,7 @@ Implemented official SDK lifecycle:
 - `trusted_for_scientific_quality=false` remains preserved.
 - `DASHSCOPE_API_KEY` is not treated as sufficient for KB management.
 - KB/index ids are allowed only in `/tmp` reports, not in repo docs.
+- Lease probe reports only presence booleans for lease id, upload URL, and headers.
 
 ## Next
 

@@ -1161,6 +1161,59 @@ Next:
 - Run exactly one authorized real SDK pilot.
 - If an index is created, delete it after evaluation using the reviewed cleanup path or Bailian console.
 
+## PR 24: Bailian SDK Error Forensics And Lease-only Probe
+
+目标：
+
+- 不盲目重试 full pilot。
+- 为 SDK exception 增加安全取证字段。
+- 新增只执行 `ApplyFileUploadLease` 的 lease-only probe。
+- 不上传、不 AddFile、不 CreateIndex、不 SubmitIndexJob、不 Retrieve。
+- 不输出 pre-signed URL、signed headers、AccessKey、secret。
+
+Implemented Phase 6c-quin files:
+
+```text
+scripts/rag/bailian_lease_probe.py
+tests/test_bailian_lease_probe_safety.py
+docs/rag/bailian_error_forensics.md
+```
+
+Updated:
+
+```text
+review_writer/retrieval/bailian_official_client.py
+scripts/rag/bailian_small_kb_pilot.py
+Makefile
+docs/rag/bailian_small_kb_pilot_runbook.md
+docs/pr/phase6c_bailian_small_kb_pilot_pr.md
+```
+
+Gate:
+
+```bash
+make bailian-lease-probe-dry-run
+make bailian-lease-probe-real-command
+```
+
+Decision rule:
+
+- If lease succeeds, a reviewed full pilot retry may be considered.
+- If lease fails, fix auth/workspace/category/endpoint/request model according to `safe_error` before any upload-capable run.
+
+Current result:
+
+- one authorized lease-only probe was executed once
+- status: `fail`
+- error type: `endpoint_or_region_error`
+- exception class: `UnretryableException`
+- failed phase: `apply_file_upload_lease`
+- no lease obtained, no upload, no knowledge base
+
+Next:
+
+- Fix endpoint/region alignment before any full pilot retry.
+
 ## 风险
 
 - PR 过大导致 review 困难。
