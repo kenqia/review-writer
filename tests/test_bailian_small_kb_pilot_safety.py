@@ -102,14 +102,57 @@ def main() -> int:
         cwd=REPO_ROOT,
         text=True,
         capture_output=True,
+        env=_without_bailian_env(),
     )
     assert blocked.returncode == 0, blocked.stderr + blocked.stdout
     blocked_report = json.loads(Path("/tmp/bailian_small_kb_pilot_test_blocked.json").read_text(encoding="utf-8"))
-    assert blocked_report["status"] in {"blocked_manual_console_required", "fail"}
+    assert blocked_report["status"] == "fail"
     assert blocked_report["error_type"] in {"missing_dependency_or_api_contract", "missing_env"}
     assert blocked_report["safety"]["upload"] == "not_used"
+    cleanup_dry = subprocess.run(
+        [
+            sys.executable,
+            "scripts/rag/bailian_small_kb_pilot.py",
+            "--payload-jsonl",
+            "/tmp/bailian_small_kb_payload.jsonl",
+            "--questions",
+            "evals/fixtures/rag_expected_questions.json",
+            "--output-json",
+            "/tmp/bailian_small_kb_pilot_test_cleanup_dry.json",
+            "--output-md",
+            "/tmp/bailian_small_kb_pilot_test_cleanup_dry.md",
+            "--use-official-sdk",
+            "--cleanup",
+            "--cleanup-index-id",
+            "fake-index-id",
+            "--strict",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+    )
+    assert cleanup_dry.returncode == 0, cleanup_dry.stderr + cleanup_dry.stdout
+    cleanup_report = json.loads(Path("/tmp/bailian_small_kb_pilot_test_cleanup_dry.json").read_text(encoding="utf-8"))
+    assert cleanup_report["status"] == "dry_run"
+    assert cleanup_report["cleanup_requested"] is True
+    assert cleanup_report["cleanup_index_id_provided"] is True
     print("bailian_small_kb_pilot_safety_tests: ok")
     return 0
+
+
+def _without_bailian_env() -> dict[str, str]:
+    import os
+
+    env = os.environ.copy()
+    for key in [
+        "ALIBABA_CLOUD_ACCESS_KEY_ID",
+        "ALIBABA_CLOUD_ACCESS_KEY_SECRET",
+        "WORKSPACE_ID",
+        "DASHSCOPE_API_KEY",
+        "BAILIAN_WORKSPACE_ID",
+    ]:
+        env.pop(key, None)
+    return env
 
 
 if __name__ == "__main__":

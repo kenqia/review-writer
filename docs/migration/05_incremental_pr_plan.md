@@ -1119,6 +1119,48 @@ Next:
 - User may create isolated conda env and install official SDK.
 - Real SDK pilot still waits for exact authorization: `allow official bailian sdk pilot`.
 
+## PR 23: Official Bailian SDK Pilot Implementation
+
+目标：
+
+- 按官方 SDK contract 实现 create/upload/index/retrieve 生命周期。
+- 仍然保持默认离线；真实路径必须同时传 `--allow-network --allow-upload --use-official-sdk`。
+- 只允许上传 `/tmp/bailian_small_kb_upload_payload.md`。
+- 只把临时 index id 写入 `/tmp` 报告，不写入 repo。
+- cleanup 必须显式传 `--cleanup --cleanup-index-id`，不自动删除。
+
+Implemented Phase 6c-quad files:
+
+```text
+review_writer/retrieval/bailian_official_client.py
+scripts/rag/bailian_small_kb_pilot.py
+tests/test_bailian_small_kb_pilot_safety.py
+docs/rag/bailian_official_api_contract.md
+docs/rag/bailian_small_kb_pilot_runbook.md
+docs/pr/phase6c_bailian_small_kb_pilot_pr.md
+```
+
+Gate:
+
+```bash
+make bailian-small-kb-official-sdk-dry-run
+make bailian-small-kb-official-sdk-real-command
+```
+
+Current result:
+
+- official SDK lifecycle implemented behind explicit gates
+- default dry-run: no network, no upload, no KB creation
+- real command target prints the command only
+- one authorized real pilot was attempted once and failed with `unexpected_error` / `UnretryableException`
+- no file/index/job id was created, retrieval did not run, and no cleanup was required
+- future successful real pilot may create a temporary Bailian index and must be followed by reviewed cleanup
+
+Next:
+
+- Run exactly one authorized real SDK pilot.
+- If an index is created, delete it after evaluation using the reviewed cleanup path or Bailian console.
+
 ## 风险
 
 - PR 过大导致 review 困难。

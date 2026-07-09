@@ -1,4 +1,4 @@
-.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check eval-baseline-check portability-check reality-audit-check clean-3paper-recommend-check clean-3paper-approval-check clean-3paper-pdf-verify-check clean-3paper-biblio-check clean-3paper-biblio-web-check clean-3paper-claims-check clean-3paper-e2e-check clean-3paper-eval-check dashboard-clean-3paper-check bailian-rag-preflight-check rag-local-retrieval-check bailian-small-kb-payload-check bailian-small-kb-pilot-dry-run bailian-small-kb-official-sdk-dry-run bailian-sdk-env-check bailian-sdk-env-strict-check release-readiness-check
+.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check eval-baseline-check portability-check reality-audit-check clean-3paper-recommend-check clean-3paper-approval-check clean-3paper-pdf-verify-check clean-3paper-biblio-check clean-3paper-biblio-web-check clean-3paper-claims-check clean-3paper-e2e-check clean-3paper-eval-check dashboard-clean-3paper-check bailian-rag-preflight-check rag-local-retrieval-check bailian-small-kb-payload-check bailian-small-kb-pilot-dry-run bailian-small-kb-official-sdk-dry-run bailian-small-kb-official-sdk-real-command bailian-sdk-env-check bailian-sdk-env-strict-check release-readiness-check
 
 PYTHON ?= python3
 REPO_ROOT ?= $(CURDIR)
@@ -239,6 +239,9 @@ bailian-small-kb-official-sdk-dry-run:
 		--output-md /tmp/bailian_small_kb_pilot_official_sdk_dry.md \
 		--use-official-sdk \
 		--strict
+
+bailian-small-kb-official-sdk-real-command:
+	@printf '%s\n' 'zsh -ic '\''cd $(REPO_ROOT) && conda run -n review-writer-bailian python scripts/rag/build_bailian_small_kb_payload.py --clean-root demo_projects/clean_3paper_allene_review --output-jsonl /tmp/bailian_small_kb_payload.jsonl --output-md /tmp/bailian_small_kb_payload.md --output-manifest /tmp/bailian_small_kb_payload_manifest.json --strict && conda run -n review-writer-bailian python scripts/rag/bailian_small_kb_pilot.py --payload-jsonl /tmp/bailian_small_kb_payload.jsonl --questions evals/fixtures/rag_expected_questions.json --output-json /tmp/bailian_small_kb_pilot_real.json --output-md /tmp/bailian_small_kb_pilot_real.md --allow-network --allow-upload --use-official-sdk --strict'\'''
 
 bailian-sdk-env-check:
 	$(PYTHON) tests/test_bailian_sdk_env_check.py

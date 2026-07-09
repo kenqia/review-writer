@@ -58,7 +58,7 @@ SubmitIndexJob
 GetIndexJobStatus
 ```
 
-This repo currently implements the gates and request lifecycle skeleton only. It does not guess request model names or upload endpoints when the SDK/API contract is not available locally.
+This repo implements the official SDK-gated lifecycle behind explicit real-run flags. Default checks still dry-run and do not upload or create a knowledge base.
 
 ## Supported Now
 
@@ -67,13 +67,14 @@ This repo currently implements the gates and request lifecycle skeleton only. It
 - official env presence check
 - dry-run official SDK path
 - fail-closed behavior for missing SDK/env/API contract
+- official SDK request model calls for upload lease, add file, parse polling, index creation, index job polling, retrieval, and reviewed cleanup
 - KB id policy: `/tmp` only, never repo
 
-## Still Blocked
+## Still Gated
 
-- concrete SDK request model calls for KB creation/upload/indexing
-- retrieval API contract for evaluating recall from the actual KB
-- automatic cleanup/delete API
+- real upload requires `--allow-network --allow-upload --use-official-sdk`
+- cleanup requires both `--cleanup` and `--cleanup-index-id`
+- no default make target performs a real upload
 
 ## Real Pilot Authorization
 
@@ -104,12 +105,29 @@ python scripts/rag/bailian_small_kb_pilot.py \
   --strict
 ```
 
+The Makefile can print the real command without executing it:
+
+```bash
+make bailian-small-kb-official-sdk-real-command
+```
+
 ## Cleanup
 
-If a KB is created manually or by a future SDK implementation:
+If a KB is created manually or by the official SDK pilot:
 
 1. Save the KB id only under `/tmp`.
 2. Run retrieval/eval.
-3. Delete the KB from Bailian console or a reviewed cleanup API.
-4. Confirm no PDFs, raw images, full markdown, local paths, or secrets were uploaded.
+3. Delete the KB from Bailian console or the reviewed cleanup path:
 
+```bash
+python scripts/rag/bailian_small_kb_pilot.py \
+  --use-official-sdk \
+  --allow-network \
+  --allow-upload \
+  --cleanup \
+  --cleanup-index-id '<index_id_from_tmp_report>' \
+  --output-json /tmp/bailian_small_kb_cleanup.json \
+  --output-md /tmp/bailian_small_kb_cleanup.md
+```
+
+4. Confirm no PDFs, raw images, full markdown, local paths, or secrets were uploaded.

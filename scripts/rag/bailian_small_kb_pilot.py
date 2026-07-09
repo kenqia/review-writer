@@ -40,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-upload", action="store_true")
     parser.add_argument("--use-official-sdk", action="store_true")
     parser.add_argument("--cleanup", action="store_true")
+    parser.add_argument("--cleanup-index-id")
     parser.add_argument("--strict", action="store_true")
     return parser.parse_args()
 
@@ -77,6 +78,8 @@ def run_pilot(args: argparse.Namespace) -> dict[str, Any]:
         "citation_coverage": None,
         "per_question_results": [],
         "kb_id_redacted_or_tmp_only": None,
+        "cleanup_requested": bool(args.cleanup),
+        "cleanup_index_id_provided": bool(args.cleanup_index_id),
         "cleanup_recommendation": "No KB was created in dry-run mode.",
         "safety": {
             "key_printed": "no",
@@ -100,17 +103,35 @@ def run_pilot(args: argparse.Namespace) -> dict[str, Any]:
     if args.use_official_sdk:
         official_report = official.run_small_kb_pilot(
             upload_file=OFFICIAL_UPLOAD_MD,
+            questions=load_questions(args.questions),
             allow_network=args.allow_network,
             allow_upload=args.allow_upload,
+            cleanup=args.cleanup,
+            cleanup_index_id=args.cleanup_index_id,
         )
+        knowledge_base_created = bool(official_report.get("knowledge_base_created"))
         return {
             **base,
             "status": official_report["status"],
             "error_type": official_report.get("error_type"),
             "summary": official_report["summary"],
-            "retrieval_status": official_report.get("retrieval_status", "blocked_retrieval_api_contract_required"),
+            "retrieval_status": official_report.get("retrieval_status", "not_run"),
+            "recall_at_1": official_report.get("recall_at_1"),
+            "recall_at_3": official_report.get("recall_at_3"),
+            "citation_coverage": official_report.get("citation_coverage"),
+            "per_question_results": official_report.get("per_question_results", []),
             "kb_id_redacted_or_tmp_only": official_report.get("kb_id_redacted_or_tmp_only"),
-            "cleanup_recommendation": "No KB was created. If a manual KB is created, delete it in the Bailian console after evaluation.",
+            "cleanup_requested": bool(args.cleanup),
+            "cleanup_index_id_provided": bool(args.cleanup_index_id),
+            "cleanup_recommendation": official_report.get(
+                "cleanup_recommendation",
+                "No KB was created. If a manual KB is created, delete it in the Bailian console after evaluation.",
+            ),
+            "safety": {
+                **base["safety"],
+                "upload": "attempted_sanitized_payload_only" if official_report.get("upload_attempted") else "not_used",
+                "knowledge_base": "created_temp_index" if knowledge_base_created else "not_created",
+            },
             "official_sdk_result": official_report,
         }
     missing = [name for name in ["DASHSCOPE_API_KEY", "BAILIAN_WORKSPACE_ID"] if env.get(name) == "MISSING"]
@@ -194,6 +215,12 @@ def validate_questions(path: Path) -> dict[str, Any]:
     return {"status": "pass", "errors": []}
 
 
+def load_questions(path: Path) -> list[dict[str, Any]]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    questions = payload.get("questions") if isinstance(payload, dict) else payload
+    return questions if isinstance(questions, list) else []
+
+
 def safe_env_presence() -> dict[str, str]:
     return {
         "ALIBABA_CLOUD_ACCESS_KEY_ID": "SET" if os.environ.get("ALIBABA_CLOUD_ACCESS_KEY_ID") else "MISSING",
@@ -227,6 +254,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- recall@1: `{report['recall_at_1']}`",
         f"- recall@3: `{report['recall_at_3']}`",
         f"- citation coverage: `{report['citation_coverage']}`",
+        f"- cleanup_requested: `{report.get('cleanup_requested', False)}`",
+        f"- cleanup_index_id_provided: `{report.get('cleanup_index_id_provided', False)}`",
         f"- cleanup: {report['cleanup_recommendation']}",
         "",
         "## Environment Presence",

@@ -4,7 +4,7 @@
 
 This phase adds the controlled small-KB pilot wrapper for Bailian RAG. The default path is still offline: build a sanitized `/tmp` payload, validate it, and dry-run the pilot wrapper without uploading or creating a KB.
 
-Phase 6c-bis adds the official SDK-gated path for the Bailian KB API contract. The path checks official SDK modules and the required Alibaba Cloud credentials but does not perform a real upload in default checks.
+Phase 6c-bis adds the official SDK-gated path for the Bailian KB API contract. Phase 6c-quad implements the official create/upload/index/retrieve lifecycle behind explicit real-run flags. Default checks still do not perform a real upload.
 
 ## Added Files
 
@@ -33,6 +33,7 @@ docs/migration/05_incremental_pr_plan.md
 make bailian-small-kb-payload-check
 make bailian-small-kb-pilot-dry-run
 make bailian-small-kb-official-sdk-dry-run
+make bailian-small-kb-official-sdk-real-command
 ```
 
 ## Result
@@ -40,11 +41,33 @@ make bailian-small-kb-official-sdk-dry-run
 - payload check: pass
 - records: 3
 - dry-run: pass
-- real-mode wrapper: `blocked_manual_console_required`
-- error type: `missing_dependency_or_api_contract`
-- real API upload: not attempted
-- automatic KB creation: not created
 - official SDK dry-run: pass
+- official SDK real command: printed only by make target
+- real API upload: gated behind `--allow-network --allow-upload --use-official-sdk`
+- automatic KB creation in default checks: not created
+- official SDK dry-run: pass
+
+Authorized real pilot attempt:
+
+- status: `fail`
+- error type: `unexpected_error`
+- safe summary: `UnretryableException`
+- file/index/job id: not created
+- retrieval: not run
+- no retry was performed
+- no cleanup required because no temporary index id was created
+
+Implemented official SDK lifecycle:
+
+- ApplyFileUploadLease
+- PUT upload to pre-signed URL
+- AddFile
+- DescribeFile until `PARSE_SUCCESS`
+- CreateIndex
+- SubmitIndexJob
+- GetIndexJobStatus until `COMPLETED`
+- Retrieve
+- optional reviewed cleanup with `--cleanup --cleanup-index-id`
 
 ## Safety
 
@@ -56,7 +79,8 @@ make bailian-small-kb-official-sdk-dry-run
 - No KB id committed to the repo.
 - `trusted_for_scientific_quality=false` remains preserved.
 - `DASHSCOPE_API_KEY` is not treated as sufficient for KB management.
+- KB/index ids are allowed only in `/tmp` reports, not in repo docs.
 
 ## Next
 
-Phase 6d should only proceed after either a successful manual console pilot or a reviewed API contract implementation for Bailian KB creation/retrieval.
+Phase 6d should only proceed after the temporary KB/index is reviewed and cleaned up, and after retrieval metrics are judged useful enough for a larger real corpus pilot.
