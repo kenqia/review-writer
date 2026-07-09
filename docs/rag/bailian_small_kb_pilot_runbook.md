@@ -65,6 +65,9 @@ python scripts/rag/bailian_small_kb_pilot.py \
   --questions evals/fixtures/rag_expected_questions.json \
   --output-json /tmp/bailian_small_kb_pilot_real.json \
   --output-md /tmp/bailian_small_kb_pilot_real.md \
+  --endpoint bailian.cn-beijing.aliyuncs.com \
+  --region cn-beijing \
+  --category-id default \
   --allow-network \
   --allow-upload \
   --use-official-sdk \
@@ -124,6 +127,9 @@ zsh -ic 'cd <REPO_ROOT> && conda run -n review-writer-bailian python scripts/rag
   --payload-md /tmp/bailian_small_kb_upload_payload.md \
   --output-json /tmp/bailian_lease_probe_real.json \
   --output-md /tmp/bailian_lease_probe_real.md \
+  --endpoint bailian.cn-beijing.aliyuncs.com \
+  --region cn-beijing \
+  --category-id default \
   --allow-network \
   --use-official-sdk \
   --strict'
@@ -132,6 +138,10 @@ zsh -ic 'cd <REPO_ROOT> && conda run -n review-writer-bailian python scripts/rag
 The report includes `safe_error`, `first_failed_phase`, `operation_name`, and `recommended_fix`. It never writes the lease id, pre-signed URL, signed headers, or key values.
 
 The authorized Phase 6c-quin probe failed safely at `ApplyFileUploadLease` with `endpoint_or_region_error` / `UnretryableException`. No lease was obtained, no upload was attempted, and no knowledge base was created. Fix endpoint/region alignment before considering a full pilot retry.
+
+Phase 6c-six adds explicit endpoint, region, and category parameters. The default endpoint is the official example endpoint `bailian.cn-beijing.aliyuncs.com`; if `BAILIAN_REGION` differs from the selected region, the report emits a warning but keeps the explicit endpoint.
+
+The authorized Phase 6c-six reprobe used `bailian.cn-beijing.aliyuncs.com`, `cn-beijing`, and `default`. It still failed safely at `ApplyFileUploadLease` with `endpoint_or_region_error` / `UnretryableException`, before any lease, upload, or KB creation. Do not retry the full pilot until endpoint reachability, workspace-region binding, and SDK endpoint expectations are checked.
 
 ## Manual Cleanup
 

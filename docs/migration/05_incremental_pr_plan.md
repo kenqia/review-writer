@@ -1214,6 +1214,57 @@ Next:
 
 - Fix endpoint/region alignment before any full pilot retry.
 
+## PR 25: Bailian Endpoint / Region Alignment
+
+目标：
+
+- 显式化 official SDK endpoint、region、category-id。
+- 默认 endpoint 使用官方示例 `bailian.cn-beijing.aliyuncs.com`。
+- `--endpoint` 优先；没有 endpoint 时由 `--region` 构造。
+- 继续只做 lease-only reprobe，不上传、不建库。
+- 保持 `WORKSPACE_ID` 为 official SDK 管理路径变量，避免和 no-upload preflight 的 `BAILIAN_WORKSPACE_ID` 混用。
+
+Updated Phase 6c-six files:
+
+```text
+review_writer/retrieval/bailian_official_client.py
+scripts/rag/bailian_lease_probe.py
+scripts/rag/bailian_small_kb_pilot.py
+tests/test_bailian_lease_probe_safety.py
+rag/bailian/preflight_config.example.yaml
+docs/rag/bailian_error_forensics.md
+docs/rag/bailian_official_api_contract.md
+docs/rag/bailian_small_kb_pilot_runbook.md
+docs/pr/phase6c_bailian_small_kb_pilot_pr.md
+```
+
+Gate:
+
+```bash
+make bailian-lease-probe-dry-run
+make bailian-lease-probe-real-command
+```
+
+Decision rule:
+
+- If lease succeeds, a reviewed full pilot retry may be considered.
+- If lease fails again, fix permission/workspace/category/endpoint/request parameters first.
+
+Current result:
+
+- one authorized explicit-endpoint lease reprobe was executed once
+- endpoint: `bailian.cn-beijing.aliyuncs.com`
+- region: `cn-beijing`
+- category_id: `default`
+- status: `fail`
+- error type: `endpoint_or_region_error`
+- exception class: `UnretryableException`
+- no lease obtained, no upload, no knowledge base
+
+Next:
+
+- Check endpoint reachability, workspace-region binding, account permissions, and SDK endpoint expectations before any full pilot retry.
+
 ## 风险
 
 - PR 过大导致 review 困难。

@@ -13,7 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from review_writer.retrieval.bailian_official_client import BailianOfficialClient
+from review_writer.retrieval.bailian_official_client import BailianOfficialClient, make_bailian_config
 
 OFFICIAL_UPLOAD_MD = Path("/tmp/bailian_small_kb_upload_payload.md")
 FORBIDDEN_RE = re.compile(r"(\.pdf\b|\.png\b|\.jpe?g\b|\.webp\b|/home/|/mnt/|[A-Za-z]:\\Users\\|api[_-]?key\s*[:=]|token\s*[:=]|secret\s*[:=]|sk-)", re.I)
@@ -36,6 +36,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--questions", type=Path, default=Path("evals/fixtures/rag_expected_questions.json"))
     parser.add_argument("--output-json", type=Path, default=Path("/tmp/bailian_small_kb_pilot_dry.json"))
     parser.add_argument("--output-md", type=Path, default=Path("/tmp/bailian_small_kb_pilot_dry.md"))
+    parser.add_argument("--endpoint")
+    parser.add_argument("--region")
+    parser.add_argument("--category-id", default="default")
     parser.add_argument("--allow-network", action="store_true")
     parser.add_argument("--allow-upload", action="store_true")
     parser.add_argument("--use-official-sdk", action="store_true")
@@ -50,12 +53,18 @@ def run_pilot(args: argparse.Namespace) -> dict[str, Any]:
     upload_md_status = build_upload_markdown(args.payload_jsonl, OFFICIAL_UPLOAD_MD)
     questions_status = validate_questions(args.questions)
     env = safe_env_presence()
-    official = BailianOfficialClient()
+    official = BailianOfficialClient(
+        make_bailian_config(endpoint=args.endpoint, region=args.region, category_id=args.category_id)
+    )
     base = {
         "payload_jsonl": str(args.payload_jsonl),
         "official_upload_md": str(OFFICIAL_UPLOAD_MD),
         "questions": str(args.questions),
         "env": env,
+        "endpoint": official.config.endpoint,
+        "region": official.config.region,
+        "category_id": official.config.category_id,
+        "config": official.config_report(),
         "official_sdk": {
             "enabled": bool(args.use_official_sdk),
             "dependency_presence": official.dependency_presence(),
@@ -256,6 +265,9 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- status: `{report['status']}`",
         f"- error_type: `{report.get('error_type')}`",
         f"- summary: {report['summary']}",
+        f"- endpoint: `{report.get('endpoint')}`",
+        f"- region: `{report.get('region')}`",
+        f"- category_id: `{report.get('category_id')}`",
         f"- official_upload_md: `{report.get('official_upload_md')}`",
         f"- record_count: `{report['record_count']}`",
         f"- retrieval_status: `{report['retrieval_status']}`",

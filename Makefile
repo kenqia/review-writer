@@ -241,7 +241,7 @@ bailian-small-kb-official-sdk-dry-run:
 		--strict
 
 bailian-small-kb-official-sdk-real-command:
-	@printf '%s\n' 'zsh -ic '\''cd $(REPO_ROOT) && conda run -n review-writer-bailian python scripts/rag/build_bailian_small_kb_payload.py --clean-root demo_projects/clean_3paper_allene_review --output-jsonl /tmp/bailian_small_kb_payload.jsonl --output-md /tmp/bailian_small_kb_payload.md --output-manifest /tmp/bailian_small_kb_payload_manifest.json --strict && conda run -n review-writer-bailian python scripts/rag/bailian_small_kb_pilot.py --payload-jsonl /tmp/bailian_small_kb_payload.jsonl --questions evals/fixtures/rag_expected_questions.json --output-json /tmp/bailian_small_kb_pilot_real.json --output-md /tmp/bailian_small_kb_pilot_real.md --allow-network --allow-upload --use-official-sdk --strict'\'''
+	@printf '%s\n' 'zsh -ic '\''cd $(REPO_ROOT) && conda run -n review-writer-bailian python scripts/rag/build_bailian_small_kb_payload.py --clean-root demo_projects/clean_3paper_allene_review --output-jsonl /tmp/bailian_small_kb_payload.jsonl --output-md /tmp/bailian_small_kb_payload.md --output-manifest /tmp/bailian_small_kb_payload_manifest.json --strict && conda run -n review-writer-bailian python scripts/rag/bailian_small_kb_pilot.py --payload-jsonl /tmp/bailian_small_kb_payload.jsonl --questions evals/fixtures/rag_expected_questions.json --output-json /tmp/bailian_small_kb_pilot_real.json --output-md /tmp/bailian_small_kb_pilot_real.md --endpoint bailian.cn-beijing.aliyuncs.com --region cn-beijing --category-id default --allow-network --allow-upload --use-official-sdk --strict'\'''
 
 bailian-lease-probe-dry-run:
 	$(PYTHON) tests/test_bailian_lease_probe_safety.py
@@ -252,7 +252,7 @@ bailian-lease-probe-dry-run:
 		--strict
 
 bailian-lease-probe-real-command:
-	@printf '%s\n' 'zsh -ic '\''cd $(REPO_ROOT) && conda run -n review-writer-bailian python scripts/rag/bailian_lease_probe.py --payload-md /tmp/bailian_small_kb_upload_payload.md --output-json /tmp/bailian_lease_probe_real.json --output-md /tmp/bailian_lease_probe_real.md --allow-network --use-official-sdk --strict'\'''
+	@printf '%s\n' 'zsh -ic '\''cd $(REPO_ROOT) && conda run -n review-writer-bailian python scripts/rag/bailian_lease_probe.py --payload-md /tmp/bailian_small_kb_upload_payload.md --output-json /tmp/bailian_lease_probe_real.json --output-md /tmp/bailian_lease_probe_real.md --endpoint bailian.cn-beijing.aliyuncs.com --region cn-beijing --category-id default --allow-network --use-official-sdk --strict'\'''
 
 bailian-sdk-env-check:
 	$(PYTHON) tests/test_bailian_sdk_env_check.py

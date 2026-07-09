@@ -37,6 +37,23 @@ Retrieve
 DeleteIndex
 ```
 
+## Endpoint / Region / Category
+
+Phase 6c-six makes the probe parameters explicit:
+
+```bash
+--endpoint bailian.cn-beijing.aliyuncs.com
+--region cn-beijing
+--category-id default
+```
+
+Resolution rules:
+
+1. `--endpoint` wins.
+2. Without `--endpoint`, `--region` builds `bailian.<region>.aliyuncs.com`.
+3. Without either value, the default is `cn-beijing`.
+4. If `BAILIAN_REGION` differs from the selected region, reports warn and keep using the explicit endpoint.
+
 ## Safe Fields
 
 Reports may include:
@@ -63,10 +80,9 @@ Reports must not include:
 
 ## Interpreting Errors
 
-- `auth_error_401`: verify AccessKey status and permissions.
-- `access_denied_workspace`: grant the principal access to the Bailian workspace.
-- `invalid_workspace`: check `WORKSPACE_ID` and endpoint region alignment.
-- `invalid_category`: check `category_id` and category type.
+- `auth_or_permission_error`: verify AccessKey status, RAM permissions, and workspace access.
+- `workspace_or_permission_error`: check `WORKSPACE_ID`, business-space membership, and RAM permissions.
+- `category_error`: check whether the `default` category exists or whether the workspace expects another category id.
 - `invalid_request_model`: compare request fields with the installed SDK version and the official API guide.
 - `endpoint_or_region_error`: verify `bailian.cn-beijing.aliyuncs.com` or the selected regional endpoint.
 - `unexpected_error`: inspect `safe_error` and avoid full retry until the failing phase is understood.
@@ -90,3 +106,27 @@ One authorized lease-only probe was executed. The safe result was:
 - knowledge base created: `false`
 
 Recommended next fix: verify endpoint and `BAILIAN_REGION` alignment before any full pilot retry.
+
+## Phase 6c-six Explicit Endpoint Reprobe
+
+One authorized reprobe was executed with:
+
+```text
+endpoint: bailian.cn-beijing.aliyuncs.com
+region: cn-beijing
+category_id: default
+```
+
+The safe result was:
+
+- status: `fail`
+- error_type: `endpoint_or_region_error`
+- exception_class: `UnretryableException`
+- first_failed_phase: `apply_file_upload_lease`
+- operation_name: `ApplyFileUploadLease`
+- request_id: not present
+- lease_obtained: `false`
+- upload attempted: `false`
+- knowledge base created: `false`
+
+Since the explicit official endpoint still failed before a lease was obtained, do not retry the full pilot. Next debugging should check network/proxy reachability to the Bailian OpenAPI endpoint, account-region/workspace binding, and whether the installed SDK expects another endpoint form for this account.

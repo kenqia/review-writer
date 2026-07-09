@@ -77,6 +77,28 @@ Authorized lease-only probe result:
 - upload: not attempted
 - knowledge base: not created
 
+Phase 6c-six endpoint/region alignment:
+
+- `--endpoint` added to official pilot and lease probe.
+- `--region` added and defaults to `cn-beijing`.
+- `--category-id` added and defaults to `default`.
+- Default endpoint is the official example endpoint: `bailian.cn-beijing.aliyuncs.com`.
+- `WORKSPACE_ID` remains the official SDK management workspace variable; `BAILIAN_WORKSPACE_ID` is not used for SDK management calls.
+- If lease reprobe still fails, classify as workspace/permission, category, endpoint/region, request model, or auth/permission before any full pilot retry.
+
+Authorized explicit-endpoint reprobe result:
+
+- endpoint: `bailian.cn-beijing.aliyuncs.com`
+- region: `cn-beijing`
+- category_id: `default`
+- status: `fail`
+- error type: `endpoint_or_region_error`
+- exception class: `UnretryableException`
+- failed phase: `apply_file_upload_lease`
+- lease obtained: `false`
+- upload: not attempted
+- knowledge base: not created
+
 Implemented official SDK lifecycle:
 
 - ApplyFileUploadLease

@@ -13,7 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from review_writer.retrieval.bailian_official_client import BailianOfficialClient
+from review_writer.retrieval.bailian_official_client import BailianOfficialClient, make_bailian_config
 
 DEFAULT_PAYLOAD_MD = Path("/tmp/bailian_small_kb_upload_payload.md")
 FALLBACK_PAYLOAD_MD = Path("/tmp/bailian_small_kb_payload.md")
@@ -40,6 +40,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--payload-md", type=Path, default=DEFAULT_PAYLOAD_MD)
     parser.add_argument("--output-json", type=Path, default=Path("/tmp/bailian_lease_probe_dry.json"))
     parser.add_argument("--output-md", type=Path, default=Path("/tmp/bailian_lease_probe_dry.md"))
+    parser.add_argument("--endpoint")
+    parser.add_argument("--region")
+    parser.add_argument("--category-id", default="default")
     parser.add_argument("--allow-network", action="store_true")
     parser.add_argument("--use-official-sdk", action="store_true")
     parser.add_argument("--strict", action="store_true")
@@ -48,11 +51,17 @@ def parse_args() -> argparse.Namespace:
 
 def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     payload_status = ensure_probe_payload(args.payload_md)
-    client = BailianOfficialClient()
+    client = BailianOfficialClient(
+        make_bailian_config(endpoint=args.endpoint, region=args.region, category_id=args.category_id)
+    )
     base = {
         "payload_md": str(args.payload_md),
         "payload_status": payload_status["status"],
         "payload_errors": payload_status["errors"],
+        "endpoint": client.config.endpoint,
+        "region": client.config.region,
+        "category_id": client.config.category_id,
+        "config": client.config_report(),
         "operation_name": "ApplyFileUploadLease",
         "first_failed_phase": None,
         "lease_obtained": False,
@@ -134,6 +143,9 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- status: `{report.get('status')}`",
         f"- error_type: `{report.get('error_type')}`",
         f"- operation_name: `{report.get('operation_name')}`",
+        f"- endpoint: `{report.get('endpoint')}`",
+        f"- region: `{report.get('region')}`",
+        f"- category_id: `{report.get('category_id')}`",
         f"- first_failed_phase: `{report.get('first_failed_phase')}`",
         f"- summary: {report.get('summary')}",
         f"- file_name: `{report.get('file_name')}`",

@@ -21,6 +21,8 @@ REQUIRED_ENV = [
     "ALIBABA_CLOUD_ACCESS_KEY_SECRET",
     "WORKSPACE_ID",
 ]
+DEFAULT_REGION = "cn-beijing"
+DEFAULT_CATEGORY_ID = "default"
 OFFICIAL_UPLOAD_MD = Path("/tmp/bailian_small_kb_upload_payload.md")
 OFFICIAL_STEPS = [
     "ApplyFileUploadLease",
@@ -41,9 +43,11 @@ SENSITIVE_RE = re.compile(
 
 @dataclass(frozen=True)
 class BailianOfficialConfig:
-    region: str = "cn-beijing"
+    region: str = DEFAULT_REGION
     endpoint: str = "bailian.cn-beijing.aliyuncs.com"
-    category_id: str = "default"
+    category_id: str = DEFAULT_CATEGORY_ID
+    endpoint_source: str = "official_default"
+    region_source: str = "default"
     category_type: str = "document"
     parser: str = "DASHSCOPE_DOCMIND"
     structure_type: str = "unstructured"
@@ -76,6 +80,22 @@ class BailianOfficialClient:
         presence["BAILIAN_REGION"] = "SET" if os.environ.get("BAILIAN_REGION") else "MISSING_DEFAULT_CN_BEIJING"
         presence["BAILIAN_MODEL"] = "SET" if os.environ.get("BAILIAN_MODEL") else "MISSING_DEFAULT_QWEN_PLUS"
         return presence
+
+    def config_report(self) -> dict[str, Any]:
+        warnings: list[str] = []
+        env_region = os.environ.get("BAILIAN_REGION")
+        if env_region and env_region != self.config.region:
+            warnings.append(
+                "BAILIAN_REGION differs from official KB API default; using explicit endpoint if provided."
+            )
+        return {
+            "region": self.config.region,
+            "endpoint": self.config.endpoint,
+            "category_id": self.config.category_id,
+            "endpoint_source": self.config.endpoint_source,
+            "region_source": self.config.region_source,
+            "warnings": warnings,
+        }
 
     def create_client(self) -> Any:
         self._ensure_runtime_ready()
@@ -254,8 +274,10 @@ class BailianOfficialClient:
     ) -> dict[str, Any]:
         base = {
             "provider_name": self.provider_name,
-            "region": os.environ.get("BAILIAN_REGION") or self.config.region,
+            "region": self.config.region,
             "endpoint": self.config.endpoint,
+            "category_id": self.config.category_id,
+            "config": self.config_report(),
             "operation_name": "ApplyFileUploadLease",
             "first_failed_phase": None,
             "dependency_presence": self.dependency_presence(),
@@ -362,7 +384,10 @@ class BailianOfficialClient:
         env_presence = self.env_presence()
         base: dict[str, Any] = {
             "provider_name": self.provider_name,
-            "region": os.environ.get("BAILIAN_REGION") or self.config.region,
+            "region": self.config.region,
+            "endpoint": self.config.endpoint,
+            "category_id": self.config.category_id,
+            "config": self.config_report(),
             "dependency_presence": dependency_presence,
             "env_presence": env_presence,
             "official_steps": OFFICIAL_STEPS,
@@ -636,18 +661,20 @@ def classify_exception(exc: Exception) -> str:
     text = f"{type(exc).__name__} {str(exc)}".lower()
     if "timeout" in text or "timed out" in text:
         return "timeout"
+    if "invalidaccesskey" in text or "invalid access key" in text:
+        return "auth_or_permission_error"
+    if "forbidden" in text or "401" in text or "unauthorized" in text:
+        return "auth_or_permission_error"
     if "accessdenied" in text or "access denied" in text:
-        return "access_denied_workspace"
+        return "workspace_or_permission_error"
     if "workspace" in text and ("invalid" in text or "not found" in text):
-        return "invalid_workspace"
+        return "workspace_or_permission_error"
     if "category" in text and ("invalid" in text or "not found" in text):
-        return "invalid_category"
-    if "endpoint" in text or "region" in text or "host" in text:
+        return "category_error"
+    if "endpoint" in text or "region" in text or "host" in text or "name or service not known" in text:
         return "endpoint_or_region_error"
     if "model" in text or "parameter" in text or "argument" in text or "request" in text:
         return "invalid_request_model"
-    if "401" in text or "unauthorized" in text or "forbidden" in text:
-        return "auth_error_401"
     if "429" in text or "quota" in text or "rate" in text:
         return "quota_or_rate_limit_429"
     if "503" in text or "server" in text:
@@ -690,9 +717,12 @@ def redact_sensitive(text: str) -> str:
 
 def recommended_fix(error_type: str | None) -> str:
     mapping = {
+        "auth_or_permission_error": "Verify Alibaba Cloud AccessKey status, RAM permissions, and workspace access; do not paste key values into logs.",
         "auth_error_401": "Verify Alibaba Cloud AccessKey permissions and that the key is active; do not paste key values into logs.",
+        "workspace_or_permission_error": "Check WORKSPACE_ID, RAM permissions, and whether the principal has joined the Bailian workspace.",
         "access_denied_workspace": "Grant the AccessKey principal Bailian workspace permissions for the target WORKSPACE_ID.",
         "invalid_workspace": "Check WORKSPACE_ID and region; the workspace must exist in the selected Bailian endpoint region.",
+        "category_error": "Check whether the requested category_id exists and whether category_type is accepted by this workspace.",
         "invalid_category": "Check category_id/category_type; create or select a valid category before full upload.",
         "invalid_request_model": "Compare SDK request fields with the installed SDK version and official API contract.",
         "endpoint_or_region_error": "Verify endpoint and BAILIAN_REGION alignment, especially cn-beijing versus other regions.",
@@ -703,6 +733,27 @@ def recommended_fix(error_type: str | None) -> str:
         "unexpected_error": "Inspect safe_error fields, then decide whether endpoint, workspace, category, or request model needs adjustment.",
     }
     return mapping.get(error_type or "", "Inspect safe_error fields and avoid retrying full upload until the cause is clear.")
+
+
+def endpoint_for_region(region: str) -> str:
+    return f"bailian.{region}.aliyuncs.com"
+
+
+def make_bailian_config(
+    *,
+    endpoint: str | None = None,
+    region: str | None = None,
+    category_id: str | None = None,
+) -> BailianOfficialConfig:
+    resolved_region = region or DEFAULT_REGION
+    resolved_endpoint = endpoint or endpoint_for_region(resolved_region)
+    return BailianOfficialConfig(
+        region=resolved_region,
+        endpoint=resolved_endpoint,
+        category_id=category_id or DEFAULT_CATEGORY_ID,
+        endpoint_source="explicit" if endpoint else ("region" if region else "official_default"),
+        region_source="explicit" if region else "default",
+    )
 
 
 def _first_present(obj: Any, names: list[str]) -> Any:

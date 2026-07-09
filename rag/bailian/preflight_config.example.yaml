@@ -2,7 +2,9 @@ mode: dry_run
 no_upload: true
 provider: bailian
 region: cn-beijing
+endpoint: bailian.cn-beijing.aliyuncs.com
 workspace_id_env: BAILIAN_WORKSPACE_ID
+official_sdk_workspace_id_env: WORKSPACE_ID
 api_key_env: DASHSCOPE_API_KEY
 knowledge_base_id_env: BAILIAN_KNOWLEDGE_BASE_ID
 max_papers: 3
@@ -37,4 +39,3 @@ retrieval_eval_plan:
   top_k: 3
   citation_required: true
   expected_questions_file: evals/fixtures/rag_expected_questions.json
-

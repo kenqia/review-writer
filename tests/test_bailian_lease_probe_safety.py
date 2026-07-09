@@ -58,6 +58,12 @@ def run_dry_probe() -> None:
             str(DRY_JSON),
             "--output-md",
             str(DRY_MD),
+            "--endpoint",
+            "bailian.cn-beijing.aliyuncs.com",
+            "--region",
+            "cn-beijing",
+            "--category-id",
+            "default",
             "--strict",
         ],
         cwd=REPO_ROOT,
@@ -68,6 +74,9 @@ def run_dry_probe() -> None:
     report = json.loads(DRY_JSON.read_text(encoding="utf-8"))
     assert report["status"] == "dry_run"
     assert report["operation_name"] == "ApplyFileUploadLease"
+    assert report["endpoint"] == "bailian.cn-beijing.aliyuncs.com"
+    assert report["region"] == "cn-beijing"
+    assert report["category_id"] == "default"
     assert report["lease_obtained"] is False
     assert report["upload_attempted"] is False
     assert report["knowledge_base_created"] is False
@@ -88,6 +97,12 @@ def run_missing_env_probe() -> None:
             str(MISSING_ENV_JSON),
             "--output-md",
             "/tmp/bailian_lease_probe_test_missing_env.md",
+            "--endpoint",
+            "bailian.cn-beijing.aliyuncs.com",
+            "--region",
+            "cn-beijing",
+            "--category-id",
+            "default",
             "--allow-network",
             "--use-official-sdk",
         ],

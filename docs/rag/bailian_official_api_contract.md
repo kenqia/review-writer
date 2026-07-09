@@ -44,6 +44,23 @@ BAILIAN_MODEL
 
 Do not write these values into the repo, `.env`, shell rc files, logs, or reports. Reports only show `SET` / `MISSING`.
 
+## Endpoint And Region
+
+The official Python examples use:
+
+```text
+bailian.cn-beijing.aliyuncs.com
+```
+
+The repo now makes endpoint selection explicit:
+
+1. `--endpoint` wins.
+2. Without `--endpoint`, `--region` builds `bailian.<region>.aliyuncs.com`.
+3. Without `--region`, the default is `cn-beijing`.
+4. The default endpoint is `bailian.cn-beijing.aliyuncs.com`.
+
+`WORKSPACE_ID` is the official SDK management workspace variable. `BAILIAN_WORKSPACE_ID` remains only for older no-upload preflight/config compatibility and is not used for official SDK management calls.
+
 ## Official Flow
 
 The documented KB-management flow includes:
@@ -99,6 +116,9 @@ python scripts/rag/bailian_small_kb_pilot.py \
   --questions evals/fixtures/rag_expected_questions.json \
   --output-json /tmp/bailian_small_kb_pilot_real.json \
   --output-md /tmp/bailian_small_kb_pilot_real.md \
+  --endpoint bailian.cn-beijing.aliyuncs.com \
+  --region cn-beijing \
+  --category-id default \
   --allow-network \
   --allow-upload \
   --use-official-sdk \
