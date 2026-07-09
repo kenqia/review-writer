@@ -1,0 +1,49 @@
+{
+  "fixture_id": "clean_3paper_allene_rag_expected_questions_v1",
+  "status": "draft_for_no_upload_preflight",
+  "questions": [
+    {
+      "question_id": "RAG-Q001",
+      "query": "Which clean draft paper should be consulted for the broad allene-based chiral ligand framing?",
+      "expected_paper_ids": ["F3I"],
+      "expected_reason": "F3I is the designated overview/framing paper in the clean draft pack.",
+      "answer_must_cite": true
+    },
+    {
+      "question_id": "RAG-Q002",
+      "query": "Which paper is expected to support discussion of catalytic application details?",
+      "expected_paper_ids": ["F47A"],
+      "expected_reason": "F47A carries the method/application role in the clean draft data.",
+      "answer_must_cite": true
+    },
+    {
+      "question_id": "RAG-Q003",
+      "query": "Which selected paper has the strongest metadata warning and must be handled conservatively?",
+      "expected_paper_ids": ["P403"],
+      "expected_reason": "P403 retains missing metadata/source-warning notes and is not trusted for scientific quality.",
+      "answer_must_cite": true
+    },
+    {
+      "question_id": "RAG-Q004",
+      "query": "Which papers should be cited when answering a comparison question across the whole clean draft pack?",
+      "expected_paper_ids": ["F3I", "F47A", "P403"],
+      "expected_reason": "A cross-paper answer should retrieve all three clean draft records.",
+      "answer_must_cite": true
+    },
+    {
+      "question_id": "RAG-Q005",
+      "query": "Which records are safe for engineering RAG preflight but not final scientific claims?",
+      "expected_paper_ids": ["F3I", "F47A", "P403"],
+      "expected_reason": "All records preserve needs_human_review=true and trusted_for_scientific_quality=false.",
+      "answer_must_cite": true
+    },
+    {
+      "question_id": "RAG-Q006",
+      "query": "Which retrieved item should warn the reviewer before using bibliographic details?",
+      "expected_paper_ids": ["P403"],
+      "expected_reason": "P403 is intentionally kept as a cautionary metadata case.",
+      "answer_must_cite": true
+    }
+  ]
+}
+

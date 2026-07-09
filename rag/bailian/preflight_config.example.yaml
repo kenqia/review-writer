@@ -1,0 +1,40 @@
+mode: dry_run
+no_upload: true
+provider: bailian
+region: cn-beijing
+workspace_id_env: BAILIAN_WORKSPACE_ID
+api_key_env: DASHSCOPE_API_KEY
+knowledge_base_id_env: BAILIAN_KNOWLEDGE_BASE_ID
+max_papers: 3
+max_claim_chars_per_paper: 800
+allowed_fields:
+  - paper_id
+  - title
+  - year
+  - journal
+  - doi_draft
+  - role
+  - claim_draft
+  - figure_note_draft
+  - warning
+blocked_file_types:
+  - pdf
+  - png
+  - jpg
+  - jpeg
+  - webp
+  - raw_mineru_markdown
+  - full_pdf_text
+safety:
+  upload_requires_explicit_user_confirmation: true
+  forbid_local_absolute_paths_in_manifest: true
+  forbid_secrets: true
+  forbid_raw_pdf: true
+  forbid_raw_images: true
+  preserve_needs_human_review: true
+  preserve_trusted_for_scientific_quality_false: true
+retrieval_eval_plan:
+  top_k: 3
+  citation_required: true
+  expected_questions_file: evals/fixtures/rag_expected_questions.json
+

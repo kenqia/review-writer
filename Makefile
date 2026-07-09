@@ -1,4 +1,4 @@
-.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check eval-baseline-check portability-check reality-audit-check clean-3paper-recommend-check clean-3paper-approval-check clean-3paper-pdf-verify-check clean-3paper-biblio-check clean-3paper-biblio-web-check clean-3paper-claims-check clean-3paper-e2e-check clean-3paper-eval-check dashboard-clean-3paper-check release-readiness-check
+.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check eval-baseline-check portability-check reality-audit-check clean-3paper-recommend-check clean-3paper-approval-check clean-3paper-pdf-verify-check clean-3paper-biblio-check clean-3paper-biblio-web-check clean-3paper-claims-check clean-3paper-e2e-check clean-3paper-eval-check dashboard-clean-3paper-check bailian-rag-preflight-check release-readiness-check
 
 PYTHON ?= python3
 REPO_ROOT ?= $(CURDIR)
@@ -193,6 +193,15 @@ clean-3paper-eval-check:
 
 dashboard-clean-3paper-check:
 	$(PYTHON) tests/test_dashboard_clean_3paper_payload.py
+
+bailian-rag-preflight-check:
+	$(PYTHON) tests/test_bailian_preflight.py
+	$(PYTHON) scripts/rag/bailian_preflight.py \
+		--clean-root demo_projects/clean_3paper_allene_review \
+		--config rag/bailian/preflight_config.example.yaml \
+		--output-json /tmp/bailian_rag_preflight.json \
+		--output-md /tmp/bailian_rag_preflight.md \
+		--strict
 
 release-readiness-check:
 	$(MAKE) smoke

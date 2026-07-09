@@ -22,6 +22,8 @@
 !/view/**
 !/review_writer/
 !/review_writer/**
+!/rag/
+!/rag/**
 !/demo_projects/
 !/demo_projects/**
 !/evals/

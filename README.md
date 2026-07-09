@@ -1,2 +1,32 @@
 # review-writer
 
+`review-writer` is an offline-first workflow scaffold for chemistry review writing, QoderWork skill orchestration, deterministic quality gates, provider adapters, and demo/eval harnesses.
+
+Core safety boundary:
+
+- generated paper libraries, PDFs, MinerU outputs, local project outputs, and secrets are external data
+- default checks do not call Qwen, DashScope, MinerU, Bailian, image APIs, or upload files
+- `.env` files and real provider keys must not be committed
+
+Useful gates:
+
+```bash
+make release-readiness-check
+make clean-3paper-e2e-check
+make clean-3paper-eval-check
+make dashboard-clean-3paper-check
+make bailian-rag-preflight-check
+```
+
+## Bailian RAG No-upload Preflight
+
+Phase 6a adds a dry-run preflight for a future Bailian RAG pilot. It only builds and checks a small corpus manifest from `demo_projects/clean_3paper_allene_review`; it does not upload data, create a knowledge base, call Bailian, call Qwen, or read PDFs.
+
+Run:
+
+```bash
+make bailian-rag-preflight-check
+```
+
+The generated manifest is written to `/tmp/bailian_no_upload_corpus_manifest.json` and is intentionally not committed. A real Bailian pilot remains blocked until explicit user authorization in a later phase.
+

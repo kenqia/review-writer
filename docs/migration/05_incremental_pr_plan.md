@@ -882,6 +882,59 @@ Next:
 - Phase 5l: user-facing review pack and manual acceptance.
 - Phase 6a: Bailian RAG no-upload preflight.
 
+## PR 18: Bailian RAG No-upload Preflight
+
+目标：
+
+- 为后续百炼 RAG 小样本 pilot 建立上传前的离线门禁。
+- 从 clean 3-paper draft package 生成极小 corpus manifest。
+- 明确保留 `needs_human_review=true` 和 `trusted_for_scientific_quality=false`。
+- 禁止在 Phase 6a 中上传文件、创建知识库、调用 Qwen/百炼/MinerU/生图 API。
+
+Implemented Phase 6a files:
+
+```text
+rag/README.md
+rag/bailian/README.md
+rag/bailian/data_policy.md
+rag/bailian/preflight_config.example.yaml
+rag/bailian/no_upload_corpus_manifest.example.json
+scripts/rag/bailian_preflight.py
+tests/test_bailian_preflight.py
+evals/fixtures/rag_expected_questions.json
+docs/rag/bailian_rag_preflight.md
+docs/pr/phase6a_bailian_rag_preflight_pr.md
+```
+
+Gate:
+
+```bash
+make bailian-rag-preflight-check
+```
+
+Current result:
+
+- no-upload preflight: pass
+- selected_count: 3
+- allowed_items: F3I, F47A, P403
+- blocked_items: 0
+- temporary manifest: `/tmp/bailian_no_upload_corpus_manifest.json`
+
+Safety boundary:
+
+- no PDF read
+- no raw image or raw MinerU markdown included
+- no local absolute paths in the generated manifest
+- no secret-like values in the generated manifest
+- no Qwen, Bailian, MinerU, or image API call
+- no upload
+- no knowledge-base creation
+
+Next:
+
+- Phase 6b: optional small Bailian KB pilot only after explicit user authorization.
+- Phase 6c: retrieval-answer eval with citation checks, still gated by data policy.
+
 ## 风险
 
 - PR 过大导致 review 困难。
