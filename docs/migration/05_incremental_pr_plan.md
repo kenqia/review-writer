@@ -1032,6 +1032,53 @@ Next:
 
 - Phase 6d: retrieval QA after an actual small KB exists, either via reviewed API contract or manual console run.
 
+## PR 21: Official Bailian SDK-gated Pilot Path
+
+目标：
+
+- 明确百炼 KB 管理 API 不等同于 Qwen OpenAI-compatible / DashScope key。
+- 增加官方 SDK dependency/env gate。
+- 生成 `/tmp/bailian_small_kb_upload_payload.md` 作为唯一允许上传的 sanitized markdown。
+- 增加 `--use-official-sdk` 三重门控路径。
+- 缺 SDK/env/API 合同时 fail closed，不上传、不建库。
+
+Implemented Phase 6c-bis files:
+
+```text
+review_writer/retrieval/bailian_official_client.py
+docs/rag/bailian_official_api_contract.md
+```
+
+Updated:
+
+```text
+scripts/rag/bailian_small_kb_pilot.py
+scripts/rag/build_bailian_small_kb_payload.py
+tests/test_bailian_small_kb_pilot_safety.py
+Makefile
+README.md
+docs/rag/bailian_small_kb_pilot_runbook.md
+docs/pr/phase6c_bailian_small_kb_pilot_pr.md
+```
+
+Gate:
+
+```bash
+make bailian-small-kb-official-sdk-dry-run
+```
+
+Current result:
+
+- official SDK dry-run: pass
+- official SDK modules: checked, no values printed
+- KB required env: checked as SET/MISSING only
+- real upload: not run by default
+- KB id: not written to repo
+
+Next:
+
+- Real SDK pilot only after exact authorization: `allow official bailian sdk pilot`.
+
 ## 风险
 
 - PR 过大导致 review 困难。

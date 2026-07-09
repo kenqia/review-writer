@@ -19,6 +19,7 @@ make bailian-rag-preflight-check
 make rag-local-retrieval-check
 make bailian-small-kb-payload-check
 make bailian-small-kb-pilot-dry-run
+make bailian-small-kb-official-sdk-dry-run
 ```
 
 ## Bailian RAG No-upload Preflight
@@ -42,3 +43,5 @@ make rag-local-retrieval-check
 This check uses token matching only. It does not call Bailian, create a knowledge base, call Qwen, upload files, or mark the clean 3-paper draft as scientifically verified.
 
 Phase 6c adds dry-run gates for a possible Bailian small-KB pilot. Default make targets only build a sanitized `/tmp` payload and verify the pilot wrapper; they do not upload data or create a knowledge base.
+
+Official Bailian KB management uses Alibaba Cloud SDK credentials (`ALIBABA_CLOUD_ACCESS_KEY_ID`, `ALIBABA_CLOUD_ACCESS_KEY_SECRET`, `WORKSPACE_ID`), not only `DASHSCOPE_API_KEY`. The official SDK path is gated behind `--use-official-sdk` plus explicit network/upload flags and stays dry-run in default checks.

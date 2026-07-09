@@ -13,6 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MANIFEST = Path("/tmp/bailian_no_upload_corpus_manifest.json")
 DEFAULT_PREFLIGHT = REPO_ROOT / "scripts/rag/bailian_preflight.py"
 DEFAULT_CONFIG = REPO_ROOT / "rag/bailian/preflight_config.example.yaml"
+DEFAULT_UPLOAD_MD = Path("/tmp/bailian_small_kb_upload_payload.md")
 MAX_TEXT_CHARS = 1200
 FORBIDDEN_RE = re.compile(
     r"(\.pdf\b|\.png\b|\.jpe?g\b|\.webp\b|raw_mineru_markdown|full_pdf_text|"
@@ -61,7 +62,9 @@ def build_payload(clean_root: Path, output_jsonl: Path, output_md: Path, output_
     output_jsonl.parent.mkdir(parents=True, exist_ok=True)
     output_jsonl.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in records), encoding="utf-8")
     output_md.parent.mkdir(parents=True, exist_ok=True)
-    output_md.write_text(render_payload_md(records), encoding="utf-8")
+    rendered_md = render_payload_md(records)
+    output_md.write_text(rendered_md, encoding="utf-8")
+    DEFAULT_UPLOAD_MD.write_text(rendered_md, encoding="utf-8")
     report = {
         "status": "fail" if blocked else "pass",
         "record_count": len(records),
@@ -84,6 +87,7 @@ def build_payload(clean_root: Path, output_jsonl: Path, output_md: Path, output_
         ],
         "output_jsonl": str(output_jsonl),
         "output_md": str(output_md),
+        "official_upload_md": str(DEFAULT_UPLOAD_MD),
         "safety": {
             "pdf": "not_included",
             "raw_image": "not_included",
@@ -206,4 +210,3 @@ def render_payload_md(records: list[dict[str, Any]]) -> str:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

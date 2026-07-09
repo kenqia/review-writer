@@ -1,4 +1,4 @@
-.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check eval-baseline-check portability-check reality-audit-check clean-3paper-recommend-check clean-3paper-approval-check clean-3paper-pdf-verify-check clean-3paper-biblio-check clean-3paper-biblio-web-check clean-3paper-claims-check clean-3paper-e2e-check clean-3paper-eval-check dashboard-clean-3paper-check bailian-rag-preflight-check rag-local-retrieval-check bailian-small-kb-payload-check bailian-small-kb-pilot-dry-run release-readiness-check
+.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check eval-baseline-check portability-check reality-audit-check clean-3paper-recommend-check clean-3paper-approval-check clean-3paper-pdf-verify-check clean-3paper-biblio-check clean-3paper-biblio-web-check clean-3paper-claims-check clean-3paper-e2e-check clean-3paper-eval-check dashboard-clean-3paper-check bailian-rag-preflight-check rag-local-retrieval-check bailian-small-kb-payload-check bailian-small-kb-pilot-dry-run bailian-small-kb-official-sdk-dry-run release-readiness-check
 
 PYTHON ?= python3
 REPO_ROOT ?= $(CURDIR)
@@ -228,6 +228,16 @@ bailian-small-kb-pilot-dry-run:
 		--questions evals/fixtures/rag_expected_questions.json \
 		--output-json /tmp/bailian_small_kb_pilot_dry.json \
 		--output-md /tmp/bailian_small_kb_pilot_dry.md \
+		--strict
+
+bailian-small-kb-official-sdk-dry-run:
+	$(PYTHON) tests/test_bailian_small_kb_pilot_safety.py
+	$(PYTHON) scripts/rag/bailian_small_kb_pilot.py \
+		--payload-jsonl /tmp/bailian_small_kb_payload.jsonl \
+		--questions evals/fixtures/rag_expected_questions.json \
+		--output-json /tmp/bailian_small_kb_pilot_official_sdk_dry.json \
+		--output-md /tmp/bailian_small_kb_pilot_official_sdk_dry.md \
+		--use-official-sdk \
 		--strict
 
 release-readiness-check:

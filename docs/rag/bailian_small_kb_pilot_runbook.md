@@ -4,6 +4,8 @@
 
 Phase 6c prepares a controlled small-KB pilot path. The repo can build a sanitized payload and dry-run the pilot wrapper. It does not implement an automatic Bailian KB upload because the KB API contract is not encoded in this repo.
 
+Phase 6c-bis adds an official SDK-gated path. It checks official SDK dependencies and official KB-management environment variables, but still does not upload unless the user explicitly authorizes `allow official bailian sdk pilot`.
+
 ## Uploaded Fields Allowed
 
 Only the following fields may be uploaded in a future manual or API-backed pilot:
@@ -44,6 +46,7 @@ Dry-run gates:
 ```bash
 make bailian-small-kb-payload-check
 make bailian-small-kb-pilot-dry-run
+make bailian-small-kb-official-sdk-dry-run
 ```
 
 Controlled real-mode wrapper:
@@ -60,6 +63,26 @@ python scripts/rag/bailian_small_kb_pilot.py \
 ```
 
 If the API contract is not available, the wrapper returns `blocked_manual_console_required` and does not upload anything.
+
+Official SDK-gated real pilot:
+
+```bash
+python scripts/rag/bailian_small_kb_pilot.py \
+  --payload-jsonl /tmp/bailian_small_kb_payload.jsonl \
+  --questions evals/fixtures/rag_expected_questions.json \
+  --output-json /tmp/bailian_small_kb_pilot_real.json \
+  --output-md /tmp/bailian_small_kb_pilot_real.md \
+  --allow-network \
+  --allow-upload \
+  --use-official-sdk \
+  --strict
+```
+
+This command must not be run until the user replies exactly:
+
+```text
+allow official bailian sdk pilot
+```
 
 Current Phase 6c real-mode wrapper result:
 

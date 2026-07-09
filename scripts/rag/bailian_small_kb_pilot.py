@@ -9,7 +9,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
-FORBIDDEN_RE = re.compile(r"(\.pdf\b|\.png\b|\.jpe?g\b|\.webp\b|/home/|/mnt/|[A-Za-z]:\\Users\\|api[_-]?key|token|secret|sk-)", re.I)
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from review_writer.retrieval.bailian_official_client import BailianOfficialClient
+
+OFFICIAL_UPLOAD_MD = Path("/tmp/bailian_small_kb_upload_payload.md")
+FORBIDDEN_RE = re.compile(r"(\.pdf\b|\.png\b|\.jpe?g\b|\.webp\b|/home/|/mnt/|[A-Za-z]:\\Users\\|api[_-]?key\s*[:=]|token\s*[:=]|secret\s*[:=]|sk-)", re.I)
 
 
 def main() -> int:
@@ -31,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-md", type=Path, default=Path("/tmp/bailian_small_kb_pilot_dry.md"))
     parser.add_argument("--allow-network", action="store_true")
     parser.add_argument("--allow-upload", action="store_true")
+    parser.add_argument("--use-official-sdk", action="store_true")
     parser.add_argument("--cleanup", action="store_true")
     parser.add_argument("--strict", action="store_true")
     return parser.parse_args()
@@ -38,15 +46,31 @@ def parse_args() -> argparse.Namespace:
 
 def run_pilot(args: argparse.Namespace) -> dict[str, Any]:
     payload_status = validate_payload(args.payload_jsonl)
+    upload_md_status = build_upload_markdown(args.payload_jsonl, OFFICIAL_UPLOAD_MD)
     questions_status = validate_questions(args.questions)
     env = safe_env_presence()
+    official = BailianOfficialClient()
     base = {
         "payload_jsonl": str(args.payload_jsonl),
+        "official_upload_md": str(OFFICIAL_UPLOAD_MD),
         "questions": str(args.questions),
         "env": env,
+        "official_sdk": {
+            "enabled": bool(args.use_official_sdk),
+            "dependency_presence": official.dependency_presence(),
+            "required_steps": [
+                "ApplyFileUploadLease",
+                "upload file to pre-signed URL",
+                "AddFile",
+                "DescribeFile until parse success",
+                "CreateIndex",
+                "SubmitIndexJob",
+                "GetIndexJobStatus",
+            ],
+        },
         "record_count": payload_status["record_count"],
         "payload_status": payload_status["status"],
-        "payload_errors": payload_status["errors"],
+        "payload_errors": payload_status["errors"] + upload_md_status["errors"],
         "retrieval_status": "not_run",
         "recall_at_1": None,
         "recall_at_3": None,
@@ -64,7 +88,7 @@ def run_pilot(args: argparse.Namespace) -> dict[str, Any]:
             "knowledge_base": "not_created",
         },
     }
-    if payload_status["status"] == "fail" or questions_status["status"] == "fail":
+    if payload_status["status"] == "fail" or upload_md_status["status"] == "fail" or questions_status["status"] == "fail":
         return {**base, "status": "fail", "error_type": "upload_rejected", "summary": "payload or question validation failed"}
     if not args.allow_network or not args.allow_upload:
         return {
@@ -73,9 +97,25 @@ def run_pilot(args: argparse.Namespace) -> dict[str, Any]:
             "error_type": None,
             "summary": "dry-run only; pass both --allow-network and --allow-upload for real pilot",
         }
-    missing = [name for name in ["DASHSCOPE_API_KEY", "BAILIAN_WORKSPACE_ID"] if env[name] == "MISSING"]
+    if args.use_official_sdk:
+        official_report = official.run_small_kb_pilot(
+            upload_file=OFFICIAL_UPLOAD_MD,
+            allow_network=args.allow_network,
+            allow_upload=args.allow_upload,
+        )
+        return {
+            **base,
+            "status": official_report["status"],
+            "error_type": official_report.get("error_type"),
+            "summary": official_report["summary"],
+            "retrieval_status": official_report.get("retrieval_status", "blocked_retrieval_api_contract_required"),
+            "kb_id_redacted_or_tmp_only": official_report.get("kb_id_redacted_or_tmp_only"),
+            "cleanup_recommendation": "No KB was created. If a manual KB is created, delete it in the Bailian console after evaluation.",
+            "official_sdk_result": official_report,
+        }
+    missing = [name for name in ["DASHSCOPE_API_KEY", "BAILIAN_WORKSPACE_ID"] if env.get(name) == "MISSING"]
     if missing:
-        return {**base, "status": "fail", "error_type": "missing_env", "summary": "required env is missing; values were not printed"}
+        return {**base, "status": "fail", "error_type": "missing_env", "summary": "legacy placeholder env is missing; values were not printed"}
     return {
         **base,
         "status": "blocked_manual_console_required",
@@ -113,6 +153,37 @@ def validate_payload(path: Path) -> dict[str, Any]:
     return {"status": "fail" if errors else "pass", "record_count": len(rows), "errors": errors}
 
 
+def build_upload_markdown(jsonl_path: Path, output_path: Path) -> dict[str, Any]:
+    if not jsonl_path.exists():
+        return {"status": "fail", "errors": [f"missing payload jsonl: {jsonl_path}"]}
+    rows = [json.loads(line) for line in jsonl_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    lines = ["# Review Writer Clean 3-Paper Small KB Payload", ""]
+    for row in rows:
+        meta = row.get("metadata", {})
+        lines.extend(
+            [
+                f"## {row.get('paper_id')}: {row.get('title')}",
+                "",
+                f"paper_id: {row.get('paper_id')}",
+                f"title: {row.get('title')}",
+                f"year: {meta.get('year')}",
+                f"journal: {meta.get('journal')}",
+                f"role: {meta.get('role')}",
+                f"needs_human_review: {row.get('needs_human_review')}",
+                f"trusted_for_scientific_quality: {row.get('trusted_for_scientific_quality')}",
+                "",
+                str(row.get("compact_text") or ""),
+                "",
+            ]
+        )
+    text = "\n".join(lines)
+    if FORBIDDEN_RE.search(text):
+        return {"status": "fail", "errors": ["official upload markdown contains forbidden content"]}
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(text, encoding="utf-8")
+    return {"status": "pass", "errors": [], "path": str(output_path)}
+
+
 def validate_questions(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {"status": "fail", "errors": [f"missing questions: {path}"]}
@@ -125,6 +196,9 @@ def validate_questions(path: Path) -> dict[str, Any]:
 
 def safe_env_presence() -> dict[str, str]:
     return {
+        "ALIBABA_CLOUD_ACCESS_KEY_ID": "SET" if os.environ.get("ALIBABA_CLOUD_ACCESS_KEY_ID") else "MISSING",
+        "ALIBABA_CLOUD_ACCESS_KEY_SECRET": "SET" if os.environ.get("ALIBABA_CLOUD_ACCESS_KEY_SECRET") else "MISSING",
+        "WORKSPACE_ID": "SET" if os.environ.get("WORKSPACE_ID") else "MISSING",
         "DASHSCOPE_API_KEY": "SET" if os.environ.get("DASHSCOPE_API_KEY") else "MISSING",
         "BAILIAN_WORKSPACE_ID": "SET" if os.environ.get("BAILIAN_WORKSPACE_ID") else "MISSING",
         "BAILIAN_REGION": "SET" if os.environ.get("BAILIAN_REGION") else "MISSING_DEFAULT_CN_BEIJING",
@@ -147,6 +221,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- status: `{report['status']}`",
         f"- error_type: `{report.get('error_type')}`",
         f"- summary: {report['summary']}",
+        f"- official_upload_md: `{report.get('official_upload_md')}`",
         f"- record_count: `{report['record_count']}`",
         f"- retrieval_status: `{report['retrieval_status']}`",
         f"- recall@1: `{report['recall_at_1']}`",
@@ -165,4 +240,3 @@ def render_markdown(report: dict[str, Any]) -> str:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
