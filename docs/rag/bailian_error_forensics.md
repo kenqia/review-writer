@@ -130,3 +130,36 @@ The safe result was:
 - knowledge base created: `false`
 
 Since the explicit official endpoint still failed before a lease was obtained, do not retry the full pilot. Next debugging should check network/proxy reachability to the Bailian OpenAPI endpoint, account-region/workspace binding, and whether the installed SDK expects another endpoint form for this account.
+
+## Phase 6c-sept Transport Split
+
+Phase 6c-sept separates the problem into two smaller questions:
+
+1. Is `bailian.cn-beijing.aliyuncs.com:443` reachable from WSL/conda at DNS, TCP, and TLS layers?
+2. Does the official SDK minimal `ApplyFileUploadLeaseRequest` fail with a service response or before a service response?
+
+The endpoint diagnostics are unauthenticated and do not call Bailian business APIs. The minimal lease repro uses only fixed dummy file metadata and does not upload.
+
+Decision rule:
+
+- DNS/TCP/TLS failure: fix WSL/conda/proxy/DNS/TLS first.
+- DNS/TCP/TLS success + SDK failure without request id: inspect proxy/SDK endpoint transport or endpoint form.
+- SDK failure with request id: inspect RAM permission, workspace, category, or request model.
+- SDK lease success: only then consider a reviewed full pilot retry.
+
+## Phase 6c-sept Real Result
+
+Endpoint diagnostics showed DNS/TCP/TLS success against `bailian.cn-beijing.aliyuncs.com:443`. The unauthenticated HTTPS root probe failed without a status code, likely because of proxy or endpoint root behavior.
+
+The official minimal lease repro still failed before a service response:
+
+- status: `fail`
+- error_type: `transport_error`
+- exception_class: `UnretryableException`
+- request_id: not present
+- status_code: not present
+- lease_obtained: `false`
+- upload attempted: `false`
+- knowledge base created: `false`
+
+This argues against payload/PDF/Qwen/MinerU causes. The next hypothesis is SDK transport/proxy handling or endpoint form used by the official SDK in this conda environment.

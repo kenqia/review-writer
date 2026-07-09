@@ -658,9 +658,10 @@ def classify_exception(exc: Exception) -> str:
     status_code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
     if isinstance(status_code, int):
         return _classify_status_code(status_code)
-    text = f"{type(exc).__name__} {str(exc)}".lower()
-    if "timeout" in text or "timed out" in text:
-        return "timeout"
+    request_id = _first_present(exc, ["request_id", "requestId", "RequestId"])
+    text = _exception_chain_text(exc).lower()
+    if not request_id and _has_transport_signal(text):
+        return "transport_error"
     if "invalidaccesskey" in text or "invalid access key" in text:
         return "auth_or_permission_error"
     if "forbidden" in text or "401" in text or "unauthorized" in text:
@@ -693,9 +694,22 @@ def safe_error_from_exception(
     data = _safe_get(exc, "data")
     if data is None:
         data = _safe_get(exc, "body", "data")
+    cause = getattr(exc, "__cause__", None)
+    context = getattr(exc, "__context__", None)
     return {
         "error_type": error_type or classify_exception(exc),
         "exception_class": type(exc).__name__,
+        "exception_module": type(exc).__module__,
+        "repr_redacted": redact_sensitive(repr(exc)),
+        "str_redacted": redact_sensitive(str(exc)),
+        "cause_class": type(cause).__name__ if cause else None,
+        "cause_message_redacted": redact_sensitive(str(cause)) if cause else None,
+        "context_class": type(context).__name__ if context else None,
+        "context_message_redacted": redact_sensitive(str(context)) if context else None,
+        "args_count": len(getattr(exc, "args", []) or []),
+        "has_code_attr": hasattr(exc, "code"),
+        "has_status_code_attr": hasattr(exc, "status_code"),
+        "has_request_id_attr": any(hasattr(exc, name) for name in ["request_id", "requestId", "RequestId"]),
         "error_code": _first_present(exc, ["error_code", "code", "errorCode"]),
         "status_code": _first_present(exc, ["status_code", "statusCode", "status"]),
         "request_id": _first_present(exc, ["request_id", "requestId", "RequestId"]),
@@ -717,6 +731,7 @@ def redact_sensitive(text: str) -> str:
 
 def recommended_fix(error_type: str | None) -> str:
     mapping = {
+        "transport_error": "Check WSL/conda DNS, proxy, TCP/TLS reachability, and endpoint connectivity before changing request fields.",
         "auth_or_permission_error": "Verify Alibaba Cloud AccessKey status, RAM permissions, and workspace access; do not paste key values into logs.",
         "auth_error_401": "Verify Alibaba Cloud AccessKey permissions and that the key is active; do not paste key values into logs.",
         "workspace_or_permission_error": "Check WORKSPACE_ID, RAM permissions, and whether the principal has joined the Bailian workspace.",
@@ -733,6 +748,33 @@ def recommended_fix(error_type: str | None) -> str:
         "unexpected_error": "Inspect safe_error fields, then decide whether endpoint, workspace, category, or request model needs adjustment.",
     }
     return mapping.get(error_type or "", "Inspect safe_error fields and avoid retrying full upload until the cause is clear.")
+
+
+def _exception_chain_text(exc: Exception) -> str:
+    parts = [type(exc).__name__, str(exc), repr(exc)]
+    for chained in [getattr(exc, "__cause__", None), getattr(exc, "__context__", None)]:
+        if chained:
+            parts.extend([type(chained).__name__, str(chained), repr(chained)])
+    return " ".join(parts)
+
+
+def _has_transport_signal(text: str) -> bool:
+    signals = [
+        "dns",
+        "name or service not known",
+        "temporary failure in name resolution",
+        "connection refused",
+        "connection reset",
+        "connect timeout",
+        "read timed out",
+        "timeout",
+        "proxy",
+        "ssl",
+        "tls",
+        "certificate",
+        "network is unreachable",
+    ]
+    return any(signal in text for signal in signals)
 
 
 def endpoint_for_region(region: str) -> str:

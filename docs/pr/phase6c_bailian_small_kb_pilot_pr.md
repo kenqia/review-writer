@@ -99,6 +99,26 @@ Authorized explicit-endpoint reprobe result:
 - upload: not attempted
 - knowledge base: not created
 
+Phase 6c-sept transport diagnostics:
+
+- Added unauthenticated endpoint diagnostics for DNS/TCP/TLS/HTTPS-root behavior.
+- Added official-minimal `ApplyFileUploadLease` repro that bypasses project client wrappers.
+- Minimal repro uses fixed dummy file metadata only and does not upload.
+- SDK safe errors now include exception module, redacted repr/str, cause/context, arg count, and attribute-presence booleans.
+- No default check uses credentials or uploads files.
+
+Authorized Phase 6c-sept result:
+
+- endpoint diagnostics: DNS/TCP/TLS pass for `bailian.cn-beijing.aliyuncs.com:443`
+- HTTPS root probe: failed without status code, likely proxy or endpoint-root behavior
+- minimal lease repro: `fail`
+- error type: `transport_error`
+- exception class: `UnretryableException`
+- request id/status code: not present
+- lease obtained: `false`
+- upload: not attempted
+- knowledge base: not created
+
 Implemented official SDK lifecycle:
 
 - ApplyFileUploadLease

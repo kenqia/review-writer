@@ -1265,6 +1265,64 @@ Next:
 
 - Check endpoint reachability, workspace-region binding, account permissions, and SDK endpoint expectations before any full pilot retry.
 
+## PR 26: Bailian Transport Diagnostics And Minimal Lease Repro
+
+目标：
+
+- 不重跑 full pilot。
+- 将问题拆成 endpoint transport 与 official SDK minimal lease repro。
+- endpoint diagnostics 不带认证、不调用业务 API。
+- minimal lease repro 只执行官方第一步 `ApplyFileUploadLease`，不上传、不 AddFile、不建索引。
+- SDK safe error 增加 cause/context/repr/attribute-presence 脱敏字段。
+
+Implemented Phase 6c-sept files:
+
+```text
+scripts/rag/bailian_endpoint_diagnostics.py
+scripts/rag/bailian_minimal_lease_repro.py
+tests/test_bailian_endpoint_diagnostics.py
+tests/test_bailian_minimal_lease_repro_safety.py
+docs/rag/bailian_transport_diagnostics.md
+```
+
+Updated:
+
+```text
+review_writer/retrieval/bailian_official_client.py
+scripts/rag/bailian_lease_probe.py
+Makefile
+docs/rag/bailian_error_forensics.md
+docs/pr/phase6c_bailian_small_kb_pilot_pr.md
+```
+
+Gates:
+
+```bash
+make bailian-endpoint-diagnostics-check
+make bailian-minimal-lease-repro-dry-run
+```
+
+Decision rule:
+
+- Endpoint diagnostics fail: fix WSL/conda/proxy/DNS/TLS.
+- Endpoint diagnostics pass but minimal lease fails without request id: inspect SDK endpoint/transport/proxy behavior.
+- Minimal lease fails with request id: inspect workspace, permission, category, or request model.
+- Minimal lease succeeds: consider one reviewed full pilot retry.
+
+Current result:
+
+- endpoint diagnostics: DNS/TCP/TLS pass
+- HTTPS root probe: failed without status code, likely proxy or endpoint-root behavior
+- official minimal lease repro: `fail`
+- error type: `transport_error`
+- exception class: `UnretryableException`
+- request id/status code: not present
+- no lease obtained, no upload, no knowledge base
+
+Next:
+
+- Investigate conda/SDK proxy transport and SDK endpoint expectations before modifying workspace/category/request assumptions.
+
 ## 风险
 
 - PR 过大导致 review 困难。
