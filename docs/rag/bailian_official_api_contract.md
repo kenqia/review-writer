@@ -77,6 +77,22 @@ GetIndexJobStatus
 
 This repo implements the official SDK-gated lifecycle behind explicit real-run flags. Default checks still dry-run and do not upload or create a knowledge base.
 
+## Current Request Contract
+
+Current automation is aligned to the installed official SDK and the current public API guide:
+
+- Endpoint: `bailian.cn-beijing.aliyuncs.com`
+- Workspace variable: `WORKSPACE_ID`
+- Category path parameter: `default` unless a discovered category is explicitly selected
+- Category type: `UNSTRUCTURED`
+- Parser: `DASHSCOPE_DOCMIND` unless manual success evidence proves a different parser is required
+- Upload lease request: file name, byte size, and MD5 are calculated from an immutable local byte snapshot
+- Upload request: uses lease `param.method` and only lease-returned `Content-Type` / `X-bailian-extra` headers when present
+- CreateIndex: short `name` of 20 characters or fewer, `structure_type=unstructured`, `source_type=DATA_CENTER_FILE`, `sink_type=BUILT_IN`, `document_ids=[file_id]`
+- Rerank fields: omitted by default; sent only under explicit configuration
+
+Historical `sink_type=DEFAULT`, endpoint-form, proxy, and category guesses are kept only as troubleshooting history in the error-forensics docs. They are not the current recommendation.
+
 ## Supported Now
 
 - sanitized upload markdown generation at `/tmp/bailian_small_kb_upload_payload.md`
@@ -85,6 +101,8 @@ This repo implements the official SDK-gated lifecycle behind explicit real-run f
 - dry-run official SDK path
 - fail-closed behavior for missing SDK/env/API contract
 - official SDK request model calls for upload lease, add file, parse polling, index creation, index job polling, retrieval, and reviewed cleanup
+- upload integrity telemetry: lease file name, byte size, MD5 prefix, upload method source, header presence, uploaded byte count, local post-upload size, and local MD5 match
+- parse failure diagnostics from `DescribeFile`, including status, file type, parser, category type, parse-message presence, and a safe classification
 - KB id policy: `/tmp` only, never repo
 
 ## Still Gated
@@ -137,7 +155,9 @@ If a KB is created manually or by the official SDK pilot:
 
 1. Save the KB id only under `/tmp`.
 2. Run retrieval/eval.
-3. Delete the KB from Bailian console or the reviewed cleanup path:
+3. Delete the KB/index through the reviewed cleanup path or console.
+
+Index cleanup path:
 
 ```bash
 python scripts/rag/bailian_small_kb_pilot.py \
@@ -151,3 +171,21 @@ python scripts/rag/bailian_small_kb_pilot.py \
 ```
 
 4. Confirm no PDFs, raw images, full markdown, local paths, or secrets were uploaded.
+
+Orphan application-data file cleanup path:
+
+```bash
+python scripts/rag/bailian_cleanup_orphan_file.py \
+  --report-json /tmp/bailian_small_kb_pilot_real.json \
+  --output-json /tmp/bailian_orphan_file_cleanup.json \
+  --output-md /tmp/bailian_orphan_file_cleanup.md \
+  --endpoint bailian.cn-beijing.aliyuncs.com \
+  --region cn-beijing \
+  --category-id default \
+  --transport-mode no_proxy \
+  --allow-network \
+  --use-official-sdk \
+  --strict
+```
+
+This command never prints the file id. It only reports whether an id was present and whether `DeleteFile` succeeded.

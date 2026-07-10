@@ -26,6 +26,7 @@ REQUIRED_ENV = [
 DEFAULT_REGION = "cn-beijing"
 DEFAULT_CATEGORY_ID = "default"
 DEFAULT_CATEGORY_TYPE = "UNSTRUCTURED"
+DEFAULT_SINK_TYPE = "BUILT_IN"
 ALLOWED_RERANK_MODES = {"qa", "similar", "custom"}
 SMOKE_FACT = "review-writer Phase 6c smoke test"
 TRANSPORT_MODES = ["inherited_proxy", "no_proxy", "explicit_proxy"]
@@ -38,6 +39,8 @@ PROXY_ENV_NAMES = [
     "all_proxy",
 ]
 OFFICIAL_UPLOAD_MD = Path("/tmp/bailian_small_kb_upload_payload.md")
+OFFICIAL_UPLOAD_TXT = Path("/tmp/review_writer_bailian_smoke.txt")
+OFFICIAL_UPLOAD_MD_CANDIDATE = Path("/tmp/review_writer_bailian_smoke.md")
 MINIMAL_LEASE_PROBE_MD = Path("/tmp/review-writer-lease-probe.md")
 OFFICIAL_STEPS = [
     "ApplyFileUploadLease",
@@ -68,7 +71,7 @@ class BailianOfficialConfig:
     parser: str = "DASHSCOPE_DOCMIND"
     structure_type: str = "unstructured"
     source_type: str = "DATA_CENTER_FILE"
-    sink_type: str = "DEFAULT"
+    sink_type: str = DEFAULT_SINK_TYPE
     rerank_mode: str | None = None
     rerank_instruct: str | None = None
     parse_timeout_seconds: float = 300.0
@@ -117,6 +120,9 @@ class BailianOfficialClient:
             "category_type": self.config.category_type,
             "use_internal_endpoint": self.config.use_internal_endpoint,
             "parser": self.config.parser,
+            "structure_type": self.config.structure_type,
+            "source_type": self.config.source_type,
+            "sink_type": self.config.sink_type,
             "rerank_mode": self.config.rerank_mode,
             "rerank_instruct_present": bool(self.config.rerank_instruct),
             "endpoint_source": self.config.endpoint_source,
@@ -143,14 +149,32 @@ class BailianOfficialClient:
     def get_file_size(self, file_path: Path) -> int:
         return get_file_size(file_path)
 
-    def apply_file_upload_lease(self, client: Any, workspace_id: str, file_path: Path) -> dict[str, Any]:
+    def prepare_upload_artifact(self, file_path: Path) -> dict[str, Any]:
+        data = file_path.read_bytes()
+        digest = hashlib.md5(data).hexdigest()  # noqa: S324 - required by Bailian upload lease API.
+        return {
+            "file_name": file_path.name,
+            "size": len(data),
+            "md5": digest,
+            "md5_prefix": digest[:8],
+            "bytes": data,
+        }
+
+    def apply_file_upload_lease(
+        self,
+        client: Any,
+        workspace_id: str,
+        file_path: Path,
+        artifact: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         from alibabacloud_bailian20231229 import models
 
+        upload_artifact = artifact or self.prepare_upload_artifact(file_path)
         request = models.ApplyFileUploadLeaseRequest(
             category_type=self.config.category_type,
-            file_name=file_path.name,
-            md_5=calculate_md5(file_path),
-            size_in_bytes=str(get_file_size(file_path)),
+            file_name=upload_artifact["file_name"],
+            md_5=upload_artifact["md5"],
+            size_in_bytes=str(upload_artifact["size"]),
             use_internal_endpoint=self.config.use_internal_endpoint,
         )
         response = client.apply_file_upload_lease_with_options(
@@ -165,13 +189,19 @@ class BailianOfficialClient:
         param = _safe_get(data, "param")
         url = _safe_get(param, "url")
         headers = _safe_get(param, "headers") or {}
+        method = _safe_get(param, "method") or _safe_get(param, "Method")
         if not lease_id or not url:
             raise BailianPilotError("upload_rejected", "missing upload lease id or presigned url")
         return {
             "lease_id": lease_id,
             "url": url,
             "headers": headers,
+            "method": method,
             "status": "lease_granted",
+            "lease_file_name": upload_artifact["file_name"],
+            "lease_size": upload_artifact["size"],
+            "lease_md5_prefix": upload_artifact["md5_prefix"],
+            "lease_method_present": bool(method),
         }
 
     def list_categories(self, client: Any, workspace_id: str, category_type: str | None = None) -> dict[str, Any]:
@@ -204,25 +234,50 @@ class BailianOfficialClient:
                     "attempts": attempts,
                 }
 
-    def upload_file_to_presigned_url(self, lease: dict[str, Any], file_path: Path) -> dict[str, Any]:
+    def upload_file_to_presigned_url(
+        self,
+        lease: dict[str, Any],
+        file_path: Path,
+        artifact: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         import requests
 
+        upload_artifact = artifact or self.prepare_upload_artifact(file_path)
         raw_headers = lease.get("headers") or {}
-        headers = {
-            "Content-Type": raw_headers.get("Content-Type", "text/markdown; charset=utf-8"),
-        }
-        if raw_headers.get("X-bailian-extra"):
-            headers["X-bailian-extra"] = raw_headers["X-bailian-extra"]
-        with file_path.open("rb") as handle:
-            response = requests.put(
-                lease["url"],
-                data=handle,
-                headers=headers,
-                timeout=self.config.request_timeout_seconds,
-            )
+        headers: dict[str, str] = {}
+        content_type = _header_get(raw_headers, "Content-Type")
+        extra_header = _header_get(raw_headers, "X-bailian-extra")
+        if content_type:
+            headers["Content-Type"] = str(content_type)
+        if extra_header:
+            headers["X-bailian-extra"] = str(extra_header)
+        method = str(lease.get("method") or "PUT").upper()
+        if method not in {"PUT", "POST"}:
+            raise BailianPilotError("upload_rejected", f"unsupported upload method {method}")
+        response = requests.request(
+            method,
+            lease["url"],
+            data=upload_artifact["bytes"],
+            headers=headers,
+            timeout=self.config.request_timeout_seconds,
+        )
         if response.status_code >= 400:
             raise BailianPilotError(_classify_status_code(response.status_code), f"upload status {response.status_code}")
-        return {"status": "uploaded", "http_status": response.status_code}
+        post_upload = self.prepare_upload_artifact(file_path)
+        return {
+            "status": "uploaded",
+            "http_status": response.status_code,
+            "lease_file_name": lease.get("lease_file_name") or upload_artifact["file_name"],
+            "lease_size": lease.get("lease_size") or upload_artifact["size"],
+            "lease_md5_prefix": lease.get("lease_md5_prefix") or upload_artifact["md5_prefix"],
+            "upload_method": method,
+            "upload_method_source": "lease" if lease.get("method") else "fallback_put",
+            "upload_content_type_present": bool(content_type),
+            "upload_extra_header_present": bool(extra_header),
+            "uploaded_byte_count": len(upload_artifact["bytes"]),
+            "post_upload_local_size": post_upload["size"],
+            "post_upload_md5_matches": post_upload["md5"] == upload_artifact["md5"],
+        }
 
     def add_file(self, client: Any, workspace_id: str, lease_id: str) -> dict[str, Any]:
         from alibabacloud_bailian20231229 import models
@@ -256,25 +311,40 @@ class BailianOfficialClient:
             )
             data = _safe_get(response, "body", "data")
             last_status = _safe_get(data, "status") or last_status
+            diagnostics = summarize_describe_file_response(response)
             if last_status == "PARSE_SUCCESS":
-                return {"status": "PARSE_SUCCESS", "attempts": attempts}
+                return {"status": "PARSE_SUCCESS", "attempts": attempts, "parse_diagnostics": diagnostics}
             if last_status in {"PARSE_FAIL", "PARSE_FAILED", "FAIL", "FAILED"}:
                 raise BailianPilotError(
                     "parse_failed",
                     f"parse status {last_status}",
-                    {"parse_status": last_status, "parse_error_present": True},
+                    {
+                        "parse_status": last_status,
+                        "parse_error_present": True,
+                        "parse_diagnostics": diagnostics,
+                        "parse_failure_classification": classify_parse_failure(diagnostics),
+                    },
                 )
             if last_status not in {"INIT", "PARSING", "PARSE_INIT", "PENDING", "RUNNING", "UNKNOWN"}:
                 raise BailianPilotError(
                     "parse_failed",
                     f"parse status {last_status}",
-                    {"parse_status": last_status, "parse_error_present": True},
+                    {
+                        "parse_status": last_status,
+                        "parse_error_present": True,
+                        "parse_diagnostics": diagnostics,
+                        "parse_failure_classification": classify_parse_failure(diagnostics),
+                    },
                 )
             time.sleep(self.config.poll_interval_seconds)
         raise BailianPilotError(
             "timeout",
             f"parse timeout; last status {last_status}",
-            {"parse_status": last_status, "parse_error_present": bool(last_status and last_status != "UNKNOWN")},
+            {
+                "parse_status": last_status,
+                "parse_error_present": bool(last_status and last_status != "UNKNOWN"),
+                "parse_failure_classification": "parse_timeout",
+            },
         )
 
     def create_index(self, client: Any, workspace_id: str, file_id: str) -> dict[str, Any]:
@@ -283,9 +353,31 @@ class BailianOfficialClient:
         kwargs = self.create_index_request_kwargs(file_id)
         request = models.CreateIndexRequest(**kwargs)
         response = client.create_index_with_options(workspace_id, request, {}, self._runtime_options())
-        index_id = _safe_get(response, "body", "data", "id") or _safe_get(response, "body", "data", "index_id")
+        body = _safe_get(response, "body")
+        data = _safe_get(body, "data") or _safe_get(body, "Data")
+        payload = _to_jsonable(data)
+        index_id = (
+            _safe_get(data, "id")
+            or _safe_get(data, "Id")
+            or _safe_get(data, "index_id")
+            or _safe_get(data, "IndexId")
+            or _first_present(payload, ["id", "Id", "index_id", "IndexId"])
+        )
         if not index_id:
-            raise BailianPilotError("index_id_missing", "missing index id")
+            raise BailianPilotError(
+                "index_id_missing",
+                "missing index id",
+                {
+                    "create_index_diagnostics": {
+                        "request_id_present": bool(_safe_get(body, "request_id") or _safe_get(body, "RequestId")),
+                        "success": _safe_get(body, "success") or _safe_get(body, "Success"),
+                        "status": _safe_get(body, "status") or _safe_get(body, "Status"),
+                        "code_present": bool(_safe_get(body, "code") or _safe_get(body, "Code")),
+                        "message_present": bool(_safe_get(body, "message") or _safe_get(body, "Message")),
+                        "data_keys": sorted(payload.keys()) if isinstance(payload, dict) else [],
+                    }
+                },
+            )
         return {"status": "index_created", "index_id": index_id}
 
     def create_index_request_kwargs(self, file_id: str) -> dict[str, Any]:
@@ -295,7 +387,7 @@ class BailianOfficialClient:
         timestamp = time.strftime("%Y%m%d%H%M%S")
         kwargs: dict[str, Any] = {
             "document_ids": [file_id],
-            "name": f"review-writer-clean-3paper-pilot-{timestamp}",
+            "name": f"rw-p6c-{timestamp[-6:]}",
             "source_type": self.config.source_type,
             "sink_type": self.config.sink_type,
             "structure_type": self.config.structure_type,
@@ -311,9 +403,22 @@ class BailianOfficialClient:
 
         request = models.SubmitIndexJobRequest(index_id=index_id)
         response = client.submit_index_job_with_options(workspace_id, request, {}, self._runtime_options())
-        job_id = _safe_get(response, "body", "data", "id")
+        body = _safe_get(response, "body")
+        data = _safe_get(body, "data") or _safe_get(body, "Data")
+        payload = _to_jsonable(data)
+        job_id = (
+            _safe_get(data, "id")
+            or _safe_get(data, "Id")
+            or _safe_get(data, "job_id")
+            or _safe_get(data, "JobId")
+            or _first_present(payload, ["id", "Id", "job_id", "JobId"])
+        )
         if not job_id:
-            raise BailianPilotError("index_failed", "missing index job id")
+            raise BailianPilotError(
+                "index_failed",
+                "missing index job id",
+                {"submit_index_job_data_keys": sorted(payload.keys()) if isinstance(payload, dict) else []},
+            )
         return {"status": "index_job_submitted", "job_id": job_id}
 
     def wait_index_completed(self, client: Any, workspace_id: str, index_id: str, job_id: str) -> dict[str, Any]:
@@ -326,7 +431,14 @@ class BailianOfficialClient:
             attempts += 1
             request = models.GetIndexJobStatusRequest(index_id=index_id, job_id=job_id)
             response = client.get_index_job_status_with_options(workspace_id, request, {}, self._runtime_options())
-            last_status = _safe_get(response, "body", "data", "status") or last_status
+            data = _safe_get(response, "body", "data") or _safe_get(response, "body", "Data")
+            payload = _to_jsonable(data)
+            last_status = (
+                _safe_get(data, "status")
+                or _safe_get(data, "Status")
+                or _first_present(payload, ["status", "Status"])
+                or last_status
+            )
             if last_status == "COMPLETED":
                 return {"status": "COMPLETED", "attempts": attempts}
             if last_status in {"FAILED", "FAIL", "ERROR"}:
@@ -347,7 +459,8 @@ class BailianOfficialClient:
 
         request = models.RetrieveRequest(index_id=index_id, query=query, dense_similarity_top_k=3)
         response = client.retrieve_with_options(workspace_id, request, {}, self._runtime_options())
-        nodes = _safe_get(response, "body", "data", "nodes") or []
+        data = _safe_get(response, "body", "data") or _safe_get(response, "body", "Data")
+        nodes = _safe_get(data, "nodes") or _safe_get(data, "Nodes") or []
         evaluation = evaluate_retrieve_nodes(nodes)
         if not evaluation["nodes_count"]:
             raise BailianPilotError("retrieve_empty_nodes", "retrieve returned no nodes")
@@ -581,6 +694,9 @@ class BailianOfficialClient:
             "manual_cleanup_required": False,
             "parse_status": None,
             "parse_error_present": False,
+            "parse_diagnostics": None,
+            "parse_failure_classification": None,
+            "upload_integrity": None,
             "skipped_because_upstream_parse_failed": False,
             "retrieval_status": "not_run",
             "nodes_count": 0,
@@ -611,6 +727,9 @@ class BailianOfficialClient:
             "created_file_id": None,
             "created_index_id": None,
             "created_job_id": None,
+            "upload_integrity": None,
+            "parse_status": None,
+            "parse_diagnostics": None,
         }
         phase = "create_client"
         operation_name = "create_client"
@@ -634,12 +753,17 @@ class BailianOfficialClient:
                         "index_cleanup": "pass",
                         "created_resource_ids_cleaned": "yes",
                     }
-                if upload_file.resolve() != OFFICIAL_UPLOAD_MD.resolve():
+                allowed_uploads = {
+                    OFFICIAL_UPLOAD_MD.resolve(),
+                    OFFICIAL_UPLOAD_MD_CANDIDATE.resolve(),
+                    OFFICIAL_UPLOAD_TXT.resolve(),
+                }
+                if upload_file.resolve() not in allowed_uploads:
                     return {
                         **base,
                         "status": "fail",
                         "error_type": "upload_rejected",
-                        "summary": "real pilot only allows /tmp/bailian_small_kb_upload_payload.md",
+                        "summary": "real pilot only allows approved /tmp smoke payload files",
                     }
                 if not upload_file.exists():
                     return {
@@ -649,13 +773,15 @@ class BailianOfficialClient:
                         "summary": "upload markdown is missing",
                     }
                 state["network_attempted"] = True
+                upload_artifact = self.prepare_upload_artifact(upload_file)
                 phase = "apply_file_upload_lease"
                 operation_name = "ApplyFileUploadLease"
-                lease = self.apply_file_upload_lease(client, workspace_id, upload_file)
+                lease = self.apply_file_upload_lease(client, workspace_id, upload_file, upload_artifact)
                 state["upload_attempted"] = True
                 phase = "upload_file_to_presigned_url"
-                operation_name = "PUT pre-signed upload URL"
-                upload_result = self.upload_file_to_presigned_url(lease, upload_file)
+                operation_name = "pre-signed upload URL"
+                upload_result = self.upload_file_to_presigned_url(lease, upload_file, upload_artifact)
+                state["upload_integrity"] = upload_result
                 phase = "add_file"
                 operation_name = "AddFile"
                 add_result = self.add_file(client, workspace_id, lease["lease_id"])
@@ -663,6 +789,8 @@ class BailianOfficialClient:
                 phase = "describe_file_until_parsed"
                 operation_name = "DescribeFile"
                 parse_result = self.describe_file_until_parsed(client, workspace_id, add_result["file_id"])
+                state["parse_status"] = parse_result["status"]
+                state["parse_diagnostics"] = parse_result.get("parse_diagnostics")
                 phase = "create_index"
                 operation_name = "CreateIndex"
                 index_result = self.create_index(client, workspace_id, add_result["file_id"])
@@ -714,7 +842,9 @@ class BailianOfficialClient:
                 "manual_cleanup_required": cleanup_result.get("created_resource_ids_cleaned") == "no",
                 "kb_id_redacted_or_tmp_only": index_result["index_id"],
                 "upload_status": upload_result["status"],
+                "upload_integrity": upload_result,
                 "parse_status": parse_result["status"],
+                "parse_diagnostics": parse_result.get("parse_diagnostics"),
                 "parse_error_present": False,
                 "skipped_because_upstream_parse_failed": False,
                 "index_status": index_status["status"],
@@ -763,9 +893,14 @@ class BailianOfficialClient:
                 "index_id_present": bool(state.get("created_index_id")),
                 "job_id_present": bool(state.get("created_job_id")),
                 "manual_cleanup_required": bool(state.get("created_file_id") and cleanup_result.get("file_cleanup") == "fail"),
-                "parse_status": exc.details.get("parse_status"),
+                "parse_status": exc.details.get("parse_status") or state.get("parse_status"),
+                "create_index_diagnostics": exc.details.get("create_index_diagnostics"),
+                "submit_index_job_data_keys": exc.details.get("submit_index_job_data_keys"),
                 "parse_error_present": bool(exc.details.get("parse_error_present")),
+                "parse_diagnostics": exc.details.get("parse_diagnostics") or state.get("parse_diagnostics"),
+                "parse_failure_classification": exc.details.get("parse_failure_classification"),
                 "skipped_because_upstream_parse_failed": exc.error_type == "parse_failed",
+                "retrieval_status": "fail" if phase == "retrieve_index" else base["retrieval_status"],
             }
         except Exception as exc:  # noqa: BLE001 - report a safe error category without leaking values.
             cleanup_result = self.cleanup_created_resources(
@@ -1106,6 +1241,10 @@ def redact_sensitive(text: str) -> str:
         if value:
             text = text.replace(value, "[REDACTED_PROXY]")
     text = SENSITIVE_RE.sub("[REDACTED]", text)
+    text = re.sub(r"ws-[A-Za-z0-9_-]+", "[REDACTED_WORKSPACE_ID]", text)
+    text = re.sub(r"file_[A-Za-z0-9_]+", "[REDACTED_FILE_ID]", text)
+    text = re.sub(r"IndexId=[A-Za-z0-9_-]+", "IndexId=[REDACTED_INDEX_ID]", text)
+    text = re.sub(r"JobId=[A-Za-z0-9_-]+", "JobId=[REDACTED_JOB_ID]", text)
     text = re.sub(r"https://[^\\s]+", "[REDACTED_URL]", text)
     return text[:500]
 
@@ -1185,6 +1324,7 @@ def make_bailian_config(
     proxy_url_env: str = "HTTPS_PROXY",
     rerank_mode: str | None = None,
     rerank_instruct: str | None = None,
+    sink_type: str = DEFAULT_SINK_TYPE,
 ) -> BailianOfficialConfig:
     if transport_mode not in TRANSPORT_MODES:
         raise ValueError(f"unsupported transport mode: {transport_mode}")
@@ -1203,6 +1343,7 @@ def make_bailian_config(
         proxy_url_env=proxy_url_env,
         rerank_mode=rerank_mode,
         rerank_instruct=rerank_instruct,
+        sink_type=sink_type,
     )
 
 
@@ -1430,6 +1571,58 @@ def _safe_get(obj: Any, *path: str) -> Any:
         else:
             current = getattr(current, part, None)
     return current
+
+
+def _header_get(headers: Any, name: str) -> Any:
+    if not isinstance(headers, dict):
+        return None
+    lowered = name.lower()
+    for key, value in headers.items():
+        if str(key).lower() == lowered:
+            return value
+    return None
+
+
+def summarize_describe_file_response(response: Any) -> dict[str, Any]:
+    body = _safe_get(response, "body")
+    data = _safe_get(body, "data")
+    payload = _to_jsonable(data)
+    nested = _jsonable_recursive(payload)
+    text = json.dumps(nested, ensure_ascii=False).lower()
+    diagnostics = {
+        "request_id_present": bool(_safe_get(body, "request_id") or _safe_get(body, "requestId")),
+        "data_keys": sorted(payload.keys()) if isinstance(payload, dict) else [],
+        "status": _first_present(payload, ["status", "Status"]),
+        "file_type": _first_present(payload, ["file_type", "fileType", "type", "Type"]),
+        "parser": _first_present(payload, ["parser", "Parser"]),
+        "category_type": _first_present(payload, ["category_type", "categoryType", "CategoryType"]),
+        "error_code_present": any(key in text for key in ["errorcode", "error_code", "code"]),
+        "error_message_present": any(key in text for key in ["errormessage", "error_message", "message", "reason"]),
+        "parse_message_present": any(key in text for key in ["parsemessage", "parse_message", "parseerror", "parse_error"]),
+        "failure_reason_present": "failurereason" in text or "failure_reason" in text or "failedreason" in text,
+    }
+    return {key: redact_sensitive(str(value)) if isinstance(value, str) else value for key, value in diagnostics.items()}
+
+
+def classify_parse_failure(diagnostics: dict[str, Any]) -> str:
+    text = json.dumps(diagnostics, ensure_ascii=False).lower()
+    status = str(diagnostics.get("status") or "").upper()
+    file_type = str(diagnostics.get("file_type") or "").lower()
+    if "md5" in text or "size" in text or "content-length" in text:
+        return "upload_integrity_mismatch"
+    if "unsupported" in text or "unknown file" in text or file_type in {"unknown", "unsupported"}:
+        return "unsupported_or_misdetected_file_type"
+    if "encoding" in text or "utf" in text or "decode" in text:
+        return "malformed_text_encoding"
+    if "category" in text:
+        return "category_contract_error"
+    if "parser" in text or "parse" in text or status in {"PARSE_FAIL", "PARSE_FAILED"}:
+        return "parser_rejected"
+    if "timeout" in text:
+        return "parse_timeout"
+    if "server" in text or "service" in text or "internal" in text:
+        return "service_parse_error"
+    return "unknown_parse_failure"
 
 
 def _normalize_retrieval_nodes(nodes: Any) -> list[dict[str, Any]]:

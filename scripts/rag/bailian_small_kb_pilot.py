@@ -20,6 +20,8 @@ from review_writer.retrieval.bailian_official_client import (
 )
 
 OFFICIAL_UPLOAD_MD = Path("/tmp/bailian_small_kb_upload_payload.md")
+OFFICIAL_UPLOAD_MD_CANDIDATE = Path("/tmp/review_writer_bailian_smoke.md")
+OFFICIAL_UPLOAD_TXT = Path("/tmp/review_writer_bailian_smoke.txt")
 FORBIDDEN_RE = re.compile(r"(\.pdf\b|\.png\b|\.jpe?g\b|\.webp\b|/home/|/mnt/|[A-Za-z]:\\Users\\|api[_-]?key\s*[:=]|token\s*[:=]|secret\s*[:=]|sk-)", re.I)
 
 
@@ -37,6 +39,7 @@ def main() -> int:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Controlled Bailian small-KB pilot wrapper.")
     parser.add_argument("--payload-jsonl", type=Path, default=Path("/tmp/bailian_small_kb_payload.jsonl"))
+    parser.add_argument("--upload-file", type=Path, default=OFFICIAL_UPLOAD_MD)
     parser.add_argument("--questions", type=Path, default=Path("evals/fixtures/rag_expected_questions.json"))
     parser.add_argument("--output-json", type=Path, default=Path("/tmp/bailian_small_kb_pilot_dry.json"))
     parser.add_argument("--output-md", type=Path, default=Path("/tmp/bailian_small_kb_pilot_dry.md"))
@@ -60,7 +63,7 @@ def parse_args() -> argparse.Namespace:
 
 def run_pilot(args: argparse.Namespace) -> dict[str, Any]:
     payload_status = validate_payload(args.payload_jsonl)
-    upload_md_status = build_upload_markdown(args.payload_jsonl, OFFICIAL_UPLOAD_MD)
+    upload_md_status = build_upload_smoke_payload(args.payload_jsonl, args.upload_file)
     questions_status = validate_questions(args.questions)
     env = safe_env_presence()
     official = BailianOfficialClient(
@@ -78,7 +81,8 @@ def run_pilot(args: argparse.Namespace) -> dict[str, Any]:
     )
     base = {
         "payload_jsonl": str(args.payload_jsonl),
-        "official_upload_md": str(OFFICIAL_UPLOAD_MD),
+        "official_upload_md": str(args.upload_file),
+        "upload_file_type": args.upload_file.suffix.lower().lstrip(".") or "unknown",
         "questions": str(args.questions),
         "env": env,
         "endpoint": official.config.endpoint,
@@ -156,7 +160,7 @@ def run_pilot(args: argparse.Namespace) -> dict[str, Any]:
         }
     if args.use_official_sdk:
         official_report = official.run_small_kb_pilot(
-            upload_file=OFFICIAL_UPLOAD_MD,
+            upload_file=args.upload_file,
             questions=load_questions(args.questions),
             allow_network=args.allow_network,
             allow_upload=args.allow_upload,
@@ -199,6 +203,9 @@ def run_pilot(args: argparse.Namespace) -> dict[str, Any]:
             "manual_cleanup_required": official_report.get("manual_cleanup_required", False),
             "parse_status": official_report.get("parse_status"),
             "parse_error_present": official_report.get("parse_error_present", False),
+            "parse_diagnostics": official_report.get("parse_diagnostics"),
+            "parse_failure_classification": official_report.get("parse_failure_classification"),
+            "upload_integrity": official_report.get("upload_integrity"),
             "skipped_because_upstream_parse_failed": official_report.get("skipped_because_upstream_parse_failed", False),
             "cleanup_recommendation": official_report.get(
                 "cleanup_recommendation",
@@ -251,29 +258,51 @@ def validate_payload(path: Path) -> dict[str, Any]:
     return {"status": "fail" if errors else "pass", "record_count": len(rows), "errors": errors}
 
 
-def build_upload_markdown(jsonl_path: Path, output_path: Path) -> dict[str, Any]:
+def build_upload_smoke_payload(jsonl_path: Path, output_path: Path) -> dict[str, Any]:
     if not jsonl_path.exists():
         return {"status": "fail", "errors": [f"missing payload jsonl: {jsonl_path}"]}
-    lines = [
-        "# Bailian Small Knowledge Base Smoke Test",
-        "",
-        "## Purpose",
-        "",
-        "This is a minimal and safe Markdown file for testing Alibaba Cloud Bailian knowledge-base indexing.",
-        "",
-        "## Test Facts",
-        "",
-        "Project name: review-writer Phase 6c smoke test.",
-        "Allowed upload scope: this file only.",
-        "Safety rule: do not upload PDFs, raw images, full paper Markdown, secrets, tokens, API keys, or private data.",
-        "Expected retrieval question: What is the project name?",
-        "Expected answer: review-writer Phase 6c smoke test.",
-        "",
-        "## Notes",
-        "",
-        "This document contains no private credentials, no API keys, no personal data, and no copyrighted paper content.",
-        "",
-    ]
+    allowed_outputs = {OFFICIAL_UPLOAD_MD.resolve(), OFFICIAL_UPLOAD_MD_CANDIDATE.resolve(), OFFICIAL_UPLOAD_TXT.resolve()}
+    if output_path.resolve() not in allowed_outputs:
+        return {"status": "fail", "errors": ["official upload payload path is not approved"]}
+    if output_path.suffix.lower() == ".txt":
+        lines = [
+            "Bailian Small Knowledge Base Smoke Test",
+            "",
+            "Purpose",
+            "This is a minimal and safe plain text file for testing Alibaba Cloud Bailian knowledge-base indexing.",
+            "",
+            "Test Facts",
+            "Project name: review-writer Phase 6c smoke test.",
+            "Allowed upload scope: this file only.",
+            "Safety rule: do not upload PDFs, raw images, full paper Markdown, secrets, tokens, API keys, or private data.",
+            "Expected retrieval question: What is the project name?",
+            "Expected answer: review-writer Phase 6c smoke test.",
+            "",
+            "Notes",
+            "This document contains no private credentials, no API keys, no personal data, and no copyrighted paper content.",
+            "",
+        ]
+    else:
+        lines = [
+            "# Bailian Small Knowledge Base Smoke Test",
+            "",
+            "## Purpose",
+            "",
+            "This is a minimal and safe Markdown file for testing Alibaba Cloud Bailian knowledge-base indexing.",
+            "",
+            "## Test Facts",
+            "",
+            "Project name: review-writer Phase 6c smoke test.",
+            "Allowed upload scope: this file only.",
+            "Safety rule: do not upload PDFs, raw images, full paper Markdown, secrets, tokens, API keys, or private data.",
+            "Expected retrieval question: What is the project name?",
+            "Expected answer: review-writer Phase 6c smoke test.",
+            "",
+            "## Notes",
+            "",
+            "This document contains no private credentials, no API keys, no personal data, and no copyrighted paper content.",
+            "",
+        ]
     text = "\n".join(lines)
     if FORBIDDEN_RE.search(text):
         return {"status": "fail", "errors": ["official upload markdown contains forbidden content"]}
@@ -329,6 +358,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- region: `{report.get('region')}`",
         f"- category_id: `{report.get('category_id')}`",
         f"- official_upload_md: `{report.get('official_upload_md')}`",
+        f"- upload_file_type: `{report.get('upload_file_type')}`",
         f"- record_count: `{report['record_count']}`",
         f"- retrieval_status: `{report['retrieval_status']}`",
         f"- nodes_count: `{report.get('nodes_count', 0)}`",
@@ -354,6 +384,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- parse_status: `{report.get('parse_status')}`",
         f"- parse_error_present: `{report.get('parse_error_present', False)}`",
         f"- skipped_because_upstream_parse_failed: `{report.get('skipped_because_upstream_parse_failed', False)}`",
+        f"- parse_failure_classification: `{report.get('parse_failure_classification')}`",
         f"- first_failed_phase: `{report.get('first_failed_phase')}`",
         f"- operation_name: `{report.get('operation_name')}`",
         f"- recommended_fix: {report.get('recommended_fix')}",
@@ -361,6 +392,22 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         "## Environment Presence",
     ]
+    if report.get("official_sdk_result", {}).get("upload_integrity"):
+        lines.extend(["", "## Upload Integrity"])
+        integrity = report["official_sdk_result"]["upload_integrity"]
+        for key in [
+            "lease_file_name",
+            "lease_size",
+            "lease_md5_prefix",
+            "upload_method",
+            "upload_method_source",
+            "upload_content_type_present",
+            "upload_extra_header_present",
+            "uploaded_byte_count",
+            "post_upload_local_size",
+            "post_upload_md5_matches",
+        ]:
+            lines.append(f"- {key}: `{integrity.get(key)}`")
     lines.extend(f"- {key}: {value}" for key, value in report["env"].items())
     if report.get("manual_console_runbook"):
         lines.extend(["", "## Manual Console Runbook"])

@@ -1558,6 +1558,47 @@ Current conclusion:
 - A temporary file may require manual cleanup; ids are kept only in `/tmp`.
 - The upload markdown now uses a minimal smoke-test document instead of clean-paper record text.
 
+### Phase 6 closure: Bailian SDK autonomous root-cause hardening
+
+Goal:
+
+- Stop repeating endpoint/proxy/category exploration.
+- Align the automated SDK path with the manual OpenAPI success path and current official contract.
+- Make upload integrity, parse diagnostics, Retrieve success, and cleanup explicit completion gates.
+
+Implemented:
+
+- Immutable upload artifact snapshot before lease.
+- Lease-provided upload method and headers are honored; guessed `Content-Type` is no longer sent.
+- Safe upload telemetry records only file name, size, MD5 prefix, method source, header presence, uploaded byte count, and post-upload local verification.
+- `CreateIndex` current contract now uses `sink_type=BUILT_IN`; `DEFAULT` is historical.
+- `DescribeFile` parse diagnostics and parse failure classification.
+- Markdown and TXT smoke payload candidates for controlled A/B parse tests.
+- Cleanup-only `DeleteFile` command for orphan application-data files, reading ids only from `/tmp` and never printing them.
+- `make bailian-sdk-e2e-closure-check`.
+
+Completion rule:
+
+- Phase 6c can be called complete only after official SDK automation passes ApplyFileUploadLease, binary upload, AddFile, `PARSE_SUCCESS`, CreateIndex, SubmitIndexJob, `COMPLETED` index job, Retrieve non-empty nodes, smoke fact match, and cleanup.
+- If any stage remains failed, report the exact incomplete stage instead of claiming Phase 6 complete.
+
+Next:
+
+- First run cleanup-only on the current orphan file report.
+- If cleanup succeeds, perform at most one evidence-backed full SDK retry with the hardened Markdown payload.
+- If Markdown parse still fails and cleanup succeeds, try the TXT candidate once.
+- Do not proceed to Phase 6d retrieval QA until Retrieve and cleanup both pass.
+
+Closure result:
+
+- Cleanup-only successfully removed the prior orphan application-data file.
+- Hardened Markdown upload reached CreateIndex; the first closure failure was index id parsing / CreateIndex response interpretation.
+- Uppercase response-id handling plus current `BUILT_IN` sink contract reached a CreateIndex 400; the next evidence-backed fix was the official 1-20 character `Name` limit.
+- Short index names advanced the SDK automation through index creation and index job completion into Retrieve.
+- Final remaining blocker is `retrieve_fact_miss`: retrieved nodes did not contain the required Phase 6c smoke fact.
+- Cleanup-only after the final attempt passed for both index and file.
+- Current status: `Phase 6 engineering prerequisites complete; Bailian SDK automation incomplete at Retrieve smoke fact validation.`
+
 ## 风险
 
 - PR 过大导致 review 困难。

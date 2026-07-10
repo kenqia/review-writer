@@ -95,6 +95,8 @@ The real path performs:
 - Retrieve smoke fact check for `review-writer Phase 6c smoke test`
 - Best-effort cleanup of created index/file resources when `--cleanup` is supplied
 - recall@1, recall@3, and citation coverage calculation
+- upload integrity telemetry without exposing full MD5, signed URL, or signed headers
+- parse failure diagnostics without exposing file ids or downloaded parse result URLs
 
 ## KB ID Policy
 
@@ -130,8 +132,10 @@ Code alignment rules:
 
 - Default `CreateIndex` omits `RerankMode`.
 - Default `CreateIndex` omits `RerankInstruct`.
+- Default `CreateIndex` uses `sink_type=BUILT_IN` for the current official contract. Older `DEFAULT` references are historical.
 - `RerankMode` is sent only when explicitly configured as `qa`, `similar`, or `custom`.
 - `RerankInstruct` is sent only when `RerankMode=custom`.
+- Upload uses the method and upload headers returned by `ApplyFileUploadLease` instead of hard-coded `PUT` plus guessed content type.
 - Retrieve succeeds only when nodes are non-empty and the smoke fact is found.
 
 ## Phase 6c-final Controlled SDK Pilot Result
@@ -155,7 +159,7 @@ Safe summary:
 - file_cleanup: fail
 - created_resource_ids_cleaned: no
 
-Interpretation: the manual success proves the cloud path can work, and the code now matches the rerank/default-index contract. The remaining automated SDK blocker is now file parsing for the sanitized markdown payload, plus cleanup transport reliability for the temporary file resource. Resource ids, if needed for manual cleanup, are only in `/tmp/bailian_small_kb_pilot_real.json`.
+Interpretation: the manual success proves the cloud path can work, and the code now matches the rerank/current-index contract. The remaining automated SDK blocker is now file parsing for the sanitized payload, plus cleanup verification for the temporary file resource. Resource ids, if needed for cleanup, are only in `/tmp/bailian_small_kb_pilot_real.json`.
 
 ## Phase 6c-final-bis Parse Failure Parity
 
@@ -179,6 +183,41 @@ The upload markdown is now generated as a minimal smoke-test document with:
 - no PDF, raw image, full paper Markdown, secrets, tokens, API keys, or private data
 
 Use `make bailian-payload-parse-readiness-check` before any future real pilot.
+
+Phase 6 closure adds a stricter SDK parity path:
+
+- immutable upload artifact snapshot before lease
+- lease-provided method and headers honored during binary upload
+- no guessed `Content-Type` when the lease omits it
+- Markdown and TXT smoke payload candidates
+- `DescribeFile` parse diagnostics and parse failure classification
+- orphan file cleanup-only command that reads ids only from `/tmp` and never prints them
+- `make bailian-sdk-e2e-closure-check`
+
+## Phase 6 Closure Controlled SDK Results
+
+Three evidence-backed upload-capable attempts were used for closure, with cleanup-only calls between attempts:
+
+1. Hardened upload contract attempt: lease, upload, AddFile, and parse passed; CreateIndex failed because the automation did not parse the returned index id shape.
+2. CreateIndex id-shape attempt: lease, upload, AddFile, and parse passed; CreateIndex still returned a 400 response without a parsed id. The next evidence-backed fix was the official 1-20 character `Name` limit.
+3. Short-name attempt: lease, upload, AddFile, parse, CreateIndex, SubmitIndexJob, and index job completion reached retrieval; Retrieve returned nodes but did not hit the required smoke fact.
+
+Cleanup after the final attempt:
+
+- index_id_present: true
+- file_id_present: true
+- index_cleanup: pass
+- file_cleanup: pass
+- created_resource_ids_cleaned: yes
+
+Current status:
+
+```text
+Phase 6 engineering prerequisites complete;
+Bailian SDK automation incomplete at Retrieve smoke fact validation.
+```
+
+Do not call Phase 6c complete until Retrieve nodes are non-empty and at least one node text contains `review-writer Phase 6c smoke test`.
 
 ## Phase 6c-quin Lease-only Probe
 

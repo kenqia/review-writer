@@ -223,6 +223,31 @@ Phase 6c-final-bis parse-failure parity:
 - Cleanup reports now expose `file_id_present`, `cleanup_error_type`, and `manual_cleanup_required` without printing ids.
 - Downstream CreateIndex/Retrieve remain skipped when parse fails; this is expected and safe.
 
+Phase 6 closure autonomous root-cause hardening:
+
+- Added upload artifact immutability before `ApplyFileUploadLease`.
+- Upload now uses the lease-returned method and only lease-returned upload headers.
+- Added safe upload telemetry: lease file name, byte size, MD5 prefix, method source, header presence, uploaded byte count, and post-upload local MD5 match.
+- Changed current default `CreateIndex` sink contract to `BUILT_IN`; older `DEFAULT` references are historical.
+- Added `DescribeFile` parse diagnostics and parse-failure classification.
+- Added Markdown and TXT smoke payload candidates for a controlled A/B parse test.
+- Added `scripts/rag/bailian_cleanup_orphan_file.py` for cleanup-only `DeleteFile` from `/tmp` reports without printing ids.
+- Added `make bailian-sdk-e2e-closure-check`.
+
+Completion standard:
+
+- Phase 6c is complete only if the SDK automated pilot passes lease, upload, AddFile, parse, CreateIndex, SubmitIndexJob, GetIndexJobStatus, Retrieve with non-empty nodes, smoke fact match, and cleanup.
+- If parse or cleanup still fails, write `Phase 6 engineering prerequisites complete; Bailian SDK automation incomplete at <stage>`.
+
+Closure result:
+
+- Attempt 1 fixed upload integrity but exposed CreateIndex id parsing.
+- Attempt 2 fixed id parsing but exposed the official `Name` length contract.
+- Attempt 3 fixed the short-name contract and reached Retrieve.
+- Final blocker: Retrieve smoke fact assertion failed.
+- Cleanup-only command successfully deleted both the temporary index and application-data file.
+- Current correct status: `Phase 6 engineering prerequisites complete; Bailian SDK automation incomplete at Retrieve smoke fact validation.`
+
 ## Safety
 
 - No PDF upload.
@@ -235,7 +260,9 @@ Phase 6c-final-bis parse-failure parity:
 - `DASHSCOPE_API_KEY` is not treated as sufficient for KB management.
 - KB/index ids are allowed only in `/tmp` reports, not in repo docs.
 - Lease probe reports only presence booleans for lease id, upload URL, and headers.
+- Signed URLs and lease upload headers are never written to repo docs.
+- Orphan cleanup reports only id presence and cleanup status, never the id value.
 
 ## Next
 
-Phase 6d should only proceed after the temporary KB/index is reviewed and cleaned up, and after retrieval metrics are judged useful enough for a larger real corpus pilot.
+Phase 6d should only proceed after the temporary KB/index/file resources are reviewed and cleaned up, the SDK automated pilot retrieves non-empty nodes, and retrieval metrics are judged useful enough for a larger real corpus pilot.

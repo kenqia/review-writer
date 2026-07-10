@@ -29,6 +29,8 @@ def main() -> int:
 def test_default_request_has_no_rerank() -> None:
     kwargs = BailianOfficialClient(BailianOfficialConfig()).create_index_request_kwargs("file-test")
     assert kwargs["document_ids"] == ["file-test"]
+    assert kwargs["sink_type"] == "BUILT_IN"
+    assert len(kwargs["name"]) <= 20
     assert "category_ids" not in kwargs
     assert "rerank_mode" not in kwargs
     assert "rerank_instruct" not in kwargs

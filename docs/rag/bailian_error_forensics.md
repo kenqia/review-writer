@@ -202,3 +202,24 @@ Rules:
 - Do not run full pilot until lease reprobe succeeds.
 
 The first real `ListCategory` attempt reached the service and returned `MissingCategoryType`, with no upload or KB creation. This narrows the next step to finding the valid `category_type` value required by the current Bailian API/workspace contract.
+
+## Phase 6 Closure Contract
+
+The current automation no longer follows the old endpoint/proxy/category guessing path. The active contract is:
+
+- endpoint: `bailian.cn-beijing.aliyuncs.com`
+- transport mode for real SDK calls: `no_proxy`
+- category id/type: `default` / `UNSTRUCTURED`
+- parser: `DASHSCOPE_DOCMIND`
+- upload: lease-provided method and upload headers only
+- index sink: `BUILT_IN`
+- rerank: omitted unless explicitly configured
+
+The current highest-value diagnostics are:
+
+1. cleanup any orphan application-data file created by the prior parse-failed run;
+2. compare Markdown versus TXT smoke payload parsing if a new upload-capable attempt is needed;
+3. inspect `DescribeFile` safe diagnostics such as status, file type, parser, category type, and parse-message presence;
+4. proceed to CreateIndex only after `PARSE_SUCCESS`.
+
+`DeleteFile` is the reviewed cleanup mechanism for application-data files that reached `PARSE_FAILED` or `PARSE_SUCCESS`. The cleanup-only script reads the file id only from `/tmp` and reports only safe booleans and error categories.
