@@ -263,6 +263,27 @@ Closure result:
 - Signed URLs and lease upload headers are never written to repo docs.
 - Orphan cleanup reports only id presence and cleanup status, never the id value.
 
-## Next
+## Phase 6d Closure
 
-Phase 6d should only proceed after the temporary KB/index/file resources are reviewed and cleaned up, the SDK automated pilot retrieves non-empty nodes, and retrieval metrics are judged useful enough for a larger real corpus pilot.
+Phase 6d completed the retrieval QA closure:
+
+- Added Retrieve contract introspection.
+- Added robust dict/object and PascalCase/snake_case response parsing.
+- Added normalized smoke fact matching from node text and `Metadata.content`.
+- Added retrieval query/mode matrix dry-run and real lifecycle support.
+- Added clean 3-paper compact retrieval QA support.
+- Added `make bailian-retrieval-contract-check`, `make bailian-retrieval-qa-dry-run`, and `make bailian-phase6-final-check`.
+
+Safe latest real results:
+
+- smoke lifecycle: pass
+- working query: `review-writer Phase 6c smoke test`
+- working mode: `official_minimal`
+- root cause classification: `index_readiness_delay`
+- clean 3-paper recall@1: `0.875`
+- clean 3-paper recall@3: `1.0`
+- clean 3-paper citation coverage: `1.0`
+- missed questions: none
+- cleanup: pass for both smoke and clean lifecycles
+
+One interrupted experimental matrix run produced no `/tmp` report before termination, so there is no local resource id to clean from that run. Later successful smoke and clean lifecycles both cleaned their created temporary index/file resources.

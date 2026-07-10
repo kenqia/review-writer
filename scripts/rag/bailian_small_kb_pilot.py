@@ -20,6 +20,7 @@ from review_writer.retrieval.bailian_official_client import (
 )
 
 OFFICIAL_UPLOAD_MD = Path("/tmp/bailian_small_kb_upload_payload.md")
+OFFICIAL_CLEAN_3PAPER_MD = Path("/tmp/bailian_clean_3paper_upload_payload.md")
 OFFICIAL_UPLOAD_MD_CANDIDATE = Path("/tmp/review_writer_bailian_smoke.md")
 OFFICIAL_UPLOAD_TXT = Path("/tmp/review_writer_bailian_smoke.txt")
 FORBIDDEN_RE = re.compile(r"(\.pdf\b|\.png\b|\.jpe?g\b|\.webp\b|/home/|/mnt/|[A-Za-z]:\\Users\\|api[_-]?key\s*[:=]|token\s*[:=]|secret\s*[:=]|sk-)", re.I)
@@ -57,6 +58,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use-official-sdk", action="store_true")
     parser.add_argument("--cleanup", action="store_true")
     parser.add_argument("--cleanup-index-id")
+    parser.add_argument("--run-retrieval-matrix", action="store_true")
+    parser.add_argument("--matrix-only", action="store_true")
+    parser.add_argument("--skip-smoke-fact-check", action="store_true")
     parser.add_argument("--strict", action="store_true")
     return parser.parse_args()
 
@@ -166,6 +170,9 @@ def run_pilot(args: argparse.Namespace) -> dict[str, Any]:
             allow_upload=args.allow_upload,
             cleanup=args.cleanup,
             cleanup_index_id=args.cleanup_index_id,
+            run_retrieval_matrix=args.run_retrieval_matrix,
+            matrix_only=args.matrix_only,
+            require_smoke_fact=not args.skip_smoke_fact_check,
         )
         knowledge_base_created = bool(official_report.get("knowledge_base_created"))
         return {
@@ -183,6 +190,10 @@ def run_pilot(args: argparse.Namespace) -> dict[str, Any]:
             "recall_at_3": official_report.get("recall_at_3"),
             "citation_coverage": official_report.get("citation_coverage"),
             "per_question_results": official_report.get("per_question_results", []),
+            "retrieval_matrix": official_report.get("retrieval_matrix", []),
+            "root_cause_classification": official_report.get("root_cause_classification"),
+            "working_query": official_report.get("working_query"),
+            "working_retrieval_mode": official_report.get("working_retrieval_mode"),
             "kb_id_redacted_or_tmp_only": official_report.get("kb_id_redacted_or_tmp_only"),
             "cleanup_requested": bool(args.cleanup),
             "cleanup_index_id_provided": bool(args.cleanup_index_id),
@@ -261,10 +272,18 @@ def validate_payload(path: Path) -> dict[str, Any]:
 def build_upload_smoke_payload(jsonl_path: Path, output_path: Path) -> dict[str, Any]:
     if not jsonl_path.exists():
         return {"status": "fail", "errors": [f"missing payload jsonl: {jsonl_path}"]}
-    allowed_outputs = {OFFICIAL_UPLOAD_MD.resolve(), OFFICIAL_UPLOAD_MD_CANDIDATE.resolve(), OFFICIAL_UPLOAD_TXT.resolve()}
+    allowed_outputs = {
+        OFFICIAL_UPLOAD_MD.resolve(),
+        OFFICIAL_CLEAN_3PAPER_MD.resolve(),
+        OFFICIAL_UPLOAD_MD_CANDIDATE.resolve(),
+        OFFICIAL_UPLOAD_TXT.resolve(),
+    }
     if output_path.resolve() not in allowed_outputs:
         return {"status": "fail", "errors": ["official upload payload path is not approved"]}
-    if output_path.suffix.lower() == ".txt":
+    rows = load_jsonl(jsonl_path)
+    if output_path.resolve() == OFFICIAL_CLEAN_3PAPER_MD.resolve():
+        lines = render_clean_upload_lines(rows)
+    elif output_path.suffix.lower() == ".txt":
         lines = [
             "Bailian Small Knowledge Base Smoke Test",
             "",
@@ -309,6 +328,48 @@ def build_upload_smoke_payload(jsonl_path: Path, output_path: Path) -> dict[str,
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(text, encoding="utf-8")
     return {"status": "pass", "errors": [], "path": str(output_path)}
+
+
+def load_jsonl(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            rows.append(json.loads(line))
+    return rows
+
+
+def render_clean_upload_lines(rows: list[dict[str, Any]]) -> list[str]:
+    lines = [
+        "# Bailian Clean 3-Paper Retrieval QA Payload",
+        "",
+        "This compact payload is for retrieval engineering QA only.",
+        "needs_human_review=true",
+        "trusted_for_scientific_quality=false",
+        "",
+    ]
+    for row in rows:
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        lines.extend(
+            [
+                f"## Paper {row.get('paper_id')}",
+                "",
+                f"paper_id: {row.get('paper_id')}",
+                f"title: {row.get('title')}",
+                f"year: {row.get('year') or metadata.get('year')}",
+                f"journal: {row.get('journal') or metadata.get('journal')}",
+                f"doi_draft: {row.get('doi_draft') or metadata.get('doi_draft')}",
+                f"role: {row.get('role') or metadata.get('role')}",
+                f"{row.get('paper_id')} short claim draft: {row.get('claim_draft')}",
+                f"{row.get('paper_id')} short figure note: {row.get('figure_note_draft')}",
+                f"{row.get('paper_id')} comparison note: {row.get('comparison_note')}",
+                f"{row.get('paper_id')} known warnings: {row.get('known_warnings') or metadata.get('known_warnings')}",
+                f"{row.get('paper_id')} limitation or human-review warning before relying on metadata: {row.get('known_warnings') or metadata.get('known_warnings')}",
+                "needs_human_review: true",
+                "trusted_for_scientific_quality: false",
+                "",
+            ]
+        )
+    return lines
 
 
 def validate_questions(path: Path) -> dict[str, Any]:

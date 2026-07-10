@@ -2,7 +2,7 @@
 
 ## Conclusion
 
-Manual OpenAPI Explorer validation proves that the Bailian cloud-side knowledge-base path can work. The repo SDK automation is not yet complete until the official SDK run passes lease, upload, AddFile, parse, index creation, index job completion, retrieval, and cleanup in one controlled lifecycle.
+Manual OpenAPI Explorer validation proved that the Bailian cloud-side knowledge-base path can work. Phase 6d now also proves the repo SDK automation path for controlled smoke retrieval, clean 3-paper retrieval QA, and cleanup.
 
 Downstream stages being skipped is correct: CreateIndex, SubmitIndexJob, and Retrieve must not run when DescribeFile reports parse failure.
 
@@ -59,10 +59,9 @@ Resource ids remain only in `/tmp/bailian_small_kb_pilot_real.json` for cleanup.
 ## Current Conclusion
 
 - Manual cloud path works.
-- SDK automation must still prove the whole lifecycle with retrieval and cleanup.
-- Skipped downstream stages are allowed and correct when parse fails.
-- Phase 6c SDK automation is not complete until the controlled SDK run passes end-to-end.
-- Before another upload-capable pilot, resolve any orphan temporary file or prove it can be cleaned by `DeleteFile`.
+- SDK automation now proves the controlled lifecycle with retrieval and cleanup.
+- Skipped downstream stages are still allowed and correct when parse fails.
+- Phase 6d closes the prior Retrieve smoke-fact validation blocker.
 
 ## Closure Update
 
@@ -78,7 +77,21 @@ The latest controlled SDK closure run advanced past the previous parse and Creat
 - Retrieve: failed the smoke-fact assertion
 - cleanup: pass for both index and application-data file in the cleanup-only command
 
-Remaining parity gap: manual Retrieve returned a node containing `review-writer Phase 6c smoke test`, while SDK automation did not find that smoke fact in retrieved node text. The next investigation should focus on query formulation, retrieve response parsing, and whether the indexed chunk text contains the exact smoke sentence.
+Phase 6d update:
+
+- smoke SDK lifecycle: pass
+- retrieval matrix: 20 query/mode results, 20 smoke-fact hits
+- working query: `review-writer Phase 6c smoke test`
+- working retrieval mode: `official_minimal`
+- root cause classification: `index_readiness_delay`
+- clean 3-paper recall@1: `0.875`
+- clean 3-paper recall@3: `1.0`
+- clean 3-paper citation coverage: `1.0`
+- missed questions: none
+- smoke cleanup: pass
+- clean cleanup: pass
+
+Resource ids and signed URLs remain only in ignored `/tmp` run reports.
 
 ## Manual Cleanup Note
 

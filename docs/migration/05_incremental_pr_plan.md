@@ -1595,9 +1595,11 @@ Closure result:
 - Hardened Markdown upload reached CreateIndex; the first closure failure was index id parsing / CreateIndex response interpretation.
 - Uppercase response-id handling plus current `BUILT_IN` sink contract reached a CreateIndex 400; the next evidence-backed fix was the official 1-20 character `Name` limit.
 - Short index names advanced the SDK automation through index creation and index job completion into Retrieve.
-- Final remaining blocker is `retrieve_fact_miss`: retrieved nodes did not contain the required Phase 6c smoke fact.
-- Cleanup-only after the final attempt passed for both index and file.
-- Current status: `Phase 6 engineering prerequisites complete; Bailian SDK automation incomplete at Retrieve smoke fact validation.`
+- Phase 6d resolved `retrieve_fact_miss` with response parsing hardening, contract introspection, and a bounded query/mode matrix.
+- Latest smoke matrix lifecycle retrieved non-empty nodes and found the required smoke fact.
+- Latest clean 3-paper retrieval QA reached recall@3 `1.0` and citation coverage `1.0`.
+- Cleanup after the latest smoke and clean lifecycles passed for both index and file.
+- Current status: `Phase 6 complete.`
 
 ## 风险
 

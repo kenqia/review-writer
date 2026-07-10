@@ -48,6 +48,9 @@ make bailian-small-kb-payload-check
 make bailian-small-kb-pilot-dry-run
 make bailian-small-kb-official-sdk-dry-run
 make bailian-small-kb-official-sdk-real-command
+make bailian-retrieval-contract-check
+make bailian-retrieval-qa-dry-run
+make bailian-phase6-final-check
 ```
 
 Controlled real-mode wrapper using the official SDK:
@@ -218,6 +221,28 @@ Bailian SDK automation incomplete at Retrieve smoke fact validation.
 ```
 
 Do not call Phase 6c complete until Retrieve nodes are non-empty and at least one node text contains `review-writer Phase 6c smoke test`.
+
+## Phase 6d Retrieval QA Closure
+
+Phase 6d adds two explicit real SDK lifecycles:
+
+1. tiny smoke payload lifecycle with retrieval matrix and cleanup
+2. clean 3-paper compact payload lifecycle with expected-question retrieval QA and cleanup
+
+Latest safe summary:
+
+- smoke lifecycle: pass
+- smoke retrieval matrix: 20 query/mode results, 20 smoke-fact hits
+- working query: `review-writer Phase 6c smoke test`
+- working retrieval mode: `official_minimal`
+- root cause classification: `index_readiness_delay`
+- clean 3-paper recall@1: `0.875`
+- clean 3-paper recall@3: `1.0`
+- clean 3-paper citation coverage: `1.0`
+- missed questions: none
+- both temporary lifecycle cleanup results: pass
+
+The clean 3-paper payload is compact retrieval engineering data only. It is not a scientific-quality source and keeps `trusted_for_scientific_quality=false`.
 
 ## Phase 6c-quin Lease-only Probe
 

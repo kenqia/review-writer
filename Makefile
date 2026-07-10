@@ -1,4 +1,4 @@
-.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check eval-baseline-check portability-check reality-audit-check clean-3paper-recommend-check clean-3paper-approval-check clean-3paper-pdf-verify-check clean-3paper-biblio-check clean-3paper-biblio-web-check clean-3paper-claims-check clean-3paper-e2e-check clean-3paper-eval-check dashboard-clean-3paper-check bailian-rag-preflight-check rag-local-retrieval-check bailian-small-kb-payload-check bailian-payload-parse-readiness-check bailian-small-kb-pilot-dry-run bailian-small-kb-official-sdk-dry-run bailian-official-pilot-fix-check bailian-sdk-e2e-closure-check bailian-small-kb-official-sdk-real-command bailian-lease-probe-dry-run bailian-lease-probe-real-command bailian-endpoint-diagnostics-check bailian-minimal-lease-repro-dry-run bailian-minimal-lease-repro-real-command bailian-sdk-transport-introspection bailian-transport-matrix-dry-run bailian-transport-matrix-real-command bailian-category-introspection bailian-category-discovery-dry-run bailian-category-discovery-real-command bailian-category-lease-reprobe-real-command bailian-category-type-matrix-dry-run bailian-category-type-matrix-real-command bailian-sdk-env-check bailian-sdk-env-strict-check release-readiness-check
+.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check eval-baseline-check portability-check reality-audit-check clean-3paper-recommend-check clean-3paper-approval-check clean-3paper-pdf-verify-check clean-3paper-biblio-check clean-3paper-biblio-web-check clean-3paper-claims-check clean-3paper-e2e-check clean-3paper-eval-check dashboard-clean-3paper-check bailian-rag-preflight-check rag-local-retrieval-check bailian-small-kb-payload-check bailian-payload-parse-readiness-check bailian-small-kb-pilot-dry-run bailian-small-kb-official-sdk-dry-run bailian-official-pilot-fix-check bailian-sdk-e2e-closure-check bailian-small-kb-official-sdk-real-command bailian-lease-probe-dry-run bailian-lease-probe-real-command bailian-endpoint-diagnostics-check bailian-minimal-lease-repro-dry-run bailian-minimal-lease-repro-real-command bailian-sdk-transport-introspection bailian-retrieval-contract-check bailian-retrieval-qa-dry-run bailian-phase6-final-check bailian-transport-matrix-dry-run bailian-transport-matrix-real-command bailian-category-introspection bailian-category-discovery-dry-run bailian-category-discovery-real-command bailian-category-lease-reprobe-real-command bailian-category-type-matrix-dry-run bailian-category-type-matrix-real-command bailian-sdk-env-check bailian-sdk-env-strict-check release-readiness-check
 
 PYTHON ?= python3
 REPO_ROOT ?= $(CURDIR)
@@ -308,6 +308,32 @@ bailian-sdk-transport-introspection:
 		--output-json /tmp/bailian_sdk_transport_introspection.json \
 		--output-md /tmp/bailian_sdk_transport_introspection.md \
 		--strict
+
+bailian-retrieval-contract-check:
+	$(PYTHON) tests/test_bailian_retrieve_contract_introspection.py
+	conda run -n review-writer-bailian python scripts/rag/bailian_retrieve_contract_introspection.py \
+		--output-json /tmp/bailian_retrieve_contract_introspection.json \
+		--output-md /tmp/bailian_retrieve_contract_introspection.md \
+		--strict
+
+bailian-retrieval-qa-dry-run:
+	$(PYTHON) tests/test_bailian_retrieval_qa.py
+	$(PYTHON) scripts/rag/bailian_retrieval_qa.py \
+		--index-id dry-run-index-redacted \
+		--questions evals/fixtures/rag_expected_questions.json \
+		--output-json /tmp/bailian_retrieval_qa_dry.json \
+		--output-md /tmp/bailian_retrieval_qa_dry.md \
+		--strict
+
+bailian-phase6-final-check:
+	$(PYTHON) tests/test_bailian_retrieve_contract_introspection.py
+	$(PYTHON) tests/test_bailian_retrieve_success_check.py
+	$(PYTHON) tests/test_bailian_retrieval_qa.py
+	$(PYTHON) tests/test_bailian_sdk_e2e_closure.py
+	$(PYTHON) tests/test_bailian_small_kb_pilot_safety.py
+	$(MAKE) bailian-retrieval-contract-check
+	$(MAKE) bailian-retrieval-qa-dry-run
+	$(MAKE) bailian-sdk-e2e-closure-check
 
 bailian-transport-matrix-dry-run:
 	$(PYTHON) tests/test_bailian_transport_matrix_safety.py

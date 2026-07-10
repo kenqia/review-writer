@@ -90,6 +90,7 @@ Current automation is aligned to the installed official SDK and the current publ
 - Upload request: uses lease `param.method` and only lease-returned `Content-Type` / `X-bailian-extra` headers when present
 - CreateIndex: short `name` of 20 characters or fewer, `structure_type=unstructured`, `source_type=DATA_CENTER_FILE`, `sink_type=BUILT_IN`, `document_ids=[file_id]`
 - Rerank fields: omitted by default; sent only under explicit configuration
+- Retrieve matrix fields: `query`, `index_id`, `dense_similarity_top_k`, `sparse_similarity_top_k`, `enable_reranking`, `rerank_top_n`, `rerank_min_score`, `enable_rewrite`, and `save_retriever_history` are introspected from the installed SDK before use
 
 Historical `sink_type=DEFAULT`, endpoint-form, proxy, and category guesses are kept only as troubleshooting history in the error-forensics docs. They are not the current recommendation.
 
@@ -104,11 +105,13 @@ Historical `sink_type=DEFAULT`, endpoint-form, proxy, and category guesses are k
 - upload integrity telemetry: lease file name, byte size, MD5 prefix, upload method source, header presence, uploaded byte count, local post-upload size, and local MD5 match
 - parse failure diagnostics from `DescribeFile`, including status, file type, parser, category type, parse-message presence, and a safe classification
 - KB id policy: `/tmp` only, never repo
+- Retrieve response parsing for `body.data.nodes` and `body.Data.Nodes`, dict/object nodes, `Text`/`text`, `Score`/`score`, and JSON-string `Metadata`
+- smoke fact matching after Unicode/case/whitespace/hyphen normalization, using only node text or `Metadata.content`
 
 ## Still Gated
 
 - real upload requires `--allow-network --allow-upload --use-official-sdk`
-- cleanup requires both `--cleanup` and `--cleanup-index-id`
+- automatic lifecycle cleanup requires `--cleanup`; cleanup-only index deletion requires both `--cleanup` and `--cleanup-index-id`
 - no default make target performs a real upload
 
 ## Real Pilot Authorization

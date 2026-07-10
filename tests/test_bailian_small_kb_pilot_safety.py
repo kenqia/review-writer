@@ -90,6 +90,36 @@ def main() -> int:
     assert sdk_dry_report["manual_cleanup_required"] is False
     assert sdk_dry_report["skipped_because_upstream_parse_failed"] is False
     assert sdk_dry_report["safety"]["upload"] == "not_used"
+    clean_dry = subprocess.run(
+        [
+            sys.executable,
+            "scripts/rag/bailian_small_kb_pilot.py",
+            "--payload-jsonl",
+            "/tmp/bailian_small_kb_payload.jsonl",
+            "--questions",
+            "evals/fixtures/rag_expected_questions.json",
+            "--upload-file",
+            "/tmp/bailian_clean_3paper_upload_payload.md",
+            "--output-json",
+            "/tmp/bailian_clean_3paper_pilot_test_dry.json",
+            "--output-md",
+            "/tmp/bailian_clean_3paper_pilot_test_dry.md",
+            "--use-official-sdk",
+            "--strict",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+    )
+    assert clean_dry.returncode == 0, clean_dry.stderr + clean_dry.stdout
+    clean_report = json.loads(Path("/tmp/bailian_clean_3paper_pilot_test_dry.json").read_text(encoding="utf-8"))
+    assert clean_report["status"] == "dry_run"
+    assert clean_report["upload_file_type"] == "md"
+    clean_text = Path("/tmp/bailian_clean_3paper_upload_payload.md").read_text(encoding="utf-8").lower()
+    assert "paper_id:" in clean_text
+    assert ".pdf" not in clean_text
+    assert "/home/" not in clean_text
+    assert "sk-" not in clean_text
     blocked = subprocess.run(
         [
             sys.executable,

@@ -7,6 +7,7 @@ import json
 import os
 import re
 import time
+import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +42,7 @@ PROXY_ENV_NAMES = [
 OFFICIAL_UPLOAD_MD = Path("/tmp/bailian_small_kb_upload_payload.md")
 OFFICIAL_UPLOAD_TXT = Path("/tmp/review_writer_bailian_smoke.txt")
 OFFICIAL_UPLOAD_MD_CANDIDATE = Path("/tmp/review_writer_bailian_smoke.md")
+OFFICIAL_CLEAN_3PAPER_MD = Path("/tmp/bailian_clean_3paper_upload_payload.md")
 MINIMAL_LEASE_PROBE_MD = Path("/tmp/review-writer-lease-probe.md")
 OFFICIAL_STEPS = [
     "ApplyFileUploadLease",
@@ -453,20 +455,34 @@ class BailianOfficialClient:
         index_id: str,
         query: str,
         *,
+        request_options: dict[str, Any] | None = None,
+        supported_request_fields: dict[str, bool] | None = None,
         require_smoke_fact: bool = False,
+        allow_empty: bool = False,
     ) -> dict[str, Any]:
         from alibabacloud_bailian20231229 import models
 
-        request = models.RetrieveRequest(index_id=index_id, query=query, dense_similarity_top_k=3)
+        request_kwargs = build_retrieve_request_kwargs(
+            index_id=index_id,
+            query=query,
+            request_options=request_options,
+            supported_request_fields=supported_request_fields,
+        )
+        request = models.RetrieveRequest(**request_kwargs)
         response = client.retrieve_with_options(workspace_id, request, {}, self._runtime_options())
-        data = _safe_get(response, "body", "data") or _safe_get(response, "body", "Data")
-        nodes = _safe_get(data, "nodes") or _safe_get(data, "Nodes") or []
+        nodes = extract_retrieve_nodes(response)
         evaluation = evaluate_retrieve_nodes(nodes)
-        if not evaluation["nodes_count"]:
+        if not evaluation["nodes_count"] and not allow_empty:
             raise BailianPilotError("retrieve_empty_nodes", "retrieve returned no nodes")
         if require_smoke_fact and not evaluation["smoke_fact_found"]:
             raise BailianPilotError("retrieve_fact_miss", "retrieve nodes did not contain smoke fact")
-        return {"status": "ok", "items": evaluation["items"], **evaluation}
+        return {
+            "status": "ok",
+            "items": evaluation["items"],
+            "request_id_present": bool(_extract_request_id(response)),
+            "retrieve_request_fields": sorted(request_kwargs.keys()),
+            **evaluation,
+        }
 
     def delete_index(self, client: Any, workspace_id: str, index_id: str) -> dict[str, Any]:
         from alibabacloud_bailian20231229 import models
@@ -656,6 +672,9 @@ class BailianOfficialClient:
         allow_upload: bool,
         cleanup: bool = False,
         cleanup_index_id: str | None = None,
+        run_retrieval_matrix: bool = False,
+        matrix_only: bool = False,
+        require_smoke_fact: bool = True,
     ) -> dict[str, Any]:
         dependency_presence = self.dependency_presence()
         env_presence = self.env_presence()
@@ -708,6 +727,10 @@ class BailianOfficialClient:
             "recall_at_3": None,
             "citation_coverage": None,
             "per_question_results": [],
+            "retrieval_matrix": [],
+            "root_cause_classification": None,
+            "working_query": None,
+            "working_retrieval_mode": None,
         }
         if not allow_network or (not allow_upload and not cleanup):
             return {
@@ -757,6 +780,7 @@ class BailianOfficialClient:
                     OFFICIAL_UPLOAD_MD.resolve(),
                     OFFICIAL_UPLOAD_MD_CANDIDATE.resolve(),
                     OFFICIAL_UPLOAD_TXT.resolve(),
+                    OFFICIAL_CLEAN_3PAPER_MD.resolve(),
                 }
                 if upload_file.resolve() not in allowed_uploads:
                     return {
@@ -811,7 +835,44 @@ class BailianOfficialClient:
                 )
                 phase = "retrieve_index"
                 operation_name = "Retrieve"
-                retrieval = self._run_retrieval(client, workspace_id, index_result["index_id"], questions)
+                matrix = (
+                    self._run_smoke_retrieval_matrix(client, workspace_id, index_result["index_id"])
+                    if run_retrieval_matrix
+                    else {
+                        "matrix_results": [],
+                        "root_cause_classification": None,
+                        "working_query": None,
+                        "working_retrieval_mode": None,
+                    }
+                )
+                if matrix_only:
+                    matrix_rows = matrix["matrix_results"]
+                    working = next((row for row in matrix_rows if row.get("smoke_fact_found")), None)
+                    retrieval = {
+                        "status": "ok" if working else "fail",
+                        "recall_at_1": None,
+                        "recall_at_3": None,
+                        "citation_coverage": None,
+                        "per_question_results": [],
+                        "nodes_count": sum(int(row.get("nodes_count") or 0) for row in matrix_rows),
+                        "top_score": next(
+                            (row["top_scores"][0] for row in matrix_rows if row.get("top_scores")),
+                            None,
+                        ),
+                        "smoke_fact_found": bool(working),
+                        "signed_url_present": False,
+                        "signed_url_redacted": True,
+                    }
+                    if require_smoke_fact and not working:
+                        raise BailianPilotError("retrieve_fact_miss", "retrieval matrix did not contain smoke fact")
+                else:
+                    retrieval = self._run_retrieval(
+                        client,
+                        workspace_id,
+                        index_result["index_id"],
+                        questions,
+                        require_smoke_fact=require_smoke_fact,
+                    )
                 cleanup_result = self.cleanup_created_resources(
                     client,
                     workspace_id,
@@ -858,6 +919,10 @@ class BailianOfficialClient:
                 "recall_at_3": retrieval["recall_at_3"],
                 "citation_coverage": retrieval["citation_coverage"],
                 "per_question_results": retrieval["per_question_results"],
+                "retrieval_matrix": matrix["matrix_results"],
+                "root_cause_classification": matrix["root_cause_classification"],
+                "working_query": matrix["working_query"],
+                "working_retrieval_mode": matrix["working_retrieval_mode"],
                 "cleanup_recommendation": (
                     "Temporary resources were cleaned up automatically."
                     if cleanup_result.get("cleanup_status") == "pass"
@@ -941,6 +1006,8 @@ class BailianOfficialClient:
         workspace_id: str,
         index_id: str,
         questions: list[dict[str, Any]],
+        *,
+        require_smoke_fact: bool = True,
     ) -> dict[str, Any]:
         results: list[dict[str, Any]] = []
         hit_at_1 = 0
@@ -966,7 +1033,7 @@ class BailianOfficialClient:
                 hit_at_1 += 1
             if hit3:
                 hit_at_3 += 1
-            if top_ids:
+            if expected and all(paper_id in top_ids[:3] for paper_id in expected):
                 citation_hits += 1
             results.append(
                 {
@@ -977,12 +1044,21 @@ class BailianOfficialClient:
                     "hit_at_3": hit3,
                 }
             )
-        smoke_retrieval = self.retrieve_index(
-            client,
-            workspace_id,
-            index_id,
-            SMOKE_FACT,
-            require_smoke_fact=True,
+        smoke_retrieval = (
+            self.retrieve_index(
+                client,
+                workspace_id,
+                index_id,
+                SMOKE_FACT,
+                require_smoke_fact=True,
+            )
+            if require_smoke_fact
+            else {
+                "nodes_count": 0,
+                "top_score": None,
+                "smoke_fact_found": False,
+                "signed_url_present": False,
+            }
         )
         return {
             "status": "ok",
@@ -995,6 +1071,81 @@ class BailianOfficialClient:
             "smoke_fact_found": bool(smoke_retrieval.get("smoke_fact_found")),
             "signed_url_present": signed_url_present or bool(smoke_retrieval.get("signed_url_present")),
             "signed_url_redacted": True,
+        }
+
+    def _run_smoke_retrieval_matrix(self, client: Any, workspace_id: str, index_id: str) -> dict[str, Any]:
+        supported = retrieve_sdk_capabilities()["retrieve_request_supported_fields"]
+        modes = retrieve_request_modes(supported)
+        rows: list[dict[str, Any]] = []
+        original_timeout = self.config.request_timeout_seconds
+        object.__setattr__(self.config, "request_timeout_seconds", min(original_timeout, 15.0))
+        try:
+            for query in retrieve_matrix_queries():
+                for mode in modes:
+                    attempts = 0
+                    while True:
+                        try:
+                            retrieved = self.retrieve_index(
+                                client,
+                                workspace_id,
+                                index_id,
+                                query["query"],
+                                request_options=mode["request_options"],
+                                supported_request_fields=supported,
+                                allow_empty=True,
+                            )
+                            row = {
+                                "query_id": query["query_id"],
+                                "query": query["query"],
+                                "mode": mode["mode"],
+                                "status": "ok",
+                                "retrieve_request_fields": retrieved.get("retrieve_request_fields", []),
+                                "nodes_count": retrieved.get("nodes_count", 0),
+                                "top_scores": retrieved.get("top_scores", []),
+                                "text_present": bool(retrieved.get("node_text_present_count")),
+                                "metadata_content_present": bool(retrieved.get("metadata_content_present_count")),
+                                "smoke_fact_found": bool(retrieved.get("smoke_fact_found")),
+                                "matched_source": retrieved.get("matched_source", "none"),
+                                "request_id_present": bool(retrieved.get("request_id_present")),
+                                "readiness_checks": attempts,
+                            }
+                        except Exception as exc:  # noqa: BLE001 - matrix must continue to cleanup.
+                            row = {
+                                "query_id": query["query_id"],
+                                "query": query["query"],
+                                "mode": mode["mode"],
+                                "status": "fail",
+                                "error_type": classify_exception(exc),
+                                "retrieve_request_fields": sorted(
+                                    build_retrieve_request_kwargs(
+                                        index_id=index_id,
+                                        query=query["query"],
+                                        request_options=mode["request_options"],
+                                        supported_request_fields=supported,
+                                    ).keys()
+                                ),
+                                "nodes_count": 0,
+                                "top_scores": [],
+                                "text_present": False,
+                                "metadata_content_present": False,
+                                "smoke_fact_found": False,
+                                "matched_source": "none",
+                                "request_id_present": False,
+                                "readiness_checks": attempts,
+                            }
+                        if row["nodes_count"] or attempts >= 3 or row["status"] == "fail":
+                            rows.append(row)
+                            break
+                        attempts += 1
+                        time.sleep(10)
+        finally:
+            object.__setattr__(self.config, "request_timeout_seconds", original_timeout)
+        working = next((row for row in rows if row.get("smoke_fact_found")), None)
+        return {
+            "matrix_results": rows,
+            "root_cause_classification": classify_retrieval_root_cause(rows),
+            "working_query": working.get("query") if working else None,
+            "working_retrieval_mode": working.get("mode") if working else None,
         }
 
     def _runtime_options(self) -> Any:
@@ -1137,15 +1288,162 @@ def validate_rerank_config(rerank_mode: str | None, rerank_instruct: str | None)
 def evaluate_retrieve_nodes(nodes: Any, smoke_fact: str = SMOKE_FACT) -> dict[str, Any]:
     items = _normalize_retrieval_nodes(nodes)
     top_score = next((item.get("score") for item in items if item.get("score") is not None), None)
-    node_text = " ".join(item.get("text_excerpt", "") for item in items)
+    top_scores = [item.get("score") for item in items if item.get("score") is not None][:5]
+    normalized_fact = _normalize_fact_text(smoke_fact)
+    matched_source = "none"
+    for item in items:
+        if normalized_fact and normalized_fact in _normalize_fact_text(item.get("text_for_match", "")):
+            matched_source = "text"
+            break
+    if matched_source == "none":
+        for item in items:
+            if normalized_fact and normalized_fact in _normalize_fact_text(item.get("metadata_content_for_match", "")):
+                matched_source = "metadata_content"
+                break
     return {
         "nodes_count": len(items),
+        "node_text_present_count": sum(1 for item in items if item.get("text_for_match")),
+        "metadata_content_present_count": sum(1 for item in items if item.get("metadata_content_for_match")),
         "top_score": top_score,
-        "smoke_fact_found": smoke_fact in node_text,
+        "top_scores": top_scores,
+        "smoke_fact_found": matched_source != "none",
+        "matched_source": matched_source,
         "signed_url_present": _contains_signed_url(nodes),
         "signed_url_redacted": True,
-        "items": [{key: value for key, value in item.items() if key != "text_excerpt"} for item in items],
+        "items": [
+            {
+                key: value
+                for key, value in item.items()
+                if key not in {"text_for_match", "metadata_content_for_match"}
+            }
+            for item in items
+        ],
     }
+
+
+def extract_retrieve_nodes(response: Any) -> list[Any]:
+    body = _node_first_present(response, _to_jsonable(response), ["body", "Body"])
+    body_payload = _to_jsonable(body)
+    data = _node_first_present(body, body_payload, ["data", "Data"])
+    data_payload = _to_jsonable(data)
+    nodes = _node_first_present(data, data_payload, ["nodes", "Nodes"])
+    return nodes if isinstance(nodes, list) else []
+
+
+def build_retrieve_request_kwargs(
+    *,
+    index_id: str,
+    query: str,
+    request_options: dict[str, Any] | None = None,
+    supported_request_fields: dict[str, bool] | None = None,
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"index_id": index_id, "query": query}
+    options = request_options or {}
+    supported = supported_request_fields or {}
+    for field, value in options.items():
+        if value is None:
+            continue
+        if supported and supported.get(field) is not True:
+            continue
+        kwargs[field] = value
+    return kwargs
+
+
+def retrieve_request_modes(supported_request_fields: dict[str, bool] | None = None) -> list[dict[str, Any]]:
+    supported = supported_request_fields or {}
+
+    def has(*fields: str) -> bool:
+        return all(supported.get(field, True) for field in fields)
+
+    modes = [{"mode": "official_minimal", "request_options": {}, "required_fields": ["index_id", "query"]}]
+    if has("dense_similarity_top_k", "sparse_similarity_top_k", "enable_reranking"):
+        modes.append(
+            {
+                "mode": "hybrid_no_rerank",
+                "request_options": {
+                    "dense_similarity_top_k": 20,
+                    "sparse_similarity_top_k": 20,
+                    "enable_reranking": False,
+                },
+                "required_fields": ["dense_similarity_top_k", "sparse_similarity_top_k", "enable_reranking"],
+            }
+        )
+        modes.append(
+            {
+                "mode": "sparse_exact_no_rerank",
+                "request_options": {
+                    "dense_similarity_top_k": 0,
+                    "sparse_similarity_top_k": 20,
+                    "enable_reranking": False,
+                },
+                "required_fields": ["dense_similarity_top_k", "sparse_similarity_top_k", "enable_reranking"],
+            }
+        )
+        modes.append(
+            {
+                "mode": "dense_semantic_no_rerank",
+                "request_options": {
+                    "dense_similarity_top_k": 20,
+                    "sparse_similarity_top_k": 0,
+                    "enable_reranking": False,
+                },
+                "required_fields": ["dense_similarity_top_k", "sparse_similarity_top_k", "enable_reranking"],
+            }
+        )
+    if has("enable_reranking", "rerank_top_n"):
+        modes.append(
+            {
+                "mode": "rerank_qa",
+                "request_options": {
+                    "enable_reranking": True,
+                    "rerank_top_n": 10,
+                },
+                "required_fields": ["enable_reranking", "rerank_top_n"],
+            }
+        )
+    return modes
+
+
+def retrieve_matrix_queries() -> list[dict[str, str]]:
+    return [
+        {"query_id": "Q1_exact", "query": SMOKE_FACT},
+        {"query_id": "Q2_question", "query": "What is the project name?"},
+        {"query_id": "Q3_title", "query": "Review Writer Bailian Smoke Test"},
+        {"query_id": "Q4_expected_answer", "query": "What is the expected answer in this document?"},
+    ]
+
+
+def classify_retrieval_root_cause(matrix_results: list[dict[str, Any]]) -> str:
+    hits = {
+        (row.get("query_id"), row.get("mode")): bool(row.get("smoke_fact_found"))
+        for row in matrix_results
+    }
+    any_no_rerank_hit = any(
+        bool(row.get("smoke_fact_found")) and str(row.get("mode", "")).endswith("no_rerank")
+        for row in matrix_results
+    )
+    minimal_hit = any(
+        bool(row.get("smoke_fact_found")) and row.get("mode") == "official_minimal"
+        for row in matrix_results
+    )
+    exact_hit = any(
+        bool(row.get("smoke_fact_found")) and row.get("query_id") == "Q1_exact"
+        for row in matrix_results
+    )
+    question_hit = any(
+        bool(row.get("smoke_fact_found")) and row.get("query_id") == "Q2_question"
+        for row in matrix_results
+    )
+    readiness_recovered = any(int(row.get("readiness_checks") or 0) > 0 and row.get("nodes_count") for row in matrix_results)
+    if readiness_recovered:
+        return "index_readiness_delay"
+    if any_no_rerank_hit and not minimal_hit:
+        return "reranking_or_threshold_filter"
+    if exact_hit and not question_hit:
+        return "query_mismatch"
+    if any(row.get("smoke_fact_found") for row in matrix_results):
+        return "response_parsing_bug_or_query_mode_fixed"
+    return "retrieve_service_or_index_content_mismatch"
 
 
 def calculate_md5(file_path: Path) -> str:
@@ -1367,6 +1665,37 @@ def category_sdk_capabilities() -> dict[str, Any]:
         "has_list_category_request": _sdk_model_exists("ListCategoryRequest"),
         "has_list_category_with_options": _client_method_exists("list_category_with_options"),
         "has_create_category_request": _sdk_model_exists("AddCategoryRequest"),
+    }
+
+
+def retrieve_sdk_capabilities() -> dict[str, Any]:
+    request_models = [
+        "RetrieveRequest",
+        "RetrieveResponse",
+        "RetrieveResponseBody",
+        "RetrieveResponseBodyData",
+        "RetrieveResponseBodyDataNodes",
+    ]
+    target_request_fields = [
+        "query",
+        "index_id",
+        "dense_similarity_top_k",
+        "sparse_similarity_top_k",
+        "enable_reranking",
+        "rerank_top_n",
+        "rerank_min_score",
+        "enable_rewrite",
+        "save_retriever_history",
+    ]
+    request_fields = _sdk_model_fields("RetrieveRequest")
+    all_request_fields = set(request_fields.get("signature_fields", [])) | set(request_fields.get("instance_fields", []))
+    return {
+        "modules": {module: _module_status(module) for module in REQUIRED_SDK_MODULES},
+        "models": {name: _sdk_model_fields(name) for name in request_models},
+        "client_methods": {"retrieve_with_options": _client_method_signature("retrieve_with_options")},
+        "retrieve_request_supported_fields": {
+            field: field in all_request_fields for field in target_request_fields
+        },
     }
 
 
@@ -1629,21 +1958,70 @@ def _normalize_retrieval_nodes(nodes: Any) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for node in nodes if isinstance(nodes, list) else []:
         payload = _to_jsonable(node)
-        text = str(payload.get("text") or payload.get("content") or json.dumps(payload, ensure_ascii=False))
-        paper_id = _extract_paper_id(text)
+        text = str(_node_first_present(node, payload, ["Text", "text", "Content", "content"]) or "")
+        metadata = _safe_metadata(_node_first_present(node, payload, ["Metadata", "metadata"]))
+        metadata_content = str(metadata.get("content") or "")
+        paper_id = str(metadata.get("paper_id") or "") or _extract_paper_id(" ".join([text, metadata_content]))
         items.append(
             {
-                "paper_id": paper_id,
-                "score": payload.get("score") or payload.get("similarity") or payload.get("rerank_score"),
-                "text_excerpt": redact_sensitive(text)[:240],
+                "paper_id": paper_id or None,
+                "score": _node_first_present(
+                    node,
+                    payload,
+                    ["Score", "score", "Similarity", "similarity", "RerankScore", "rerank_score"],
+                ),
+                "text_for_match": text,
+                "metadata_content_for_match": metadata_content,
             }
         )
     return items
 
 
+def _safe_metadata(value: Any) -> dict[str, Any]:
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            decoded = {}
+        value = decoded
+    payload = _to_jsonable(value)
+    if not isinstance(payload, dict):
+        return {}
+    allowed = {"content", "title", "hier_title", "doc_name", "paper_id"}
+    return {key: payload.get(key) for key in allowed if payload.get(key) is not None}
+
+
+def _node_first_present(node: Any, payload: dict[str, Any], names: list[str]) -> Any:
+    for name in names:
+        if isinstance(payload, dict) and payload.get(name) is not None:
+            return payload.get(name)
+        value = getattr(node, name, None)
+        if value is not None:
+            return value
+    lower_payload = {str(key).lower(): value for key, value in payload.items()} if isinstance(payload, dict) else {}
+    for name in names:
+        value = lower_payload.get(name.lower())
+        if value is not None:
+            return value
+    return None
+
+
+def _normalize_fact_text(text: Any) -> str:
+    normalized = unicodedata.normalize("NFKC", str(text or "")).lower()
+    normalized = re.sub(r"[\s_\-‐‑‒–—−]+", " ", normalized)
+    normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
+    return " ".join(normalized.split())
+
+
 def _contains_signed_url(value: Any) -> bool:
     text = json.dumps(_jsonable_recursive(value), ensure_ascii=False).lower()
     return any(marker in text for marker in ["ossaccesskeyid", "signature=", "x-oss-signature", "expires=", "signedurl"])
+
+
+def _extract_request_id(response: Any) -> Any:
+    body = _node_first_present(response, _to_jsonable(response), ["body", "Body"])
+    body_payload = _to_jsonable(body)
+    return _node_first_present(body, body_payload, ["request_id", "requestId", "RequestId"])
 
 
 def _jsonable_recursive(value: Any) -> Any:

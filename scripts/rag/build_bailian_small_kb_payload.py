@@ -14,6 +14,7 @@ DEFAULT_MANIFEST = Path("/tmp/bailian_no_upload_corpus_manifest.json")
 DEFAULT_PREFLIGHT = REPO_ROOT / "scripts/rag/bailian_preflight.py"
 DEFAULT_CONFIG = REPO_ROOT / "rag/bailian/preflight_config.example.yaml"
 DEFAULT_UPLOAD_MD = Path("/tmp/bailian_small_kb_upload_payload.md")
+DEFAULT_CLEAN_UPLOAD_MD = Path("/tmp/bailian_clean_3paper_upload_payload.md")
 MAX_TEXT_CHARS = 1200
 FORBIDDEN_RE = re.compile(
     r"(\.pdf\b|\.png\b|\.jpe?g\b|\.webp\b|raw_mineru_markdown|full_pdf_text|"
@@ -88,6 +89,7 @@ def build_payload(clean_root: Path, output_jsonl: Path, output_md: Path, output_
         "output_jsonl": str(output_jsonl),
         "output_md": str(output_md),
         "official_upload_md": str(DEFAULT_UPLOAD_MD),
+        "clean_3paper_upload_md": str(DEFAULT_CLEAN_UPLOAD_MD),
         "safety": {
             "pdf": "not_included",
             "raw_image": "not_included",
@@ -100,6 +102,7 @@ def build_payload(clean_root: Path, output_jsonl: Path, output_md: Path, output_
         },
     }
     output_manifest.parent.mkdir(parents=True, exist_ok=True)
+    DEFAULT_CLEAN_UPLOAD_MD.write_text(render_clean_payload_md(records), encoding="utf-8")
     output_manifest.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return report
 
@@ -130,6 +133,7 @@ def sanitize_item(item: dict[str, Any]) -> dict[str, Any]:
     known_warnings = str(item.get("warning") or item.get("known_warnings") or "not trusted for scientific quality")
     claim = trim(str(item.get("claim_draft") or ""), 650)
     figure = trim(str(item.get("figure_note_draft") or ""), 350)
+    comparison_note = comparison_hint(paper_id)
     compact_text = trim(
         "\n".join(
             [
@@ -138,6 +142,7 @@ def sanitize_item(item: dict[str, Any]) -> dict[str, Any]:
                 f"Role: {item.get('role') or 'unknown'}",
                 f"Claim draft: {claim}",
                 f"Figure note draft: {figure}",
+                f"Comparison note: {comparison_note}",
                 f"Known warnings: {known_warnings}",
                 "Human review required: true",
                 "Trusted for scientific quality: false",
@@ -148,6 +153,14 @@ def sanitize_item(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "paper_id": paper_id,
         "title": item.get("title") or paper_id,
+        "year": item.get("year") or "unknown",
+        "journal": item.get("journal") or "unknown",
+        "doi_draft": item.get("doi_draft") or "",
+        "role": item.get("role") or "unknown",
+        "claim_draft": claim,
+        "figure_note_draft": figure,
+        "known_warnings": known_warnings,
+        "comparison_note": comparison_note,
         "compact_text": compact_text,
         "metadata": {
             "year": item.get("year") or "unknown",
@@ -167,6 +180,14 @@ def trim(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 20].rstrip() + " [trimmed]"
+
+
+def comparison_hint(paper_id: str) -> str:
+    if paper_id == "F3I":
+        return "F3I should be compared for broad review framing versus palladium axially chiral allene method detail."
+    if paper_id == "F47A":
+        return "F47A should be compared for palladium axially chiral allene method detail versus broad review framing."
+    return "No broad framing versus palladium method comparison role assigned."
 
 
 def validate_records(records: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -210,6 +231,42 @@ def render_payload_md(records: list[dict[str, Any]]) -> str:
             "",
         ]
     )
+
+
+def render_clean_payload_md(records: list[dict[str, Any]]) -> str:
+    lines = [
+        "# Bailian Clean 3-Paper Retrieval QA Payload",
+        "",
+        "This compact payload is for retrieval engineering QA only.",
+        "needs_human_review=true",
+        "trusted_for_scientific_quality=false",
+        "",
+    ]
+    for record in records:
+        lines.extend(
+            [
+                f"## Paper {record['paper_id']}",
+                "",
+                f"paper_id: {record['paper_id']}",
+                f"title: {record['title']}",
+                f"year: {record['year']}",
+                f"journal: {record['journal']}",
+                f"doi_draft: {record['doi_draft']}",
+                f"role: {record['role']}",
+                f"{record['paper_id']} short claim draft: {record['claim_draft']}",
+                f"{record['paper_id']} short figure note: {record['figure_note_draft']}",
+                f"{record['paper_id']} comparison note: {record['comparison_note']}",
+                f"{record['paper_id']} known warnings: {record['known_warnings']}",
+                f"{record['paper_id']} limitation or human-review warning before relying on metadata: {record['known_warnings']}",
+                "needs_human_review: true",
+                "trusted_for_scientific_quality: false",
+                "",
+            ]
+        )
+    text = "\n".join(lines)
+    if FORBIDDEN_RE.search(text):
+        raise PayloadError("clean 3-paper upload markdown contains forbidden content")
+    return text + "\n"
 
 
 if __name__ == "__main__":

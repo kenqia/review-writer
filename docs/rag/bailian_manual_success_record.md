@@ -34,6 +34,20 @@ This record is intentionally redacted. It does not store AccessKey values, signe
 - `RerankInstruct` may be sent only when `RerankMode=custom`.
 - Retrieve success must require non-empty nodes and the smoke fact `review-writer Phase 6c smoke test`.
 
+## Phase 6d Automated Closure
+
+The repo SDK path now has matching automated evidence:
+
+- smoke retrieval matrix: pass
+- working query: `review-writer Phase 6c smoke test`
+- working mode: `official_minimal`
+- root cause classification: `index_readiness_delay`
+- clean 3-paper recall@3: `1.0`
+- clean 3-paper citation coverage: `1.0`
+- cleanup: pass for both smoke and clean lifecycles
+
+Resource ids and signed URLs remain only in ignored `/tmp` reports.
+
 ## Safety Boundary
 
 - No PDF upload.
