@@ -37,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Official-minimal ApplyFileUploadLease repro.")
     parser.add_argument("--endpoint", default="bailian.cn-beijing.aliyuncs.com")
     parser.add_argument("--category-id", default="default")
+    parser.add_argument("--category-id-from", type=Path)
     parser.add_argument("--transport-mode", choices=["inherited_proxy", "no_proxy", "explicit_proxy"], default="inherited_proxy")
     parser.add_argument("--connect-timeout-ms", type=int, default=10000)
     parser.add_argument("--read-timeout-ms", type=int, default=20000)
@@ -49,9 +50,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def run_repro(args: argparse.Namespace) -> dict[str, Any]:
+    category = resolve_category(args)
     config = make_bailian_config(
         endpoint=args.endpoint,
-        category_id=args.category_id,
+        category_id=category["category_id"],
+        category_type=category["category_type"],
         transport_mode=args.transport_mode,
         connect_timeout_ms=args.connect_timeout_ms,
         read_timeout_ms=args.read_timeout_ms,
@@ -60,7 +63,10 @@ def run_repro(args: argparse.Namespace) -> dict[str, Any]:
     client = BailianOfficialClient(config)
     base: dict[str, Any] = {
         "endpoint": args.endpoint,
-        "category_id": args.category_id,
+        "category_id": category["category_id"],
+        "category_id_source": category["category_id_source"],
+        "category_type": category["category_type"],
+        "category_type_source": category["category_type_source"],
         "transport_mode": args.transport_mode,
         "connect_timeout_ms": args.connect_timeout_ms,
         "read_timeout_ms": args.read_timeout_ms,
@@ -87,6 +93,14 @@ def run_repro(args: argparse.Namespace) -> dict[str, Any]:
         "safe_error": None,
         "recommended_fix": None,
     }
+    if category.get("error_type"):
+        return {
+            **base,
+            "status": "fail",
+            "error_type": category["error_type"],
+            "summary": category["summary"],
+            "recommended_fix": recommended_fix(category["error_type"]),
+        }
     if not args.allow_network:
         return {
             **base,
@@ -110,6 +124,44 @@ def run_repro(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def resolve_category(args: argparse.Namespace) -> dict[str, Any]:
+    if not args.category_id_from:
+        return {
+            "category_id": args.category_id,
+            "category_id_source": "cli",
+            "category_type": "document",
+            "category_type_source": "default",
+        }
+    try:
+        data = json.loads(args.category_id_from.read_text(encoding="utf-8"))
+    except Exception:
+        return {
+            "category_id": args.category_id,
+            "category_id_source": "cli_fallback",
+            "category_type": "document",
+            "category_type_source": "default",
+            "error_type": "category_discovery_required",
+            "summary": "category discovery report is missing or unreadable",
+        }
+    category_id = data.get("recommended_category_id")
+    category_type = data.get("recommended_category_type")
+    if not category_id:
+        return {
+            "category_id": args.category_id,
+            "category_id_source": "cli_fallback",
+            "category_type": category_type or "document",
+            "category_type_source": "discovery_or_default",
+            "error_type": "category_discovery_required",
+            "summary": "category discovery did not provide recommended_category_id",
+        }
+    return {
+        "category_id": str(category_id),
+        "category_id_source": str(args.category_id_from),
+        "category_type": str(category_type or "document"),
+        "category_type_source": "discovery" if category_type else "default",
+    }
+
+
 def write_outputs(report: dict[str, Any], output_json: Path, output_md: Path) -> None:
     output_json.parent.mkdir(parents=True, exist_ok=True)
     output_json.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -126,6 +178,9 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- error_type: `{report.get('error_type')}`",
         f"- endpoint: `{report.get('endpoint')}`",
         f"- category_id: `{report.get('category_id')}`",
+        f"- category_id_source: `{report.get('category_id_source')}`",
+        f"- category_type: `{report.get('category_type')}`",
+        f"- category_type_source: `{report.get('category_type_source')}`",
         f"- transport_mode: `{report.get('transport_mode')}`",
         f"- connect_timeout_ms: `{report.get('connect_timeout_ms')}`",
         f"- read_timeout_ms: `{report.get('read_timeout_ms')}`",

@@ -162,6 +162,36 @@ class BailianOfficialClient:
             "status": "lease_granted",
         }
 
+    def list_categories(self, client: Any, workspace_id: str, category_type: str | None = None) -> dict[str, Any]:
+        from alibabacloud_bailian20231229 import models
+
+        categories: list[dict[str, Any]] = []
+        next_token: str | None = None
+        attempts = 0
+        while True:
+            attempts += 1
+            request = models.ListCategoryRequest(max_results=100, next_token=next_token, category_type=category_type)
+            response = client.list_category_with_options(workspace_id, request, {}, self._runtime_options())
+            body = _safe_get(response, "body")
+            data = _safe_get(body, "data")
+            raw_categories = (
+                _safe_get(data, "category_list")
+                or _safe_get(data, "categoryList")
+                or _safe_get(data, "categories")
+                or []
+            )
+            for item in raw_categories if isinstance(raw_categories, list) else []:
+                categories.append(safe_category_summary(item))
+            next_token = _safe_get(data, "next_token") or _safe_get(data, "nextToken")
+            if not next_token or attempts >= 10:
+                return {
+                    "status": "ok",
+                    "categories": categories,
+                    "categories_count": len(categories),
+                    "request_id": _safe_get(body, "request_id") or _safe_get(body, "requestId"),
+                    "attempts": attempts,
+                }
+
     def upload_file_to_presigned_url(self, lease: dict[str, Any], file_path: Path) -> dict[str, Any]:
         import requests
 
@@ -754,6 +784,8 @@ def classify_exception(exc: Exception) -> str:
     text = _exception_chain_text(exc).lower()
     error_code = str(_first_present(exc, ["error_code", "code", "errorCode"]) or "").lower()
     combined = f"{error_code} {text}"
+    if "missingcategorytype" in combined or "missing category type" in combined:
+        return "category_type_required"
     if "invalidcategory" in combined or "invalid category" in combined:
         return "invalid_category"
     if "category" in combined and ("invalid" in combined or "not found" in combined):
@@ -841,6 +873,7 @@ def recommended_fix(error_type: str | None) -> str:
         "invalid_workspace": "Check WORKSPACE_ID and region; the workspace must exist in the selected Bailian endpoint region.",
         "category_error": "Check whether the requested category_id exists and whether category_type is accepted by this workspace.",
         "invalid_category": "Check category_id/category_type; create or select a valid category before full upload.",
+        "category_type_required": "ListCategory requires an explicit category_type for this workspace/API version; confirm valid values before retry.",
         "invalid_request_model": "Compare SDK request fields with the installed SDK version and official API contract.",
         "endpoint_or_region_error": "Verify endpoint and BAILIAN_REGION alignment, especially cn-beijing versus other regions.",
         "missing_env": "Set required env only in a temporary shell or isolated manual bridge; do not commit secrets.",
@@ -890,6 +923,7 @@ def make_bailian_config(
     endpoint: str | None = None,
     region: str | None = None,
     category_id: str | None = None,
+    category_type: str = "document",
     transport_mode: str = "inherited_proxy",
     connect_timeout_ms: int = 10000,
     read_timeout_ms: int = 20000,
@@ -903,6 +937,7 @@ def make_bailian_config(
         region=resolved_region,
         endpoint=resolved_endpoint,
         category_id=category_id or DEFAULT_CATEGORY_ID,
+        category_type=category_type,
         endpoint_source="explicit" if endpoint else ("region" if region else "official_default"),
         region_source="explicit" if region else "default",
         transport_mode=transport_mode,
@@ -912,8 +947,131 @@ def make_bailian_config(
     )
 
 
+def category_sdk_capabilities() -> dict[str, Any]:
+    request_models = [
+        "ListCategoryRequest",
+        "ListCategoryResponseBodyDataCategoryList",
+        "AddCategoryRequest",
+        "DeleteCategoryRequest",
+    ]
+    client_methods = [
+        "list_category_with_options",
+        "list_category",
+        "add_category_with_options",
+        "delete_category_with_options",
+    ]
+    return {
+        "modules": {module: _module_status(module) for module in REQUIRED_SDK_MODULES},
+        "request_models": {name: _sdk_model_fields(name) for name in request_models},
+        "client_methods": {name: _client_method_signature(name) for name in client_methods},
+        "has_list_category_request": _sdk_model_exists("ListCategoryRequest"),
+        "has_list_category_with_options": _client_method_exists("list_category_with_options"),
+        "has_create_category_request": _sdk_model_exists("AddCategoryRequest"),
+    }
+
+
+def _sdk_model_exists(class_name: str) -> bool:
+    try:
+        mod = importlib.import_module("alibabacloud_bailian20231229.models")
+        return hasattr(mod, class_name)
+    except Exception:
+        return False
+
+
+def _client_method_exists(method_name: str) -> bool:
+    try:
+        mod = importlib.import_module("alibabacloud_bailian20231229.client")
+        return hasattr(getattr(mod, "Client"), method_name)
+    except Exception:
+        return False
+
+
+def _sdk_model_fields(class_name: str) -> dict[str, Any]:
+    try:
+        mod = importlib.import_module("alibabacloud_bailian20231229.models")
+        cls = getattr(mod, class_name)
+        signature = inspect.signature(cls.__init__)
+        parameters = [name for name in signature.parameters if name != "self"]
+        try:
+            instance_fields = [name for name in vars(cls()).keys() if not name.startswith("_")]
+        except Exception:
+            instance_fields = []
+        return {
+            "exists": True,
+            "signature_fields": parameters,
+            "instance_fields": sorted(set(instance_fields)),
+        }
+    except Exception as exc:  # noqa: BLE001 - offline introspection must tolerate missing SDK.
+        return {"exists": False, "error_class": type(exc).__name__, "signature_fields": [], "instance_fields": []}
+
+
+def _client_method_signature(method_name: str) -> dict[str, Any]:
+    try:
+        mod = importlib.import_module("alibabacloud_bailian20231229.client")
+        method = getattr(getattr(mod, "Client"), method_name)
+        return {"exists": True, "signature": str(inspect.signature(method))}
+    except Exception as exc:  # noqa: BLE001
+        return {"exists": False, "error_class": type(exc).__name__, "signature": None}
+
+
 def proxy_env_set_names() -> list[str]:
     return [name for name in PROXY_ENV_NAMES if os.environ.get(name)]
+
+
+def safe_category_summary(category: Any) -> dict[str, Any]:
+    category_id = _safe_get(category, "category_id") or _safe_get(category, "categoryId")
+    category_name = _safe_get(category, "category_name") or _safe_get(category, "categoryName")
+    category_type = _safe_get(category, "category_type") or _safe_get(category, "categoryType")
+    parent_id = _safe_get(category, "parent_category_id") or _safe_get(category, "parentCategoryId")
+    is_default = bool(_safe_get(category, "is_default") or _safe_get(category, "isDefault"))
+    status = _safe_get(category, "status")
+    return {
+        "category_id": str(category_id) if category_id is not None else None,
+        "name_redacted_or_plain_if_safe": safe_category_name(category_name),
+        "type": str(category_type) if category_type is not None else None,
+        "parent_id_present": bool(parent_id),
+        "status": str(status) if status is not None else None,
+        "is_default_candidate": is_default or str(category_id or "").lower() == "default",
+    }
+
+
+def safe_category_name(name: Any) -> str | None:
+    if name is None:
+        return None
+    text = str(name).strip()
+    if not text:
+        return None
+    if SENSITIVE_RE.search(text) or len(text) > 120:
+        return "[REDACTED_CATEGORY_NAME]"
+    return text
+
+
+def recommend_category(categories: list[dict[str, Any]]) -> dict[str, Any]:
+    if not categories:
+        return {
+            "recommended_category_id": None,
+            "recommended_category_type": None,
+            "recommended_reason": "no categories returned; category discovery or workspace permissions need review",
+        }
+    preferred = [
+        item
+        for item in categories
+        if item.get("is_default_candidate") and item.get("category_id") and item.get("type")
+    ]
+    if not preferred:
+        preferred = [item for item in categories if item.get("category_id") and item.get("type")]
+    if not preferred:
+        preferred = [item for item in categories if item.get("category_id")]
+    chosen = preferred[0] if preferred else {}
+    return {
+        "recommended_category_id": chosen.get("category_id"),
+        "recommended_category_type": chosen.get("type"),
+        "recommended_reason": (
+            "selected default candidate from ListCategory"
+            if chosen.get("is_default_candidate")
+            else "selected first category with id/type from ListCategory"
+        ),
+    }
 
 
 def sdk_transport_capabilities() -> dict[str, Any]:

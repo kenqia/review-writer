@@ -188,3 +188,17 @@ Authorized Phase 6c-oct matrix result:
 - no knowledge base created
 
 This shifts the next debugging target to category or request-model alignment while using `no_proxy` as the working service-reachability mode.
+
+## Phase 6c-nov Category Discovery
+
+The SDK exposes `ListCategoryRequest` and `list_category_with_options`. Category discovery is therefore the correct next diagnostic before any upload-capable retry.
+
+Rules:
+
+- Use `no_proxy`, because it is the only mode that reached the service.
+- Call only `ListCategory`.
+- If discovery returns a recommended category, run one `ApplyFileUploadLease` reprobe with that category id/type.
+- If discovery returns no category, use Bailian console to create or select a valid document-search category.
+- Do not run full pilot until lease reprobe succeeds.
+
+The first real `ListCategory` attempt reached the service and returned `MissingCategoryType`, with no upload or KB creation. This narrows the next step to finding the valid `category_type` value required by the current Bailian API/workspace contract.

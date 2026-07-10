@@ -1381,6 +1381,68 @@ Next:
 - Use `no_proxy` as the service-reaching transport mode.
 - Inspect `category_type`, `category_id`, and SDK request-model contract before any full pilot retry.
 
+### Phase 6c-nov: Bailian category discovery / correct category-id lease probe
+
+目标：
+
+- 固定 `no_proxy`，因为它是唯一能到服务端并拿到 request id 的模式。
+- 调用只读 `ListCategory`，发现当前 workspace 的 category id/type。
+- 用 discovery 推荐类目做一次 lease-only reprobe。
+- 不上传、不 AddFile、不建索引、不 Retrieve、不创建知识库。
+
+Implemented Phase 6c-nov files:
+
+```text
+scripts/rag/bailian_category_introspection.py
+scripts/rag/bailian_category_discovery.py
+tests/test_bailian_category_introspection.py
+tests/test_bailian_category_discovery_safety.py
+docs/rag/bailian_category_discovery.md
+```
+
+Updated:
+
+```text
+review_writer/retrieval/bailian_official_client.py
+scripts/rag/bailian_minimal_lease_repro.py
+scripts/rag/bailian_transport_matrix.py
+tests/test_bailian_minimal_lease_repro_safety.py
+Makefile
+docs/rag/bailian_sdk_transport_matrix.md
+docs/rag/bailian_error_forensics.md
+docs/pr/phase6c_bailian_small_kb_pilot_pr.md
+```
+
+Gates:
+
+```bash
+make bailian-category-introspection
+make bailian-category-discovery-dry-run
+```
+
+Decision rule:
+
+- Discovery 有 recommended category：用它做一次 lease reprobe。
+- Discovery 没有合适 category：需要在控制台创建或选择文档搜索类目。
+- Discovery 失败且有 request id：查权限/workspace。
+- Discovery 失败且无 request id：回到 transport。
+- Lease reprobe 成功后，才允许 full pilot retry once。
+
+Current result:
+
+- `ListCategory` through `no_proxy` reached service.
+- request id present.
+- status code `400`, error code `MissingCategoryType`.
+- categories_count `0`; no recommended category.
+- no lease reprobe executed.
+- no upload, no AddFile, no index, no Retrieve, no knowledge base.
+
+Next:
+
+- Confirm valid Bailian `category_type` values for this workspace/API contract.
+- Rerun `ListCategory` once with explicit `--category-type`.
+- Only if a recommended category is found, run one lease-only reprobe.
+
 ## 风险
 
 - PR 过大导致 review 困难。

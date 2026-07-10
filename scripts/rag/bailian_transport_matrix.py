@@ -52,6 +52,7 @@ def run_matrix(args: argparse.Namespace) -> dict[str, Any]:
         repro_args = SimpleNamespace(
             endpoint=args.endpoint,
             category_id=args.category_id,
+            category_id_from=None,
             transport_mode=mode,
             connect_timeout_ms=args.connect_timeout_ms,
             read_timeout_ms=args.read_timeout_ms,

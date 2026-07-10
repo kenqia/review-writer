@@ -138,6 +138,25 @@ Authorized Phase 6c-oct result:
 - no knowledge base created
 - next target: category/request-model alignment under no-proxy mode
 
+Phase 6c-nov category discovery:
+
+- Added SDK category introspection for `ListCategoryRequest` and `list_category_with_options`.
+- Added dry-run category discovery.
+- Added `--category-id-from` to the minimal lease repro so the next reprobe can consume `recommended_category_id`.
+- Discovery uses `no_proxy`, because that is the only transport mode that reached Bailian service.
+- Discovery is read-only and does not call ApplyFileUploadLease, upload, AddFile, CreateIndex, SubmitIndexJob, Retrieve, or create a knowledge base.
+
+Authorized Phase 6c-nov discovery result:
+
+- `ListCategory` reached service with request id.
+- status code: `400`
+- error code: `MissingCategoryType`
+- categories returned: `0`
+- no recommended category yet
+- no lease reprobe was executed
+- no upload or KB creation
+- next target: confirm valid `category_type` values, then rerun ListCategory with an explicit category type
+
 Implemented official SDK lifecycle:
 
 - ApplyFileUploadLease

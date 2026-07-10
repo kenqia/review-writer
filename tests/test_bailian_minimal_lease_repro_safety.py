@@ -10,11 +10,14 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DRY_JSON = Path("/tmp/bailian_minimal_lease_repro_test_dry.json")
 MISSING_ENV_JSON = Path("/tmp/bailian_minimal_lease_repro_test_missing_env.json")
+MISSING_CATEGORY_JSON = Path("/tmp/bailian_minimal_lease_repro_test_missing_category.json")
+DISCOVERY_WITHOUT_RECOMMENDATION = Path("/tmp/bailian_category_discovery_without_recommendation.json")
 
 
 def main() -> int:
     run_dry_repro()
     run_missing_env_repro()
+    run_missing_category_repro()
     print("bailian_minimal_lease_repro_safety_tests: ok")
     return 0
 
@@ -75,6 +78,37 @@ def run_missing_env_repro() -> None:
     report = json.loads(MISSING_ENV_JSON.read_text(encoding="utf-8"))
     assert report["status"] == "fail"
     assert report["error_type"] in {"missing_env", "missing_dependency_or_api_contract"}
+    assert report["network_attempted"] is False
+    assert report["upload_attempted"] is False
+    assert report["knowledge_base_created"] is False
+
+
+def run_missing_category_repro() -> None:
+    DISCOVERY_WITHOUT_RECOMMENDATION.write_text(
+        json.dumps({"status": "pass", "recommended_category_id": None}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/rag/bailian_minimal_lease_repro.py",
+            "--endpoint",
+            "bailian.cn-beijing.aliyuncs.com",
+            "--category-id-from",
+            str(DISCOVERY_WITHOUT_RECOMMENDATION),
+            "--output-json",
+            str(MISSING_CATEGORY_JSON),
+            "--output-md",
+            "/tmp/bailian_minimal_lease_repro_test_missing_category.md",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    report = json.loads(MISSING_CATEGORY_JSON.read_text(encoding="utf-8"))
+    assert report["status"] == "fail"
+    assert report["error_type"] == "category_discovery_required"
     assert report["network_attempted"] is False
     assert report["upload_attempted"] is False
     assert report["knowledge_base_created"] is False

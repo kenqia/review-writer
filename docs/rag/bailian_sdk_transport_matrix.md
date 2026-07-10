@@ -71,3 +71,11 @@ Safe summary:
 - knowledge base created: false
 
 Interpretation: process-local `no_proxy` reaches Bailian service, so the next issue is no longer pure endpoint reachability. The next fix should inspect `category_type` / `category_id` / SDK request contract before any full pilot retry.
+
+## Phase 6c-nov Category Discovery Plan
+
+`no_proxy` is the only mode that has produced a service request id so far. Phase 6c-nov therefore fixes discovery and lease reprobe to `no_proxy`.
+
+The next diagnostic is `ListCategory`, followed by at most one lease-only reprobe using the recommended category id/type. Full pilot retry remains blocked until a lease is obtained.
+
+The first real `ListCategory` probe reached the service through `no_proxy` and returned `400 MissingCategoryType`, so the current blocker is valid category type discovery rather than transport.
