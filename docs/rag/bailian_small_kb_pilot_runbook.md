@@ -157,6 +157,29 @@ Safe summary:
 
 Interpretation: the manual success proves the cloud path can work, and the code now matches the rerank/default-index contract. The remaining automated SDK blocker is now file parsing for the sanitized markdown payload, plus cleanup transport reliability for the temporary file resource. Resource ids, if needed for manual cleanup, are only in `/tmp/bailian_small_kb_pilot_real.json`.
 
+## Phase 6c-final-bis Parse Failure Parity
+
+`docs/rag/bailian_manual_success_parity.md` compares the manual success path with the SDK automated path.
+
+Current SDK automation result:
+
+- lease/upload/AddFile pass
+- parse fails with `PARSE_FAILED`
+- CreateIndex/SubmitIndexJob/Retrieve are skipped correctly
+- cleanup is attempted
+- temporary file cleanup failed
+- manual_file_cleanup_required: true
+
+The upload markdown is now generated as a minimal smoke-test document with:
+
+- H1 title
+- `## Purpose`
+- `## Test Facts`
+- explicit `Project name: review-writer Phase 6c smoke test.`
+- no PDF, raw image, full paper Markdown, secrets, tokens, API keys, or private data
+
+Use `make bailian-payload-parse-readiness-check` before any future real pilot.
+
 ## Phase 6c-quin Lease-only Probe
 
 The next diagnostic step is intentionally smaller than the full pilot. It calls only `ApplyFileUploadLease` and stops before any PUT upload, `AddFile`, `CreateIndex`, `SubmitIndexJob`, or retrieval call.

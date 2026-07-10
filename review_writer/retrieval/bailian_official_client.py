@@ -116,6 +116,7 @@ class BailianOfficialClient:
             "category_id": self.config.category_id,
             "category_type": self.config.category_type,
             "use_internal_endpoint": self.config.use_internal_endpoint,
+            "parser": self.config.parser,
             "rerank_mode": self.config.rerank_mode,
             "rerank_instruct_present": bool(self.config.rerank_instruct),
             "endpoint_source": self.config.endpoint_source,
@@ -258,9 +259,23 @@ class BailianOfficialClient:
             if last_status == "PARSE_SUCCESS":
                 return {"status": "PARSE_SUCCESS", "attempts": attempts}
             if last_status in {"PARSE_FAIL", "PARSE_FAILED", "FAIL", "FAILED"}:
-                raise BailianPilotError("parse_failed", f"parse status {last_status}")
+                raise BailianPilotError(
+                    "parse_failed",
+                    f"parse status {last_status}",
+                    {"parse_status": last_status, "parse_error_present": True},
+                )
+            if last_status not in {"INIT", "PARSING", "PARSE_INIT", "PENDING", "RUNNING", "UNKNOWN"}:
+                raise BailianPilotError(
+                    "parse_failed",
+                    f"parse status {last_status}",
+                    {"parse_status": last_status, "parse_error_present": True},
+                )
             time.sleep(self.config.poll_interval_seconds)
-        raise BailianPilotError("timeout", f"parse timeout; last status {last_status}")
+        raise BailianPilotError(
+            "timeout",
+            f"parse timeout; last status {last_status}",
+            {"parse_status": last_status, "parse_error_present": bool(last_status and last_status != "UNKNOWN")},
+        )
 
     def create_index(self, client: Any, workspace_id: str, file_id: str) -> dict[str, Any]:
         from alibabacloud_bailian20231229 import models
@@ -367,6 +382,7 @@ class BailianOfficialClient:
             "cleanup_status": "not_needed",
             "index_cleanup": "not_created",
             "file_cleanup": "not_created",
+            "cleanup_error_type": None,
             "created_resource_ids_cleaned": "not_created",
             "cleanup_errors": [],
         }
@@ -380,6 +396,7 @@ class BailianOfficialClient:
             except Exception as exc:  # noqa: BLE001 - cleanup must be best-effort and reported safely.
                 result["cleanup_status"] = "fail"
                 result["index_cleanup"] = "fail"
+                result["cleanup_error_type"] = result["cleanup_error_type"] or "index_cleanup_failed"
                 result["cleanup_errors"].append(
                     safe_error_from_exception(
                         exc,
@@ -395,6 +412,7 @@ class BailianOfficialClient:
             except Exception as exc:  # noqa: BLE001 - cleanup must be best-effort and reported safely.
                 result["cleanup_status"] = "fail"
                 result["file_cleanup"] = "fail"
+                result["cleanup_error_type"] = result["cleanup_error_type"] or "file_cleanup_failed"
                 result["cleanup_errors"].append(
                     safe_error_from_exception(
                         exc,
@@ -554,8 +572,16 @@ class BailianOfficialClient:
             "cleanup_status": "not_needed",
             "index_cleanup": "not_created",
             "file_cleanup": "not_created",
+            "cleanup_error_type": None,
             "created_resource_ids_cleaned": "not_created",
             "cleanup_errors": [],
+            "file_id_present": False,
+            "index_id_present": False,
+            "job_id_present": False,
+            "manual_cleanup_required": False,
+            "parse_status": None,
+            "parse_error_present": False,
+            "skipped_because_upstream_parse_failed": False,
             "retrieval_status": "not_run",
             "nodes_count": 0,
             "top_score": None,
@@ -682,9 +708,15 @@ class BailianOfficialClient:
                 "file_id": add_result["file_id"],
                 "index_id": index_result["index_id"],
                 "job_id": submit_result["job_id"],
+                "file_id_present": bool(add_result.get("file_id")),
+                "index_id_present": bool(index_result.get("index_id")),
+                "job_id_present": bool(submit_result.get("job_id")),
+                "manual_cleanup_required": cleanup_result.get("created_resource_ids_cleaned") == "no",
                 "kb_id_redacted_or_tmp_only": index_result["index_id"],
                 "upload_status": upload_result["status"],
                 "parse_status": parse_result["status"],
+                "parse_error_present": False,
+                "skipped_because_upstream_parse_failed": False,
                 "index_status": index_status["status"],
                 "retrieval_status": retrieval["status"],
                 "nodes_count": retrieval["nodes_count"],
@@ -727,6 +759,13 @@ class BailianOfficialClient:
                 "operation_name": operation_name,
                 "safe_error": safe_error,
                 "recommended_fix": recommended_fix(exc.error_type),
+                "file_id_present": bool(state.get("created_file_id")),
+                "index_id_present": bool(state.get("created_index_id")),
+                "job_id_present": bool(state.get("created_job_id")),
+                "manual_cleanup_required": bool(state.get("created_file_id") and cleanup_result.get("file_cleanup") == "fail"),
+                "parse_status": exc.details.get("parse_status"),
+                "parse_error_present": bool(exc.details.get("parse_error_present")),
+                "skipped_because_upstream_parse_failed": exc.error_type == "parse_failed",
             }
         except Exception as exc:  # noqa: BLE001 - report a safe error category without leaking values.
             cleanup_result = self.cleanup_created_resources(
@@ -752,6 +791,13 @@ class BailianOfficialClient:
                 "operation_name": operation_name,
                 "safe_error": safe_error,
                 "recommended_fix": recommended_fix(safe_error["error_type"]),
+                "file_id_present": bool(state.get("created_file_id")),
+                "index_id_present": bool(state.get("created_index_id")),
+                "job_id_present": bool(state.get("created_job_id")),
+                "manual_cleanup_required": bool(state.get("created_file_id") and cleanup_result.get("file_cleanup") == "fail"),
+                "parse_status": None,
+                "parse_error_present": False,
+                "skipped_because_upstream_parse_failed": False,
             }
 
     def _run_retrieval(
@@ -932,10 +978,11 @@ class BailianOfficialClient:
 
 
 class BailianPilotError(RuntimeError):
-    def __init__(self, error_type: str, safe_summary: str) -> None:
+    def __init__(self, error_type: str, safe_summary: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(safe_summary)
         self.error_type = error_type
         self.safe_summary = safe_summary
+        self.details = details or {}
 
 
 def validate_rerank_config(rerank_mode: str | None, rerank_instruct: str | None) -> dict[str, str] | None:

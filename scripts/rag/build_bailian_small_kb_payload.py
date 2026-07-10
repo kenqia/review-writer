@@ -188,24 +188,28 @@ def validate_records(records: list[dict[str, Any]]) -> list[dict[str, str]]:
 
 
 def render_payload_md(records: list[dict[str, Any]]) -> str:
-    lines = ["# Bailian Small KB Payload", "", "Only sanitized compact records are included.", ""]
-    for record in records:
-        meta = record["metadata"]
-        lines.extend(
-            [
-                f"## {record['paper_id']}: {record['title']}",
-                "",
-                f"- year: {meta['year']}",
-                f"- journal: {meta['journal']}",
-                f"- role: {meta['role']}",
-                f"- needs_human_review: {record['needs_human_review']}",
-                f"- trusted_for_scientific_quality: {record['trusted_for_scientific_quality']}",
-                "",
-                record["compact_text"],
-                "",
-            ]
-        )
-    return "\n".join(lines)
+    return "\n".join(
+        [
+            "# Bailian Small Knowledge Base Smoke Test",
+            "",
+            "## Purpose",
+            "",
+            "This is a minimal and safe Markdown file for testing Alibaba Cloud Bailian knowledge-base indexing.",
+            "",
+            "## Test Facts",
+            "",
+            "Project name: review-writer Phase 6c smoke test.",
+            "Allowed upload scope: this file only.",
+            "Safety rule: do not upload PDFs, raw images, full paper Markdown, secrets, tokens, API keys, or private data.",
+            "Expected retrieval question: What is the project name?",
+            "Expected answer: review-writer Phase 6c smoke test.",
+            "",
+            "## Notes",
+            "",
+            "This document contains no private credentials, no API keys, no personal data, and no copyrighted paper content.",
+            "",
+        ]
+    )
 
 
 if __name__ == "__main__":

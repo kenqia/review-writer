@@ -114,6 +114,19 @@ def run_pilot(args: argparse.Namespace) -> dict[str, Any]:
         "kb_id_redacted_or_tmp_only": None,
         "cleanup_requested": bool(args.cleanup),
         "cleanup_index_id_provided": bool(args.cleanup_index_id),
+        "cleanup_attempted": False,
+        "cleanup_status": "not_needed",
+        "cleanup_error_type": None,
+        "index_cleanup": "not_created",
+        "file_cleanup": "not_created",
+        "created_resource_ids_cleaned": "not_created",
+        "file_id_present": False,
+        "index_id_present": False,
+        "job_id_present": False,
+        "manual_cleanup_required": False,
+        "parse_status": None,
+        "parse_error_present": False,
+        "skipped_because_upstream_parse_failed": False,
         "first_failed_phase": None,
         "operation_name": None,
         "safe_error": None,
@@ -177,8 +190,16 @@ def run_pilot(args: argparse.Namespace) -> dict[str, Any]:
             "cleanup_status": official_report.get("cleanup_status", "not_needed"),
             "index_cleanup": official_report.get("index_cleanup", "not_created"),
             "file_cleanup": official_report.get("file_cleanup", "not_created"),
+            "cleanup_error_type": official_report.get("cleanup_error_type"),
             "created_resource_ids_cleaned": official_report.get("created_resource_ids_cleaned", "not_created"),
             "cleanup_errors": official_report.get("cleanup_errors", []),
+            "file_id_present": official_report.get("file_id_present", False),
+            "index_id_present": official_report.get("index_id_present", False),
+            "job_id_present": official_report.get("job_id_present", False),
+            "manual_cleanup_required": official_report.get("manual_cleanup_required", False),
+            "parse_status": official_report.get("parse_status"),
+            "parse_error_present": official_report.get("parse_error_present", False),
+            "skipped_because_upstream_parse_failed": official_report.get("skipped_because_upstream_parse_failed", False),
             "cleanup_recommendation": official_report.get(
                 "cleanup_recommendation",
                 "No KB was created. If a manual KB is created, delete it in the Bailian console after evaluation.",
@@ -233,31 +254,26 @@ def validate_payload(path: Path) -> dict[str, Any]:
 def build_upload_markdown(jsonl_path: Path, output_path: Path) -> dict[str, Any]:
     if not jsonl_path.exists():
         return {"status": "fail", "errors": [f"missing payload jsonl: {jsonl_path}"]}
-    rows = [json.loads(line) for line in jsonl_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     lines = [
-        "# Review Writer Clean 3-Paper Small KB Payload",
+        "# Bailian Small Knowledge Base Smoke Test",
         "",
-        "review-writer Phase 6c smoke test",
+        "## Purpose",
+        "",
+        "This is a minimal and safe Markdown file for testing Alibaba Cloud Bailian knowledge-base indexing.",
+        "",
+        "## Test Facts",
+        "",
+        "Project name: review-writer Phase 6c smoke test.",
+        "Allowed upload scope: this file only.",
+        "Safety rule: do not upload PDFs, raw images, full paper Markdown, secrets, tokens, API keys, or private data.",
+        "Expected retrieval question: What is the project name?",
+        "Expected answer: review-writer Phase 6c smoke test.",
+        "",
+        "## Notes",
+        "",
+        "This document contains no private credentials, no API keys, no personal data, and no copyrighted paper content.",
         "",
     ]
-    for row in rows:
-        meta = row.get("metadata", {})
-        lines.extend(
-            [
-                f"## {row.get('paper_id')}: {row.get('title')}",
-                "",
-                f"paper_id: {row.get('paper_id')}",
-                f"title: {row.get('title')}",
-                f"year: {meta.get('year')}",
-                f"journal: {meta.get('journal')}",
-                f"role: {meta.get('role')}",
-                f"needs_human_review: {row.get('needs_human_review')}",
-                f"trusted_for_scientific_quality: {row.get('trusted_for_scientific_quality')}",
-                "",
-                str(row.get("compact_text") or ""),
-                "",
-            ]
-        )
     text = "\n".join(lines)
     if FORBIDDEN_RE.search(text):
         return {"status": "fail", "errors": ["official upload markdown contains forbidden content"]}
@@ -327,9 +343,17 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- cleanup_index_id_provided: `{report.get('cleanup_index_id_provided', False)}`",
         f"- cleanup_attempted: `{report.get('cleanup_attempted', False)}`",
         f"- cleanup_status: `{report.get('cleanup_status', 'not_needed')}`",
+        f"- cleanup_error_type: `{report.get('cleanup_error_type')}`",
         f"- index_cleanup: `{report.get('index_cleanup', 'not_created')}`",
         f"- file_cleanup: `{report.get('file_cleanup', 'not_created')}`",
         f"- created_resource_ids_cleaned: `{report.get('created_resource_ids_cleaned', 'not_created')}`",
+        f"- file_id_present: `{report.get('file_id_present', False)}`",
+        f"- index_id_present: `{report.get('index_id_present', False)}`",
+        f"- job_id_present: `{report.get('job_id_present', False)}`",
+        f"- manual_cleanup_required: `{report.get('manual_cleanup_required', False)}`",
+        f"- parse_status: `{report.get('parse_status')}`",
+        f"- parse_error_present: `{report.get('parse_error_present', False)}`",
+        f"- skipped_because_upstream_parse_failed: `{report.get('skipped_because_upstream_parse_failed', False)}`",
         f"- first_failed_phase: `{report.get('first_failed_phase')}`",
         f"- operation_name: `{report.get('operation_name')}`",
         f"- recommended_fix: {report.get('recommended_fix')}",

@@ -84,6 +84,11 @@ def main() -> int:
     assert sdk_dry_report["official_sdk"]["enabled"] is True
     assert sdk_dry_report["config"]["category_type"] == "UNSTRUCTURED"
     assert sdk_dry_report["config"]["use_internal_endpoint"] is False
+    assert sdk_dry_report["config"]["parser"] == "DASHSCOPE_DOCMIND"
+    assert sdk_dry_report["parse_status"] is None
+    assert sdk_dry_report["parse_error_present"] is False
+    assert sdk_dry_report["manual_cleanup_required"] is False
+    assert sdk_dry_report["skipped_because_upstream_parse_failed"] is False
     assert sdk_dry_report["safety"]["upload"] == "not_used"
     blocked = subprocess.run(
         [

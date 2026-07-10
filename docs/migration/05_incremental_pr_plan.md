@@ -1535,6 +1535,29 @@ Controlled SDK pilot result:
 - Resource ids remain only in `/tmp` reports for manual cleanup.
 - Next action: inspect parser/file-type compatibility for the sanitized markdown payload before retrying the full SDK pilot.
 
+### Phase 6c-final-bis: Manual success parity diff / parse failure fix
+
+Goal:
+
+- Stop category/endpoint/proxy exploration.
+- Compare manual OpenAPI success against SDK automation.
+- Fix payload parse readiness, parser status reporting, and cleanup reporting.
+
+Implemented:
+
+- `docs/rag/bailian_manual_success_parity.md`
+- `scripts/rag/check_bailian_payload_parse_readiness.py`
+- `tests/test_bailian_payload_parse_readiness.py`
+- `make bailian-payload-parse-readiness-check`
+
+Current conclusion:
+
+- Manual cloud path works.
+- SDK automation passes lease/upload/AddFile but fails at parse.
+- CreateIndex/SubmitIndexJob/Retrieve are skipped correctly because parse failed.
+- A temporary file may require manual cleanup; ids are kept only in `/tmp`.
+- The upload markdown now uses a minimal smoke-test document instead of clean-paper record text.
+
 ## 风险
 
 - PR 过大导致 review 困难。

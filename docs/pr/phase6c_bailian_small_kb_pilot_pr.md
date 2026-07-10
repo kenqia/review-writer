@@ -214,6 +214,15 @@ Controlled Phase 6c-final SDK pilot result:
 
 This means the original workspace/RAM and rerank blockers are no longer the observed automation blocker. The next investigation should focus on parser configuration or payload file type for the sanitized markdown payload, and on manual cleanup of the temporary file resource using the id stored only in `/tmp`.
 
+Phase 6c-final-bis parse-failure parity:
+
+- Added manual-vs-SDK parity documentation.
+- Added payload parse readiness checker and test.
+- Updated the generated upload markdown to a minimal smoke document.
+- Parser status handling now reports `parse_status`, `parse_error_present`, and `skipped_because_upstream_parse_failed`.
+- Cleanup reports now expose `file_id_present`, `cleanup_error_type`, and `manual_cleanup_required` without printing ids.
+- Downstream CreateIndex/Retrieve remain skipped when parse fails; this is expected and safe.
+
 ## Safety
 
 - No PDF upload.

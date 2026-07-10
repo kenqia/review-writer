@@ -1,4 +1,4 @@
-.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check eval-baseline-check portability-check reality-audit-check clean-3paper-recommend-check clean-3paper-approval-check clean-3paper-pdf-verify-check clean-3paper-biblio-check clean-3paper-biblio-web-check clean-3paper-claims-check clean-3paper-e2e-check clean-3paper-eval-check dashboard-clean-3paper-check bailian-rag-preflight-check rag-local-retrieval-check bailian-small-kb-payload-check bailian-small-kb-pilot-dry-run bailian-small-kb-official-sdk-dry-run bailian-official-pilot-fix-check bailian-small-kb-official-sdk-real-command bailian-lease-probe-dry-run bailian-lease-probe-real-command bailian-endpoint-diagnostics-check bailian-minimal-lease-repro-dry-run bailian-minimal-lease-repro-real-command bailian-sdk-transport-introspection bailian-transport-matrix-dry-run bailian-transport-matrix-real-command bailian-category-introspection bailian-category-discovery-dry-run bailian-category-discovery-real-command bailian-category-lease-reprobe-real-command bailian-category-type-matrix-dry-run bailian-category-type-matrix-real-command bailian-sdk-env-check bailian-sdk-env-strict-check release-readiness-check
+.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check eval-baseline-check portability-check reality-audit-check clean-3paper-recommend-check clean-3paper-approval-check clean-3paper-pdf-verify-check clean-3paper-biblio-check clean-3paper-biblio-web-check clean-3paper-claims-check clean-3paper-e2e-check clean-3paper-eval-check dashboard-clean-3paper-check bailian-rag-preflight-check rag-local-retrieval-check bailian-small-kb-payload-check bailian-payload-parse-readiness-check bailian-small-kb-pilot-dry-run bailian-small-kb-official-sdk-dry-run bailian-official-pilot-fix-check bailian-small-kb-official-sdk-real-command bailian-lease-probe-dry-run bailian-lease-probe-real-command bailian-endpoint-diagnostics-check bailian-minimal-lease-repro-dry-run bailian-minimal-lease-repro-real-command bailian-sdk-transport-introspection bailian-transport-matrix-dry-run bailian-transport-matrix-real-command bailian-category-introspection bailian-category-discovery-dry-run bailian-category-discovery-real-command bailian-category-lease-reprobe-real-command bailian-category-type-matrix-dry-run bailian-category-type-matrix-real-command bailian-sdk-env-check bailian-sdk-env-strict-check release-readiness-check
 
 PYTHON ?= python3
 REPO_ROOT ?= $(CURDIR)
@@ -219,6 +219,14 @@ bailian-small-kb-payload-check:
 		--output-jsonl /tmp/bailian_small_kb_payload.jsonl \
 		--output-md /tmp/bailian_small_kb_payload.md \
 		--output-manifest /tmp/bailian_small_kb_payload_manifest.json \
+		--strict
+
+bailian-payload-parse-readiness-check:
+	$(PYTHON) tests/test_bailian_payload_parse_readiness.py
+	$(PYTHON) scripts/rag/check_bailian_payload_parse_readiness.py \
+		--payload-md /tmp/bailian_small_kb_upload_payload.md \
+		--output-json /tmp/bailian_payload_parse_readiness.json \
+		--output-md /tmp/bailian_payload_parse_readiness.md \
 		--strict
 
 bailian-small-kb-pilot-dry-run:
