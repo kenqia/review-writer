@@ -40,7 +40,7 @@ In the isolated `review-writer-bailian` conda environment:
 - `list_category_with_options`: available
 - create-category request: available, but not called
 
-`ListCategoryRequest` exposes category name/type, connector id, max results, next token, and parent category id fields. Discovery does not set `category_type` by default so that it can list categories without repeating the known `InvalidCategoryType` failure.
+`ListCategoryRequest` exposes category name/type, connector id, max results, next token, and parent category id fields. The real Phase 6c-nov probe showed that this API version requires an explicit `category_type`, so follow-up discovery must set the official value `UNSTRUCTURED`.
 
 ## Interpretation
 
@@ -68,6 +68,14 @@ Safe summary:
 - knowledge base created: false
 
 Interpretation: the workspace/service is reachable through `no_proxy`, but this API version requires an explicit `category_type` even for `ListCategory`. The next step is to confirm the valid category type values for this workspace/API contract, then run one more `ListCategory --category-type <value>` before any lease or full pilot retry.
+
+SDK source and official documentation identify `UNSTRUCTURED` as the required `CategoryType` for normal categories. `SESSION_FILE` is also valid for session files, but the knowledge-base workflow should prefer `UNSTRUCTURED`.
+
+## Phase 6c-deepfix Real Matrix Result
+
+The authorized category-type matrix confirmed that `UNSTRUCTURED` is accepted by `ListCategory`, but the workspace returned no categories. Because no `recommended_category_id` was found, no lease-only reprobe was executed.
+
+Next safe action: create or select a category in Bailian console, then run one lease-only reprobe with `category_type=UNSTRUCTURED` and that category id.
 
 ## Commands
 

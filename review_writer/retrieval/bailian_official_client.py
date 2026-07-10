@@ -25,6 +25,7 @@ REQUIRED_ENV = [
 ]
 DEFAULT_REGION = "cn-beijing"
 DEFAULT_CATEGORY_ID = "default"
+DEFAULT_CATEGORY_TYPE = "UNSTRUCTURED"
 TRANSPORT_MODES = ["inherited_proxy", "no_proxy", "explicit_proxy"]
 PROXY_ENV_NAMES = [
     "HTTP_PROXY",
@@ -60,7 +61,7 @@ class BailianOfficialConfig:
     category_id: str = DEFAULT_CATEGORY_ID
     endpoint_source: str = "official_default"
     region_source: str = "default"
-    category_type: str = "document"
+    category_type: str = DEFAULT_CATEGORY_TYPE
     parser: str = "DASHSCOPE_DOCMIND"
     structure_type: str = "unstructured"
     source_type: str = "DATA_CENTER_FILE"
@@ -923,7 +924,7 @@ def make_bailian_config(
     endpoint: str | None = None,
     region: str | None = None,
     category_id: str | None = None,
-    category_type: str = "document",
+    category_type: str = DEFAULT_CATEGORY_TYPE,
     transport_mode: str = "inherited_proxy",
     connect_timeout_ms: int = 10000,
     read_timeout_ms: int = 20000,

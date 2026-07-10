@@ -14,6 +14,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from review_writer.retrieval.bailian_official_client import (
     BailianOfficialClient,
+    DEFAULT_CATEGORY_TYPE,
     make_bailian_config,
     proxy_env_set_names,
     recommended_fix,
@@ -37,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Official-minimal ApplyFileUploadLease repro.")
     parser.add_argument("--endpoint", default="bailian.cn-beijing.aliyuncs.com")
     parser.add_argument("--category-id", default="default")
+    parser.add_argument("--category-type", default=DEFAULT_CATEGORY_TYPE)
     parser.add_argument("--category-id-from", type=Path)
     parser.add_argument("--transport-mode", choices=["inherited_proxy", "no_proxy", "explicit_proxy"], default="inherited_proxy")
     parser.add_argument("--connect-timeout-ms", type=int, default=10000)
@@ -129,8 +131,8 @@ def resolve_category(args: argparse.Namespace) -> dict[str, Any]:
         return {
             "category_id": args.category_id,
             "category_id_source": "cli",
-            "category_type": "document",
-            "category_type_source": "default",
+            "category_type": args.category_type,
+            "category_type_source": "cli_or_default",
         }
     try:
         data = json.loads(args.category_id_from.read_text(encoding="utf-8"))
@@ -138,8 +140,8 @@ def resolve_category(args: argparse.Namespace) -> dict[str, Any]:
         return {
             "category_id": args.category_id,
             "category_id_source": "cli_fallback",
-            "category_type": "document",
-            "category_type_source": "default",
+            "category_type": args.category_type,
+            "category_type_source": "cli_or_default",
             "error_type": "category_discovery_required",
             "summary": "category discovery report is missing or unreadable",
         }
@@ -149,7 +151,7 @@ def resolve_category(args: argparse.Namespace) -> dict[str, Any]:
         return {
             "category_id": args.category_id,
             "category_id_source": "cli_fallback",
-            "category_type": category_type or "document",
+            "category_type": category_type or args.category_type,
             "category_type_source": "discovery_or_default",
             "error_type": "category_discovery_required",
             "summary": "category discovery did not provide recommended_category_id",
@@ -157,7 +159,7 @@ def resolve_category(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "category_id": str(category_id),
         "category_id_source": str(args.category_id_from),
-        "category_type": str(category_type or "document"),
+        "category_type": str(category_type or args.category_type),
         "category_type_source": "discovery" if category_type else "default",
     }
 

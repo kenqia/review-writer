@@ -79,3 +79,7 @@ Interpretation: process-local `no_proxy` reaches Bailian service, so the next is
 The next diagnostic is `ListCategory`, followed by at most one lease-only reprobe using the recommended category id/type. Full pilot retry remains blocked until a lease is obtained.
 
 The first real `ListCategory` probe reached the service through `no_proxy` and returned `400 MissingCategoryType`, so the current blocker is valid category type discovery rather than transport.
+
+Phase 6c-deepfix updates the default SDK wrapper category type from the invalid historical value `document` to the official value `UNSTRUCTURED`.
+
+The authorized Phase 6c-deepfix matrix confirmed `UNSTRUCTURED` is accepted by `ListCategory` under `no_proxy`, while the workspace returned zero categories. Since no category id was discovered, lease reprobe and full pilot remain blocked until a Bailian console category is created or selected.

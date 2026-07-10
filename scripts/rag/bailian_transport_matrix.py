@@ -12,7 +12,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from review_writer.retrieval.bailian_official_client import proxy_env_set_names, recommended_fix
+from review_writer.retrieval.bailian_official_client import (
+    DEFAULT_CATEGORY_TYPE,
+    proxy_env_set_names,
+    recommended_fix,
+)
 from scripts.rag.bailian_minimal_lease_repro import run_repro
 
 MODES = ["inherited_proxy", "no_proxy", "explicit_proxy"]
@@ -52,6 +56,7 @@ def run_matrix(args: argparse.Namespace) -> dict[str, Any]:
         repro_args = SimpleNamespace(
             endpoint=args.endpoint,
             category_id=args.category_id,
+            category_type=DEFAULT_CATEGORY_TYPE,
             category_id_from=None,
             transport_mode=mode,
             connect_timeout_ms=args.connect_timeout_ms,

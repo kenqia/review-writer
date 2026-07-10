@@ -157,6 +157,24 @@ Authorized Phase 6c-nov discovery result:
 - no upload or KB creation
 - next target: confirm valid `category_type` values, then rerun ListCategory with an explicit category type
 
+Phase 6c-deepfix category type autodiscovery:
+
+- SDK source confirms `category_type` is serialized as `CategoryType`.
+- SDK source comments and official docs identify `UNSTRUCTURED` and `SESSION_FILE`; knowledge-base/application-data flow should use `UNSTRUCTURED`.
+- Added category type matrix over conservative candidates, using `ListCategory` only.
+- Default SDK wrapper category type changed from invalid `document` to official `UNSTRUCTURED`.
+- Full pilot remains blocked until a lease-only reprobe succeeds.
+
+Authorized Phase 6c-deepfix matrix result:
+
+- `UNSTRUCTURED`: accepted by `ListCategory`, but returned zero categories.
+- `SESSION_FILE`, `DOCUMENT`, `DATA_CENTER_FILE`, `DATA_CENTER_CATEGORY`, and `DEFAULT`: rejected with `InvalidCategoryType`.
+- `INDEX` and `KNOWLEDGE_BASE`: rejected with `Throttling.Api`.
+- no recommended category id was discovered
+- no lease-only reprobe was executed
+- no upload, AddFile, index, Retrieve, or knowledge base creation occurred
+- next target: create/select a Bailian console category, then run one lease-only reprobe with `UNSTRUCTURED`
+
 Implemented official SDK lifecycle:
 
 - ApplyFileUploadLease

@@ -1443,6 +1443,64 @@ Next:
 - Rerun `ListCategory` once with explicit `--category-type`.
 - Only if a recommended category is found, run one lease-only reprobe.
 
+### Phase 6c-deepfix: Bailian CategoryType contract autodiscovery
+
+目标：
+
+- 深挖 installed SDK 源码、模型字段、官方文档和 API 线索。
+- 找出合法 `CategoryType`。
+- 使用 `no_proxy` + `ListCategory` 做 category_type matrix。
+- 如果找到 category id，再执行一次 lease-only reprobe。
+- 不上传、不 AddFile、不建索引、不 Retrieve、不创建知识库。
+
+Evidence:
+
+- SDK model fields include `category_type` on `ListCategoryRequest`, `ApplyFileUploadLeaseRequest`, and `AddFileRequest`.
+- SDK source serializes `category_type` as `CategoryType`.
+- SDK source comments mention `UNSTRUCTURED` and `SESSION_FILE`.
+- Official `ListCategory` docs mark `CategoryType` as required and list `UNSTRUCTURED`.
+- Official `AddFile` docs list `UNSTRUCTURED` and `SESSION_FILE`.
+
+Implemented Phase 6c-deepfix files:
+
+```text
+scripts/rag/bailian_category_type_matrix.py
+tests/test_bailian_category_type_matrix_safety.py
+docs/rag/bailian_category_type_contract.md
+```
+
+Updated:
+
+```text
+review_writer/retrieval/bailian_official_client.py
+scripts/rag/bailian_minimal_lease_repro.py
+Makefile
+docs/rag/bailian_category_discovery.md
+docs/rag/bailian_sdk_transport_matrix.md
+docs/pr/phase6c_bailian_small_kb_pilot_pr.md
+```
+
+Gates:
+
+```bash
+make bailian-category-type-matrix-dry-run
+```
+
+Decision rule:
+
+- Matrix 找到 category_type/category_id：执行一次 lease-only reprobe。
+- Matrix 找到 valid type 但无 category：控制台创建或选择 category。
+- Matrix 找不到 valid type：停止 SDK 自动化，走 API Explorer / manual console pilot。
+
+Authorized Phase 6c-deepfix result:
+
+- `UNSTRUCTURED` was accepted by `ListCategory`.
+- The workspace returned zero categories, so no `recommended_category_id` was discovered.
+- Other conservative candidates were rejected with `InvalidCategoryType` or `Throttling.Api`.
+- No lease-only reprobe was executed.
+- No upload, AddFile, index, Retrieve, or knowledge base creation occurred.
+- Next action: create/select a Bailian console category, then run one lease-only reprobe with `category_type=UNSTRUCTURED`.
+
 ## 风险
 
 - PR 过大导致 review 困难。
