@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import sys
@@ -13,22 +12,16 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from review_writer.retrieval.bailian_official_client import recommended_fix, safe_error_from_exception
+from review_writer.retrieval.bailian_official_client import (
+    BailianOfficialClient,
+    make_bailian_config,
+    proxy_env_set_names,
+    recommended_fix,
+)
 
-DUMMY_CONTENT = b"# review-writer lease probe\nThis is a tiny dummy metadata file.\n"
+DUMMY_CONTENT = "# review-writer lease probe\nThis is a tiny dummy metadata file.\n"
 DUMMY_FILE_NAME = "review-writer-lease-probe.md"
-REQUIRED_MODULES = [
-    "alibabacloud_bailian20231229",
-    "alibabacloud_tea_openapi",
-    "alibabacloud_tea_util",
-]
-REQUIRED_ENV = [
-    "ALIBABA_CLOUD_ACCESS_KEY_ID",
-    "ALIBABA_CLOUD_ACCESS_KEY_SECRET",
-    "WORKSPACE_ID",
-]
-
-
+DUMMY_FILE_PATH = Path("/tmp/review-writer-lease-probe.md")
 def main() -> int:
     args = parse_args()
     report = run_repro(args)
@@ -44,6 +37,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Official-minimal ApplyFileUploadLease repro.")
     parser.add_argument("--endpoint", default="bailian.cn-beijing.aliyuncs.com")
     parser.add_argument("--category-id", default="default")
+    parser.add_argument("--transport-mode", choices=["inherited_proxy", "no_proxy", "explicit_proxy"], default="inherited_proxy")
+    parser.add_argument("--connect-timeout-ms", type=int, default=10000)
+    parser.add_argument("--read-timeout-ms", type=int, default=20000)
+    parser.add_argument("--proxy-url-env", default="HTTPS_PROXY")
     parser.add_argument("--output-json", type=Path, default=Path("/tmp/bailian_minimal_lease_repro_dry.json"))
     parser.add_argument("--output-md", type=Path, default=Path("/tmp/bailian_minimal_lease_repro_dry.md"))
     parser.add_argument("--allow-network", action="store_true")
@@ -52,14 +49,28 @@ def parse_args() -> argparse.Namespace:
 
 
 def run_repro(args: argparse.Namespace) -> dict[str, Any]:
-    md5 = hashlib.md5(DUMMY_CONTENT).hexdigest()  # noqa: S324 - required by Bailian upload lease API.
+    config = make_bailian_config(
+        endpoint=args.endpoint,
+        category_id=args.category_id,
+        transport_mode=args.transport_mode,
+        connect_timeout_ms=args.connect_timeout_ms,
+        read_timeout_ms=args.read_timeout_ms,
+        proxy_url_env=args.proxy_url_env,
+    )
+    client = BailianOfficialClient(config)
     base: dict[str, Any] = {
         "endpoint": args.endpoint,
         "category_id": args.category_id,
+        "transport_mode": args.transport_mode,
+        "connect_timeout_ms": args.connect_timeout_ms,
+        "read_timeout_ms": args.read_timeout_ms,
+        "proxy_url_env": args.proxy_url_env,
+        "proxy_url_env_set": False if not args.proxy_url_env else bool(os.environ.get(args.proxy_url_env)),
+        "proxy_env_set_names": proxy_env_set_names(),
         "operation_name": "ApplyFileUploadLease",
         "file_name": DUMMY_FILE_NAME,
-        "file_size": len(DUMMY_CONTENT),
-        "md5_prefix": md5[:8],
+        "file_size": len(DUMMY_CONTENT.encode("utf-8")),
+        "md5_prefix": None,
         "lease_obtained": False,
         "lease_id_present": False,
         "upload_url_present": False,
@@ -70,8 +81,9 @@ def run_repro(args: argparse.Namespace) -> dict[str, Any]:
         "index_attempted": False,
         "retrieve_attempted": False,
         "knowledge_base_created": False,
-        "dependency_presence": module_presence(),
-        "env_presence": env_presence(),
+        "dependency_presence": client.dependency_presence(),
+        "env_presence": client.env_presence(),
+        "transport": client.transport_report(),
         "safe_error": None,
         "recommended_fix": None,
     }
@@ -82,108 +94,20 @@ def run_repro(args: argparse.Namespace) -> dict[str, Any]:
             "error_type": None,
             "summary": "minimal lease repro dry-run only; no network call was made",
         }
-    missing_modules = [name for name, status in base["dependency_presence"].items() if status == "MISSING"]
-    if missing_modules:
-        return {
-            **base,
-            "status": "fail",
-            "error_type": "missing_dependency_or_api_contract",
-            "summary": "official Bailian SDK modules are missing",
-            "recommended_fix": recommended_fix("missing_dependency_or_api_contract"),
-        }
-    missing_env = [name for name, status in base["env_presence"].items() if status == "MISSING"]
-    if missing_env:
-        return {
-            **base,
-            "status": "fail",
-            "error_type": "missing_env",
-            "summary": "required env is missing; values were not printed",
-            "recommended_fix": recommended_fix("missing_env"),
-        }
-    phase = "create_client"
-    try:
-        from alibabacloud_bailian20231229 import models
-        from alibabacloud_bailian20231229.client import Client as BailianClient
-        from alibabacloud_tea_openapi import models as open_api_models
-        from alibabacloud_tea_util import models as util_models
-
-        config = open_api_models.Config(
-            access_key_id=os.environ["ALIBABA_CLOUD_ACCESS_KEY_ID"],
-            access_key_secret=os.environ["ALIBABA_CLOUD_ACCESS_KEY_SECRET"],
-        )
-        config.endpoint = args.endpoint
-        client = BailianClient(config)
-        request = models.ApplyFileUploadLeaseRequest(
-            file_name=DUMMY_FILE_NAME,
-            md_5=md5,
-            size_in_bytes=str(len(DUMMY_CONTENT)),
-        )
-        runtime = util_models.RuntimeOptions(connect_timeout=60000, read_timeout=60000)
-        phase = "apply_file_upload_lease"
-        response = client.apply_file_upload_lease_with_options(
-            args.category_id,
-            os.environ["WORKSPACE_ID"],
-            request,
-            {},
-            runtime,
-        )
-        data = _safe_get(response, "body", "data")
-        param = _safe_get(data, "param")
-        headers = _safe_get(param, "headers") or {}
-        return {
-            **base,
-            "status": "pass",
-            "error_type": None,
-            "summary": "ApplyFileUploadLease succeeded; no upload was attempted",
-            "lease_obtained": True,
-            "lease_id_present": bool(_safe_get(data, "file_upload_lease_id")),
-            "upload_url_present": bool(_safe_get(param, "url")),
-            "headers_present": bool(headers),
-            "network_attempted": True,
-        }
-    except Exception as exc:  # noqa: BLE001 - minimal repro must safely report SDK failures.
-        safe_error = safe_error_from_exception(
-            exc,
-            operation_name="ApplyFileUploadLease",
-            phase=phase,
-            endpoint=args.endpoint,
-        )
-        return {
-            **base,
-            "status": "fail",
-            "error_type": safe_error["error_type"],
-            "summary": safe_error["message_redacted"] or safe_error["exception_class"],
-            "safe_error": safe_error,
-            "recommended_fix": recommended_fix(safe_error["error_type"]),
-            "network_attempted": phase != "create_client",
-        }
-
-
-def module_presence() -> dict[str, str]:
-    presence: dict[str, str] = {}
-    for module in REQUIRED_MODULES:
-        try:
-            __import__(module)
-            presence[module] = "INSTALLED"
-        except Exception:
-            presence[module] = "MISSING"
-    return presence
-
-
-def env_presence() -> dict[str, str]:
-    return {name: "SET" if os.environ.get(name) else "MISSING" for name in REQUIRED_ENV}
-
-
-def _safe_get(obj: Any, *path: str) -> Any:
-    current = obj
-    for part in path:
-        if current is None:
-            return None
-        if isinstance(current, dict):
-            current = current.get(part)
-        else:
-            current = getattr(current, part, None)
-    return current
+    DUMMY_FILE_PATH.write_text(DUMMY_CONTENT, encoding="utf-8")
+    report = client.run_lease_probe(
+        payload_md=DUMMY_FILE_PATH,
+        allow_network=True,
+        use_official_sdk=True,
+    )
+    return {
+        **base,
+        **{key: value for key, value in report.items() if key not in {"payload_md", "file_name", "file_size"}},
+        "file_name": DUMMY_FILE_NAME,
+        "file_size": len(DUMMY_CONTENT.encode("utf-8")),
+        "md5_prefix": report.get("md5_prefix"),
+        "proxy_env_set_names": proxy_env_set_names(),
+    }
 
 
 def write_outputs(report: dict[str, Any], output_json: Path, output_md: Path) -> None:
@@ -202,6 +126,12 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- error_type: `{report.get('error_type')}`",
         f"- endpoint: `{report.get('endpoint')}`",
         f"- category_id: `{report.get('category_id')}`",
+        f"- transport_mode: `{report.get('transport_mode')}`",
+        f"- connect_timeout_ms: `{report.get('connect_timeout_ms')}`",
+        f"- read_timeout_ms: `{report.get('read_timeout_ms')}`",
+        f"- proxy_url_env: `{report.get('proxy_url_env')}`",
+        f"- proxy_url_env_set: `{report.get('proxy_url_env_set')}`",
+        f"- proxy_env_set_names: `{report.get('proxy_env_set_names')}`",
         f"- operation_name: `{report.get('operation_name')}`",
         f"- lease_obtained: `{report.get('lease_obtained')}`",
         f"- lease_id_present: `{report.get('lease_id_present')}`",

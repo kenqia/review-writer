@@ -119,6 +119,25 @@ Authorized Phase 6c-sept result:
 - upload: not attempted
 - knowledge base: not created
 
+Phase 6c-oct SDK proxy / transport matrix:
+
+- Added SDK transport introspection for OpenAPI `Config` and Tea `RuntimeOptions`.
+- Added `inherited_proxy`, `no_proxy`, and `explicit_proxy` modes to the minimal lease repro.
+- Added a dry-run transport matrix target and a real-command print target.
+- Introspection in `review-writer-bailian` shows proxy and timeout fields are available on both Config and RuntimeOptions.
+- The real matrix is limited to at most three `ApplyFileUploadLease` attempts.
+- The matrix still does not upload, AddFile, CreateIndex, SubmitIndexJob, Retrieve, or create a knowledge base.
+
+Authorized Phase 6c-oct result:
+
+- inherited proxy: transport error, no request id
+- no proxy: service reached with request id, status code `400`, error code `InvalidCategoryType`
+- explicit proxy: transport error, no request id
+- no lease obtained
+- no upload attempted
+- no knowledge base created
+- next target: category/request-model alignment under no-proxy mode
+
 Implemented official SDK lifecycle:
 
 - ApplyFileUploadLease

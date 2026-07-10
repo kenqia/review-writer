@@ -1323,6 +1323,64 @@ Next:
 
 - Investigate conda/SDK proxy transport and SDK endpoint expectations before modifying workspace/category/request assumptions.
 
+### Phase 6c-oct: Bailian SDK proxy / transport matrix
+
+目标：
+
+- 不重跑 full pilot。
+- 对 SDK transport 做三模式 matrix：`inherited_proxy`、`no_proxy`、`explicit_proxy`。
+- 只执行 lease-only `ApplyFileUploadLease`，不上传、不 AddFile、不建索引、不 Retrieve。
+- 通过 introspection 判断 SDK 是否支持 proxy / timeout 字段，而不是猜。
+
+Implemented Phase 6c-oct files:
+
+```text
+scripts/rag/bailian_sdk_transport_introspection.py
+scripts/rag/bailian_transport_matrix.py
+tests/test_bailian_sdk_transport_introspection.py
+tests/test_bailian_transport_matrix_safety.py
+docs/rag/bailian_sdk_transport_matrix.md
+```
+
+Updated:
+
+```text
+review_writer/retrieval/bailian_official_client.py
+scripts/rag/bailian_minimal_lease_repro.py
+Makefile
+docs/rag/bailian_transport_diagnostics.md
+docs/rag/bailian_error_forensics.md
+docs/pr/phase6c_bailian_small_kb_pilot_pr.md
+```
+
+Gates:
+
+```bash
+make bailian-sdk-transport-introspection
+make bailian-transport-matrix-dry-run
+```
+
+Decision rule:
+
+- `no_proxy` 成功：代理环境污染 SDK。
+- `inherited_proxy` 成功：默认环境可用。
+- `explicit_proxy` 成功：SDK 需要显式 proxy/runtime。
+- 有 request id 但失败：查 RAM/workspace/category/request。
+- 无 request id：继续查 conda/SDK proxy/TLS transport，或走 manual console pilot。
+
+Current result:
+
+- `inherited_proxy`: transport error, no request id.
+- `no_proxy`: service reached, request id present, status code `400`, error code `InvalidCategoryType`.
+- `explicit_proxy`: transport error, no request id.
+- no lease obtained.
+- no upload, no AddFile, no index, no Retrieve, no knowledge base.
+
+Next:
+
+- Use `no_proxy` as the service-reaching transport mode.
+- Inspect `category_type`, `category_id`, and SDK request-model contract before any full pilot retry.
+
 ## 风险
 
 - PR 过大导致 review 困难。

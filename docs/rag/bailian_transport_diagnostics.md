@@ -74,3 +74,23 @@ Official minimal lease repro:
 - knowledge base created: `false`
 
 Interpretation: because the minimal SDK request still fails before a service `request_id`, the next step is to inspect conda/SDK proxy transport behavior or SDK endpoint expectations before changing workspace/category/request payload assumptions.
+
+## Phase 6c-oct Transport Matrix
+
+Phase 6c-oct adds a matrix over three SDK transport modes:
+
+- `inherited_proxy`: leave proxy environment behavior unchanged.
+- `no_proxy`: clear proxy environment variables only inside the current child process.
+- `explicit_proxy`: read a proxy URL from the selected env variable and pass it through SDK `Config`/`RuntimeOptions` fields if the installed SDK exposes those fields.
+
+SDK introspection in the isolated `review-writer-bailian` conda environment reports proxy and timeout support on both OpenAPI `Config` and Tea `RuntimeOptions`.
+
+The matrix still stops at `ApplyFileUploadLease`. It never performs PUT upload, AddFile, CreateIndex, SubmitIndexJob, Retrieve, or knowledge-base creation.
+
+Decision rules:
+
+- A lease in any mode means the SDK transport path works in that mode.
+- A request id without a lease means the service was reached and the next investigation should focus on permission, workspace, category, or request model.
+- No request id in all modes means transport/proxy/TLS/SDK runtime remains the likely blocker.
+
+Real matrix result: `no_proxy` reached the service and returned `InvalidCategoryType` with status code `400`; inherited and explicit proxy modes still failed before a service request id. This points the next investigation toward Bailian category/request-model semantics under the working no-proxy transport path.

@@ -1,4 +1,4 @@
-.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check eval-baseline-check portability-check reality-audit-check clean-3paper-recommend-check clean-3paper-approval-check clean-3paper-pdf-verify-check clean-3paper-biblio-check clean-3paper-biblio-web-check clean-3paper-claims-check clean-3paper-e2e-check clean-3paper-eval-check dashboard-clean-3paper-check bailian-rag-preflight-check rag-local-retrieval-check bailian-small-kb-payload-check bailian-small-kb-pilot-dry-run bailian-small-kb-official-sdk-dry-run bailian-small-kb-official-sdk-real-command bailian-lease-probe-dry-run bailian-lease-probe-real-command bailian-endpoint-diagnostics-check bailian-minimal-lease-repro-dry-run bailian-minimal-lease-repro-real-command bailian-sdk-env-check bailian-sdk-env-strict-check release-readiness-check
+.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check eval-baseline-check portability-check reality-audit-check clean-3paper-recommend-check clean-3paper-approval-check clean-3paper-pdf-verify-check clean-3paper-biblio-check clean-3paper-biblio-web-check clean-3paper-claims-check clean-3paper-e2e-check clean-3paper-eval-check dashboard-clean-3paper-check bailian-rag-preflight-check rag-local-retrieval-check bailian-small-kb-payload-check bailian-small-kb-pilot-dry-run bailian-small-kb-official-sdk-dry-run bailian-small-kb-official-sdk-real-command bailian-lease-probe-dry-run bailian-lease-probe-real-command bailian-endpoint-diagnostics-check bailian-minimal-lease-repro-dry-run bailian-minimal-lease-repro-real-command bailian-sdk-transport-introspection bailian-transport-matrix-dry-run bailian-transport-matrix-real-command bailian-sdk-env-check bailian-sdk-env-strict-check release-readiness-check
 
 PYTHON ?= python3
 REPO_ROOT ?= $(CURDIR)
@@ -273,6 +273,25 @@ bailian-minimal-lease-repro-dry-run:
 
 bailian-minimal-lease-repro-real-command:
 	@printf '%s\n' 'zsh -ic '\''cd $(REPO_ROOT) && conda run -n review-writer-bailian python scripts/rag/bailian_minimal_lease_repro.py --endpoint bailian.cn-beijing.aliyuncs.com --category-id default --output-json /tmp/bailian_minimal_lease_repro_real.json --output-md /tmp/bailian_minimal_lease_repro_real.md --allow-network --strict'\'''
+
+bailian-sdk-transport-introspection:
+	$(PYTHON) tests/test_bailian_sdk_transport_introspection.py
+	conda run -n review-writer-bailian python scripts/rag/bailian_sdk_transport_introspection.py \
+		--output-json /tmp/bailian_sdk_transport_introspection.json \
+		--output-md /tmp/bailian_sdk_transport_introspection.md \
+		--strict
+
+bailian-transport-matrix-dry-run:
+	$(PYTHON) tests/test_bailian_transport_matrix_safety.py
+	$(PYTHON) scripts/rag/bailian_transport_matrix.py \
+		--endpoint bailian.cn-beijing.aliyuncs.com \
+		--category-id default \
+		--output-json /tmp/bailian_transport_matrix_dry.json \
+		--output-md /tmp/bailian_transport_matrix_dry.md \
+		--strict
+
+bailian-transport-matrix-real-command:
+	@printf '%s\n' 'zsh -ic '\''cd $(REPO_ROOT) && conda run -n review-writer-bailian python scripts/rag/bailian_transport_matrix.py --endpoint bailian.cn-beijing.aliyuncs.com --category-id default --output-json /tmp/bailian_transport_matrix_real.json --output-md /tmp/bailian_transport_matrix_real.md --allow-network --use-official-sdk --strict'\'' >/dev/null && printf '\''bailian transport matrix wrote /tmp/bailian_transport_matrix_real.{json,md}\n'\'''
 
 bailian-sdk-env-check:
 	$(PYTHON) tests/test_bailian_sdk_env_check.py

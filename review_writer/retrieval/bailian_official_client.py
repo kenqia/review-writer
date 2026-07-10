@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import inspect
 import json
 import os
 import re
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 REQUIRED_SDK_MODULES = [
     "alibabacloud_bailian20231229",
@@ -23,7 +25,17 @@ REQUIRED_ENV = [
 ]
 DEFAULT_REGION = "cn-beijing"
 DEFAULT_CATEGORY_ID = "default"
+TRANSPORT_MODES = ["inherited_proxy", "no_proxy", "explicit_proxy"]
+PROXY_ENV_NAMES = [
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+]
 OFFICIAL_UPLOAD_MD = Path("/tmp/bailian_small_kb_upload_payload.md")
+MINIMAL_LEASE_PROBE_MD = Path("/tmp/review-writer-lease-probe.md")
 OFFICIAL_STEPS = [
     "ApplyFileUploadLease",
     "upload file to pre-signed URL",
@@ -57,6 +69,10 @@ class BailianOfficialConfig:
     index_timeout_seconds: float = 300.0
     poll_interval_seconds: float = 5.0
     request_timeout_seconds: float = 60.0
+    transport_mode: str = "inherited_proxy"
+    connect_timeout_ms: int = 10000
+    read_timeout_ms: int = 20000
+    proxy_url_env: str = "HTTPS_PROXY"
 
 
 class BailianOfficialClient:
@@ -107,6 +123,7 @@ class BailianOfficialClient:
             access_key_secret=os.environ["ALIBABA_CLOUD_ACCESS_KEY_SECRET"],
         )
         config.endpoint = self.config.endpoint
+        self._apply_transport_to_config(config)
         return BailianClient(config)
 
     def calculate_md5(self, file_path: Path) -> str:
@@ -311,12 +328,13 @@ class BailianOfficialClient:
                 "first_failed_phase": "readiness",
                 "recommended_fix": recommended_fix(readiness.get("error_type")),
             }
-        if payload_md.resolve() != OFFICIAL_UPLOAD_MD.resolve():
+        allowed_payloads = {OFFICIAL_UPLOAD_MD.resolve(), MINIMAL_LEASE_PROBE_MD.resolve()}
+        if payload_md.resolve() not in allowed_payloads:
             return {
                 **base,
                 "status": "fail",
                 "error_type": "upload_rejected",
-                "summary": "lease probe only allows /tmp/bailian_small_kb_upload_payload.md",
+                "summary": "lease probe only allows approved /tmp payload paths",
                 "first_failed_phase": "payload_guard",
                 "recommended_fix": recommended_fix("upload_rejected"),
             }
@@ -331,10 +349,11 @@ class BailianOfficialClient:
             }
         phase = "create_client"
         try:
-            client = self.create_client()
-            workspace_id = os.environ["WORKSPACE_ID"]
-            phase = "apply_file_upload_lease"
-            lease = self.apply_file_upload_lease(client, workspace_id, payload_md)
+            with self.transport_environment():
+                client = self.create_client()
+                workspace_id = os.environ["WORKSPACE_ID"]
+                phase = "apply_file_upload_lease"
+                lease = self.apply_file_upload_lease(client, workspace_id, payload_md)
             headers = lease.get("headers") or {}
             return {
                 **base,
@@ -429,67 +448,73 @@ class BailianOfficialClient:
         phase = "create_client"
         operation_name = "create_client"
         try:
-            client = self.create_client()
-            workspace_id = os.environ["WORKSPACE_ID"]
-            if cleanup:
-                if not cleanup_index_id:
+            with self.transport_environment():
+                client = self.create_client()
+                workspace_id = os.environ["WORKSPACE_ID"]
+                if cleanup:
+                    if not cleanup_index_id:
+                        return {
+                            **base,
+                            "status": "fail",
+                            "error_type": "cleanup_failed",
+                            "summary": "cleanup requires --cleanup-index-id; no delete call was made",
+                        }
+                    result = self.delete_index(client, workspace_id, cleanup_index_id)
+                    return {
+                        **base,
+                        "status": "pass",
+                        "error_type": None,
+                        "summary": "cleanup delete request completed",
+                        "network_attempted": True,
+                        "cleanup_result": result,
+                    }
+                if upload_file.resolve() != OFFICIAL_UPLOAD_MD.resolve():
                     return {
                         **base,
                         "status": "fail",
-                        "error_type": "cleanup_failed",
-                        "summary": "cleanup requires --cleanup-index-id; no delete call was made",
+                        "error_type": "upload_rejected",
+                        "summary": "real pilot only allows /tmp/bailian_small_kb_upload_payload.md",
                     }
-                result = self.delete_index(client, workspace_id, cleanup_index_id)
-                return {
-                    **base,
-                    "status": "pass",
-                    "error_type": None,
-                    "summary": "cleanup delete request completed",
-                    "network_attempted": True,
-                    "cleanup_result": result,
-                }
-            if upload_file.resolve() != OFFICIAL_UPLOAD_MD.resolve():
-                return {
-                    **base,
-                    "status": "fail",
-                    "error_type": "upload_rejected",
-                    "summary": "real pilot only allows /tmp/bailian_small_kb_upload_payload.md",
-                }
-            if not upload_file.exists():
-                return {**base, "status": "fail", "error_type": "upload_rejected", "summary": "upload markdown is missing"}
-            state["network_attempted"] = True
-            phase = "apply_file_upload_lease"
-            operation_name = "ApplyFileUploadLease"
-            lease = self.apply_file_upload_lease(client, workspace_id, upload_file)
-            state["upload_attempted"] = True
-            phase = "upload_file_to_presigned_url"
-            operation_name = "PUT pre-signed upload URL"
-            upload_result = self.upload_file_to_presigned_url(lease, upload_file)
-            phase = "add_file"
-            operation_name = "AddFile"
-            add_result = self.add_file(client, workspace_id, lease["lease_id"])
-            phase = "describe_file_until_parsed"
-            operation_name = "DescribeFile"
-            parse_result = self.describe_file_until_parsed(client, workspace_id, add_result["file_id"])
-            phase = "create_index"
-            operation_name = "CreateIndex"
-            index_result = self.create_index(client, workspace_id, add_result["file_id"])
-            state["knowledge_base_created"] = True
-            state["index_created"] = True
-            phase = "submit_index_job"
-            operation_name = "SubmitIndexJob"
-            submit_result = self.submit_index_job(client, workspace_id, index_result["index_id"])
-            phase = "wait_index_completed"
-            operation_name = "GetIndexJobStatus"
-            index_status = self.wait_index_completed(
-                client,
-                workspace_id,
-                index_result["index_id"],
-                submit_result["job_id"],
-            )
-            phase = "retrieve_index"
-            operation_name = "Retrieve"
-            retrieval = self._run_retrieval(client, workspace_id, index_result["index_id"], questions)
+                if not upload_file.exists():
+                    return {
+                        **base,
+                        "status": "fail",
+                        "error_type": "upload_rejected",
+                        "summary": "upload markdown is missing",
+                    }
+                state["network_attempted"] = True
+                phase = "apply_file_upload_lease"
+                operation_name = "ApplyFileUploadLease"
+                lease = self.apply_file_upload_lease(client, workspace_id, upload_file)
+                state["upload_attempted"] = True
+                phase = "upload_file_to_presigned_url"
+                operation_name = "PUT pre-signed upload URL"
+                upload_result = self.upload_file_to_presigned_url(lease, upload_file)
+                phase = "add_file"
+                operation_name = "AddFile"
+                add_result = self.add_file(client, workspace_id, lease["lease_id"])
+                phase = "describe_file_until_parsed"
+                operation_name = "DescribeFile"
+                parse_result = self.describe_file_until_parsed(client, workspace_id, add_result["file_id"])
+                phase = "create_index"
+                operation_name = "CreateIndex"
+                index_result = self.create_index(client, workspace_id, add_result["file_id"])
+                state["knowledge_base_created"] = True
+                state["index_created"] = True
+                phase = "submit_index_job"
+                operation_name = "SubmitIndexJob"
+                submit_result = self.submit_index_job(client, workspace_id, index_result["index_id"])
+                phase = "wait_index_completed"
+                operation_name = "GetIndexJobStatus"
+                index_status = self.wait_index_completed(
+                    client,
+                    workspace_id,
+                    index_result["index_id"],
+                    submit_result["job_id"],
+                )
+                phase = "retrieve_index"
+                operation_name = "Retrieve"
+                retrieval = self._run_retrieval(client, workspace_id, index_result["index_id"], questions)
             return {
                 **base,
                 "status": "pass",
@@ -600,10 +625,79 @@ class BailianOfficialClient:
     def _runtime_options(self) -> Any:
         from alibabacloud_tea_util import models as util_models
 
-        return util_models.RuntimeOptions(
+        runtime = util_models.RuntimeOptions(
             connect_timeout=int(self.config.request_timeout_seconds * 1000),
             read_timeout=int(self.config.request_timeout_seconds * 1000),
         )
+        self._apply_transport_to_runtime(runtime)
+        return runtime
+
+    @contextmanager
+    def transport_environment(self) -> Iterator[None]:
+        if self.config.transport_mode != "no_proxy":
+            yield
+            return
+        saved = {name: os.environ.get(name) for name in PROXY_ENV_NAMES}
+        try:
+            for name in PROXY_ENV_NAMES:
+                os.environ.pop(name, None)
+            yield
+        finally:
+            for name, value in saved.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+    def transport_report(self) -> dict[str, Any]:
+        capabilities = sdk_transport_capabilities()
+        return {
+            "transport_mode": self.config.transport_mode,
+            "connect_timeout_ms": self.config.connect_timeout_ms,
+            "read_timeout_ms": self.config.read_timeout_ms,
+            "proxy_url_env": self.config.proxy_url_env,
+            "proxy_url_env_set": bool(os.environ.get(self.config.proxy_url_env)),
+            "proxy_env_set_names": proxy_env_set_names(),
+            "capabilities": capabilities,
+        }
+
+    def _apply_transport_to_config(self, config: Any) -> None:
+        _set_supported_field(config, "connect_timeout", self.config.connect_timeout_ms)
+        _set_supported_field(config, "read_timeout", self.config.read_timeout_ms)
+        if self.config.transport_mode != "explicit_proxy":
+            return
+        proxy_url = os.environ.get(self.config.proxy_url_env)
+        if not proxy_url:
+            raise BailianPilotError("explicit_proxy_missing", "explicit proxy env is missing")
+        applied = False
+        for field in ("proxy", "http_proxy", "https_proxy"):
+            if _field_supported(config, field):
+                setattr(config, field, proxy_url)
+                applied = True
+        if not applied:
+            caps = sdk_transport_capabilities()
+            runtime_supports_proxy = any(caps["runtime_options"].get(name) for name in ("proxy", "http_proxy", "https_proxy"))
+            if not runtime_supports_proxy:
+                raise BailianPilotError("explicit_proxy_unsupported", "SDK Config/RuntimeOptions do not expose proxy fields")
+
+    def _apply_transport_to_runtime(self, runtime: Any) -> None:
+        _set_supported_field(runtime, "connect_timeout", self.config.connect_timeout_ms)
+        _set_supported_field(runtime, "read_timeout", self.config.read_timeout_ms)
+        if self.config.transport_mode != "explicit_proxy":
+            return
+        proxy_url = os.environ.get(self.config.proxy_url_env)
+        if not proxy_url:
+            raise BailianPilotError("explicit_proxy_missing", "explicit proxy env is missing")
+        applied = False
+        for field in ("proxy", "http_proxy", "https_proxy"):
+            if _field_supported(runtime, field):
+                setattr(runtime, field, proxy_url)
+                applied = True
+        if not applied:
+            caps = sdk_transport_capabilities()
+            config_supports_proxy = any(caps["config"].get(name) for name in ("proxy", "http_proxy", "https_proxy"))
+            if not config_supports_proxy:
+                raise BailianPilotError("explicit_proxy_unsupported", "SDK Config/RuntimeOptions do not expose proxy fields")
 
     def _ensure_runtime_ready(self) -> None:
         missing_modules = [name for name, status in self.dependency_presence().items() if status == "MISSING"]
@@ -656,10 +750,16 @@ def get_file_size(file_path: Path) -> int:
 
 def classify_exception(exc: Exception) -> str:
     status_code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
-    if isinstance(status_code, int):
-        return _classify_status_code(status_code)
     request_id = _first_present(exc, ["request_id", "requestId", "RequestId"])
     text = _exception_chain_text(exc).lower()
+    error_code = str(_first_present(exc, ["error_code", "code", "errorCode"]) or "").lower()
+    combined = f"{error_code} {text}"
+    if "invalidcategory" in combined or "invalid category" in combined:
+        return "invalid_category"
+    if "category" in combined and ("invalid" in combined or "not found" in combined):
+        return "category_error"
+    if isinstance(status_code, int):
+        return _classify_status_code(status_code)
     if not request_id and _has_transport_signal(text):
         return "transport_error"
     if "invalidaccesskey" in text or "invalid access key" in text:
@@ -670,8 +770,6 @@ def classify_exception(exc: Exception) -> str:
         return "workspace_or_permission_error"
     if "workspace" in text and ("invalid" in text or "not found" in text):
         return "workspace_or_permission_error"
-    if "category" in text and ("invalid" in text or "not found" in text):
-        return "category_error"
     if "endpoint" in text or "region" in text or "host" in text or "name or service not known" in text:
         return "endpoint_or_region_error"
     if "model" in text or "parameter" in text or "argument" in text or "request" in text:
@@ -724,6 +822,10 @@ def safe_error_from_exception(
 
 
 def redact_sensitive(text: str) -> str:
+    for name in PROXY_ENV_NAMES:
+        value = os.environ.get(name)
+        if value:
+            text = text.replace(value, "[REDACTED_PROXY]")
     text = SENSITIVE_RE.sub("[REDACTED]", text)
     text = re.sub(r"https://[^\\s]+", "[REDACTED_URL]", text)
     return text[:500]
@@ -743,6 +845,8 @@ def recommended_fix(error_type: str | None) -> str:
         "endpoint_or_region_error": "Verify endpoint and BAILIAN_REGION alignment, especially cn-beijing versus other regions.",
         "missing_env": "Set required env only in a temporary shell or isolated manual bridge; do not commit secrets.",
         "missing_dependency_or_api_contract": "Run inside the isolated conda env with official Bailian SDK packages installed.",
+        "explicit_proxy_missing": "Set a temporary proxy env for the selected proxy-url-env or use inherited_proxy/no_proxy mode.",
+        "explicit_proxy_unsupported": "Installed SDK does not expose proxy fields; use inherited_proxy/no_proxy or manual console pilot.",
         "upload_rejected": "Regenerate the sanitized /tmp payload and ensure only the allowed markdown path is used.",
         "timeout": "Check network/proxy reachability and consider a lease-only retry only after review.",
         "unexpected_error": "Inspect safe_error fields, then decide whether endpoint, workspace, category, or request model needs adjustment.",
@@ -786,7 +890,13 @@ def make_bailian_config(
     endpoint: str | None = None,
     region: str | None = None,
     category_id: str | None = None,
+    transport_mode: str = "inherited_proxy",
+    connect_timeout_ms: int = 10000,
+    read_timeout_ms: int = 20000,
+    proxy_url_env: str = "HTTPS_PROXY",
 ) -> BailianOfficialConfig:
+    if transport_mode not in TRANSPORT_MODES:
+        raise ValueError(f"unsupported transport mode: {transport_mode}")
     resolved_region = region or DEFAULT_REGION
     resolved_endpoint = endpoint or endpoint_for_region(resolved_region)
     return BailianOfficialConfig(
@@ -795,7 +905,82 @@ def make_bailian_config(
         category_id=category_id or DEFAULT_CATEGORY_ID,
         endpoint_source="explicit" if endpoint else ("region" if region else "official_default"),
         region_source="explicit" if region else "default",
+        transport_mode=transport_mode,
+        connect_timeout_ms=connect_timeout_ms,
+        read_timeout_ms=read_timeout_ms,
+        proxy_url_env=proxy_url_env,
     )
+
+
+def proxy_env_set_names() -> list[str]:
+    return [name for name in PROXY_ENV_NAMES if os.environ.get(name)]
+
+
+def sdk_transport_capabilities() -> dict[str, Any]:
+    return {
+        "modules": {module: _module_status(module) for module in REQUIRED_SDK_MODULES},
+        "config": _class_field_support("alibabacloud_tea_openapi.models", "Config"),
+        "runtime_options": _class_field_support("alibabacloud_tea_util.models", "RuntimeOptions"),
+    }
+
+
+def _module_status(module: str) -> str:
+    try:
+        importlib.import_module(module)
+        return "INSTALLED"
+    except Exception:
+        return "MISSING"
+
+
+def _class_field_support(module: str, class_name: str) -> dict[str, Any]:
+    target_fields = [
+        "proxy",
+        "http_proxy",
+        "https_proxy",
+        "connect_timeout",
+        "read_timeout",
+        "autoretry",
+        "ignore_ssl",
+    ]
+    try:
+        mod = importlib.import_module(module)
+        cls = getattr(mod, class_name)
+        signature = inspect.signature(cls.__init__)
+        parameters = [name for name in signature.parameters if name != "self"]
+        try:
+            instance = cls()
+            instance_fields = [name for name in vars(instance).keys() if not name.startswith("_")]
+        except Exception:
+            instance_fields = []
+        return {
+            "status": "ok",
+            "fields": sorted(set(parameters + instance_fields)),
+            **{field: field in parameters or field in instance_fields for field in target_fields},
+        }
+    except Exception as exc:  # noqa: BLE001 - introspection must be safe when SDK is absent.
+        return {
+            "status": "missing_or_uninspectable",
+            "error_class": type(exc).__name__,
+            "fields": [],
+            **{field: False for field in target_fields},
+        }
+
+
+def _field_supported(obj: Any, field: str) -> bool:
+    if hasattr(obj, field):
+        return True
+    try:
+        parameters = inspect.signature(type(obj).__init__).parameters
+        return field in parameters
+    except Exception:
+        return False
+
+
+def _set_supported_field(obj: Any, field: str, value: Any) -> bool:
+    if _field_supported(obj, field):
+        setattr(obj, field, value)
+        return True
+    return False
 
 
 def _first_present(obj: Any, names: list[str]) -> Any:

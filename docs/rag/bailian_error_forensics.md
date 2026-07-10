@@ -163,3 +163,28 @@ The official minimal lease repro still failed before a service response:
 - knowledge base created: `false`
 
 This argues against payload/PDF/Qwen/MinerU causes. The next hypothesis is SDK transport/proxy handling or endpoint form used by the official SDK in this conda environment.
+
+## Phase 6c-oct Proxy / Transport Matrix
+
+The next diagnostic step compares SDK behavior across three modes:
+
+- inherited proxy environment
+- process-local no-proxy environment
+- explicit SDK proxy/runtime fields
+
+The installed SDK exposes proxy and timeout fields on both OpenAPI `Config` and Tea `RuntimeOptions`, so explicit proxy mode is supported by this local SDK contract.
+
+The real matrix is limited to three `ApplyFileUploadLease` attempts, one per mode. It does not upload, add files, create indexes, submit jobs, retrieve, or create a knowledge base. Reports include only safe fields such as mode, status, error category, exception class, service request-id presence, status code, error code, and whether a lease was obtained.
+
+If no mode obtains a request id, the working hypothesis remains transport/proxy/runtime failure rather than RAM/workspace/category. If any mode obtains a request id, the investigation moves up to Bailian service-side authorization or request validation.
+
+Authorized Phase 6c-oct matrix result:
+
+- inherited proxy: transport error, no request id
+- no proxy: service reached, status code `400`, error code `InvalidCategoryType`, request id present
+- explicit proxy: transport error, no request id
+- no lease obtained
+- no upload attempted
+- no knowledge base created
+
+This shifts the next debugging target to category or request-model alignment while using `no_proxy` as the working service-reachability mode.
