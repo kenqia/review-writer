@@ -25,6 +25,11 @@ Optional:
 provider_config / <PROVIDER_CONFIG>
 data_root
 skip_figures=false
+retrieval_mode=offline_fixture
+generation_provider=offline
+section_id
+section_title
+max_evidence_items
 ```
 
 Use placeholders in portable instructions:
@@ -49,6 +54,8 @@ Use placeholders in portable instructions:
 8. Do not skip the final quality gate before release or export.
 9. Resolve user-provided paths before running commands; never guess personal paths.
 10. If required paths are missing, ask the user or use a repo-relative demo.
+11. For retrieval-backed generation, default to `retrieval_mode=offline_fixture` and `generation_provider=offline`.
+12. Retrieval-backed generation must stop at the `Sections` checkpoint after one section is marked `ready_for_human_review`.
 
 Windows/WSL is only an optional runtime example:
 
@@ -74,6 +81,31 @@ python scripts/validators/validate_review_quality.py
 ```text
 Library -> Discovery -> Matrix -> Blueprint -> Sections -> Figures -> Draft -> Final -> Export
 ```
+
+## Retrieval-backed Section Pilot
+
+When `retrieval_mode` or `generation_provider` is supplied, run only this checkpointed path:
+
+```text
+retrieve evidence
+-> build EvidencePack
+-> generate one section
+-> validate citations/evidence
+-> ready_for_human_review
+-> STOP
+```
+
+Allowed modes:
+
+```text
+retrieval_mode: offline_fixture | local | bailian
+generation_provider: offline | qwen
+section_id
+section_title
+max_evidence_items
+```
+
+Do not continue automatically into Figures, Draft, Final, or Export. Do not write local absolute paths into portable instructions.
 
 ## Outputs
 

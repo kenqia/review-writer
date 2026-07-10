@@ -1601,6 +1601,38 @@ Closure result:
 - Cleanup after the latest smoke and clean lifecycles passed for both index and file.
 - Current status: `Phase 6 complete.`
 
+### Phase 7: Orchestrator-backed retrieval generation pilot
+
+Goal:
+
+- Connect clean 3-paper retrieval evidence, one generation provider, and grounded-section validation.
+- Stop at the existing `Sections` checkpoint with `ready_for_human_review`.
+- Keep default checks offline.
+
+Implemented:
+
+- `review_writer/pipeline/retrieval_generation.py`
+- `scripts/demo/run_retrieval_generation_pilot.py`
+- `scripts/validators/validate_grounded_section.py`
+- `tests/fixtures/retrieval_generation/*`
+- `tests/test_retrieval_generation_pipeline.py`
+- `tests/test_grounded_section_validation.py`
+- `make retrieval-generation-check`
+- `make grounded-section-check`
+- `make phase7-pilot-dry-run`
+
+Safety wording:
+
+- Default checks do not upload; controlled pilots require explicit authorization.
+- Generated sections remain `needs_human_review=true` and `trusted_for_scientific_quality=false`.
+
+Current result:
+
+- Offline replay: pass.
+- Real controlled retrieval: reached Qwen generation stage.
+- Qwen generation: failed with read timeout.
+- Phase 7 strict status: incomplete at Qwen generation timeout.
+
 ## 风险
 
 - PR 过大导致 review 困难。

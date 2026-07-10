@@ -23,6 +23,9 @@ make bailian-small-kb-official-sdk-dry-run
 make bailian-retrieval-contract-check
 make bailian-retrieval-qa-dry-run
 make bailian-phase6-final-check
+make retrieval-generation-check
+make grounded-section-check
+make phase7-pilot-dry-run
 ```
 
 ## Bailian RAG No-upload Preflight
@@ -50,3 +53,5 @@ Phase 6c adds dry-run gates for a possible Bailian small-KB pilot. Default make 
 Official Bailian KB management uses Alibaba Cloud SDK credentials (`ALIBABA_CLOUD_ACCESS_KEY_ID`, `ALIBABA_CLOUD_ACCESS_KEY_SECRET`, `WORKSPACE_ID`), not only `DASHSCOPE_API_KEY`. The official SDK path is gated behind `--use-official-sdk` plus explicit network/upload flags and stays dry-run in default checks.
 
 Phase 6d adds offline-safe Retrieve contract introspection and retrieval QA dry-run gates. Real Bailian smoke/clean lifecycles remain explicit commands and write sensitive resource identifiers only to ignored `/tmp` reports.
+
+Phase 7 adds an offline default retrieval-generation pilot for one grounded section. Default checks do not upload; controlled pilots require explicit authorization. Generated sections remain `needs_human_review=true` and are not final scientific review text.
