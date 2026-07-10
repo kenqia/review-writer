@@ -26,6 +26,8 @@ REQUIRED_ENV = [
 DEFAULT_REGION = "cn-beijing"
 DEFAULT_CATEGORY_ID = "default"
 DEFAULT_CATEGORY_TYPE = "UNSTRUCTURED"
+ALLOWED_RERANK_MODES = {"qa", "similar", "custom"}
+SMOKE_FACT = "review-writer Phase 6c smoke test"
 TRANSPORT_MODES = ["inherited_proxy", "no_proxy", "explicit_proxy"]
 PROXY_ENV_NAMES = [
     "HTTP_PROXY",
@@ -67,6 +69,8 @@ class BailianOfficialConfig:
     structure_type: str = "unstructured"
     source_type: str = "DATA_CENTER_FILE"
     sink_type: str = "DEFAULT"
+    rerank_mode: str | None = None
+    rerank_instruct: str | None = None
     parse_timeout_seconds: float = 300.0
     index_timeout_seconds: float = 300.0
     poll_interval_seconds: float = 5.0
@@ -112,6 +116,8 @@ class BailianOfficialClient:
             "category_id": self.config.category_id,
             "category_type": self.config.category_type,
             "use_internal_endpoint": self.config.use_internal_endpoint,
+            "rerank_mode": self.config.rerank_mode,
+            "rerank_instruct_present": bool(self.config.rerank_instruct),
             "endpoint_source": self.config.endpoint_source,
             "region_source": self.config.region_source,
             "warnings": warnings,
@@ -259,20 +265,31 @@ class BailianOfficialClient:
     def create_index(self, client: Any, workspace_id: str, file_id: str) -> dict[str, Any]:
         from alibabacloud_bailian20231229 import models
 
-        timestamp = time.strftime("%Y%m%d%H%M%S")
-        request = models.CreateIndexRequest(
-            category_ids=[self.config.category_id],
-            document_ids=[file_id],
-            name=f"review-writer-clean-3paper-pilot-{timestamp}",
-            source_type=self.config.source_type,
-            sink_type=self.config.sink_type,
-            structure_type=self.config.structure_type,
-        )
+        kwargs = self.create_index_request_kwargs(file_id)
+        request = models.CreateIndexRequest(**kwargs)
         response = client.create_index_with_options(workspace_id, request, {}, self._runtime_options())
-        index_id = _safe_get(response, "body", "data", "id")
+        index_id = _safe_get(response, "body", "data", "id") or _safe_get(response, "body", "data", "index_id")
         if not index_id:
-            raise BailianPilotError("index_failed", "missing index id")
+            raise BailianPilotError("index_id_missing", "missing index id")
         return {"status": "index_created", "index_id": index_id}
+
+    def create_index_request_kwargs(self, file_id: str) -> dict[str, Any]:
+        rerank_error = validate_rerank_config(self.config.rerank_mode, self.config.rerank_instruct)
+        if rerank_error:
+            raise BailianPilotError(rerank_error["error_type"], rerank_error["summary"])
+        timestamp = time.strftime("%Y%m%d%H%M%S")
+        kwargs: dict[str, Any] = {
+            "document_ids": [file_id],
+            "name": f"review-writer-clean-3paper-pilot-{timestamp}",
+            "source_type": self.config.source_type,
+            "sink_type": self.config.sink_type,
+            "structure_type": self.config.structure_type,
+        }
+        if self.config.rerank_mode:
+            kwargs["rerank_mode"] = self.config.rerank_mode
+        if self.config.rerank_mode == "custom" and self.config.rerank_instruct:
+            kwargs["rerank_instruct"] = self.config.rerank_instruct
+        return kwargs
 
     def submit_index_job(self, client: Any, workspace_id: str, index_id: str) -> dict[str, Any]:
         from alibabacloud_bailian20231229 import models
@@ -302,13 +319,26 @@ class BailianOfficialClient:
             time.sleep(self.config.poll_interval_seconds)
         raise BailianPilotError("timeout", f"index timeout; last status {last_status}")
 
-    def retrieve_index(self, client: Any, workspace_id: str, index_id: str, query: str) -> dict[str, Any]:
+    def retrieve_index(
+        self,
+        client: Any,
+        workspace_id: str,
+        index_id: str,
+        query: str,
+        *,
+        require_smoke_fact: bool = False,
+    ) -> dict[str, Any]:
         from alibabacloud_bailian20231229 import models
 
         request = models.RetrieveRequest(index_id=index_id, query=query, dense_similarity_top_k=3)
         response = client.retrieve_with_options(workspace_id, request, {}, self._runtime_options())
         nodes = _safe_get(response, "body", "data", "nodes") or []
-        return {"status": "ok", "items": _normalize_retrieval_nodes(nodes)}
+        evaluation = evaluate_retrieve_nodes(nodes)
+        if not evaluation["nodes_count"]:
+            raise BailianPilotError("retrieve_empty_nodes", "retrieve returned no nodes")
+        if require_smoke_fact and not evaluation["smoke_fact_found"]:
+            raise BailianPilotError("retrieve_fact_miss", "retrieve nodes did not contain smoke fact")
+        return {"status": "ok", "items": evaluation["items"], **evaluation}
 
     def delete_index(self, client: Any, workspace_id: str, index_id: str) -> dict[str, Any]:
         from alibabacloud_bailian20231229 import models
@@ -527,6 +557,11 @@ class BailianOfficialClient:
             "created_resource_ids_cleaned": "not_created",
             "cleanup_errors": [],
             "retrieval_status": "not_run",
+            "nodes_count": 0,
+            "top_score": None,
+            "smoke_fact_found": False,
+            "signed_url_present": False,
+            "signed_url_redacted": True,
             "recall_at_1": None,
             "recall_at_3": None,
             "citation_coverage": None,
@@ -652,6 +687,11 @@ class BailianOfficialClient:
                 "parse_status": parse_result["status"],
                 "index_status": index_status["status"],
                 "retrieval_status": retrieval["status"],
+                "nodes_count": retrieval["nodes_count"],
+                "top_score": retrieval["top_score"],
+                "smoke_fact_found": retrieval["smoke_fact_found"],
+                "signed_url_present": retrieval["signed_url_present"],
+                "signed_url_redacted": True,
                 "recall_at_1": retrieval["recall_at_1"],
                 "recall_at_3": retrieval["recall_at_3"],
                 "citation_coverage": retrieval["citation_coverage"],
@@ -726,11 +766,18 @@ class BailianOfficialClient:
         hit_at_3 = 0
         citation_hits = 0
         total = len(questions)
+        nodes_count_total = 0
+        top_score: float | None = None
+        signed_url_present = False
         for question in questions:
             query = str(question.get("question") or question.get("query") or "")
             expected = _expected_ids(question)
             retrieved = self.retrieve_index(client, workspace_id, index_id, query)
             items = retrieved["items"]
+            nodes_count_total += int(retrieved.get("nodes_count") or 0)
+            if top_score is None and retrieved.get("top_score") is not None:
+                top_score = retrieved.get("top_score")
+            signed_url_present = signed_url_present or bool(retrieved.get("signed_url_present"))
             top_ids = [item["paper_id"] for item in items if item.get("paper_id")]
             hit1 = bool(expected and top_ids[:1] and top_ids[0] in expected)
             hit3 = bool(expected and any(paper_id in expected for paper_id in top_ids[:3]))
@@ -749,12 +796,24 @@ class BailianOfficialClient:
                     "hit_at_3": hit3,
                 }
             )
+        smoke_retrieval = self.retrieve_index(
+            client,
+            workspace_id,
+            index_id,
+            SMOKE_FACT,
+            require_smoke_fact=True,
+        )
         return {
             "status": "ok",
             "recall_at_1": round(hit_at_1 / total, 4) if total else None,
             "recall_at_3": round(hit_at_3 / total, 4) if total else None,
             "citation_coverage": round(citation_hits / total, 4) if total else None,
             "per_question_results": results,
+            "nodes_count": nodes_count_total + int(smoke_retrieval.get("nodes_count") or 0),
+            "top_score": top_score if top_score is not None else smoke_retrieval.get("top_score"),
+            "smoke_fact_found": bool(smoke_retrieval.get("smoke_fact_found")),
+            "signed_url_present": signed_url_present or bool(smoke_retrieval.get("signed_url_present")),
+            "signed_url_redacted": True,
         }
 
     def _runtime_options(self) -> Any:
@@ -843,6 +902,14 @@ class BailianOfficialClient:
             raise BailianPilotError("missing_env", "official Bailian SDK env is missing")
 
     def _readiness_error(self, base: dict[str, Any]) -> dict[str, Any] | None:
+        rerank_error = validate_rerank_config(self.config.rerank_mode, self.config.rerank_instruct)
+        if rerank_error:
+            return {
+                **base,
+                "status": "fail",
+                "error_type": rerank_error["error_type"],
+                "summary": rerank_error["summary"],
+            }
         missing_modules = [name for name, status in base["dependency_presence"].items() if status == "MISSING"]
         if missing_modules:
             return {
@@ -869,6 +936,34 @@ class BailianPilotError(RuntimeError):
         super().__init__(safe_summary)
         self.error_type = error_type
         self.safe_summary = safe_summary
+
+
+def validate_rerank_config(rerank_mode: str | None, rerank_instruct: str | None) -> dict[str, str] | None:
+    if rerank_mode and rerank_mode not in ALLOWED_RERANK_MODES:
+        return {
+            "error_type": "invalid_rerank_mode",
+            "summary": "rerank_mode must be one of qa, similar, custom",
+        }
+    if rerank_instruct and rerank_mode != "custom":
+        return {
+            "error_type": "invalid_rerank_instruct",
+            "summary": "rerank_instruct is allowed only when rerank_mode=custom",
+        }
+    return None
+
+
+def evaluate_retrieve_nodes(nodes: Any, smoke_fact: str = SMOKE_FACT) -> dict[str, Any]:
+    items = _normalize_retrieval_nodes(nodes)
+    top_score = next((item.get("score") for item in items if item.get("score") is not None), None)
+    node_text = " ".join(item.get("text_excerpt", "") for item in items)
+    return {
+        "nodes_count": len(items),
+        "top_score": top_score,
+        "smoke_fact_found": smoke_fact in node_text,
+        "signed_url_present": _contains_signed_url(nodes),
+        "signed_url_redacted": True,
+        "items": [{key: value for key, value in item.items() if key != "text_excerpt"} for item in items],
+    }
 
 
 def calculate_md5(file_path: Path) -> str:
@@ -981,8 +1076,13 @@ def recommended_fix(error_type: str | None) -> str:
         "category_type_required": "ListCategory requires an explicit category_type for this workspace/API version; confirm valid values before retry.",
         "invalid_request_model": "Compare SDK request fields with the installed SDK version and official API contract.",
         "index_failed": "Inspect CreateIndex request fields, category id/type, document parse state, and workspace index permissions before another full pilot.",
+        "index_id_missing": "CreateIndex returned without a parsed index id; inspect response shape and manual success parameters before retry.",
         "parse_failed": "Inspect DescribeFile parse status and parser configuration before creating an index.",
         "cleanup_failed": "Inspect cleanup_errors and delete any temporary resources manually in the Bailian console if needed.",
+        "invalid_rerank_mode": "Use no rerank mode by default, or explicitly choose qa, similar, or custom.",
+        "invalid_rerank_instruct": "Only provide rerank_instruct when rerank_mode=custom.",
+        "retrieve_empty_nodes": "Retrieve returned no nodes; inspect index job status and payload ingestion before retry.",
+        "retrieve_fact_miss": "Retrieve returned nodes but missed the Phase 6c smoke fact; inspect payload indexing and query routing.",
         "endpoint_or_region_error": "Verify endpoint and BAILIAN_REGION alignment, especially cn-beijing versus other regions.",
         "missing_env": "Set required env only in a temporary shell or isolated manual bridge; do not commit secrets.",
         "missing_dependency_or_api_contract": "Run inside the isolated conda env with official Bailian SDK packages installed.",
@@ -1036,6 +1136,8 @@ def make_bailian_config(
     connect_timeout_ms: int = 10000,
     read_timeout_ms: int = 20000,
     proxy_url_env: str = "HTTPS_PROXY",
+    rerank_mode: str | None = None,
+    rerank_instruct: str | None = None,
 ) -> BailianOfficialConfig:
     if transport_mode not in TRANSPORT_MODES:
         raise ValueError(f"unsupported transport mode: {transport_mode}")
@@ -1052,6 +1154,8 @@ def make_bailian_config(
         connect_timeout_ms=connect_timeout_ms,
         read_timeout_ms=read_timeout_ms,
         proxy_url_env=proxy_url_env,
+        rerank_mode=rerank_mode,
+        rerank_instruct=rerank_instruct,
     )
 
 
@@ -1285,15 +1389,33 @@ def _normalize_retrieval_nodes(nodes: Any) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for node in nodes if isinstance(nodes, list) else []:
         payload = _to_jsonable(node)
-        text = json.dumps(payload, ensure_ascii=False)
+        text = str(payload.get("text") or payload.get("content") or json.dumps(payload, ensure_ascii=False))
         paper_id = _extract_paper_id(text)
         items.append(
             {
                 "paper_id": paper_id,
                 "score": payload.get("score") or payload.get("similarity") or payload.get("rerank_score"),
+                "text_excerpt": redact_sensitive(text)[:240],
             }
         )
     return items
+
+
+def _contains_signed_url(value: Any) -> bool:
+    text = json.dumps(_jsonable_recursive(value), ensure_ascii=False).lower()
+    return any(marker in text for marker in ["ossaccesskeyid", "signature=", "x-oss-signature", "expires=", "signedurl"])
+
+
+def _jsonable_recursive(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _jsonable_recursive(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_jsonable_recursive(item) for item in value]
+    if isinstance(value, tuple):
+        return [_jsonable_recursive(item) for item in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return _to_jsonable(value)
 
 
 def _to_jsonable(obj: Any) -> dict[str, Any]:
@@ -1310,7 +1432,7 @@ def _to_jsonable(obj: Any) -> dict[str, Any]:
 def _extract_paper_id(text: str) -> str | None:
     import re
 
-    match = re.search(r"\bP\d{3,}\b", text)
+    match = re.search(r"\b(?:P\d{3,}|F\d+[A-Z])\b", text)
     return match.group(0) if match else None
 
 

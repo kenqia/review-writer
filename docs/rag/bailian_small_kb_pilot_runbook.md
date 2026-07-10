@@ -68,9 +68,11 @@ python scripts/rag/bailian_small_kb_pilot.py \
   --endpoint bailian.cn-beijing.aliyuncs.com \
   --region cn-beijing \
   --category-id default \
+  --transport-mode no_proxy \
   --allow-network \
   --allow-upload \
   --use-official-sdk \
+  --cleanup \
   --strict
 ```
 
@@ -90,6 +92,8 @@ The real path performs:
 - SubmitIndexJob
 - GetIndexJobStatus until `COMPLETED`
 - Retrieve over `evals/fixtures/rag_expected_questions.json`
+- Retrieve smoke fact check for `review-writer Phase 6c smoke test`
+- Best-effort cleanup of created index/file resources when `--cleanup` is supplied
 - recall@1, recall@3, and citation coverage calculation
 
 ## KB ID Policy
@@ -108,6 +112,50 @@ One authorized official SDK pilot was attempted after the implementation was add
 - temporary KB/index cleanup: not required
 
 No retry was performed. No key value was printed, no PDF or raw image was uploaded, and no KB/index id was written to the repo.
+
+## Phase 6c-final Manual Success Alignment
+
+Manual OpenAPI Explorer validation proved the cloud-side path can succeed:
+
+- CreateIndex: success
+- SubmitIndexJob: success
+- GetIndexJobStatus: `COMPLETED`
+- Retrieve: success
+- Retrieve nodes: non-empty
+- Retrieved text contained `review-writer Phase 6c smoke test`
+
+The manual success record is kept in `docs/rag/bailian_manual_success_record.md` with resource ids and signed URLs redacted.
+
+Code alignment rules:
+
+- Default `CreateIndex` omits `RerankMode`.
+- Default `CreateIndex` omits `RerankInstruct`.
+- `RerankMode` is sent only when explicitly configured as `qa`, `similar`, or `custom`.
+- `RerankInstruct` is sent only when `RerankMode=custom`.
+- Retrieve succeeds only when nodes are non-empty and the smoke fact is found.
+
+## Phase 6c-final Controlled SDK Pilot Result
+
+After aligning the code with the manual success path, one controlled official SDK pilot was executed with the sanitized small payload and `--cleanup`.
+
+Safe summary:
+
+- lease: pass
+- upload: pass
+- AddFile: pass
+- DescribeFile/parse: fail
+- CreateIndex: skipped
+- SubmitIndexJob: skipped
+- GetIndexJobStatus: skipped
+- Retrieve: skipped
+- error_type: `parse_failed`
+- safe summary: `parse status PARSE_FAILED`
+- cleanup_attempted: true
+- index_cleanup: not_created
+- file_cleanup: fail
+- created_resource_ids_cleaned: no
+
+Interpretation: the manual success proves the cloud path can work, and the code now matches the rerank/default-index contract. The remaining automated SDK blocker is now file parsing for the sanitized markdown payload, plus cleanup transport reliability for the temporary file resource. Resource ids, if needed for manual cleanup, are only in `/tmp/bailian_small_kb_pilot_real.json`.
 
 ## Phase 6c-quin Lease-only Probe
 

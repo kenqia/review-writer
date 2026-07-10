@@ -187,6 +187,33 @@ Implemented official SDK lifecycle:
 - Retrieve
 - optional reviewed cleanup with `--cleanup --cleanup-index-id`
 
+Phase 6c-final manual success alignment:
+
+- Manual OpenAPI Explorer run proved CreateIndex, SubmitIndexJob, GetIndexJobStatus, and Retrieve can succeed.
+- Retrieved nodes were non-empty and contained `review-writer Phase 6c smoke test`.
+- Root cause 1: workspace membership / RAM permission was initially incomplete.
+- Root cause 2: explicit invalid `RerankMode` breaks CreateIndex.
+- Code now defaults to no `RerankMode` and no `RerankInstruct`.
+- `RerankMode` is allowed only when explicitly set to `qa`, `similar`, or `custom`.
+- `RerankInstruct` is allowed only when `RerankMode=custom`.
+- Retrieve success now checks non-empty nodes and the smoke fact.
+- Resource ids and signed URLs remain out of repo docs; `/tmp` reports are the only place for ids needed for cleanup.
+
+Controlled Phase 6c-final SDK pilot result:
+
+- lease: pass
+- upload: pass
+- AddFile: pass
+- parse: fail with `parse_failed` / `PARSE_FAILED`
+- CreateIndex / SubmitIndexJob / Retrieve: skipped
+- cleanup attempted: true
+- index cleanup: not_created
+- file cleanup: fail
+- no PDF, raw image, or full markdown was uploaded
+- no signed URL, header, or key was printed
+
+This means the original workspace/RAM and rerank blockers are no longer the observed automation blocker. The next investigation should focus on parser configuration or payload file type for the sanitized markdown payload, and on manual cleanup of the temporary file resource using the id stored only in `/tmp`.
+
 ## Safety
 
 - No PDF upload.

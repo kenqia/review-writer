@@ -1501,6 +1501,40 @@ Authorized Phase 6c-deepfix result:
 - No upload, AddFile, index, Retrieve, or knowledge base creation occurred.
 - Next action: create/select a Bailian console category, then run one lease-only reprobe with `category_type=UNSTRUCTURED`.
 
+### Phase 6c-final: Bailian official SDK pilot alignment from manual success
+
+人工 OpenAPI Explorer 成功事实（repo 内不记录资源 id 原文）：
+
+- CreateIndex: success.
+- SubmitIndexJob: success.
+- GetIndexJobStatus: `COMPLETED`.
+- Retrieve: success.
+- `Data.Nodes`: non-empty.
+- Retrieved text contains `review-writer Phase 6c smoke test`.
+
+Root causes:
+
+- RAM/workspace membership was initially incomplete.
+- Explicit invalid `RerankMode` caused CreateIndex failures.
+
+Implemented alignment:
+
+- Default CreateIndex does not pass `RerankMode`.
+- Default CreateIndex does not pass `RerankInstruct`.
+- Explicit `RerankMode` is validated as `qa`, `similar`, or `custom`.
+- `RerankInstruct` is accepted only with `RerankMode=custom`.
+- Retrieve success requires non-empty nodes and the smoke fact.
+- Cleanup remains best-effort and reports index/file cleanup status without printing resource ids in chat or repo docs.
+
+Controlled SDK pilot result:
+
+- lease/upload/AddFile passed.
+- DescribeFile parse failed with `parse_failed` / `PARSE_FAILED`.
+- CreateIndex, SubmitIndexJob, GetIndexJobStatus, and Retrieve were skipped.
+- Cleanup was attempted; no index was created, and file cleanup failed.
+- Resource ids remain only in `/tmp` reports for manual cleanup.
+- Next action: inspect parser/file-type compatibility for the sanitized markdown payload before retrying the full SDK pilot.
+
 ## 风险
 
 - PR 过大导致 review 困难。

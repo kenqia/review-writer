@@ -13,7 +13,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from review_writer.retrieval.bailian_official_client import BailianOfficialClient, make_bailian_config
+from review_writer.retrieval.bailian_official_client import (
+    BailianOfficialClient,
+    make_bailian_config,
+    validate_rerank_config,
+)
 
 OFFICIAL_UPLOAD_MD = Path("/tmp/bailian_small_kb_upload_payload.md")
 FORBIDDEN_RE = re.compile(r"(\.pdf\b|\.png\b|\.jpe?g\b|\.webp\b|/home/|/mnt/|[A-Za-z]:\\Users\\|api[_-]?key\s*[:=]|token\s*[:=]|secret\s*[:=]|sk-)", re.I)
@@ -43,6 +47,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--connect-timeout-ms", type=int, default=10000)
     parser.add_argument("--read-timeout-ms", type=int, default=20000)
     parser.add_argument("--proxy-url-env", default="HTTPS_PROXY")
+    parser.add_argument("--rerank-mode")
+    parser.add_argument("--rerank-instruct")
     parser.add_argument("--allow-network", action="store_true")
     parser.add_argument("--allow-upload", action="store_true")
     parser.add_argument("--use-official-sdk", action="store_true")
@@ -66,6 +72,8 @@ def run_pilot(args: argparse.Namespace) -> dict[str, Any]:
             connect_timeout_ms=args.connect_timeout_ms,
             read_timeout_ms=args.read_timeout_ms,
             proxy_url_env=args.proxy_url_env,
+            rerank_mode=args.rerank_mode,
+            rerank_instruct=args.rerank_instruct,
         )
     )
     base = {
@@ -94,6 +102,11 @@ def run_pilot(args: argparse.Namespace) -> dict[str, Any]:
         "payload_status": payload_status["status"],
         "payload_errors": payload_status["errors"] + upload_md_status["errors"],
         "retrieval_status": "not_run",
+        "nodes_count": 0,
+        "top_score": None,
+        "smoke_fact_found": False,
+        "signed_url_present": False,
+        "signed_url_redacted": True,
         "recall_at_1": None,
         "recall_at_3": None,
         "citation_coverage": None,
@@ -118,6 +131,9 @@ def run_pilot(args: argparse.Namespace) -> dict[str, Any]:
     }
     if payload_status["status"] == "fail" or upload_md_status["status"] == "fail" or questions_status["status"] == "fail":
         return {**base, "status": "fail", "error_type": "upload_rejected", "summary": "payload or question validation failed"}
+    rerank_error = validate_rerank_config(args.rerank_mode, args.rerank_instruct)
+    if rerank_error:
+        return {**base, "status": "fail", **rerank_error}
     if not args.allow_network or not args.allow_upload:
         return {
             **base,
@@ -141,6 +157,11 @@ def run_pilot(args: argparse.Namespace) -> dict[str, Any]:
             "error_type": official_report.get("error_type"),
             "summary": official_report["summary"],
             "retrieval_status": official_report.get("retrieval_status", "not_run"),
+            "nodes_count": official_report.get("nodes_count", 0),
+            "top_score": official_report.get("top_score"),
+            "smoke_fact_found": official_report.get("smoke_fact_found", False),
+            "signed_url_present": official_report.get("signed_url_present", False),
+            "signed_url_redacted": True,
             "recall_at_1": official_report.get("recall_at_1"),
             "recall_at_3": official_report.get("recall_at_3"),
             "citation_coverage": official_report.get("citation_coverage"),
@@ -213,7 +234,12 @@ def build_upload_markdown(jsonl_path: Path, output_path: Path) -> dict[str, Any]
     if not jsonl_path.exists():
         return {"status": "fail", "errors": [f"missing payload jsonl: {jsonl_path}"]}
     rows = [json.loads(line) for line in jsonl_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    lines = ["# Review Writer Clean 3-Paper Small KB Payload", ""]
+    lines = [
+        "# Review Writer Clean 3-Paper Small KB Payload",
+        "",
+        "review-writer Phase 6c smoke test",
+        "",
+    ]
     for row in rows:
         meta = row.get("metadata", {})
         lines.extend(
@@ -289,6 +315,11 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- official_upload_md: `{report.get('official_upload_md')}`",
         f"- record_count: `{report['record_count']}`",
         f"- retrieval_status: `{report['retrieval_status']}`",
+        f"- nodes_count: `{report.get('nodes_count', 0)}`",
+        f"- top_score: `{report.get('top_score')}`",
+        f"- smoke_fact_found: `{report.get('smoke_fact_found', False)}`",
+        f"- signed_url_present: `{report.get('signed_url_present', False)}`",
+        f"- signed_url_redacted: `{report.get('signed_url_redacted', True)}`",
         f"- recall@1: `{report['recall_at_1']}`",
         f"- recall@3: `{report['recall_at_3']}`",
         f"- citation coverage: `{report['citation_coverage']}`",
