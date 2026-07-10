@@ -62,6 +62,7 @@ class BailianOfficialConfig:
     endpoint_source: str = "official_default"
     region_source: str = "default"
     category_type: str = DEFAULT_CATEGORY_TYPE
+    use_internal_endpoint: bool = False
     parser: str = "DASHSCOPE_DOCMIND"
     structure_type: str = "unstructured"
     source_type: str = "DATA_CENTER_FILE"
@@ -109,6 +110,8 @@ class BailianOfficialClient:
             "region": self.config.region,
             "endpoint": self.config.endpoint,
             "category_id": self.config.category_id,
+            "category_type": self.config.category_type,
+            "use_internal_endpoint": self.config.use_internal_endpoint,
             "endpoint_source": self.config.endpoint_source,
             "region_source": self.config.region_source,
             "warnings": warnings,
@@ -141,6 +144,7 @@ class BailianOfficialClient:
             file_name=file_path.name,
             md_5=calculate_md5(file_path),
             size_in_bytes=str(get_file_size(file_path)),
+            use_internal_endpoint=self.config.use_internal_endpoint,
         )
         response = client.apply_file_upload_lease_with_options(
             self.config.category_id,
@@ -313,6 +317,68 @@ class BailianOfficialClient:
         client.delete_index_with_options(workspace_id, request, {}, self._runtime_options())
         return {"status": "delete_requested", "index_id": index_id}
 
+    def delete_file(self, client: Any, workspace_id: str, file_id: str) -> dict[str, Any]:
+        from alibabacloud_bailian20231229 import models
+
+        request = models.DeleteFileRequest()
+        client.delete_file_with_options(file_id, workspace_id, request, {}, self._runtime_options())
+        return {"status": "delete_requested", "file_id": file_id}
+
+    def cleanup_created_resources(
+        self,
+        client: Any,
+        workspace_id: str,
+        *,
+        index_id: str | None = None,
+        file_id: str | None = None,
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "cleanup_attempted": bool(index_id or file_id),
+            "cleanup_status": "not_needed",
+            "index_cleanup": "not_created",
+            "file_cleanup": "not_created",
+            "created_resource_ids_cleaned": "not_created",
+            "cleanup_errors": [],
+        }
+        if not index_id and not file_id:
+            return result
+        result["cleanup_status"] = "pass"
+        if index_id:
+            try:
+                self.delete_index(client, workspace_id, index_id)
+                result["index_cleanup"] = "pass"
+            except Exception as exc:  # noqa: BLE001 - cleanup must be best-effort and reported safely.
+                result["cleanup_status"] = "fail"
+                result["index_cleanup"] = "fail"
+                result["cleanup_errors"].append(
+                    safe_error_from_exception(
+                        exc,
+                        operation_name="DeleteIndex",
+                        phase="cleanup_index",
+                        endpoint=self.config.endpoint,
+                    )
+                )
+        if file_id:
+            try:
+                self.delete_file(client, workspace_id, file_id)
+                result["file_cleanup"] = "pass"
+            except Exception as exc:  # noqa: BLE001 - cleanup must be best-effort and reported safely.
+                result["cleanup_status"] = "fail"
+                result["file_cleanup"] = "fail"
+                result["cleanup_errors"].append(
+                    safe_error_from_exception(
+                        exc,
+                        operation_name="DeleteFile",
+                        phase="cleanup_file",
+                        endpoint=self.config.endpoint,
+                    )
+                )
+        if result["cleanup_status"] == "pass":
+            result["created_resource_ids_cleaned"] = "yes"
+        elif result["cleanup_status"] == "fail":
+            result["created_resource_ids_cleaned"] = "no"
+        return result
+
     def run_lease_probe(
         self,
         *,
@@ -454,6 +520,12 @@ class BailianOfficialClient:
             "index_created": False,
             "cleanup_requested": cleanup,
             "cleanup_index_id_provided": bool(cleanup_index_id),
+            "cleanup_attempted": False,
+            "cleanup_status": "not_needed",
+            "index_cleanup": "not_created",
+            "file_cleanup": "not_created",
+            "created_resource_ids_cleaned": "not_created",
+            "cleanup_errors": [],
             "retrieval_status": "not_run",
             "recall_at_1": None,
             "recall_at_3": None,
@@ -475,21 +547,19 @@ class BailianOfficialClient:
             "upload_attempted": False,
             "knowledge_base_created": False,
             "index_created": False,
+            "created_file_id": None,
+            "created_index_id": None,
+            "created_job_id": None,
         }
         phase = "create_client"
         operation_name = "create_client"
+        client = None
+        workspace_id = None
         try:
             with self.transport_environment():
                 client = self.create_client()
                 workspace_id = os.environ["WORKSPACE_ID"]
-                if cleanup:
-                    if not cleanup_index_id:
-                        return {
-                            **base,
-                            "status": "fail",
-                            "error_type": "cleanup_failed",
-                            "summary": "cleanup requires --cleanup-index-id; no delete call was made",
-                        }
+                if cleanup and cleanup_index_id:
                     result = self.delete_index(client, workspace_id, cleanup_index_id)
                     return {
                         **base,
@@ -498,6 +568,10 @@ class BailianOfficialClient:
                         "summary": "cleanup delete request completed",
                         "network_attempted": True,
                         "cleanup_result": result,
+                        "cleanup_attempted": True,
+                        "cleanup_status": "pass",
+                        "index_cleanup": "pass",
+                        "created_resource_ids_cleaned": "yes",
                     }
                 if upload_file.resolve() != OFFICIAL_UPLOAD_MD.resolve():
                     return {
@@ -524,17 +598,20 @@ class BailianOfficialClient:
                 phase = "add_file"
                 operation_name = "AddFile"
                 add_result = self.add_file(client, workspace_id, lease["lease_id"])
+                state["created_file_id"] = add_result["file_id"]
                 phase = "describe_file_until_parsed"
                 operation_name = "DescribeFile"
                 parse_result = self.describe_file_until_parsed(client, workspace_id, add_result["file_id"])
                 phase = "create_index"
                 operation_name = "CreateIndex"
                 index_result = self.create_index(client, workspace_id, add_result["file_id"])
+                state["created_index_id"] = index_result["index_id"]
                 state["knowledge_base_created"] = True
                 state["index_created"] = True
                 phase = "submit_index_job"
                 operation_name = "SubmitIndexJob"
                 submit_result = self.submit_index_job(client, workspace_id, index_result["index_id"])
+                state["created_job_id"] = submit_result["job_id"]
                 phase = "wait_index_completed"
                 operation_name = "GetIndexJobStatus"
                 index_status = self.wait_index_completed(
@@ -546,15 +623,27 @@ class BailianOfficialClient:
                 phase = "retrieve_index"
                 operation_name = "Retrieve"
                 retrieval = self._run_retrieval(client, workspace_id, index_result["index_id"], questions)
+                cleanup_result = self.cleanup_created_resources(
+                    client,
+                    workspace_id,
+                    index_id=index_result["index_id"] if cleanup else None,
+                    file_id=add_result["file_id"] if cleanup else None,
+                )
+            cleanup_failed = cleanup_result.get("cleanup_status") == "fail"
             return {
                 **base,
-                "status": "pass",
-                "error_type": None,
-                "summary": "official Bailian small-KB pilot completed",
+                "status": "fail" if cleanup_failed else "pass",
+                "error_type": "cleanup_failed" if cleanup_failed else None,
+                "summary": (
+                    "official Bailian small-KB pilot completed but cleanup failed"
+                    if cleanup_failed
+                    else "official Bailian small-KB pilot completed"
+                ),
                 "network_attempted": state["network_attempted"],
                 "upload_attempted": state["upload_attempted"],
                 "knowledge_base_created": state["knowledge_base_created"],
                 "index_created": state["index_created"],
+                **cleanup_result,
                 "file_id": add_result["file_id"],
                 "index_id": index_result["index_id"],
                 "job_id": submit_result["job_id"],
@@ -568,11 +657,18 @@ class BailianOfficialClient:
                 "citation_coverage": retrieval["citation_coverage"],
                 "per_question_results": retrieval["per_question_results"],
                 "cleanup_recommendation": (
-                    "Temporary Bailian index was created. Delete it after review using --cleanup "
-                    "--cleanup-index-id <index_id>."
+                    "Temporary resources were cleaned up automatically."
+                    if cleanup_result.get("cleanup_status") == "pass"
+                    else "Temporary resources may remain; inspect cleanup_errors and delete manually in console."
                 ),
             }
         except BailianPilotError as exc:
+            cleanup_result = self.cleanup_created_resources(
+                client,
+                workspace_id,
+                index_id=state.get("created_index_id") if cleanup and client and workspace_id else None,
+                file_id=state.get("created_file_id") if cleanup and client and workspace_id else None,
+            )
             safe_error = safe_error_from_exception(
                 exc,
                 operation_name=operation_name,
@@ -583,6 +679,7 @@ class BailianOfficialClient:
             return {
                 **base,
                 **state,
+                **cleanup_result,
                 "status": "fail",
                 "error_type": exc.error_type,
                 "summary": exc.safe_summary,
@@ -592,6 +689,12 @@ class BailianOfficialClient:
                 "recommended_fix": recommended_fix(exc.error_type),
             }
         except Exception as exc:  # noqa: BLE001 - report a safe error category without leaking values.
+            cleanup_result = self.cleanup_created_resources(
+                client,
+                workspace_id,
+                index_id=state.get("created_index_id") if cleanup and client and workspace_id else None,
+                file_id=state.get("created_file_id") if cleanup and client and workspace_id else None,
+            )
             safe_error = safe_error_from_exception(
                 exc,
                 operation_name=operation_name,
@@ -601,6 +704,7 @@ class BailianOfficialClient:
             return {
                 **base,
                 **state,
+                **cleanup_result,
                 "status": "fail",
                 "error_type": safe_error["error_type"],
                 "summary": safe_error["message_redacted"] or safe_error["exception_class"],
@@ -876,6 +980,9 @@ def recommended_fix(error_type: str | None) -> str:
         "invalid_category": "Check category_id/category_type; create or select a valid category before full upload.",
         "category_type_required": "ListCategory requires an explicit category_type for this workspace/API version; confirm valid values before retry.",
         "invalid_request_model": "Compare SDK request fields with the installed SDK version and official API contract.",
+        "index_failed": "Inspect CreateIndex request fields, category id/type, document parse state, and workspace index permissions before another full pilot.",
+        "parse_failed": "Inspect DescribeFile parse status and parser configuration before creating an index.",
+        "cleanup_failed": "Inspect cleanup_errors and delete any temporary resources manually in the Bailian console if needed.",
         "endpoint_or_region_error": "Verify endpoint and BAILIAN_REGION alignment, especially cn-beijing versus other regions.",
         "missing_env": "Set required env only in a temporary shell or isolated manual bridge; do not commit secrets.",
         "missing_dependency_or_api_contract": "Run inside the isolated conda env with official Bailian SDK packages installed.",

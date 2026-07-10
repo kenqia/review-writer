@@ -82,6 +82,8 @@ def main() -> int:
     sdk_dry_report = json.loads(SDK_DRY_JSON.read_text(encoding="utf-8"))
     assert sdk_dry_report["status"] == "dry_run"
     assert sdk_dry_report["official_sdk"]["enabled"] is True
+    assert sdk_dry_report["config"]["category_type"] == "UNSTRUCTURED"
+    assert sdk_dry_report["config"]["use_internal_endpoint"] is False
     assert sdk_dry_report["safety"]["upload"] == "not_used"
     blocked = subprocess.run(
         [

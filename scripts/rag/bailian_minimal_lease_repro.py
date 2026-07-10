@@ -15,6 +15,7 @@ if str(REPO_ROOT) not in sys.path:
 from review_writer.retrieval.bailian_official_client import (
     BailianOfficialClient,
     DEFAULT_CATEGORY_TYPE,
+    get_file_size,
     make_bailian_config,
     proxy_env_set_names,
     recommended_fix,
@@ -23,6 +24,8 @@ from review_writer.retrieval.bailian_official_client import (
 DUMMY_CONTENT = "# review-writer lease probe\nThis is a tiny dummy metadata file.\n"
 DUMMY_FILE_NAME = "review-writer-lease-probe.md"
 DUMMY_FILE_PATH = Path("/tmp/review-writer-lease-probe.md")
+
+
 def main() -> int:
     args = parse_args()
     report = run_repro(args)
@@ -40,6 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--category-id", default="default")
     parser.add_argument("--category-type", default=DEFAULT_CATEGORY_TYPE)
     parser.add_argument("--category-id-from", type=Path)
+    parser.add_argument("--payload-md", type=Path, default=DUMMY_FILE_PATH)
     parser.add_argument("--transport-mode", choices=["inherited_proxy", "no_proxy", "explicit_proxy"], default="inherited_proxy")
     parser.add_argument("--connect-timeout-ms", type=int, default=10000)
     parser.add_argument("--read-timeout-ms", type=int, default=20000)
@@ -63,6 +67,8 @@ def run_repro(args: argparse.Namespace) -> dict[str, Any]:
         proxy_url_env=args.proxy_url_env,
     )
     client = BailianOfficialClient(config)
+    payload_md = args.payload_md
+    file_size = get_file_size(payload_md) if payload_md.exists() else len(DUMMY_CONTENT.encode("utf-8"))
     base: dict[str, Any] = {
         "endpoint": args.endpoint,
         "category_id": category["category_id"],
@@ -76,8 +82,8 @@ def run_repro(args: argparse.Namespace) -> dict[str, Any]:
         "proxy_url_env_set": False if not args.proxy_url_env else bool(os.environ.get(args.proxy_url_env)),
         "proxy_env_set_names": proxy_env_set_names(),
         "operation_name": "ApplyFileUploadLease",
-        "file_name": DUMMY_FILE_NAME,
-        "file_size": len(DUMMY_CONTENT.encode("utf-8")),
+        "file_name": payload_md.name,
+        "file_size": file_size,
         "md5_prefix": None,
         "lease_obtained": False,
         "lease_id_present": False,
@@ -110,17 +116,18 @@ def run_repro(args: argparse.Namespace) -> dict[str, Any]:
             "error_type": None,
             "summary": "minimal lease repro dry-run only; no network call was made",
         }
-    DUMMY_FILE_PATH.write_text(DUMMY_CONTENT, encoding="utf-8")
+    if payload_md == DUMMY_FILE_PATH:
+        DUMMY_FILE_PATH.write_text(DUMMY_CONTENT, encoding="utf-8")
     report = client.run_lease_probe(
-        payload_md=DUMMY_FILE_PATH,
+        payload_md=payload_md,
         allow_network=True,
         use_official_sdk=True,
     )
     return {
         **base,
         **{key: value for key, value in report.items() if key not in {"payload_md", "file_name", "file_size"}},
-        "file_name": DUMMY_FILE_NAME,
-        "file_size": len(DUMMY_CONTENT.encode("utf-8")),
+        "file_name": payload_md.name,
+        "file_size": file_size,
         "md5_prefix": report.get("md5_prefix"),
         "proxy_env_set_names": proxy_env_set_names(),
     }

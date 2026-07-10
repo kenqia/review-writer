@@ -39,6 +39,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--endpoint")
     parser.add_argument("--region")
     parser.add_argument("--category-id", default="default")
+    parser.add_argument("--transport-mode", choices=["inherited_proxy", "no_proxy", "explicit_proxy"], default="inherited_proxy")
+    parser.add_argument("--connect-timeout-ms", type=int, default=10000)
+    parser.add_argument("--read-timeout-ms", type=int, default=20000)
+    parser.add_argument("--proxy-url-env", default="HTTPS_PROXY")
     parser.add_argument("--allow-network", action="store_true")
     parser.add_argument("--allow-upload", action="store_true")
     parser.add_argument("--use-official-sdk", action="store_true")
@@ -54,7 +58,15 @@ def run_pilot(args: argparse.Namespace) -> dict[str, Any]:
     questions_status = validate_questions(args.questions)
     env = safe_env_presence()
     official = BailianOfficialClient(
-        make_bailian_config(endpoint=args.endpoint, region=args.region, category_id=args.category_id)
+        make_bailian_config(
+            endpoint=args.endpoint,
+            region=args.region,
+            category_id=args.category_id,
+            transport_mode=args.transport_mode,
+            connect_timeout_ms=args.connect_timeout_ms,
+            read_timeout_ms=args.read_timeout_ms,
+            proxy_url_env=args.proxy_url_env,
+        )
     )
     base = {
         "payload_jsonl": str(args.payload_jsonl),
@@ -140,6 +152,12 @@ def run_pilot(args: argparse.Namespace) -> dict[str, Any]:
             "operation_name": official_report.get("operation_name"),
             "safe_error": official_report.get("safe_error"),
             "recommended_fix": official_report.get("recommended_fix"),
+            "cleanup_attempted": official_report.get("cleanup_attempted", False),
+            "cleanup_status": official_report.get("cleanup_status", "not_needed"),
+            "index_cleanup": official_report.get("index_cleanup", "not_created"),
+            "file_cleanup": official_report.get("file_cleanup", "not_created"),
+            "created_resource_ids_cleaned": official_report.get("created_resource_ids_cleaned", "not_created"),
+            "cleanup_errors": official_report.get("cleanup_errors", []),
             "cleanup_recommendation": official_report.get(
                 "cleanup_recommendation",
                 "No KB was created. If a manual KB is created, delete it in the Bailian console after evaluation.",
@@ -276,6 +294,11 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- citation coverage: `{report['citation_coverage']}`",
         f"- cleanup_requested: `{report.get('cleanup_requested', False)}`",
         f"- cleanup_index_id_provided: `{report.get('cleanup_index_id_provided', False)}`",
+        f"- cleanup_attempted: `{report.get('cleanup_attempted', False)}`",
+        f"- cleanup_status: `{report.get('cleanup_status', 'not_needed')}`",
+        f"- index_cleanup: `{report.get('index_cleanup', 'not_created')}`",
+        f"- file_cleanup: `{report.get('file_cleanup', 'not_created')}`",
+        f"- created_resource_ids_cleaned: `{report.get('created_resource_ids_cleaned', 'not_created')}`",
         f"- first_failed_phase: `{report.get('first_failed_phase')}`",
         f"- operation_name: `{report.get('operation_name')}`",
         f"- recommended_fix: {report.get('recommended_fix')}",

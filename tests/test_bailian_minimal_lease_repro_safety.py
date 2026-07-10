@@ -31,6 +31,10 @@ def run_dry_repro() -> None:
             "bailian.cn-beijing.aliyuncs.com",
             "--category-id",
             "default",
+            "--category-type",
+            "UNSTRUCTURED",
+            "--payload-md",
+            "/tmp/bailian_small_kb_upload_payload.md",
             "--output-json",
             str(DRY_JSON),
             "--output-md",
@@ -45,6 +49,8 @@ def run_dry_repro() -> None:
     report = json.loads(DRY_JSON.read_text(encoding="utf-8"))
     assert report["status"] == "dry_run"
     assert report["operation_name"] == "ApplyFileUploadLease"
+    assert report["category_type"] == "UNSTRUCTURED"
+    assert report["file_name"] == "bailian_small_kb_upload_payload.md"
     assert report["lease_obtained"] is False
     assert report["upload_attempted"] is False
     assert report["knowledge_base_created"] is False
