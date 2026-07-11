@@ -62,7 +62,7 @@ def validate(section_md: Path, evidence_pack_json: Path) -> tuple[dict[str, Any]
         citations = sorted(set(re.findall(r"\[([A-Z0-9]+)\]", paragraph)))
         unsupported = [paper_id for paper_id in citations if paper_id not in evidence_ids]
         unsupported_citations.extend(unsupported)
-        has_needs = "[NEEDS_EVIDENCE:" in paragraph
+        has_needs = "[NEEDS_EVIDENCE:" in paragraph or paragraph.strip().upper().startswith("[NEEDS_E")
         if has_needs:
             needs_evidence_tasks.append({"claim_id": f"C{index:03d}", "task": paragraph})
         numeric = bool(UNSUPPORTED_NUMBER_RE.search(paragraph))
@@ -122,7 +122,7 @@ def claim_paragraphs(section: str) -> list[str]:
     paragraphs = []
     for chunk in section.split("\n\n"):
         text = " ".join(chunk.split())
-        if text and not text.startswith("## "):
+        if text and not re.match(r"^#{1,6}\s+", text):
             paragraphs.append(text)
     return paragraphs
 
