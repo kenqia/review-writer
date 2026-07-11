@@ -279,6 +279,27 @@ def test_decision_writer_recovery_and_atomic_batch() -> None:
         assert duplicate.returncode != 0
         assert "duplicate decision_id" in duplicate.stderr
         assert log.read_bytes() == before
+        recovery = subprocess.run(
+            [
+                sys.executable,
+                str(writer),
+                "audit",
+                "--root",
+                str(root),
+                "--write-reports",
+                "--dashboard-port",
+                "8788",
+                "--warning",
+                "port 8787 is occupied",
+            ],
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+        )
+        assert recovery.returncode == 0, recovery.stderr
+        resume = (root / "reports/session_resume.md").read_text(encoding="utf-8")
+        assert "--port 8788" in resume
+        assert "port 8787 is occupied" in resume
 
 
 def read_jsonl(path: Path) -> list[dict]:

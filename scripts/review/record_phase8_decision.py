@@ -54,6 +54,8 @@ def parse_args() -> argparse.Namespace:
     audit.add_argument("--root", type=Path, required=True)
     audit.add_argument("--write-reports", action="store_true")
     audit.add_argument("--repair-corrupt-tail", action="store_true")
+    audit.add_argument("--dashboard-port", type=int, default=8787)
+    audit.add_argument("--warning", action="append", default=[])
     record = subparsers.add_parser("record")
     record.add_argument("--root", type=Path, required=True)
     record.add_argument("--input", type=Path, required=True)
@@ -227,9 +229,10 @@ def record_batch(root: Path, input_path: Path, dry_run: bool) -> dict:
         return {"status": "recorded", "event_count": len(normalized), "backup": backup.name, **state}
 
 
-def write_state_reports(root: Path, package: dict, audit: dict) -> dict:
+def write_state_reports(root: Path, package: dict, audit: dict, settings: dict | None = None) -> dict:
     reports = root / "reports"
     reports.mkdir(parents=True, exist_ok=True)
+    settings = settings or load_session_settings(root)
     effective = audit["effective"]
     counts = Counter(event["final_decision"] for event in effective.values())
     decided_ids = {item_id for item_id, event in effective.items() if event["final_decision"] != "defer"}
@@ -244,6 +247,8 @@ def write_state_reports(root: Path, package: dict, audit: dict) -> dict:
         **hash_summary(package),
         "decision_log_hash": sha256_file(log_path) if log_path.exists() else hashlib.sha256(b"").hexdigest(),
         "review_input_mode": "guided_chat",
+        "dashboard_port": settings["dashboard_port"],
+        "warnings": settings["warnings"],
         "total_core": len(package["core_items"]),
         "effective_decided": len(decided_ids),
         **{f"{decision}_count": counts[decision] for decision in sorted(FINAL_DECISIONS)},
@@ -294,9 +299,9 @@ def render_resume(checkpoint: dict) -> str:
         "last completed batch": checkpoint["last_completed_batch_id"],
         "next unresolved item IDs": checkpoint["next_review_item_ids"],
         "current checkpoint": "HUMAN_REVIEW_REQUIRED",
-        "dashboard command": "make phase8-dashboard-check && conda run -n review-writer-phase8 python scripts/review/serve_phase8_evidence_review.py --root local/phase8_evidence --host 127.0.0.1 --port 8787",
+        "dashboard command": f"make phase8-dashboard-check && conda run -n review-writer-phase8 python scripts/review/serve_phase8_evidence_review.py --root local/phase8_evidence --host 127.0.0.1 --port {checkpoint['dashboard_port']}",
         "decision input mode": "guided_chat",
-        "warnings/blockers": [],
+        "warnings/blockers": checkpoint["warnings"],
         "updated_at": checkpoint["created_at"],
     }
     return "# Phase 8A Session Resume\n\n```json\n" + json.dumps(safe, ensure_ascii=False, indent=2) + "\n```\n"
@@ -342,6 +347,14 @@ def create_batch_backup(root: Path, batch_id: str) -> Path:
 
 def hash_summary(package: dict) -> dict:
     return {key: package[key] for key in ("package_manifest_hash", "source_inventory_hash", "core_queue_hash", "extended_queue_hash")}
+
+
+def load_session_settings(root: Path) -> dict:
+    path = root / "reports/session_settings.json"
+    if not path.exists():
+        return {"dashboard_port": 8787, "warnings": []}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return {"dashboard_port": int(data.get("dashboard_port", 8787)), "warnings": list(data.get("warnings", []))}
 
 
 def append_and_fsync(path: Path, data: bytes) -> None:
@@ -407,9 +420,12 @@ def main() -> int:
                 repair_corrupt_tail(root, audit)
                 audit = audit_log(root)
                 audit["warnings"].append("corrupt final line recovered from last complete event")
+            audit["warnings"].extend(args.warning)
             if args.write_reports:
+                settings = {"dashboard_port": args.dashboard_port, "warnings": audit["warnings"] + audit["blockers"]}
+                atomic_write_json(root / "reports/session_settings.json", settings)
                 write_recovery_audit(root, package, audit)
-                write_state_reports(root, package, audit)
+                write_state_reports(root, package, audit, settings)
             result = {
                 "status": "blocked" if audit["blockers"] or audit["corrupt_tail"] else "audited",
                 "event_count": len(audit["events"]),
