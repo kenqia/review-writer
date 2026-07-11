@@ -20,7 +20,8 @@ Output root:
 
 ## Real Controlled Pilot
 
-One real controlled attempt was made after offline gates passed:
+The final controlled Phase 7 pilot completed after offline gates and real
+preflight passed:
 
 ```text
 clean 3-paper compact payload
@@ -33,49 +34,33 @@ clean 3-paper compact payload
 
 Result:
 
-- real retrieval: reached Qwen generation stage
-- Qwen generation: failed with read timeout
-- validation: not run for real output
-- checkpoint: blocked before `Sections: ready_for_human_review`
-- cleanup: attempted before generation; follow-up file sweep found `0` clean payload file candidates
-
-No second Qwen request was made.
-
-## Real Generation Closure Update
-
-Latest local preflight:
-
-- `make phase7-real-preflight`: pass
-- network calls: `0`
-- provider dependency in active base environment: `openai` importable
-- env report: SET/MISSING only
-- dedicated endpoint metadata: redacted; reports keep only region and boolean use
-
-Qwen-only smoke:
-
-- first Qwen-only request: failed before section validation with a first-byte style timeout boundary
-- one evidence-backed retry: produced a section from the offline sanitized EvidencePack
-- revalidated grounding after validator heading/truncated-marker fix: pass
+- unified environment: `review-writer-bailian`
+- installed Qwen dependency: `openai==1.93.0`
+- `python -m pip check`: pass
+- `make phase7-real-preflight`: pass, `network_calls=0`
+- Qwen-only streaming smoke: pass
+- Full Bailian + Qwen E2E: pass
+- model: `qwen3.7-plus`
+- dedicated endpoint: used and redacted in reports
+- retrieval evidence count: `3`
+- stream started: `true`
+- full E2E content chunks: `86`
 - claim-evidence coverage: `1.0`
 - unsupported claims: `0`
 - unsupported citations: `0`
 - prompt leakage: `0`
 - checkpoint: `Sections: ready_for_human_review`
+- temporary file cleanup: pass
+- temporary index cleanup: pass
+- trusted as final scientific text: no
 
-Full Bailian + Qwen E2E:
+Safe report paths:
 
-- status: incomplete at local dependency/API-contract boundary before resource creation
-- active base environment: Qwen `openai` dependency available, Bailian SDK contract incomplete
-- `review-writer-bailian` environment: Bailian SDK available, `openai` missing
-- Bailian temporary index lifecycles created: `0`
-- Bailian file uploads: `0`
-- final Qwen generation for full E2E: not sent
-
-Install real Qwen dependency only in the project/conda environment used for the
-full pilot:
-
-```bash
-python -m pip install -r requirements-qwen.txt
+```text
+/tmp/review_writer_phase7_real_qwen_only_1.json
+/tmp/review_writer_phase7_real_qwen_only_1.md
+/tmp/review_writer_phase7_real_full_e2e_1.json
+/tmp/review_writer_phase7_real_full_e2e_1.md
 ```
 
 ## Safety

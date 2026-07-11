@@ -10,7 +10,7 @@
 
 - `main`: `506c066` (`origin/main`)
 - `feat/chem-review-quality-gates`: `35c078c` (`origin/feat/chem-review-quality-gates`)
-- `feat/orchestrator-rag-generation-pilot`: stack head includes `73a7245` on top of `35c078c`; this handoff document is the current stack-head documentation update.
+- `feat/orchestrator-rag-generation-pilot`: stacked on `feat/chem-review-quality-gates`; local closure commits include provider routing, real preflight, grounded validation hardening, Qwen runtime dependency documentation, and Phase 7 real E2E closure.
 
 ## Current Commits
 
@@ -50,25 +50,37 @@
 
 ## Current Phase 7 Blocker
 
-Phase 7 offline replay passes, and Qwen-only generation has closed against the
-offline sanitized EvidencePack after validator hardening. The full controlled
-Bailian + Qwen pilot is still incomplete:
+None for Phase 7 real E2E closure. The controlled real pilot completed in the
+unified `review-writer-bailian` environment.
 
-- Preflight passed without network calls.
-- Qwen-only retry produced a section.
-- Revalidated Qwen-only grounding: claim-evidence coverage `1.0`, unsupported claims `0`, unsupported citations `0`, prompt leakage `0`.
-- Full Bailian + Qwen E2E is blocked before resource creation by environment dependency mismatch: base has Qwen `openai`, while `review-writer-bailian` has Bailian SDK but lacks `openai`.
-- Next closure work must not convert offline replay success into a real-pilot success claim.
+Latest verified real closure:
+
+- `review-writer-bailian` has Bailian SDK and `openai==1.93.0`.
+- `python -m pip check`: pass.
+- `make phase7-real-preflight`: pass with `network_calls=0`.
+- Qwen-only streaming smoke: pass.
+- Full Bailian + Qwen E2E: pass.
+- Model: `qwen3.7-plus`.
+- Region reported safely as `cn-beijing`; dedicated endpoint used; endpoint redacted.
+- Full E2E retrieval evidence count: `3` (`F3I`, `F47A`, `P403`).
+- Full E2E stream: `stream_started=true`, `chunks_received=86`.
+- Full E2E grounding: claim-evidence coverage `1.0`, unsupported claims `0`, unsupported citations `0`, prompt leakage `0`.
+- Checkpoint: `Sections: ready_for_human_review`.
+- Temporary file/index cleanup: pass.
+- Real-call counts in this closure run: Qwen-only requests `1`, full E2E runs `1`, total Qwen requests `2`, Bailian lifecycles `1`, evidence-backed retries `0`.
 
 ## Offline Gates
 
-Fresh local gates run during reconciliation:
+Fresh local gates run during reconciliation and Phase 7 closure:
 
 ```bash
 make release-readiness-check
 make bailian-phase6-final-check
 make phase7-pilot-dry-run
+make phase7-real-preflight
 make offline-ci-workflow-check
+make quality-check
+make smoke
 ```
 
 CI workflow:
@@ -88,7 +100,9 @@ CI jobs:
 
 - Default checks do not call Qwen/Bailian, upload files, or create knowledge bases.
 - Controlled real pilots require explicit authorization, sanitized payloads, `/tmp` reports, and best-effort cleanup.
-- Latest closure attempt used two Qwen-only real calls. No Bailian temporary index or file upload was created during the full E2E attempt.
+- Latest closure attempt used one Qwen-only real call and one full Bailian + Qwen E2E call.
+- Full E2E created one temporary Bailian file/index lifecycle from the clean 3-paper compact payload and cleaned it up successfully.
+- Reports are under `/tmp/review_writer_phase7_real_qwen_only_1.*` and `/tmp/review_writer_phase7_real_full_e2e_1.*`; they contain only redacted/safe fields.
 
 ## Known Caveats
 
@@ -99,9 +113,5 @@ CI jobs:
 
 ## Next Issue
 
-Continue Phase 7 real generation closure:
-
-- install `requirements-qwen.txt` only into the project/conda environment that will run both Bailian SDK and Qwen provider code;
-- preserve sanitized payloads and `/tmp` reporting;
-- verify claim-evidence coverage and unsupported-claim count on any real output;
-- keep `Sections` at human-review checkpoint until validated.
+Proceed only to human scientific evidence review or PR review if desired. Do
+not treat `Sections: ready_for_human_review` as a final scientific review.

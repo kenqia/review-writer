@@ -29,14 +29,28 @@ make phase7-pilot-dry-run
 
 Offline replay passes and stops at `Sections: ready_for_human_review`.
 
-The real controlled pilot reached the Qwen generation request, but the request timed out. Phase 7 is therefore not complete under the strict completion criteria.
+Final controlled real pilot status:
+
+- Qwen-only streaming smoke: pass
+- Full Bailian + Qwen E2E: pass
+- claim-evidence coverage: `1.0`
+- unsupported claims: `0`
+- unsupported citations: `0`
+- prompt leakage: `0`
+- Sections checkpoint: `ready_for_human_review`
+- temporary index/file cleanup: pass
+- Phase 7 real pilot: complete
+
+Generated sections remain human-review artifacts, not final scientific text.
 
 ## Safety Wording
 
 Use this wording:
 
 ```text
-Default checks do not upload; controlled pilots require explicit authorization.
+Default checks do not call Qwen/Bailian, upload files, or create knowledge bases.
+Controlled real pilots require explicit authorization, use sanitized payloads,
+write reports under /tmp, and perform best-effort cleanup.
 ```
 
 Do not claim blanket "no uploads / no KB creation" for the whole branch, because Phase 6 and controlled pilots include explicit real upload/index lifecycles.
