@@ -9,15 +9,17 @@
 ## Current Branches
 
 - `main`: `506c066` (`origin/main`)
-- `feat/chem-review-quality-gates`: `e0d4ce9` (`origin/feat/chem-review-quality-gates`)
-- `feat/orchestrator-rag-generation-pilot`: stack head includes `fbee482` on top of `e0d4ce9`; this handoff document is the current stack-head documentation update.
+- `feat/chem-review-quality-gates`: `35c078c` (`origin/feat/chem-review-quality-gates`)
+- `feat/orchestrator-rag-generation-pilot`: stack head includes `73a7245` on top of `35c078c`; this handoff document is the current stack-head documentation update.
 
 ## Current Commits
 
 - `a28e4b2 ci: add offline validation workflow`
 - `e0d4ce9 ci: make release readiness portable`
+- `35c078c ci: pin release readiness to repo fixtures`
 - `e01d765 feat: add orchestrator retrieval generation pilot`
 - `fbee482 Merge branch 'feat/chem-review-quality-gates' into feat/orchestrator-rag-generation-pilot`
+- `73a7245 Merge branch 'feat/chem-review-quality-gates' into feat/orchestrator-rag-generation-pilot`
 - Previous expected Phase 6 commit exists: `4a3cac1 feat: complete bailian retrieval qa`
 - Previous expected Phase 7 commit was rebased from `5e11fe7` to `e01d765`
 
@@ -27,7 +29,7 @@
   - Base: `main`
   - Head: `feat/chem-review-quality-gates`
   - Status: Open Draft
-  - Current head after reconciliation: `e0d4ce9`
+  - Current head after reconciliation: `35c078c`
   - Body updated with Phase 5h-6d summary, Phase 6 final metrics, and controlled-pilot safety wording.
 - PR #2: <https://github.com/kenqia/review-writer/pull/2>
   - Base: `feat/chem-review-quality-gates`
