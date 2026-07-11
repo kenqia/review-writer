@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import time
@@ -24,6 +25,7 @@ from review_writer.pipeline.retrieval_generation import (
 from review_writer.phase7_budget import DEFAULT_BUDGET_PATH, Phase7BudgetLedger
 
 DEFAULT_FIXTURE = REPO_ROOT / "tests/fixtures/retrieval_generation/clean_3paper_retrieval_fixture.json"
+PROXY_ENV_NAMES = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy")
 
 
 def main() -> int:
@@ -103,6 +105,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     provider_metadata = generation.provider_metadata or {}
     stream = provider_metadata.get("stream_telemetry", {})
     evidence_hash_prefix = evidence_pack_hash_prefix(pack.to_safe_dict())
+    bailian_transport_mode = retrieval_payload.get("bailian_transport_mode", "no_proxy" if args.retrieval_mode == "bailian" else "not_used")
+    qwen_transport_mode = provider_metadata.get("transport_mode", "openai_sdk_default" if args.generation_provider == "qwen" else "not_used")
     report = {
         "status": status,
         "attempt_type": args.attempt_type,
@@ -120,6 +124,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "region": provider_metadata.get("region"),
         "dedicated_endpoint_used": bool(provider_metadata.get("dedicated_endpoint_used", False)),
         "endpoint_redacted": bool(provider_metadata.get("base_url_redacted") == "redacted") if args.generation_provider == "qwen" else True,
+        "transport_mode": f"bailian={bailian_transport_mode};qwen={qwen_transport_mode}",
+        "bailian_transport_mode": bailian_transport_mode,
+        "bailian_proxy_env_names_set": retrieval_payload.get("bailian_proxy_env_names_set", []),
+        "qwen_transport_mode": qwen_transport_mode,
+        "qwen_proxy_env_names_set": provider_metadata.get("proxy_env_names_set", []),
         "stream_started": bool(provider_metadata.get("stream_started", False)),
         "chunks_received": int(provider_metadata.get("chunks_received", 0) or 0),
         "server_chunks_received": int(stream.get("server_chunks_received") or 0),
@@ -303,6 +312,8 @@ def run_real_bailian_retrieval(args: argparse.Namespace) -> dict[str, Any]:
             return {
                 "fixture_id": "phase7_bailian_real_retrieval_redacted",
                 "real_retrieval_status": "pass" if items else "fail",
+                "bailian_transport_mode": "no_proxy",
+                "bailian_proxy_env_names_set": [],
                 "cleanup_status": cleanup_status,
                 "file_created": bool(file_id),
                 "index_created": bool(index_id),
@@ -423,6 +434,14 @@ def failure_report(args: argparse.Namespace, exc: Exception, *, elapsed_ms: int 
         "region": "cn-beijing",
         "dedicated_endpoint_used": True if args.generation_provider == "qwen" else False,
         "endpoint_redacted": True,
+        "transport_mode": (
+            f"bailian={'no_proxy' if args.retrieval_mode == 'bailian' else 'not_used'};"
+            f"qwen={'openai_sdk_default' if args.generation_provider == 'qwen' else 'not_used'}"
+        ),
+        "bailian_transport_mode": "no_proxy" if args.retrieval_mode == "bailian" else "not_used",
+        "bailian_proxy_env_names_set": [],
+        "qwen_transport_mode": "openai_sdk_default" if args.generation_provider == "qwen" else "not_used",
+        "qwen_proxy_env_names_set": proxy_env_names_set() if args.generation_provider == "qwen" else [],
         "first_chunk_ms": None,
         "retrieval_evidence_count": 0,
         "evidence_pack_hash_prefix": None,
@@ -464,6 +483,10 @@ def failure_report(args: argparse.Namespace, exc: Exception, *, elapsed_ms: int 
             "resource_ids_redacted": "yes",
         },
     }
+
+
+def proxy_env_names_set() -> list[str]:
+    return [name for name in PROXY_ENV_NAMES if os.environ.get(name)]
 
 
 if __name__ == "__main__":

@@ -36,6 +36,7 @@ Final controlled real pilot status:
 - model: `qwen3.7-plus`
 - thinking: disabled
 - external search: disabled
+- transport modes: Bailian `no_proxy`; Qwen `openai_sdk_default`
 - finish_reason: stop
 - retrieval evidence count: `3`
 - EvidencePack hash prefix: `02ded82c3494`

@@ -62,6 +62,7 @@ Latest verified real closure:
 - Full Bailian + Qwen E2E: pass.
 - Model: `qwen3.7-plus`.
 - Region reported safely as `cn-beijing`; dedicated endpoint used; endpoint redacted.
+- Transport modes: Bailian `no_proxy`; Qwen `openai_sdk_default`.
 - Full E2E retrieval evidence count: `3` (`F3I`, `F47A`, `P403`).
 - Full E2E EvidencePack hash prefix: `02ded82c3494`.
 - Qwen-only stream: `server_chunks_received=122`, `content_chunks_received=119`, `finish_reason=stop`, `prompt_tokens=692`, `completion_tokens=395`, `total_tokens=1087`.

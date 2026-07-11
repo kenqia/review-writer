@@ -170,6 +170,11 @@ def test_demo_script_offline_outputs_checkpoint() -> None:
     assert report["checkpoint"] == "Sections: ready_for_human_review"
     assert report["claim_evidence_coverage"] == 1.0
     assert report["unsupported_claim_count"] == 0
+    assert report["transport_mode"] == "bailian=not_used;qwen=not_used"
+    assert report["bailian_transport_mode"] == "not_used"
+    assert report["qwen_transport_mode"] == "not_used"
+    assert report["bailian_proxy_env_names_set"] == []
+    assert report["qwen_proxy_env_names_set"] == []
     assert report["safety"]["pdf_uploaded"] == "no"
     assert report["safety"]["full_text_uploaded"] == "no"
 

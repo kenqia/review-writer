@@ -137,6 +137,8 @@ def test_openai_request_contract_disables_thinking_and_search() -> None:
     assert "max_completion_tokens" in kwargs
     assert "max_tokens" not in kwargs
     assert "tools" not in kwargs
+    assert result.metadata["transport_mode"] == "openai_sdk_default"
+    assert isinstance(result.metadata["proxy_env_names_set"], list)
 
 
 def test_first_byte_timeout_is_classified_without_prompt_leakage() -> None:
@@ -192,6 +194,7 @@ def test_dedicated_endpoint_metadata_is_redacted() -> None:
     assert result.content == "ok"
     assert result.metadata["region"] == "cn-beijing"
     assert result.metadata["dedicated_endpoint_used"] is True
+    assert result.metadata["transport_mode"] == "openai_sdk_default"
     text = str(result.to_safe_dict())
     assert "workspace-for-test" not in text
     assert "fake-secret-key" not in text

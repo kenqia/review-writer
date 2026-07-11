@@ -14,6 +14,7 @@ REGION_HOSTS = {
     "ap-southeast-1": "https://{workspace_id}.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
 }
 DEFAULT_QWEN_MODEL = "qwen3.7-plus"
+PROXY_ENV_NAMES = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy")
 
 
 class OpenAICompatibleProvider:
@@ -228,6 +229,8 @@ class OpenAICompatibleProvider:
             "request_id_present": False,
             "retry_count": 0,
             "cleanup_status": "not_needed",
+            "transport_mode": "openai_sdk_default",
+            "proxy_env_names_set": [name for name in PROXY_ENV_NAMES if os.environ.get(name)],
         }
 
     def _safe_env(self) -> dict[str, Any]:
