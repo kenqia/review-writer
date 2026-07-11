@@ -2,16 +2,20 @@
 from __future__ import annotations
 
 import csv
+import http.client
 import json
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
+from http.server import ThreadingHTTPServer
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.review.serve_phase8_evidence_review import is_allowed_read, safe_path
+from scripts.review.serve_phase8_evidence_review import is_allowed_read, make_handler, render_index, safe_path
+import scripts.review.serve_phase8_evidence_review as dashboard
 
 LOCAL_ROOT = REPO_ROOT / "local/phase8_evidence"
 PUBLIC_REPORT = REPO_ROOT / "docs/phase8/phase8a_status_report.json"
@@ -24,6 +28,7 @@ def main() -> int:
         "extraction": [test_ai_extraction_statuses_and_locators, test_quote_lengths_and_mechanism_classes],
         "review_package": [test_review_queue_size_and_phase7_claims, test_no_verified_status],
         "dashboard": [test_dashboard_path_security_and_append_only_contract],
+        "decision_writer": [test_decision_writer_recovery_and_atomic_batch],
     }
     selected = sys.argv[1:] or list(groups)
     tests = [test for group in selected for test in groups[group]]
@@ -161,6 +166,9 @@ def test_no_verified_status() -> None:
 
 def test_dashboard_path_security_and_append_only_contract() -> None:
     root = LOCAL_ROOT.resolve()
+    assert hasattr(dashboard, "safe_pid_file"), "dashboard PID path guard is missing"
+    assert dashboard.safe_pid_file(root, root / "reports/dashboard.pid") == root / "reports/dashboard.pid"
+    assert dashboard.safe_pid_file(root, root.parent / "dashboard.pid") is None
     assert safe_path(root, "../etc/passwd") is None
     assert safe_path(root, "/etc/passwd") is None
     allowed = safe_path(root, "review_queue/core_review_queue.json")
@@ -175,10 +183,119 @@ def test_dashboard_path_security_and_append_only_contract() -> None:
         outside = Path(tmp) / "x.json"
         outside.write_text("{}", encoding="utf-8")
         assert not is_allowed_read(root, outside)
+    html = render_index(root)
+    assert "guided-chat" in html
+    assert "/api/decision" not in html
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(root))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port)
+        connection.request(
+            "POST",
+            "/api/decision",
+            body=json.dumps({"decision": "accept"}),
+            headers={"content-type": "application/json"},
+        )
+        response = connection.getresponse()
+        assert response.status == 405
+        assert json.loads(response.read())["error"] == "guided-chat mode is read-only"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def test_decision_writer_recovery_and_atomic_batch() -> None:
+    writer = REPO_ROOT / "scripts/review/record_phase8_decision.py"
+    assert writer.exists(), "safe Phase 8 decision writer is missing"
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "phase8_evidence"
+        (root / "review_queue").mkdir(parents=True)
+        (root / "inventories").mkdir()
+        core_item = {
+            "review_item_id": "CORE-1",
+            "candidate_value": "candidate",
+            "ai_record_hash": "a" * 64,
+            "atomic_extended_review_item_ids": ["ATOM-1"],
+            "field_name": "phase7_claim",
+        }
+        write_json(root / "review_queue/core_review_queue.json", {"items": [core_item]})
+        write_json(root / "review_queue/extended_review_queue.json", {"items": [{"review_item_id": "ATOM-1"}]})
+        write_json(
+            root / "review_queue/core_to_atomic_map.json",
+            {"items": [{"core_review_item_id": "CORE-1", "atomic_extended_review_item_ids": ["ATOM-1"]}]},
+        )
+        write_json(root / "inventories/source_inventory.local.json", [{"source_document_id": "DOC-1"}])
+        event = {
+            "decision_id": "decision-001",
+            "batch_id": "batch_001",
+            "sequence_number": 1,
+            "reviewer_id": "reviewer_1",
+            "review_mode": "guided_chat",
+            "review_item_id": "CORE-1",
+            "core_review_item_id": "CORE-1",
+            "atomic_review_item_ids": ["ATOM-1"],
+            "original_ai_record_hash": "a" * 64,
+            "preliminary_decision": "accept",
+            "ai_recommendation_shown": True,
+            "ai_recommendation": "accept",
+            "final_decision": "accept",
+            "edited_value": None,
+            "reviewer_note": "source agrees",
+            "evidence_opened": False,
+            "evidence_document_ids": ["DOC-1"],
+            "evidence_locators": [{"source_document_id": "DOC-1", "pdf_page_index": 1}],
+            "created_at": "2026-07-12T00:00:00Z",
+            "supersedes_decision_id": None,
+            "decision_scope": "individual",
+            "original_value": "candidate",
+        }
+        batch_file = root / "batch.json"
+        write_json(batch_file, {"events": [event]})
+        dry = run_writer(writer, root, batch_file, "--dry-run")
+        assert dry.returncode == 0, dry.stderr
+        assert json.loads(dry.stdout)["status"] == "dry_run"
+        assert not (root / "review_decisions/reviewer_1.jsonl").exists()
+        saved = run_writer(writer, root, batch_file)
+        assert saved.returncode == 0, saved.stderr
+        assert json.loads(saved.stdout)["status"] == "recorded"
+        log = root / "review_decisions/reviewer_1.jsonl"
+        rows = read_jsonl(log)
+        assert len(rows) == 1
+        assert rows[0]["package_manifest_hash"]
+        assert rows[0]["source_inventory_hash"]
+        for rel in [
+            "reports/checkpoint.json",
+            "reports/progress.md",
+            "reports/session_resume.md",
+        ]:
+            assert (root / rel).exists()
+        backup_dirs = list((root / "backups").glob("batch_001_*"))
+        assert len(backup_dirs) == 1
+        assert (backup_dirs[0] / "manifest.sha256").exists()
+        before = log.read_bytes()
+        duplicate = run_writer(writer, root, batch_file)
+        assert duplicate.returncode != 0
+        assert "duplicate decision_id" in duplicate.stderr
+        assert log.read_bytes() == before
 
 
 def read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def write_json(path: Path, value: object) -> None:
+    path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+
+
+def run_writer(writer: Path, root: Path, batch_file: Path, *extra: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(writer), "record", "--root", str(root), "--input", str(batch_file), *extra],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+    )
 
 
 if __name__ == "__main__":

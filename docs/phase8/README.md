@@ -23,6 +23,7 @@ make phase8-source-inventory-check
 make phase8-extraction-check
 make phase8-review-package-check
 make phase8-dashboard-check
+make phase8-decision-writer-check
 ```
 
 Current Phase 8A refresh:
@@ -44,5 +45,11 @@ conda run -n review-writer-phase8 python scripts/review/serve_phase8_evidence_re
   --port 8787
 ```
 
-The dashboard binds to localhost only, serves no full-PDF download endpoint, and
-appends reviewer decisions to the ignored local workspace.
+The dashboard binds to localhost only, serves no full-PDF download endpoint,
+and runs as a read-only evidence viewer in `guided_chat` mode. Confirmed human
+decisions are appended separately through the locked, schema-validating writer:
+
+```bash
+conda run -n review-writer-phase8 python scripts/review/record_phase8_decision.py \
+  record --root local/phase8_evidence --input <confirmed-batch.json> --dry-run
+```
