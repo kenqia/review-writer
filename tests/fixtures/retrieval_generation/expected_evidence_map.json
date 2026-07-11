@@ -1,0 +1,8 @@
+{
+  "section_id": "phase7-single-section",
+  "section_title": "Representative strategies for asymmetric allene synthesis",
+  "allowed_paper_ids": ["F3I", "F47A", "P403"],
+  "required_checkpoint": "Sections: ready_for_human_review",
+  "expected_min_claim_evidence_coverage": 1.0,
+  "expected_unsupported_claims": 0
+}

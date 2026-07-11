@@ -1,0 +1,31 @@
+{
+  "fixture_id": "clean_3paper_retrieval_generation_replay_v1",
+  "needs_human_review": true,
+  "trusted_for_scientific_quality": false,
+  "items": [
+    {
+      "paper_id": "F3I",
+      "chunk_id": "F3I-001",
+      "sanitized_text": "F3I is a review/background record for allene-centered catalytic asymmetric synthesis and natural product synthesis context. It is useful for broad review framing, not a single-method evidence source.",
+      "score": 0.9666,
+      "title": "Allenes in Catalytic Asymmetric Synthesis and Natural Product Syntheses",
+      "known_warnings": "not trusted for scientific quality"
+    },
+    {
+      "paper_id": "F47A",
+      "chunk_id": "F47A-001",
+      "sanitized_text": "F47A is a representative method candidate for palladium-catalyzed asymmetric synthesis of axially chiral allenes and notes a dibenzalacetone-related title signal for high enantioselectivity. Mechanistic and optimization details still need manual PDF extraction.",
+      "score": 0.9442,
+      "title": "Palladium-Catalyzed Asymmetric Synthesis of Axially Chiral Allenes",
+      "known_warnings": "source conflicts require human review; not trusted for scientific quality"
+    },
+    {
+      "paper_id": "P403",
+      "chunk_id": "P403-001",
+      "sanitized_text": "P403 is a recent-progress method candidate for Pd-catalyzed asymmetric allenylation of secondary phosphine oxides with enyne-type propargylic carbamates. Exact substrate scope and outcomes need manual extraction.",
+      "score": 0.9321,
+      "title": "Pd-Catalyzed Asymmetric Allenylation of Secondary Phosphine Oxides",
+      "known_warnings": "missing fields: authors, doi; source conflicts require human review; not trusted for scientific quality"
+    }
+  ]
+}
