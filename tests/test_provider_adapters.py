@@ -15,6 +15,7 @@ from review_writer.image.base import ImageRequest
 from review_writer.providers.base import TextGenerationRequest
 from review_writer.providers.dashscope_provider import DashScopeProvider
 from review_writer.providers.offline_provider import OfflineProvider
+from review_writer.providers import openai_compatible_provider as qwen_provider
 from review_writer.providers.openai_compatible_provider import OpenAICompatibleProvider
 from review_writer.retrieval.bailian_retrieval import BailianRetrieval
 from review_writer.retrieval.base import RetrievalQuery
@@ -27,6 +28,10 @@ def main() -> int:
         test_disabled_dashscope_no_network,
         test_disabled_bailian_no_network,
         test_disabled_alibaba_image_no_network,
+        test_openai_stream_chunks_are_merged,
+        test_first_byte_timeout_is_classified_without_prompt_leakage,
+        test_stream_midway_failure_writes_safe_report,
+        test_dedicated_endpoint_metadata_is_redacted,
         test_config_loader_reads_example,
         test_check_providers_strict_passes,
     ]
@@ -57,6 +62,74 @@ def test_disabled_openai_compatible_no_network() -> None:
     result = OpenAICompatibleProvider().generate_text(_request())
     assert result.status == "disabled"
     assert result.metadata["network"] == "not_used"
+
+
+def test_openai_stream_chunks_are_merged() -> None:
+    assert hasattr(qwen_provider, "parse_openai_stream_content")
+    chunks = [
+        {"choices": [{"delta": {"content": "Alpha "}}]},
+        {"choices": [{"delta": {"content": "beta"}}]},
+        {"choices": [{"delta": {}}]},
+    ]
+    assert qwen_provider.parse_openai_stream_content(chunks, first_byte_timeout_seconds=5, total_timeout_seconds=5) == "Alpha beta"
+
+
+def test_first_byte_timeout_is_classified_without_prompt_leakage() -> None:
+    provider = OpenAICompatibleProvider(
+        enabled=True,
+        allow_network=True,
+        api_key="sk-fake-secret-key-1234567890",
+        base_url="https://workspace-for-test.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        client_factory=FakeClientFactory([{"choices": [{"delta": {"content": "late"}}]}]),
+        monotonic=FakeClock([0.0, 4.0]),
+        first_byte_timeout_seconds=3.0,
+    )
+    result = provider.generate_text(_request("secret prompt body must not leak"))
+    assert result.status == "error"
+    assert result.metadata["error_type"] == "first_byte_timeout"
+    assert result.metadata["stream_started"] is False
+    text = str(result.to_safe_dict())
+    assert "secret prompt body" not in text
+    assert "fake-secret-key" not in text
+
+
+def test_stream_midway_failure_writes_safe_report() -> None:
+    provider = OpenAICompatibleProvider(
+        enabled=True,
+        allow_network=True,
+        api_key="sk-fake-secret-key-1234567890",
+        base_url="https://workspace-for-test.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        client_factory=FakeClientFactory(FailingStream()),
+        monotonic=FakeClock([0.0, 0.2, 0.3]),
+    )
+    result = provider.generate_text(_request("do not reveal this prompt"))
+    assert result.status == "error"
+    assert result.metadata["error_type"] == "stream_failed"
+    assert result.metadata["stream_started"] is True
+    assert result.metadata["chunks_received"] == 1
+    text = str(result.to_safe_dict())
+    assert "do not reveal" not in text
+    assert "fake-secret-key" not in text
+
+
+def test_dedicated_endpoint_metadata_is_redacted() -> None:
+    provider = OpenAICompatibleProvider(
+        enabled=True,
+        allow_network=True,
+        api_key="sk-fake-secret-key-1234567890",
+        workspace_id="workspace-for-test",
+        region="cn-beijing",
+        client_factory=FakeClientFactory([{"choices": [{"delta": {"content": "ok"}}]}]),
+        monotonic=FakeClock([0.0, 0.1, 0.2]),
+    )
+    result = provider.generate_text(_request())
+    assert result.status == "ok"
+    assert result.content == "ok"
+    assert result.metadata["region"] == "cn-beijing"
+    assert result.metadata["dedicated_endpoint_used"] is True
+    text = str(result.to_safe_dict())
+    assert "workspace-for-test" not in text
+    assert "fake-secret-key" not in text
 
 
 def test_disabled_dashscope_no_network() -> None:
@@ -110,8 +183,52 @@ def test_check_providers_strict_passes() -> None:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def _request() -> TextGenerationRequest:
-    return TextGenerationRequest(messages=[{"role": "user", "content": "must stay offline"}])
+def _request(content: str = "must stay offline") -> TextGenerationRequest:
+    return TextGenerationRequest(messages=[{"role": "user", "content": content}])
+
+
+class FakeClock:
+    def __init__(self, values: list[float]) -> None:
+        self.values = values
+        self.index = 0
+
+    def __call__(self) -> float:
+        value = self.values[min(self.index, len(self.values) - 1)]
+        self.index += 1
+        return value
+
+
+class FakeClientFactory:
+    def __init__(self, chunks) -> None:
+        self.chunks = chunks
+
+    def __call__(self, *, api_key: str, base_url: str, timeout):
+        return FakeClient(self.chunks)
+
+
+class FakeClient:
+    def __init__(self, chunks) -> None:
+        self.chat = FakeChat(chunks)
+
+
+class FakeChat:
+    def __init__(self, chunks) -> None:
+        self.completions = FakeCompletions(chunks)
+
+
+class FakeCompletions:
+    def __init__(self, chunks) -> None:
+        self.chunks = chunks
+
+    def create(self, **kwargs):
+        assert kwargs["stream"] is True
+        return self.chunks
+
+
+class FailingStream:
+    def __iter__(self):
+        yield {"choices": [{"delta": {"content": "partial"}}]}
+        raise RuntimeError("simulated stream failure with prompt hidden")
 
 
 if __name__ == "__main__":

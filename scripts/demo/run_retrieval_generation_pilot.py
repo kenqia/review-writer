@@ -5,6 +5,7 @@ import argparse
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -25,11 +26,12 @@ DEFAULT_FIXTURE = REPO_ROOT / "tests/fixtures/retrieval_generation/clean_3paper_
 
 def main() -> int:
     args = parse_args()
+    started = time.monotonic()
     try:
         report = run(args)
     except Exception as exc:  # noqa: BLE001 - real pilot failures still need a safe report.
         args.output_root.mkdir(parents=True, exist_ok=True)
-        report = failure_report(args, exc)
+        report = failure_report(args, exc, elapsed_ms=int((time.monotonic() - started) * 1000))
         (args.output_root / "phase7_retrieval_generation_report.json").write_text(
             json.dumps(report, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
@@ -54,6 +56,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-network", action="store_true")
     parser.add_argument("--allow-upload", action="store_true")
     parser.add_argument("--allow-qwen", action="store_true")
+    parser.add_argument("--connect-timeout-seconds", type=float, default=10.0)
+    parser.add_argument("--first-byte-timeout-seconds", type=float, default=45.0)
+    parser.add_argument("--total-timeout-seconds", type=float, default=120.0)
+    parser.add_argument("--max-output-tokens", type=int, default=900)
     parser.add_argument("--strict", action="store_true")
     return parser.parse_args()
 
@@ -71,6 +77,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         pack,
         generation_provider=args.generation_provider,
         allow_qwen=args.allow_qwen and args.allow_network,
+        max_output_tokens=args.max_output_tokens,
+        connect_timeout_seconds=args.connect_timeout_seconds,
+        first_byte_timeout_seconds=args.first_byte_timeout_seconds,
+        total_timeout_seconds=args.total_timeout_seconds,
     )
     evidence_json = args.output_root / "evidence_pack.json"
     section_md = args.output_root / "generated_section.md"
@@ -92,13 +102,22 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "checkpoint": generation.checkpoint,
         "claim_evidence_coverage": grounding["claim_evidence_coverage"],
         "unsupported_claim_count": grounding["unsupported_claim_count"],
+        "unsupported_citations": grounding.get("unsupported_citations", []),
         "prompt_leakage_count": grounding["prompt_leakage_count"],
+        "section_text_present": bool(generation.section_text.strip()),
         "human_review_tasks": grounding["human_review_tasks"],
         "needs_human_review": generation.needs_human_review,
         "trusted_for_scientific_quality": False,
         "real_retrieval_status": retrieval_payload.get("real_retrieval_status", "not_used"),
         "qwen_generation_status": "pass" if args.generation_provider == "qwen" else "not_used",
+        "generation_status": "pass" if args.generation_provider == "qwen" else "not_used",
         "cleanup_status": retrieval_payload.get("cleanup_status", "not_needed"),
+        "timeout_seconds": {
+            "connect": args.connect_timeout_seconds,
+            "first_byte": args.first_byte_timeout_seconds,
+            "total": args.total_timeout_seconds,
+        },
+        "max_output_tokens": args.max_output_tokens,
         "safety": {
             "pdf_uploaded": "no",
             "raw_image_uploaded": "no",
@@ -234,6 +253,9 @@ def run_grounding_validator(output_root: Path, section_md: Path, evidence_json: 
         capture_output=True,
     )
     if result.returncode != 0:
+        report_path = output_root / "grounding_report.json"
+        if report_path.exists():
+            return json.loads(report_path.read_text(encoding="utf-8"))
         raise RuntimeError(result.stderr + result.stdout)
     return json.loads((output_root / "grounding_report.json").read_text(encoding="utf-8"))
 
@@ -256,12 +278,25 @@ def render_report_md(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def failure_report(args: argparse.Namespace, exc: Exception) -> dict[str, Any]:
-    error_type = "qwen_timeout" if "timed out" in str(exc).lower() else type(exc).__name__
+def failure_report(args: argparse.Namespace, exc: Exception, *, elapsed_ms: int = 0) -> dict[str, Any]:
+    error_type = getattr(exc, "error_type", None) or ("qwen_timeout" if "timed out" in str(exc).lower() else type(exc).__name__)
+    provider_error_types = {"missing_env", "missing_dependency", "first_byte_timeout", "total_timeout", "stream_failed", "client_timeout", "network_error", "auth_error_401", "rate_limit_or_quota_429", "server_error_5xx"}
+    failed_stage = "generation" if args.generation_provider == "qwen" else "preflight"
+    if args.retrieval_mode == "bailian" and str(error_type) not in provider_error_types:
+        failed_stage = "retrieval"
     return {
         "status": "fail",
+        "failed_stage": failed_stage,
+        "exception_class": type(exc).__name__,
         "error_type": error_type,
+        "status_code": getattr(exc, "status_code", None),
+        "request_id_present": bool(getattr(exc, "request_id_present", False) or getattr(exc, "request_id", None)),
+        "stream_started": bool(getattr(exc, "stream_started", False)),
+        "chunks_received": int(getattr(exc, "chunks_received", 0)),
+        "elapsed_ms": elapsed_ms,
+        "retry_count": int(getattr(exc, "retry_count", 0)),
         "safe_summary": "Qwen generation timed out" if error_type == "qwen_timeout" else type(exc).__name__,
+        "recommended_fix": "Inspect provider/preflight report, then retry only within the approved real-call budget.",
         "retrieval_mode": args.retrieval_mode,
         "generation_provider": args.generation_provider,
         "section_id": args.section_id,
@@ -272,13 +307,16 @@ def failure_report(args: argparse.Namespace, exc: Exception) -> dict[str, Any]:
         "checkpoint": "Sections: blocked_before_ready_for_human_review",
         "claim_evidence_coverage": None,
         "unsupported_claim_count": None,
+        "unsupported_citations": [],
         "prompt_leakage_count": None,
+        "section_text_present": False,
         "human_review_tasks": ["Retry Qwen only after reviewing timeout/network conditions; do not reuse as scientific final text."],
         "needs_human_review": True,
         "trusted_for_scientific_quality": False,
         "real_retrieval_status": "attempted" if args.retrieval_mode == "bailian" else "not_used",
         "qwen_generation_status": "fail" if args.generation_provider == "qwen" else "not_used",
-        "cleanup_status": "attempted_before_generation_or_not_needed",
+        "generation_status": "fail" if args.generation_provider == "qwen" else "not_used",
+        "cleanup_status": str(getattr(exc, "cleanup_status", "attempted_before_generation_or_not_needed")),
         "safety": {
             "pdf_uploaded": "no",
             "raw_image_uploaded": "no",
