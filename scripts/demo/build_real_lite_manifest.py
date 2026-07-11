@@ -21,7 +21,8 @@ def main() -> int:
     write_json(args.output_json, report)
     write_markdown(args.output_md, report)
     if len(report["selected_papers"]) >= 3:
-        build_input_package(repo_root, report)
+        if not input_package_ready(repo_root):
+            build_input_package(repo_root, report)
     else:
         write_gap_report(repo_root, report)
     print(f"real-lite-preflight: {report['status']} ({report['summary']})")
@@ -327,6 +328,24 @@ def build_input_package(repo_root: Path, report: dict[str, Any]) -> None:
                 "reason": "Real-lite preflight stores image directory pointer only.",
             },
         )
+
+
+def input_package_ready(repo_root: Path) -> bool:
+    package = repo_root / "demo_projects/real_lite_allene_review"
+    selected_path = package / "inputs/selected_papers.json"
+    metadata_dir = package / "inputs/paper_metadata"
+    markdown_dir = package / "inputs/mineru_markdown"
+    if not selected_path.exists():
+        return False
+    try:
+        selected = json.loads(selected_path.read_text(encoding="utf-8")).get("selected_papers") or []
+    except Exception:
+        return False
+    return (
+        len(selected) >= 3
+        and len(list(metadata_dir.glob("*.metadata.json"))) >= 3
+        and len(list(markdown_dir.glob("*.excerpt.md"))) >= 3
+    )
 
 
 def portable_selected_row(row: dict[str, Any]) -> dict[str, Any]:
