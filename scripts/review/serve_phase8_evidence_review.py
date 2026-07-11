@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -80,8 +81,12 @@ def make_handler(root: Path):
             }
             out = root / "review_decisions" / "reviewer_1.jsonl"
             out.parent.mkdir(parents=True, exist_ok=True)
-            with out.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+            line = (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8")
+            fd = os.open(out, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
+            try:
+                os.write(fd, line)
+            finally:
+                os.close(fd)
             return self._json({"status": "appended"})
 
         def do_PUT(self) -> None:
