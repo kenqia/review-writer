@@ -41,6 +41,43 @@ Result:
 
 No second Qwen request was made.
 
+## Real Generation Closure Update
+
+Latest local preflight:
+
+- `make phase7-real-preflight`: pass
+- network calls: `0`
+- provider dependency in active base environment: `openai` importable
+- env report: SET/MISSING only
+- dedicated endpoint metadata: redacted; reports keep only region and boolean use
+
+Qwen-only smoke:
+
+- first Qwen-only request: failed before section validation with a first-byte style timeout boundary
+- one evidence-backed retry: produced a section from the offline sanitized EvidencePack
+- revalidated grounding after validator heading/truncated-marker fix: pass
+- claim-evidence coverage: `1.0`
+- unsupported claims: `0`
+- unsupported citations: `0`
+- prompt leakage: `0`
+- checkpoint: `Sections: ready_for_human_review`
+
+Full Bailian + Qwen E2E:
+
+- status: incomplete at local dependency/API-contract boundary before resource creation
+- active base environment: Qwen `openai` dependency available, Bailian SDK contract incomplete
+- `review-writer-bailian` environment: Bailian SDK available, `openai` missing
+- Bailian temporary index lifecycles created: `0`
+- Bailian file uploads: `0`
+- final Qwen generation for full E2E: not sent
+
+Install real Qwen dependency only in the project/conda environment used for the
+full pilot:
+
+```bash
+python -m pip install -r requirements-qwen.txt
+```
+
 ## Safety
 
 - PDF uploaded: no

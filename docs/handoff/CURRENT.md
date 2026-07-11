@@ -50,11 +50,14 @@
 
 ## Current Phase 7 Blocker
 
-Phase 7 offline replay passes, but the controlled real pilot is incomplete:
+Phase 7 offline replay passes, and Qwen-only generation has closed against the
+offline sanitized EvidencePack after validator hardening. The full controlled
+Bailian + Qwen pilot is still incomplete:
 
-- Bailian retrieval reached EvidencePack generation.
-- Qwen generation failed with read timeout.
-- No real generated section was validated as complete.
+- Preflight passed without network calls.
+- Qwen-only retry produced a section.
+- Revalidated Qwen-only grounding: claim-evidence coverage `1.0`, unsupported claims `0`, unsupported citations `0`, prompt leakage `0`.
+- Full Bailian + Qwen E2E is blocked before resource creation by environment dependency mismatch: base has Qwen `openai`, while `review-writer-bailian` has Bailian SDK but lacks `openai`.
 - Next closure work must not convert offline replay success into a real-pilot success claim.
 
 ## Offline Gates
@@ -85,7 +88,7 @@ CI jobs:
 
 - Default checks do not call Qwen/Bailian, upload files, or create knowledge bases.
 - Controlled real pilots require explicit authorization, sanitized payloads, `/tmp` reports, and best-effort cleanup.
-- This reconciliation did not run any real Qwen/Bailian calls.
+- Latest closure attempt used two Qwen-only real calls. No Bailian temporary index or file upload was created during the full E2E attempt.
 
 ## Known Caveats
 
@@ -98,7 +101,7 @@ CI jobs:
 
 Continue Phase 7 real generation closure:
 
-- retry or harden Qwen generation only with explicit authorization;
+- install `requirements-qwen.txt` only into the project/conda environment that will run both Bailian SDK and Qwen provider code;
 - preserve sanitized payloads and `/tmp` reporting;
 - verify claim-evidence coverage and unsupported-claim count on any real output;
 - keep `Sections` at human-review checkpoint until validated.
