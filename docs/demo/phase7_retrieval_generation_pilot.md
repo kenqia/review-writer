@@ -41,17 +41,23 @@ Result:
 - Qwen-only streaming smoke: pass
 - Full Bailian + Qwen E2E: pass
 - model: `qwen3.7-plus`
+- thinking: disabled
+- external search: disabled
 - dedicated endpoint: used and redacted in reports
 - retrieval evidence count: `3`
+- EvidencePack hash prefix: `02ded82c3494`
 - stream started: `true`
-- full E2E content chunks: `86`
+- Qwen-only stream: `server_chunks_received=122`, `content_chunks_received=119`, `finish_reason=stop`
+- full E2E stream: `server_chunks_received=106`, `content_chunks_received=103`, `finish_reason=stop`
 - claim-evidence coverage: `1.0`
 - unsupported claims: `0`
 - unsupported citations: `0`
 - prompt leakage: `0`
+- malformed marker count: `0`
 - checkpoint: `Sections: ready_for_human_review`
 - temporary file cleanup: pass
 - temporary index cleanup: pass
+- final budget ledger: Qwen-only attempts `1`, full E2E attempts `1`, Qwen total requests `2`, Bailian lifecycles `1`, uploads `1`
 - trusted as final scientific text: no
 
 Safe report paths:
@@ -71,3 +77,4 @@ Safe report paths:
 - default checks upload: no
 - resource ids committed: no
 - model output marked final scientific review: no
+- Phase 7 automatically proceeds to human scientific evidence review: no

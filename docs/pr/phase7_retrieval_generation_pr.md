@@ -18,11 +18,11 @@ Added:
 ```bash
 make release-readiness-check
 make bailian-phase6-final-check
-make provider-check
-make judge-check
-make clean-3paper-e2e-check
-make clean-3paper-eval-check
 make phase7-pilot-dry-run
+make phase7-real-preflight
+make offline-ci-workflow-check
+make quality-check
+make smoke
 ```
 
 ## Current Pilot Status
@@ -33,10 +33,17 @@ Final controlled real pilot status:
 
 - Qwen-only streaming smoke: pass
 - Full Bailian + Qwen E2E: pass
+- model: `qwen3.7-plus`
+- thinking: disabled
+- external search: disabled
+- finish_reason: stop
+- retrieval evidence count: `3`
+- EvidencePack hash prefix: `02ded82c3494`
 - claim-evidence coverage: `1.0`
 - unsupported claims: `0`
 - unsupported citations: `0`
 - prompt leakage: `0`
+- malformed marker count: `0`
 - Sections checkpoint: `ready_for_human_review`
 - temporary index/file cleanup: pass
 - Phase 7 real pilot: complete
