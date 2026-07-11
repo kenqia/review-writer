@@ -41,9 +41,13 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_manifest(search_root: Path, repo_root: Path, max_papers: int) -> dict[str, Any]:
-    registry_paths = sorted(search_root.glob("**/papers.jsonl"))
+    registry_paths = sorted({*search_root.glob("**/papers.jsonl"), *search_root.glob("**/paper_registry.jsonl")})
     metadata_paths = sorted(search_root.glob("**/*.metadata.json"))
-    markdown_paths = sorted(path for path in search_root.glob("**/*.md") if "mineru-outputs" in str(path))
+    markdown_paths = sorted(
+        path
+        for path in search_root.glob("**/*.md")
+        if "mineru-outputs" in str(path) or "inputs/mineru_markdown" in str(path)
+    )
     content_list_paths = sorted(search_root.glob("**/*content_list*.json"))
     image_dirs = sorted(path for path in search_root.glob("**/images") if path.is_dir() and "mineru-outputs" in str(path))
 
@@ -69,9 +73,13 @@ def build_manifest(search_root: Path, repo_root: Path, max_papers: int) -> dict[
             markdown_path = resolve_existing_path(row.get("markdown_path"), search_root, repo_root)
             if not markdown_path:
                 markdown_path = markdown_by_slug.get(slug)
+            if not markdown_path:
+                markdown_path = markdown_by_slug.get(paper_id)
             content_path = resolve_existing_path(row.get("content_list_path"), search_root, repo_root)
             if not content_path:
                 content_path = content_by_slug.get(slug)
+            if not content_path:
+                content_path = content_by_slug.get(paper_id)
             image_dir = images_by_slug.get(slug)
             missing = []
             if not title:
@@ -146,6 +154,7 @@ def index_markdown(paths: list[Path]) -> dict[str, Path]:
             out.setdefault(path.parent.name, path)
         else:
             out.setdefault(path.stem, path)
+            out.setdefault(path.stem.split(".")[0], path)
     return out
 
 
@@ -153,6 +162,7 @@ def index_content_lists(paths: list[Path]) -> dict[str, Path]:
     out: dict[str, Path] = {}
     for path in paths:
         out.setdefault(path.parent.name, path)
+        out.setdefault(path.stem.split(".")[0], path)
     return out
 
 
