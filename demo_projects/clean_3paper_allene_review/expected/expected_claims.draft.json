@@ -1,0 +1,75 @@
+{
+  "claims": [
+    {
+      "claim_id": "F3I-C1",
+      "paper_id": "F3I",
+      "claim_text_draft": "The paper can serve as background for allene-centered catalytic asymmetric synthesis because its verified draft title is 'Allenes in Catalytic Asymmetric Synthesis and Natural Product Syntheses'.",
+      "support_type": "background",
+      "evidence_source": "bibliographic_metadata",
+      "confidence": "medium",
+      "needs_human_review": true,
+      "human_verified": false
+    },
+    {
+      "claim_id": "F3I-C2",
+      "paper_id": "F3I",
+      "claim_text_draft": "The title also signals relevance to natural product synthesis context, but specific examples still require manual extraction from the PDF.",
+      "support_type": "background",
+      "evidence_source": "needs_manual_extraction",
+      "confidence": "low",
+      "needs_human_review": true,
+      "human_verified": false
+    },
+    {
+      "claim_id": "F3I-C3",
+      "paper_id": "F3I",
+      "claim_text_draft": "The publication type draft marks this item as review/background rather than a single-method evidence source.",
+      "support_type": "background",
+      "evidence_source": "bibliographic_metadata",
+      "confidence": "medium",
+      "needs_human_review": true,
+      "human_verified": false
+    },
+    {
+      "claim_id": "F47A-C1",
+      "paper_id": "F47A",
+      "claim_text_draft": "The paper is a representative method candidate for palladium-catalyzed asymmetric synthesis of axially chiral allenes, based on the verified draft title 'Palladium-Catalyzed Asymmetric Synthesis of Axially Chiral Allenes:  A Synergistic Effect of Dibenzalacetone on High Enantioselectivity'.",
+      "support_type": "method",
+      "evidence_source": "bibliographic_metadata",
+      "confidence": "medium",
+      "needs_human_review": true,
+      "human_verified": false
+    },
+    {
+      "claim_id": "F47A-C2",
+      "paper_id": "F47A",
+      "claim_text_draft": "The title indicates a dibenzalacetone-related effect on enantioselectivity; the detailed mechanistic or optimization claim still needs manual PDF extraction.",
+      "support_type": "method",
+      "evidence_source": "needs_manual_extraction",
+      "confidence": "low",
+      "needs_human_review": true,
+      "human_verified": false
+    },
+    {
+      "claim_id": "P403-C1",
+      "paper_id": "P403",
+      "claim_text_draft": "The paper is a recent-progress method candidate for Pd-catalyzed asymmetric allenylation of secondary phosphine oxides, based on the verified draft title 'Pd-Catalyzed Asymmetric Allenylation of Secondary Phosphine Oxides with Enyne-Type Propargylic Carbamates for the Construction of Chiral Allenyl Phosphine Oxides'.",
+      "support_type": "recent_progress",
+      "evidence_source": "bibliographic_metadata",
+      "confidence": "medium",
+      "needs_human_review": true,
+      "human_verified": false
+    },
+    {
+      "claim_id": "P403-C2",
+      "paper_id": "P403",
+      "claim_text_draft": "The title indicates enyne-type propargylic carbamates and chiral allenyl phosphine oxides as central scope elements; exact substrate scope and outcomes need manual extraction.",
+      "support_type": "recent_progress",
+      "evidence_source": "needs_manual_extraction",
+      "confidence": "low",
+      "needs_human_review": true,
+      "human_verified": false
+    }
+  ],
+  "trusted_for_scientific_quality": false
+}

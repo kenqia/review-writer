@@ -1,0 +1,21 @@
+{
+  "paper_id": "demo-allene-002",
+  "title": "Allene-Derived P,N Ligands in Copper-Catalyzed Asymmetric Addition",
+  "year": 2022,
+  "authors": ["Chen Demo", "Singh Example"],
+  "journal": "Synthetic Demo Letters",
+  "doi": "10.0000/demo.allene.002",
+  "topic_tags": ["allene ligand", "copper catalysis", "enantioselective addition"],
+  "method_tags": ["P,N ligand", "mock substrate scope"],
+  "key_findings": [
+    "A P,N donor pair is used as a synthetic handle for coordination geometry.",
+    "The mock substrate table suggests ligand electronics can shift selectivity."
+  ],
+  "figure_candidates": [
+    {
+      "figure_id": "fig2",
+      "caption": "Mock coordination comparison for P,N allene ligands.",
+      "source_path": "figures/allene_placeholder.svg"
+    }
+  ]
+}

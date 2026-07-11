@@ -195,7 +195,7 @@ def run(args: argparse.Namespace) -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate review metadata JSON files.")
-    parser.add_argument("--review-root", default="/home/ps/review-writer")
+    parser.add_argument("--review-root", default=str(Path(__file__).resolve().parents[3]))
     return parser.parse_args()
 
 

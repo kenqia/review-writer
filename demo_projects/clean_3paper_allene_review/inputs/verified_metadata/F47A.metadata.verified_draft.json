@@ -1,0 +1,104 @@
+{
+  "candidate_id": "F47A",
+  "filename": "chem_papers/47a-palladium-catalyzed-asymmetric-synthesis-of-axially-chiral-allenes-a-synergistic-effect-of-dibenzalacetone-on-high.pdf",
+  "pdf_exists": true,
+  "verified_title_draft": "Palladium-Catalyzed Asymmetric Synthesis of Axially Chiral Allenes:  A Synergistic Effect of Dibenzalacetone on High Enantioselectivity",
+  "authors_draft": [
+    "Masamichi Ogasawara",
+    "Hisashi Ikeda",
+    "Takashi Nagano",
+    "Tamio Hayashi"
+  ],
+  "year_draft": 2001,
+  "journal_draft": "Journal of the American Chemical Society",
+  "doi_draft": "10.1021/ja005921o",
+  "publication_type_draft": "research_article",
+  "source_matches": [
+    {
+      "source_name": "local_verified_draft",
+      "query": "Palladium-catalyzed asymmetric synthesis of axially chiral allenes",
+      "matched_title": "Palladium-catalyzed asymmetric synthesis of axially chiral allenes",
+      "authors": [],
+      "year": null,
+      "venue": "unknown",
+      "doi": "unknown",
+      "url": "",
+      "confidence": 0.55,
+      "warnings": [
+        "offline seed only; public metadata lookup disabled"
+      ]
+    },
+    {
+      "source_name": "crossref",
+      "query": "Palladium catalyzed asymmetric synthesis of axially chiral allenes a synergistic effect of dibenzalacetone on high",
+      "matched_title": "Palladium-Catalyzed Asymmetric Synthesis of Axially Chiral Allenes:  A Synergistic Effect of Dibenzalacetone on High Enantioselectivity",
+      "authors": [
+        "Masamichi Ogasawara",
+        "Hisashi Ikeda",
+        "Takashi Nagano",
+        "Tamio Hayashi"
+      ],
+      "year": 2001,
+      "venue": "Journal of the American Chemical Society",
+      "doi": "10.1021/ja005921o",
+      "url": "https://doi.org/10.1021/ja005921o",
+      "confidence": 0.917,
+      "warnings": []
+    },
+    {
+      "source_name": "openalex",
+      "query": "Palladium catalyzed asymmetric synthesis of axially chiral allenes a synergistic effect of dibenzalacetone on high",
+      "matched_title": "Palladium-Catalyzed Asymmetric Synthesis of Axially Chiral Allenes:  A Synergistic Effect of Dibenzalacetone on High Enantioselectivity",
+      "authors": [
+        "Masamichi Ogasawara",
+        "Hisashi Ikeda",
+        "Takashi Nagano",
+        "Tamio Hayashi"
+      ],
+      "year": 2001,
+      "venue": "Journal of the American Chemical Society",
+      "doi": "10.1021/ja005921o",
+      "url": "https://openalex.org/W1966392014",
+      "confidence": 0.917,
+      "warnings": []
+    },
+    {
+      "source_name": "semantic_scholar",
+      "query": "Palladium catalyzed asymmetric synthesis of axially chiral allenes a synergistic effect of dibenzalacetone on high",
+      "matched_title": "",
+      "authors": [],
+      "year": null,
+      "venue": "",
+      "doi": "",
+      "url": "",
+      "confidence": 0.0,
+      "warnings": [
+        "network_warning: HTTPError"
+      ]
+    }
+  ],
+  "metadata_confidence": "medium",
+  "conflicts": [
+    {
+      "field": "title",
+      "values": [
+        "Palladium-catalyzed asymmetric synthesis of axially chiral allenes",
+        "Palladium-Catalyzed Asymmetric Synthesis of Axially Chiral Allenes:  A Synergistic Effect of Dibenzalacetone on High Enantioselectivity",
+        "Palladium-Catalyzed Asymmetric Synthesis of Axially Chiral Allenes:  A Synergistic Effect of Dibenzalacetone on High Enantioselectivity"
+      ],
+      "reason": "title similarity below threshold"
+    }
+  ],
+  "missing_fields": [],
+  "needs_human_review": true,
+  "human_verified": false,
+  "verification_status": "bibliographic_verified_draft",
+  "upload_status": "not_uploaded",
+  "api_used": false,
+  "trusted_for_scientific_quality": false,
+  "notes": [
+    "Metadata is a draft based on filename/local draft and optional public bibliographic sources.",
+    "No long PDF body text was saved.",
+    "Human review remains required before scientific-quality use."
+  ]
+}

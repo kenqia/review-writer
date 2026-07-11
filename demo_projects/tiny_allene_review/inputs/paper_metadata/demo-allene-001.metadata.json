@@ -1,0 +1,21 @@
+{
+  "paper_id": "demo-allene-001",
+  "title": "Axially Chiral Allene Phosphine Ligands for Enantioselective Allylation",
+  "year": 2021,
+  "authors": ["Lin Demo", "Rao Example"],
+  "journal": "Journal of Mock Asymmetric Catalysis",
+  "doi": "10.0000/demo.allene.001",
+  "topic_tags": ["allene ligand", "axial chirality", "allylation"],
+  "method_tags": ["phosphine ligand", "transition-metal catalysis"],
+  "key_findings": [
+    "Rigid allene backbones increase enantioselection in a mock allylation benchmark.",
+    "Bulky aryl substituents improve a synthetic selectivity trend."
+  ],
+  "figure_candidates": [
+    {
+      "figure_id": "fig1",
+      "caption": "Mock design map for allene phosphine ligands.",
+      "source_path": "figures/allene_placeholder.svg"
+    }
+  ]
+}

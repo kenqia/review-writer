@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -241,12 +243,72 @@ def write_reports(out_dir: Path, scan: dict[str, Any]) -> None:
     lines.append(f"- Image paths: {scan['image_paths']}")
     lines.append(f"- Broken images: {scan['broken_images']}")
     lines.append(f"- Source figure placeholder mode: {scan['source_placeholder_mode']}")
+    lines += ["", "## Chemistry Quality Gate", ""]
+    lines.append(f"- Quality report status: {scan.get('quality_report_status', 'not_run')}")
+    lines.append(f"- Quality report path: {scan.get('quality_report_md', '')}")
     (out_dir / "format_scan.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def first_existing(paths: list[Path]) -> Path | None:
+    return next((path for path in paths if path.exists()), None)
+
+
+def run_quality_scan(project: Path, draft_path: Path, out_dir: Path) -> dict[str, Any]:
+    if not draft_path.exists():
+        return {"status": "not_run", "reason": "draft missing"}
+    repo_root = Path(__file__).resolve().parents[3]
+    script = repo_root / "scripts" / "validators" / "validate_review_quality.py"
+    if not script.exists():
+        return {"status": "not_run", "reason": f"quality validator missing: {script}"}
+    figure_manifest = first_existing(
+        [
+            project / "03_figure_redraw" / "redrawn_figure_manifest.json",
+            project / "02_section_drafting" / "figure_candidates.json",
+        ]
+    )
+    out_json = out_dir / "quality_report.json"
+    out_md = out_dir / "quality_report.md"
+    cmd = [
+        sys.executable,
+        str(script),
+        "--draft",
+        str(draft_path),
+        "--output-json",
+        str(out_json),
+        "--output-md",
+        str(out_md),
+    ]
+    if figure_manifest:
+        cmd.extend(["--figure-manifest", str(figure_manifest)])
+    result = subprocess.run(cmd, cwd=repo_root, text=True, capture_output=True)
+    payload: dict[str, Any] = {
+        "status": "error" if result.returncode not in {0, 1} else "unknown",
+        "returncode": result.returncode,
+        "stdout_tail": result.stdout.strip().splitlines()[-20:],
+        "stderr_tail": result.stderr.strip().splitlines()[-20:],
+        "output_json": str(out_json),
+        "output_md": str(out_md),
+    }
+    if out_json.exists():
+        try:
+            report = json.loads(out_json.read_text(encoding="utf-8"))
+            payload.update(
+                {
+                    "status": report.get("status", "unknown"),
+                    "error_count": len(report.get("errors") or []),
+                    "warning_count": len(report.get("warnings") or []),
+                    "llm_judge_task_count": len(report.get("llm_judge_tasks") or []),
+                    "human_review_task_count": len(report.get("human_review_tasks") or []),
+                }
+            )
+        except Exception as exc:
+            payload.update({"status": "error", "parse_error": str(exc)})
+    return payload
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run deterministic final format scan for a review project.")
-    parser.add_argument("--review-root", default="/home/ps/review-writer")
+    parser.add_argument("--review-root", default=str(Path(__file__).resolve().parents[3]))
     parser.add_argument("--project-id", required=True)
     return parser.parse_args()
 
@@ -256,9 +318,21 @@ def main() -> int:
     project = Path(args.review_root).resolve() / "review-projects" / args.project_id
     out_dir = project / "05_final_audit"
     scan = scan_draft(project)
+    quality = run_quality_scan(project, Path(scan["draft_path"]), out_dir)
+    scan["quality_report_status"] = quality.get("status")
+    scan["quality_report_json"] = quality.get("output_json", "")
+    scan["quality_report_md"] = quality.get("output_md", "")
+    scan["quality_report_summary"] = quality
+    if quality.get("status") == "fail":
+        scan["issues"].append("quality_report_has_errors")
+        scan["blocking_issues"].append("quality_report_has_errors")
+    elif quality.get("status") == "error":
+        scan["issues"].append("quality_report_scan_failed")
+        scan["blocking_issues"].append("quality_report_scan_failed")
     write_reports(out_dir, scan)
     print(f"Wrote final audit scan to {out_dir}")
     print(f"Issues: {len(scan['issues'])}")
+    print(f"Quality report status: {scan.get('quality_report_status')}")
     if scan["blocking_issues"]:
         print("BLOCKING ISSUES:")
         for issue in scan["blocking_issues"]:

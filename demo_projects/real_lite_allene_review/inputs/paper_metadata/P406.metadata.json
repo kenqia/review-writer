@@ -1,0 +1,106 @@
+{
+  "paper_id": "P406",
+  "slug": "wang-et-al-2024-photoredox-copper-dual-catalyzed-phosphorothiolation-of-propargylic-derivatives-for-the-switchable",
+  "title": {
+    "value": "Photoredox/Copper Dual-Catalyzed Phosphorothiolation of Propargylic Derivatives for the Switchable Synthesis of S‑Alkyl, S‑Vinyl and S‑Allenyl Phosphorothioates",
+    "source": "markdown_first_h1",
+    "confidence": 0.88,
+    "human_checked": false
+  },
+  "authors": {
+    "value": [
+      "Shanshan Shi",
+      "Hu Chen",
+      "Shiwei Yang",
+      "Huaze Dong",
+      "Jinmiao Zhu",
+      "Bin Zheng",
+      "Xiaohong Wang",
+      "Zhaoyang Liang",
+      "Hongyu Ren",
+      "Yuzhen Gao Cite This: Org. Lett.",
+      "− Read Online Article Recommendations sı Supporting Information"
+    ],
+    "source": "content_list_after_title",
+    "confidence": 0.74,
+    "human_checked": false
+  },
+  "year": {
+    "value": 2024,
+    "source": "filename_or_front_matter",
+    "confidence": 0.68,
+    "human_checked": false
+  },
+  "journal": {
+    "value": "Org. Lett. 2024",
+    "source": "cite_this_line",
+    "confidence": 0.7,
+    "human_checked": false
+  },
+  "doi": {
+    "value": null,
+    "source": "rule_not_found",
+    "confidence": 0.0,
+    "human_checked": false
+  },
+  "abstract": {
+    "value": "Herein, we report a photoredox/copper dual-catalyzed selective phosphorothiolation of propargylic derivatives from easily accessible [P(O)SH] compounds. This reaction provides a general, mild and versatile procedure to synthesize a variety of synthetically useful S-alkyl, S-vinyl and S-allenyl phosphorothioates selectively from the same set of simple starting materials.",
+    "source": "content_list_inline_abstract",
+    "confidence": 0.84,
+    "human_checked": false
+  },
+  "structured_tags": {
+    "value": {
+      "product": "allenes",
+      "substrate": "propargylic derivatives",
+      "catalyst_or_method": "copper catalysis",
+      "organometallic_partner": "not specified",
+      "ligand_or_chiral_source": "enantioselective synthesis",
+      "leaving_group": "not specified",
+      "reaction_type": "radical reaction",
+      "document_scope": "primary research article"
+    },
+    "source": "rule_keyword_inference_8_category_fallback",
+    "confidence": 0.45,
+    "human_checked": false
+  },
+  "source_paths": {
+    "pdf": "<PAPER_LIBRARY>/P406.pdf",
+    "markdown": "<MINERU_MARKDOWN_ROOT>/P406/full.md",
+    "content_list": "<MINERU_CONTENT_LIST_ROOT>/P406/content_list.json",
+    "extracted_dir": "<MINERU_OUTPUT_ROOT>/P406"
+  },
+  "source_file": {
+    "pdf_name": "wang-et-al-2024-photoredox-copper-dual-catalyzed-phosphorothiolation-of-propargylic-derivatives-for-the-switchable.pdf",
+    "relative_pdf_path": "wang-et-al-2024-photoredox-copper-dual-catalyzed-phosphorothiolation-of-propargylic-derivatives-for-the-switchable.pdf",
+    "sha256": "5545e9650e7790abe8fff8ecdd3d8628bd0263b73b9bd19f677bb97f5c3e3d9b"
+  },
+  "extraction": {
+    "mode": "rules",
+    "model": null,
+    "created_at": "2026-07-05T08:55:38Z",
+    "inputs": {
+      "manifest": "<MINERU_OUTPUT_ROOT>/manifest.json",
+      "content_blocks": 113,
+      "markdown_chars_used": 14000
+    },
+    "notes": []
+  },
+  "human_review": {
+    "status": "not_reviewed",
+    "reviewed_at": null,
+    "reviewer": null,
+    "notes": []
+  },
+  "quality": {
+    "missing_fields": [],
+    "warnings": [
+      "missing_doi",
+      "structured_tag_not_specified_organometallic_partner",
+      "structured_tag_not_specified_leaving_group"
+    ],
+    "overall_confidence": 0.613,
+    "needs_human_check": true,
+    "manifest": "<MINERU_OUTPUT_ROOT>/manifest.json"
+  }
+}

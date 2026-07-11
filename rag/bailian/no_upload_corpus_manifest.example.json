@@ -1,0 +1,26 @@
+{
+  "mode": "dry_run",
+  "provider": "bailian",
+  "no_upload": true,
+  "selected_count": 1,
+  "trusted_for_scientific_quality": false,
+  "needs_human_review": true,
+  "items": [
+    {
+      "paper_id": "EXAMPLE-1",
+      "title": "Example allene catalysis paper",
+      "year": 2024,
+      "journal": "Example Journal",
+      "doi_draft": "",
+      "role": "example",
+      "claim_draft": "Short human-review draft claim only.",
+      "figure_note_draft": "Short human-review draft figure note only.",
+      "warning": "Example item is not trusted for scientific quality.",
+      "upload_status": "not_uploaded",
+      "api_used": false,
+      "knowledge_base_created": false,
+      "needs_human_review": true,
+      "trusted_for_scientific_quality": false
+    }
+  ]
+}

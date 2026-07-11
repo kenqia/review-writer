@@ -1,0 +1,13 @@
+# Future promptfoo-compatible draft.
+# Do not install or run promptfoo for Phase 5d.
+# The default provider is an offline local script, not a real LLM or API provider.
+description: Real-lite review-writer offline evaluation draft
+providers:
+  - id: script:python scripts/eval/run_eval_baseline.py --output-root <OUTPUT_ROOT> --baseline evals/baselines/real_lite_v1.yaml --expected evals/fixtures/real_lite_expected_metrics.json --output-json /tmp/real_lite_eval_report.json --output-md /tmp/real_lite_eval_report.md
+tests:
+  - description: Real-lite workflow artifacts satisfy offline quality baseline
+    vars:
+      output_root: <OUTPUT_ROOT>
+    assert:
+      - type: python
+        value: output["status"] in ["pass", "warn"]

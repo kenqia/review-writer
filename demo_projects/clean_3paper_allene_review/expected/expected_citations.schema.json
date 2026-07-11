@@ -1,0 +1,35 @@
+{
+  "description": "Draft schema for future verified citations. This is a TODO schema, not a citation list.",
+  "type": "object",
+  "required": ["paper_id", "references", "human_verified", "verification_status", "needs_human_review"],
+  "properties": {
+    "paper_id": {
+      "type": "string"
+    },
+    "references": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["reference_id", "raw_reference", "doi", "needs_human_check"],
+        "properties": {
+          "reference_id": {"type": "string"},
+          "raw_reference": {"type": "string"},
+          "doi": {"type": ["string", "null"]},
+          "needs_human_check": {"type": "boolean"}
+        }
+      }
+    },
+    "human_verified": {
+      "const": false
+    },
+    "verification_status": {
+      "enum": ["todo", "verified_draft", "needs_human_review"]
+    },
+    "needs_human_review": {
+      "const": true
+    },
+    "doi_verification_status": {
+      "enum": ["unknown", "verified_draft", "needs_human_review"]
+    }
+  }
+}

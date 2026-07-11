@@ -118,7 +118,7 @@ def insert_after_section(text: str, section_id: str, section_heading: str, block
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Insert available figures into the first draft.")
-    parser.add_argument("--review-root", default="/home/ps/review-writer")
+    parser.add_argument("--review-root", default=str(Path(__file__).resolve().parents[3]))
     parser.add_argument("--project-id", required=True)
     parser.add_argument("--max-per-section", type=int, default=1)
     return parser.parse_args()

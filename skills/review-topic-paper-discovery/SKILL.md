@@ -22,7 +22,7 @@ reaction_type
 document_scope
 ```
 
-Use `/home/ps/review-writer/allene_classification_rules.py` as the tag
+Use `<review_root>/allene_classification_rules.py` as the tag
 vocabulary and synonym source. Do not rank local papers by metadata abstract.
 
 External retrieval (both run in parallel when requested):
@@ -43,8 +43,8 @@ the joined label for quick reading.
 Local-only (default):
 
 ```bash
-python /home/ps/review-writer/skills/review-topic-paper-discovery/scripts/discover.py \
-  --review-root /home/ps/review-writer \
+python <review_root>/skills/review-topic-paper-discovery/scripts/discover.py \
+  --review-root <review_root> \
   --topic "<review topic>" \
   --keywords "<optional user keywords>" \
   --project-id <project_id>
@@ -56,8 +56,8 @@ Local + SciAtlas KG:
 export SCIATLAS_API_BASE_URL=http://sciatlas.openkg.cn
 export SCIATLAS_API_KEY=sciatlas_xxx     # required for /v1/search
 
-python /home/ps/review-writer/skills/review-topic-paper-discovery/scripts/discover.py \
-  --review-root /home/ps/review-writer \
+python <review_root>/skills/review-topic-paper-discovery/scripts/discover.py \
+  --review-root <review_root> \
   --topic "<review topic>" \
   --keywords "<optional user keywords>" \
   --project-id <project_id> \
@@ -70,8 +70,8 @@ python /home/ps/review-writer/skills/review-topic-paper-discovery/scripts/discov
 Both SciAtlas and Crossref together (results merged per keyword):
 
 ```bash
-python /home/ps/review-writer/skills/review-topic-paper-discovery/scripts/discover.py \
-  --review-root /home/ps/review-writer \
+python <review_root>/skills/review-topic-paper-discovery/scripts/discover.py \
+  --review-root <review_root> \
   --topic "<review topic>" \
   --project-id <project_id> \
   --sciatlas-search \
@@ -81,8 +81,8 @@ python /home/ps/review-writer/skills/review-topic-paper-discovery/scripts/discov
 Crossref only (no SciAtlas token available):
 
 ```bash
-python /home/ps/review-writer/skills/review-topic-paper-discovery/scripts/discover.py \
-  --review-root /home/ps/review-writer \
+python <review_root>/skills/review-topic-paper-discovery/scripts/discover.py \
+  --review-root <review_root> \
   --topic "<review topic>" \
   --project-id <project_id> \
   --web-search

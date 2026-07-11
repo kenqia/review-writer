@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="160" viewBox="0 0 360 160" role="img" aria-label="Tiny allene ligand placeholder">
+  <rect width="360" height="160" fill="#f8fafc"/>
+  <line x1="85" y1="80" x2="160" y2="80" stroke="#0f766e" stroke-width="6"/>
+  <line x1="200" y1="80" x2="275" y2="80" stroke="#0f766e" stroke-width="6"/>
+  <circle cx="180" cy="80" r="18" fill="#2563eb"/>
+  <text x="180" y="132" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" fill="#111827">mock allene ligand figure</text>
+</svg>

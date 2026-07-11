@@ -1,0 +1,29 @@
+{
+  "paper_id": "P403",
+  "claims": [
+    {
+      "claim_id": "P403-C1",
+      "paper_id": "P403",
+      "claim_text_draft": "The paper is a recent-progress method candidate for Pd-catalyzed asymmetric allenylation of secondary phosphine oxides, based on the verified draft title 'Pd-Catalyzed Asymmetric Allenylation of Secondary Phosphine Oxides with Enyne-Type Propargylic Carbamates for the Construction of Chiral Allenyl Phosphine Oxides'.",
+      "support_type": "recent_progress",
+      "evidence_source": "bibliographic_metadata",
+      "confidence": "medium",
+      "needs_human_review": true,
+      "human_verified": false
+    },
+    {
+      "claim_id": "P403-C2",
+      "paper_id": "P403",
+      "claim_text_draft": "The title indicates enyne-type propargylic carbamates and chiral allenyl phosphine oxides as central scope elements; exact substrate scope and outcomes need manual extraction.",
+      "support_type": "recent_progress",
+      "evidence_source": "needs_manual_extraction",
+      "confidence": "low",
+      "needs_human_review": true,
+      "human_verified": false
+    }
+  ],
+  "verification_status": "clean_draft",
+  "human_verified": false,
+  "needs_human_review": true,
+  "trusted_for_scientific_quality": false
+}

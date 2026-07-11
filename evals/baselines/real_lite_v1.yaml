@@ -1,0 +1,29 @@
+# Offline custom baseline for <OUTPUT_ROOT>.
+# This file is intentionally simple YAML so it can be read without third-party dependencies.
+name: real_lite_v1
+description: Offline real-lite workflow quality baseline for selected allene records.
+output_root: <OUTPUT_ROOT>
+offline_only: true
+metrics:
+  - id: workflow_completeness
+    weight: 15
+  - id: artifact_completeness
+    weight: 15
+  - id: quality_gate_health
+    weight: 15
+  - id: figure_integrity
+    weight: 10
+  - id: citation_and_reference_integrity
+    weight: 10
+  - id: prompt_leakage_absence
+    weight: 10
+  - id: evidence_coverage
+    weight: 15
+  - id: safety_boundary
+    weight: 10
+safety:
+  network: not_used
+  pdf_read: not_used
+  qwen: not_used
+  mineru_api: not_used
+  upload: not_used

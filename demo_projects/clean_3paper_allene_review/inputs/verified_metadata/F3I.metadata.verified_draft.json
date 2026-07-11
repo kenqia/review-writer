@@ -1,0 +1,88 @@
+{
+  "candidate_id": "F3I",
+  "filename": "chem_papers/3i-Angew Chem Int Ed - 2012 - Yu - Allenes in Catalytic Asymmetric Synthesis and Natural Product Syntheses.pdf",
+  "pdf_exists": true,
+  "verified_title_draft": "Allenes in Catalytic Asymmetric Synthesis and Natural Product Syntheses",
+  "authors_draft": [
+    "Shichao Yu",
+    "Shengming Ma"
+  ],
+  "year_draft": 2012,
+  "journal_draft": "Angewandte Chemie International Edition",
+  "doi_draft": "10.1002/anie.201101460",
+  "publication_type_draft": "review_or_background",
+  "source_matches": [
+    {
+      "source_name": "local_verified_draft",
+      "query": "Allenes in Catalytic Asymmetric Synthesis and Natural Product Syntheses",
+      "matched_title": "Allenes in Catalytic Asymmetric Synthesis and Natural Product Syntheses",
+      "authors": [],
+      "year": 2012,
+      "venue": "Angew. Chem. Int. Ed.",
+      "doi": "unknown",
+      "url": "",
+      "confidence": 0.55,
+      "warnings": [
+        "offline seed only; public metadata lookup disabled"
+      ]
+    },
+    {
+      "source_name": "crossref",
+      "query": "Angew Chem Int Ed 2012 Yu Allenes in Catalytic Asymmetric Synthesis and Natural Product Syntheses",
+      "matched_title": "Allenes in Catalytic Asymmetric Synthesis and Natural Product Syntheses",
+      "authors": [
+        "Shichao Yu",
+        "Shengming Ma"
+      ],
+      "year": 2012,
+      "venue": "Angewandte Chemie International Edition",
+      "doi": "10.1002/anie.201101460",
+      "url": "https://doi.org/10.1002/anie.201101460",
+      "confidence": 0.636,
+      "warnings": []
+    },
+    {
+      "source_name": "openalex",
+      "query": "Angew Chem Int Ed 2012 Yu Allenes in Catalytic Asymmetric Synthesis and Natural Product Syntheses",
+      "matched_title": "Allenes in Catalytic Asymmetric Synthesis and Natural Product Syntheses",
+      "authors": [
+        "Shichao Yu",
+        "Shengming Ma"
+      ],
+      "year": 2012,
+      "venue": "Angewandte Chemie International Edition",
+      "doi": "10.1002/anie.201101460",
+      "url": "https://openalex.org/W2140026331",
+      "confidence": 0.636,
+      "warnings": []
+    },
+    {
+      "source_name": "semantic_scholar",
+      "query": "Angew Chem Int Ed 2012 Yu Allenes in Catalytic Asymmetric Synthesis and Natural Product Syntheses",
+      "matched_title": "",
+      "authors": [],
+      "year": null,
+      "venue": "",
+      "doi": "",
+      "url": "",
+      "confidence": 0.0,
+      "warnings": [
+        "network_warning: HTTPError"
+      ]
+    }
+  ],
+  "metadata_confidence": "medium",
+  "conflicts": [],
+  "missing_fields": [],
+  "needs_human_review": true,
+  "human_verified": false,
+  "verification_status": "bibliographic_verified_draft",
+  "upload_status": "not_uploaded",
+  "api_used": false,
+  "trusted_for_scientific_quality": false,
+  "notes": [
+    "Metadata is a draft based on filename/local draft and optional public bibliographic sources.",
+    "No long PDF body text was saved.",
+    "Human review remains required before scientific-quality use."
+  ]
+}

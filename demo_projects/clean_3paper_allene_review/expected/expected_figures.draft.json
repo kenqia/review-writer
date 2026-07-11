@@ -1,0 +1,35 @@
+{
+  "figure_notes": [
+    {
+      "figure_note_id": "F3I-FN1",
+      "paper_id": "F3I",
+      "figure_or_scheme_label": "unknown",
+      "note_draft": "Potential review use is likely a background concept or summary scheme, but no source figure or caption was extracted.",
+      "source": "needs_manual_extraction",
+      "should_use_in_review": "maybe",
+      "needs_human_review": true,
+      "human_verified": false
+    },
+    {
+      "figure_note_id": "F47A-FN1",
+      "paper_id": "F47A",
+      "figure_or_scheme_label": "unknown",
+      "note_draft": "Potential review use is a reaction scheme or optimization figure related to Pd/asymmetric axially chiral allene synthesis; exact figure label is unknown.",
+      "source": "needs_manual_extraction",
+      "should_use_in_review": "yes_after_human_review",
+      "needs_human_review": true,
+      "human_verified": false
+    },
+    {
+      "figure_note_id": "P403-FN1",
+      "paper_id": "P403",
+      "figure_or_scheme_label": "unknown",
+      "note_draft": "Potential review use is a reaction scheme for Pd-catalyzed allenylation of secondary phosphine oxides; exact figure/scheme label is unknown.",
+      "source": "needs_manual_extraction",
+      "should_use_in_review": "yes_after_human_review",
+      "needs_human_review": true,
+      "human_verified": false
+    }
+  ],
+  "trusted_for_scientific_quality": false
+}

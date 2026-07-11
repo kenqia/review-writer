@@ -69,8 +69,8 @@ Use `wire_api: images` for real source-image editing. Do not use `responses` for
 ## Run
 
 ```bash
-python /home/ps/review-writer/skills/review-figure-style-redraw/scripts/redraw_figures.py \
-  --review-root /home/ps/review-writer \
+python <review_root>/skills/review-figure-style-redraw/scripts/redraw_figures.py \
+  --review-root <review_root> \
   --project-id <project_id> \
   --base-url https://naiccc.com \
   --wire-api images \
@@ -97,8 +97,8 @@ If `--api-key` is omitted, the script uses `OPENAI_API_KEY`.
 Validate source resolution first when needed:
 
 ```bash
-python /home/ps/review-writer/skills/review-figure-style-redraw/scripts/redraw_figures.py \
-  --review-root /home/ps/review-writer \
+python <review_root>/skills/review-figure-style-redraw/scripts/redraw_figures.py \
+  --review-root <review_root> \
   --project-id <project_id> \
   --dry-run
 ```

@@ -1,0 +1,6 @@
+{
+  "paper_id": "P403",
+  "source_path": "<MINERU_CONTENT_LIST_ROOT>/P403/content_list.json",
+  "copied_content": false,
+  "reason": "Real-lite preflight stores pointer only to avoid committing large MinerU content_list outputs."
+}

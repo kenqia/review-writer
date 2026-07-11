@@ -1,0 +1,279 @@
+{
+  "dataset_id": "clean_3paper_allene_v1_verified_draft",
+  "status": "verified_draft_needs_human_review",
+  "source": "Phase 5j-C read-only PDF filename/filesystem verification",
+  "trusted_for_engineering_fixture": true,
+  "trusted_for_scientific_quality": false,
+  "human_verified": false,
+  "verification_scope": {
+    "allowed_pdf_count": 3,
+    "allowed_paper_ids": [
+      "F3I",
+      "F47A",
+      "P403"
+    ],
+    "pdf_read_scope": "filename_metadata_or_first_page_only",
+    "full_chem_papers_scan": "not_used",
+    "long_pdf_body_saved": false
+  },
+  "papers": [
+    {
+      "candidate_id": "F3I",
+      "filename": "chem_papers/3i-Angew Chem Int Ed - 2012 - Yu - Allenes in Catalytic Asymmetric Synthesis and Natural Product Syntheses.pdf",
+      "title_draft": "Allenes in Catalytic Asymmetric Synthesis and Natural Product Syntheses",
+      "authors_draft": [
+        "Shichao Yu",
+        "Shengming Ma"
+      ],
+      "year_draft": 2012,
+      "journal_draft": "Angewandte Chemie International Edition",
+      "doi_draft": "10.1002/anie.201101460",
+      "role": "review_background",
+      "verification_status": "verified_draft",
+      "human_verified": false,
+      "needs_human_review": true,
+      "needs_pdf_read_verification": true,
+      "pdf_read_scope": "filename_metadata_or_first_page_only",
+      "upload_status": "not_uploaded",
+      "api_used": false,
+      "trusted_for_scientific_quality": false,
+      "metadata_confidence": "medium",
+      "key_claims_draft": [
+        {
+          "claim_id": "F3I-C1",
+          "paper_id": "F3I",
+          "claim_text_draft": "The paper can serve as background for allene-centered catalytic asymmetric synthesis because its verified draft title is 'Allenes in Catalytic Asymmetric Synthesis and Natural Product Syntheses'.",
+          "support_type": "background",
+          "evidence_source": "bibliographic_metadata",
+          "confidence": "medium",
+          "needs_human_review": true,
+          "human_verified": false
+        },
+        {
+          "claim_id": "F3I-C2",
+          "paper_id": "F3I",
+          "claim_text_draft": "The title also signals relevance to natural product synthesis context, but specific examples still require manual extraction from the PDF.",
+          "support_type": "background",
+          "evidence_source": "needs_manual_extraction",
+          "confidence": "low",
+          "needs_human_review": true,
+          "human_verified": false
+        },
+        {
+          "claim_id": "F3I-C3",
+          "paper_id": "F3I",
+          "claim_text_draft": "The publication type draft marks this item as review/background rather than a single-method evidence source.",
+          "support_type": "background",
+          "evidence_source": "bibliographic_metadata",
+          "confidence": "medium",
+          "needs_human_review": true,
+          "human_verified": false
+        }
+      ],
+      "figure_notes_path": "inputs/figure_notes/F3I.figure_notes.md",
+      "verified_metadata_path": "inputs/verified_metadata/F3I.metadata.verified_draft.json",
+      "verified_excerpt_path": "inputs/verified_excerpts/F3I.excerpt_note.md",
+      "risks": [
+        "authors and DOI are not verified",
+        "key claims are not extracted",
+        "figure candidates are not verified"
+      ],
+      "bibliography_verification_status": "bibliographic_verified_draft",
+      "source_conflicts": [],
+      "missing_fields": [],
+      "figure_notes_draft": [
+        {
+          "figure_note_id": "F3I-FN1",
+          "paper_id": "F3I",
+          "figure_or_scheme_label": "unknown",
+          "note_draft": "Potential review use is likely a background concept or summary scheme, but no source figure or caption was extracted.",
+          "source": "needs_manual_extraction",
+          "should_use_in_review": "maybe",
+          "needs_human_review": true,
+          "human_verified": false
+        }
+      ],
+      "claims_figures_extraction_status": "draft_needs_human_review"
+    },
+    {
+      "candidate_id": "F47A",
+      "filename": "chem_papers/47a-palladium-catalyzed-asymmetric-synthesis-of-axially-chiral-allenes-a-synergistic-effect-of-dibenzalacetone-on-high.pdf",
+      "title_draft": "Palladium-Catalyzed Asymmetric Synthesis of Axially Chiral Allenes:  A Synergistic Effect of Dibenzalacetone on High Enantioselectivity",
+      "authors_draft": [
+        "Masamichi Ogasawara",
+        "Hisashi Ikeda",
+        "Takashi Nagano",
+        "Tamio Hayashi"
+      ],
+      "year_draft": 2001,
+      "journal_draft": "Journal of the American Chemical Society",
+      "doi_draft": "10.1021/ja005921o",
+      "role": "representative_method",
+      "verification_status": "verified_draft",
+      "human_verified": false,
+      "needs_human_review": true,
+      "needs_pdf_read_verification": true,
+      "pdf_read_scope": "filename_metadata_or_first_page_only",
+      "upload_status": "not_uploaded",
+      "api_used": false,
+      "trusted_for_scientific_quality": false,
+      "metadata_confidence": "medium",
+      "key_claims_draft": [
+        {
+          "claim_id": "F47A-C1",
+          "paper_id": "F47A",
+          "claim_text_draft": "The paper is a representative method candidate for palladium-catalyzed asymmetric synthesis of axially chiral allenes, based on the verified draft title 'Palladium-Catalyzed Asymmetric Synthesis of Axially Chiral Allenes:  A Synergistic Effect of Dibenzalacetone on High Enantioselectivity'.",
+          "support_type": "method",
+          "evidence_source": "bibliographic_metadata",
+          "confidence": "medium",
+          "needs_human_review": true,
+          "human_verified": false
+        },
+        {
+          "claim_id": "F47A-C2",
+          "paper_id": "F47A",
+          "claim_text_draft": "The title indicates a dibenzalacetone-related effect on enantioselectivity; the detailed mechanistic or optimization claim still needs manual PDF extraction.",
+          "support_type": "method",
+          "evidence_source": "needs_manual_extraction",
+          "confidence": "low",
+          "needs_human_review": true,
+          "human_verified": false
+        }
+      ],
+      "figure_notes_path": "inputs/figure_notes/F47A.figure_notes.md",
+      "verified_metadata_path": "inputs/verified_metadata/F47A.metadata.verified_draft.json",
+      "verified_excerpt_path": "inputs/verified_excerpts/F47A.excerpt_note.md",
+      "risks": [
+        "year, journal, authors, and DOI are not verified",
+        "filename appears truncated after 'on high'",
+        "key claims are not extracted"
+      ],
+      "bibliography_verification_status": "bibliographic_verified_draft",
+      "source_conflicts": [
+        {
+          "field": "title",
+          "values": [
+            "Palladium-catalyzed asymmetric synthesis of axially chiral allenes",
+            "Palladium-Catalyzed Asymmetric Synthesis of Axially Chiral Allenes:  A Synergistic Effect of Dibenzalacetone on High Enantioselectivity",
+            "Palladium-Catalyzed Asymmetric Synthesis of Axially Chiral Allenes:  A Synergistic Effect of Dibenzalacetone on High Enantioselectivity"
+          ],
+          "reason": "title similarity below threshold"
+        }
+      ],
+      "missing_fields": [],
+      "figure_notes_draft": [
+        {
+          "figure_note_id": "F47A-FN1",
+          "paper_id": "F47A",
+          "figure_or_scheme_label": "unknown",
+          "note_draft": "Potential review use is a reaction scheme or optimization figure related to Pd/asymmetric axially chiral allene synthesis; exact figure label is unknown.",
+          "source": "needs_manual_extraction",
+          "should_use_in_review": "yes_after_human_review",
+          "needs_human_review": true,
+          "human_verified": false
+        }
+      ],
+      "claims_figures_extraction_status": "draft_needs_human_review"
+    },
+    {
+      "candidate_id": "P403",
+      "filename": "chem_papers/pd-catalyzed-asymmetric-allenylation-of-secondary-phosphine-oxides-with-enyne-type-propargylic-carbamates-for-the.pdf",
+      "title_draft": "Pd-Catalyzed Asymmetric Allenylation of Secondary Phosphine Oxides with Enyne-Type Propargylic Carbamates for the Construction of Chiral Allenyl Phosphine Oxides",
+      "authors_draft": "unknown",
+      "year_draft": 2025,
+      "journal_draft": "ACS Catal. 2025",
+      "doi_draft": "unknown",
+      "role": "recent_progress",
+      "verification_status": "verified_draft",
+      "human_verified": false,
+      "needs_human_review": true,
+      "needs_pdf_read_verification": true,
+      "pdf_read_scope": "filename_metadata_or_first_page_only",
+      "upload_status": "not_uploaded",
+      "api_used": false,
+      "trusted_for_scientific_quality": false,
+      "metadata_confidence": "medium",
+      "key_claims_draft": [
+        {
+          "claim_id": "P403-C1",
+          "paper_id": "P403",
+          "claim_text_draft": "The paper is a recent-progress method candidate for Pd-catalyzed asymmetric allenylation of secondary phosphine oxides, based on the verified draft title 'Pd-Catalyzed Asymmetric Allenylation of Secondary Phosphine Oxides with Enyne-Type Propargylic Carbamates for the Construction of Chiral Allenyl Phosphine Oxides'.",
+          "support_type": "recent_progress",
+          "evidence_source": "bibliographic_metadata",
+          "confidence": "medium",
+          "needs_human_review": true,
+          "human_verified": false
+        },
+        {
+          "claim_id": "P403-C2",
+          "paper_id": "P403",
+          "claim_text_draft": "The title indicates enyne-type propargylic carbamates and chiral allenyl phosphine oxides as central scope elements; exact substrate scope and outcomes need manual extraction.",
+          "support_type": "recent_progress",
+          "evidence_source": "needs_manual_extraction",
+          "confidence": "low",
+          "needs_human_review": true,
+          "human_verified": false
+        }
+      ],
+      "figure_notes_path": "inputs/figure_notes/P403.figure_notes.md",
+      "verified_metadata_path": "inputs/verified_metadata/P403.metadata.verified_draft.json",
+      "verified_excerpt_path": "inputs/verified_excerpts/P403.excerpt_note.md",
+      "risks": [
+        "authors and DOI are not verified",
+        "title tail may need PDF title-page confirmation",
+        "key claims and figures are not extracted"
+      ],
+      "bibliography_verification_status": "bibliographic_verified_draft",
+      "source_conflicts": [
+        {
+          "field": "doi",
+          "values": [
+            "10.1021/acscatal.5c05571",
+            "10.1021/acscatal.5c05571.s001"
+          ],
+          "reason": "metadata sources disagree"
+        },
+        {
+          "field": "doi",
+          "values": [
+            "10.1021/acscatal.5c05571.s001"
+          ],
+          "reason": "matched DOI appears to identify supporting information"
+        }
+      ],
+      "missing_fields": [
+        "authors",
+        "doi"
+      ],
+      "figure_notes_draft": [
+        {
+          "figure_note_id": "P403-FN1",
+          "paper_id": "P403",
+          "figure_or_scheme_label": "unknown",
+          "note_draft": "Potential review use is a reaction scheme for Pd-catalyzed allenylation of secondary phosphine oxides; exact figure/scheme label is unknown.",
+          "source": "needs_manual_extraction",
+          "should_use_in_review": "yes_after_human_review",
+          "needs_human_review": true,
+          "human_verified": false
+        }
+      ],
+      "claims_figures_extraction_status": "draft_needs_human_review"
+    }
+  ],
+  "safety": {
+    "network": "not_used",
+    "qwen": "not_used",
+    "mineru_api": "not_used",
+    "bailian": "not_used",
+    "upload": "not_used",
+    "knowledge_base": "not_created",
+    "image_api": "not_used"
+  },
+  "bibliography_verification_summary_path": "inputs/bibliography_verification_summary.json",
+  "phase5k_ready": true,
+  "claims_figures_summary": {
+    "claim_count": 7,
+    "figure_note_count": 3,
+    "needs_manual_extraction_count": 6
+  }
+}

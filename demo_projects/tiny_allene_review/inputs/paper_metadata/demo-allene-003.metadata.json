@@ -1,0 +1,21 @@
+{
+  "paper_id": "demo-allene-003",
+  "title": "Steric Tuning of Allene Ligands for Palladium-Catalyzed Enantioselective Coupling",
+  "year": 2023,
+  "authors": ["Morgan Demo", "Ito Example"],
+  "journal": "Catalysis Demo Reports",
+  "doi": "",
+  "topic_tags": ["allene ligand", "palladium catalysis", "steric tuning"],
+  "method_tags": ["coupling reaction", "ligand optimization"],
+  "key_findings": [
+    "A larger substituent set is linked to a mock increase in enantioselectivity.",
+    "The synthetic model emphasizes matching ligand pocket and substrate size."
+  ],
+  "figure_candidates": [
+    {
+      "figure_id": "fig3",
+      "caption": "Mock steric pocket schematic for allene ligands.",
+      "source_path": "figures/allene_placeholder.svg"
+    }
+  ]
+}

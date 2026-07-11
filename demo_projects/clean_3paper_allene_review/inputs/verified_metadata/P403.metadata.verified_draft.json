@@ -1,0 +1,109 @@
+{
+  "candidate_id": "P403",
+  "filename": "chem_papers/pd-catalyzed-asymmetric-allenylation-of-secondary-phosphine-oxides-with-enyne-type-propargylic-carbamates-for-the.pdf",
+  "pdf_exists": true,
+  "verified_title_draft": "Pd-Catalyzed Asymmetric Allenylation of Secondary Phosphine Oxides with Enyne-Type Propargylic Carbamates for the Construction of Chiral Allenyl Phosphine Oxides",
+  "authors_draft": [],
+  "year_draft": 2025,
+  "journal_draft": "ACS Catal. 2025",
+  "doi_draft": "unknown",
+  "publication_type_draft": "research_article",
+  "source_matches": [
+    {
+      "source_name": "local_verified_draft",
+      "query": "Pd-Catalyzed Asymmetric Allenylation of Secondary Phosphine Oxides with Enyne-Type Propargylic Carbamates for the Construction of Chiral Allenyl Phosphine Oxides",
+      "matched_title": "Pd-Catalyzed Asymmetric Allenylation of Secondary Phosphine Oxides with Enyne-Type Propargylic Carbamates for the Construction of Chiral Allenyl Phosphine Oxides",
+      "authors": [],
+      "year": 2025,
+      "venue": "ACS Catal.",
+      "doi": "unknown",
+      "url": "",
+      "confidence": 0.55,
+      "warnings": [
+        "offline seed only; public metadata lookup disabled"
+      ]
+    },
+    {
+      "source_name": "crossref",
+      "query": "Pd-Catalyzed Asymmetric Allenylation of Secondary Phosphine Oxides with Enyne-Type Propargylic Carbamates for the Construction of Chiral Allenyl Phosphine Oxides",
+      "matched_title": "Pd-Catalyzed Asymmetric Allenylation of Secondary Phosphine Oxides with Enyne-Type Propargylic Carbamates for the Construction of Chiral Allenyl Phosphine Oxides",
+      "authors": [],
+      "year": null,
+      "venue": "",
+      "doi": "10.1021/acscatal.5c05571.s001",
+      "url": "https://doi.org/10.1021/acscatal.5c05571.s001",
+      "confidence": 1.0,
+      "warnings": []
+    },
+    {
+      "source_name": "openalex",
+      "query": "Pd-Catalyzed Asymmetric Allenylation of Secondary Phosphine Oxides with Enyne-Type Propargylic Carbamates for the Construction of Chiral Allenyl Phosphine Oxides",
+      "matched_title": "Pd-Catalyzed Asymmetric Allenylation of Secondary Phosphine Oxides with Enyne-Type Propargylic Carbamates for the Construction of Chiral Allenyl Phosphine Oxides",
+      "authors": [
+        "Yujie Dong",
+        "Nianci Zhang",
+        "Fazhou Yang",
+        "Jinbao Wang",
+        "Bo Wang",
+        "Jun Liu",
+        "Bing Zheng",
+        "Cheng Zhang",
+        "Leijie Zhou",
+        "Hongchao Guo"
+      ],
+      "year": 2025,
+      "venue": "ACS Catalysis",
+      "doi": "10.1021/acscatal.5c05571",
+      "url": "https://openalex.org/W4414697023",
+      "confidence": 1.0,
+      "warnings": []
+    },
+    {
+      "source_name": "semantic_scholar",
+      "query": "Pd-Catalyzed Asymmetric Allenylation of Secondary Phosphine Oxides with Enyne-Type Propargylic Carbamates for the Construction of Chiral Allenyl Phosphine Oxides",
+      "matched_title": "",
+      "authors": [],
+      "year": null,
+      "venue": "",
+      "doi": "",
+      "url": "",
+      "confidence": 0.0,
+      "warnings": [
+        "network_warning: HTTPError"
+      ]
+    }
+  ],
+  "metadata_confidence": "medium",
+  "conflicts": [
+    {
+      "field": "doi",
+      "values": [
+        "10.1021/acscatal.5c05571",
+        "10.1021/acscatal.5c05571.s001"
+      ],
+      "reason": "metadata sources disagree"
+    },
+    {
+      "field": "doi",
+      "values": [
+        "10.1021/acscatal.5c05571.s001"
+      ],
+      "reason": "matched DOI appears to identify supporting information"
+    }
+  ],
+  "missing_fields": [
+    "authors",
+    "doi"
+  ],
+  "needs_human_review": true,
+  "human_verified": false,
+  "verification_status": "bibliographic_verified_draft",
+  "upload_status": "not_uploaded",
+  "api_used": false,
+  "trusted_for_scientific_quality": false,
+  "notes": [
+    "Metadata is a draft based on filename/local draft and optional public bibliographic sources.",
+    "No long PDF body text was saved.",
+    "Human review remains required before scientific-quality use."
+  ]
+}

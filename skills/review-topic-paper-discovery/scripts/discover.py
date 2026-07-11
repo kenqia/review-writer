@@ -754,7 +754,7 @@ def run(args: argparse.Namespace) -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Discover local and web papers by expanded topic keywords.")
-    parser.add_argument("--review-root", default="/home/ps/review-writer")
+    parser.add_argument("--review-root", default=str(Path(__file__).resolve().parents[3]))
     parser.add_argument("--project-id", default="")
     parser.add_argument("--topic", required=True)
     parser.add_argument("--keywords", default="")

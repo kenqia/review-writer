@@ -1,0 +1,21 @@
+name: clean_3paper_v1
+minimum_score: 90
+metrics:
+  - id: workflow_completeness
+    weight: 11
+  - id: artifact_completeness
+    weight: 11
+  - id: bibliographic_completeness
+    weight: 11
+  - id: claim_traceability
+    weight: 11
+  - id: figure_note_integrity
+    weight: 11
+  - id: warning_visibility
+    weight: 11
+  - id: prompt_leakage_absence
+    weight: 11
+  - id: safety_boundary
+    weight: 11
+  - id: human_review_flags
+    weight: 12

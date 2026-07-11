@@ -39,29 +39,29 @@ If `latex2word` is missing, math is rendered as italic plain text and a warning 
 Default (final draft):
 
 ```bash
-python3 /home/ps/review-writer/skills/review-export-docx/scripts/md2docx.py \
-  --input  /home/ps/review-writer/review-projects/<project_id>/05_final_audit/final_draft.md \
-  --output /home/ps/review-writer/review-projects/<project_id>/05_final_audit/final_draft.docx
+python3 <review_root>/skills/review-export-docx/scripts/md2docx.py \
+  --input  <review_root>/review-projects/<project_id>/05_final_audit/final_draft.md \
+  --output <review_root>/review-projects/<project_id>/05_final_audit/final_draft.docx
 ```
 
 First draft:
 
 ```bash
-python3 /home/ps/review-writer/skills/review-export-docx/scripts/md2docx.py \
-  --input  /home/ps/review-writer/review-projects/<project_id>/04_first_draft/first_draft.md \
-  --output /home/ps/review-writer/review-projects/<project_id>/04_first_draft/first_draft.docx
+python3 <review_root>/skills/review-export-docx/scripts/md2docx.py \
+  --input  <review_root>/review-projects/<project_id>/04_first_draft/first_draft.md \
+  --output <review_root>/review-projects/<project_id>/04_first_draft/first_draft.docx
 ```
 
 Custom template:
 
 ```bash
-python3 /home/ps/review-writer/skills/review-export-docx/scripts/md2docx.py \
+python3 <review_root>/skills/review-export-docx/scripts/md2docx.py \
   --input    /abs/path/review.md \
   --output   /abs/path/review.docx \
   --template /abs/path/custom_template.docx
 ```
 
-The default template is `/home/ps/review-writer/skills/review-export-docx/review_template.docx`.
+The default template is `<review_root>/skills/review-export-docx/review_template.docx`.
 
 ## Style Mapping
 

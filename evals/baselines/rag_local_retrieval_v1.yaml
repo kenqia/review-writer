@@ -1,0 +1,7 @@
+baseline_id: rag_local_retrieval_v1
+mode: offline_local_retrieval
+minimum_recall_at_3: 0.80
+minimum_citation_coverage: 1.00
+allow_warn: true
+trusted_for_scientific_quality_must_remain_false: true
+
