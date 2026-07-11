@@ -13,7 +13,9 @@ providers:
   alibaba_openai_compatible:
     enabled: false
     env_key: DASHSCOPE_API_KEY
-    workspace_id_env: ALIBABA_WORKSPACE_ID
+    workspace_id_env: BAILIAN_WORKSPACE_ID
+    fallback_workspace_id_env: ALIBABA_WORKSPACE_ID
+    base_url_env: BAILIAN_OPENAI_BASE_URL
     region: cn-beijing
     base_url_template: https://{workspace_id}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
     model: qwen-plus
