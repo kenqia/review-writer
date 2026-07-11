@@ -352,9 +352,11 @@ phase7-pilot-dry-run:
 		--strict
 
 phase7-real-preflight:
-	$(PYTHON) tests/test_provider_adapters.py
-	$(PYTHON) tests/test_retrieval_generation_pipeline.py
-	$(PYTHON) scripts/demo/phase7_real_preflight.py \
+	$(BAILIAN_SDK_PYTHON) tests/test_provider_adapters.py
+	$(BAILIAN_SDK_PYTHON) tests/test_phase7_real_budget.py
+	$(BAILIAN_SDK_PYTHON) tests/test_retrieval_generation_pipeline.py
+	$(BAILIAN_SDK_PYTHON) tests/test_grounded_section_validation.py
+	$(BAILIAN_SDK_PYTHON) scripts/demo/phase7_real_preflight.py \
 		--fixture tests/fixtures/retrieval_generation/clean_3paper_retrieval_fixture.json \
 		--output-json /tmp/review_writer_phase7_real_preflight.json \
 		--output-md /tmp/review_writer_phase7_real_preflight.md

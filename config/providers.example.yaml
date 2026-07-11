@@ -18,11 +18,11 @@ providers:
     base_url_env: BAILIAN_OPENAI_BASE_URL
     region: cn-beijing
     base_url_template: https://{workspace_id}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
-    model: qwen-plus
+    model: qwen3.7-plus
   dashscope:
     enabled: false
     env_key: DASHSCOPE_API_KEY
-    model: qwen-plus
+    model: qwen3.7-plus
 
 retrieval:
   local:

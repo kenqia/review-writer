@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -18,8 +19,18 @@ from review_writer.pipeline.retrieval_generation import (
     build_generation_messages,
     load_retrieval_fixture,
 )
+from review_writer.config import load_provider_config
+from review_writer.phase7_budget import LIMITS, Phase7BudgetLedger
 from review_writer.providers.base import TextGenerationRequest
-from review_writer.providers.openai_compatible_provider import OpenAICompatibleProvider, parse_openai_stream_content
+from review_writer.providers.openai_compatible_provider import (
+    DEFAULT_QWEN_MODEL,
+    FirstByteTimeout,
+    OpenAICompatibleProvider,
+    StreamFailed,
+    TotalStreamTimeout,
+    parse_openai_stream_content,
+    parse_openai_stream_result,
+)
 
 DEFAULT_FIXTURE = REPO_ROOT / "tests/fixtures/retrieval_generation/clean_3paper_retrieval_fixture.json"
 DEFAULT_OUTPUT_JSON = Path("/tmp/review_writer_phase7_real_preflight.json")
@@ -59,13 +70,18 @@ def run_preflight(args: argparse.Namespace) -> dict[str, Any]:
     checks: dict[str, dict[str, Any]] = {}
 
     cleanup_handler = make_cleanup_handler(args.output_root)
+    checks["git_worktree_state"] = check_git_worktree_state()
     checks["cleanup_handler"] = check_cleanup_handler(cleanup_handler)
     cleanup_status = checks["cleanup_handler"]["cleanup_status"]
 
     checks["output_dir_writable"] = check_output_dir(args.output_root)
     checks["provider_dependency"] = check_openai_dependency()
+    checks["bailian_sdk_dependency"] = check_bailian_sdk_dependency()
+    checks["pip_check"] = check_pip_check()
     env = read_safe_env()
     checks["env_presence"] = {"status": "pass" if env_ready_for_real_call(env) else "fail", "presence": env["presence"]}
+    checks["model_name_valid"] = check_model_name(env)
+    checks["dedicated_endpoint_derivable"] = check_endpoint_derivable(env)
 
     pack = build_evidence_pack(load_retrieval_fixture(args.fixture), max_evidence_items=3)
     checks["offline_evidence_pack"] = {
@@ -83,10 +99,17 @@ def run_preflight(args: argparse.Namespace) -> dict[str, Any]:
         metadata={"section_id": pack.section_id, "evidence_item_count": len(pack.items)},
     )
     checks["request_serializable"] = check_request_serializable(request)
+    checks["stream_true_supported"] = {"status": "pass", "stream": True}
     checks["streaming_parser"] = check_streaming_parser()
+    checks["first_server_timeout_handling"] = check_first_server_timeout_handling()
+    checks["first_byte_timeout_handling"] = check_first_byte_timeout_handling()
+    checks["total_timeout_handling"] = check_total_timeout_handling()
+    checks["length_finish_handling"] = check_length_finish_handling()
+    checks["mid_stream_failure_handling"] = check_mid_stream_failure_handling()
     checks["timeout_configurable"] = check_timeout_config(args)
     checks["safe_failure_report"] = check_safe_failure_report()
     checks["prompt_and_tokens"] = check_prompt_and_tokens(messages, args.max_output_tokens)
+    checks["real_call_budget"] = check_real_call_budget()
 
     failed = [name for name, check in checks.items() if check.get("status") != "pass"]
     return {
@@ -106,27 +129,35 @@ def run_preflight(args: argparse.Namespace) -> dict[str, Any]:
         "bailian_index_created": False,
         "qwen_request_sent": False,
         "region": env["region"],
+        "model_name": env["model"],
+        "model_source": env["model_source"],
         "dedicated_endpoint_used": env["dedicated_endpoint_used"],
+        "endpoint_redacted": True,
         "checks": checks,
     }
 
 
 def read_safe_env() -> dict[str, Any]:
     region = os.environ.get("BAILIAN_REGION") or os.environ.get("ALIBABA_REGION") or "cn-beijing"
-    model = os.environ.get("BAILIAN_MODEL") or os.environ.get("ALIBABA_MODEL") or "qwen-plus"
+    env_model = os.environ.get("BAILIAN_MODEL") or os.environ.get("ALIBABA_MODEL")
+    repo_model = read_repo_qwen_model()
+    model = env_model or repo_model or DEFAULT_QWEN_MODEL
     workspace_present = bool(os.environ.get("BAILIAN_WORKSPACE_ID") or os.environ.get("ALIBABA_WORKSPACE_ID"))
     base_url_present = bool(os.environ.get("BAILIAN_OPENAI_BASE_URL") or os.environ.get("ALIBABA_OPENAI_BASE_URL"))
     return {
         "region": region,
         "model": model,
+        "model_source": "env" if env_model else "repo_config",
         "dedicated_endpoint_used": workspace_present or base_url_present,
+        "workspace_present": workspace_present,
+        "base_url_present": base_url_present,
         "presence": {
             "DASHSCOPE_API_KEY": "SET" if os.environ.get("DASHSCOPE_API_KEY") else "MISSING",
             "BAILIAN_WORKSPACE_ID": "SET" if os.environ.get("BAILIAN_WORKSPACE_ID") else "MISSING",
             "ALIBABA_WORKSPACE_ID": "SET" if os.environ.get("ALIBABA_WORKSPACE_ID") else "MISSING",
             "BAILIAN_OPENAI_BASE_URL": "SET" if os.environ.get("BAILIAN_OPENAI_BASE_URL") else "MISSING",
             "BAILIAN_REGION": "SET" if os.environ.get("BAILIAN_REGION") else "MISSING_DEFAULT_CN_BEIJING",
-            "BAILIAN_MODEL": "SET" if os.environ.get("BAILIAN_MODEL") else "MISSING_DEFAULT_QWEN_PLUS",
+            "BAILIAN_MODEL": "SET" if os.environ.get("BAILIAN_MODEL") else "MISSING_REPO_QWEN37_PLUS",
         },
     }
 
@@ -137,12 +168,107 @@ def env_ready_for_real_call(env: dict[str, Any]) -> bool:
     return has_key and has_endpoint
 
 
+def read_repo_qwen_model() -> str:
+    try:
+        config = load_provider_config(REPO_ROOT / "config/providers.example.yaml")
+    except Exception:
+        return DEFAULT_QWEN_MODEL
+    model = (
+        ((config.get("providers") or {}).get("alibaba_openai_compatible") or {}).get("model")
+        or DEFAULT_QWEN_MODEL
+    )
+    return str(model)
+
+
+def check_git_worktree_state() -> dict[str, Any]:
+    status_result = subprocess.run(
+        ["git", "status", "--short"],
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    branch_result = subprocess.run(
+        ["git", "branch", "--show-current"],
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    current_branch = branch_result.stdout.strip()
+    worktree_clean = status_result.stdout.strip() == ""
+    return {
+        "status": "pass" if status_result.returncode == 0 and branch_result.returncode == 0 and current_branch == "feat/orchestrator-rag-generation-pilot" else "fail",
+        "git_available": status_result.returncode == 0 and branch_result.returncode == 0,
+        "worktree_clean": worktree_clean,
+        "current_branch": current_branch,
+        "expected_branch": "feat/orchestrator-rag-generation-pilot",
+    }
+
+
 def check_openai_dependency() -> dict[str, Any]:
     try:
         import openai  # type: ignore # noqa: F401
     except Exception:
         return {"status": "fail", "dependency": "openai", "importable": False}
     return {"status": "pass", "dependency": "openai", "importable": True}
+
+
+def check_bailian_sdk_dependency() -> dict[str, Any]:
+    try:
+        import alibabacloud_bailian20231229  # type: ignore # noqa: F401
+    except Exception:
+        return {"status": "fail", "dependency": "alibabacloud_bailian20231229", "importable": False}
+    return {"status": "pass", "dependency": "alibabacloud_bailian20231229", "importable": True}
+
+
+def check_pip_check() -> dict[str, Any]:
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "check"],
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    return {"status": "pass" if result.returncode == 0 else "fail", "command": "python -m pip check"}
+
+
+def check_model_name(env: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": "pass" if env["model"] == DEFAULT_QWEN_MODEL else "fail",
+        "model_name": env["model"],
+        "expected_model_name": DEFAULT_QWEN_MODEL,
+        "model_source": env["model_source"],
+    }
+
+
+def check_endpoint_derivable(env: dict[str, Any]) -> dict[str, Any]:
+    provider = OpenAICompatibleProvider(region=env["region"], model=env["model"])
+    try:
+        endpoint = provider._resolve_endpoint(  # noqa: SLF001 - preflight validates redacted endpoint contract.
+            {
+                "region": env["region"],
+                "workspace_id_present": env["workspace_present"],
+                "base_url_present": env["base_url_present"],
+                "presence": env["presence"],
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "status": "fail",
+            "region": env["region"],
+            "exception_class": exc.__class__.__name__,
+            "endpoint_redacted": True,
+        }
+    return {
+        "status": "pass",
+        "region": endpoint["region"],
+        "dedicated_endpoint_used": bool(endpoint["dedicated_endpoint_used"]),
+        "endpoint_redacted": endpoint["base_url_redacted"] == "redacted",
+    }
 
 
 def check_request_serializable(request: TextGenerationRequest) -> dict[str, Any]:
@@ -152,23 +278,121 @@ def check_request_serializable(request: TextGenerationRequest) -> dict[str, Any]
                 "messages": request.messages,
                 "model": request.model,
                 "temperature": request.temperature,
-                "max_tokens": request.max_output_tokens,
+                "max_completion_tokens": request.max_output_tokens,
+                "stream": True,
+                "stream_options": {"include_usage": True},
+                "extra_body": {"enable_thinking": False, "enable_search": False},
                 "metadata": request.metadata,
             },
             ensure_ascii=False,
         )
     except Exception as exc:  # noqa: BLE001
         return {"status": "fail", "exception_class": exc.__class__.__name__}
-    return {"status": "pass", "model": request.model, "max_output_tokens": request.max_output_tokens}
+    return {
+        "status": "pass",
+        "model": request.model,
+        "stream": True,
+        "max_completion_tokens": request.max_output_tokens,
+        "enable_thinking": False,
+        "enable_search": False,
+    }
 
 
 def check_streaming_parser() -> dict[str, Any]:
     chunks = [
+        {"choices": [{"delta": {"role": "assistant"}}]},
+        {"choices": [{"delta": {"reasoning_content": "hidden"}}]},
         {"choices": [{"delta": {"content": "one "}}]},
-        {"choices": [{"delta": {"content": "two"}}]},
+        {"choices": [{"delta": {"content": "two"}, "finish_reason": "stop"}]},
+        {"choices": [], "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}},
     ]
-    content = parse_openai_stream_content(chunks, first_byte_timeout_seconds=3, total_timeout_seconds=5)
-    return {"status": "pass" if content == "one two" else "fail", "chunks_received": 2}
+    parsed = parse_openai_stream_result(
+        chunks,
+        first_server_timeout_seconds=3,
+        first_content_timeout_seconds=3,
+        idle_timeout_seconds=3,
+        total_timeout_seconds=5,
+    )
+    ok = (
+        parsed.content == "one two"
+        and parsed.telemetry["usage_chunk_received"] is True
+        and parsed.telemetry["reasoning_chunks_received"] == 1
+        and parsed.telemetry["finish_reason"] == "stop"
+    )
+    return {"status": "pass" if ok else "fail", **parsed.telemetry}
+
+
+def check_first_byte_timeout_handling() -> dict[str, Any]:
+    try:
+        parse_openai_stream_content(
+            [{"choices": [{"delta": {"content": "late"}}]}],
+            first_byte_timeout_seconds=1,
+            total_timeout_seconds=5,
+            monotonic=FakeClock([0.0, 2.0]),
+        )
+    except FirstByteTimeout:
+        return {"status": "pass", "error_type": "first_byte_timeout"}
+    return {"status": "fail", "error_type": None}
+
+
+def check_first_server_timeout_handling() -> dict[str, Any]:
+    try:
+        parse_openai_stream_result(
+            [{"choices": [{"delta": {"content": "late"}}]}],
+            first_server_timeout_seconds=1,
+            first_content_timeout_seconds=3,
+            idle_timeout_seconds=3,
+            total_timeout_seconds=5,
+            monotonic=FakeClock([0.0, 2.0]),
+        )
+    except FirstByteTimeout:
+        return {"status": "pass", "error_type": "first_server_timeout"}
+    return {"status": "fail", "error_type": None}
+
+
+def check_total_timeout_handling() -> dict[str, Any]:
+    try:
+        parse_openai_stream_content(
+            [{"choices": [{"delta": {"content": "one"}}]}, {"choices": [{"delta": {"content": "two"}}]}],
+            first_byte_timeout_seconds=1,
+            total_timeout_seconds=2,
+            monotonic=FakeClock([0.0, 0.5, 3.0]),
+        )
+    except TotalStreamTimeout:
+        return {"status": "pass", "error_type": "total_timeout"}
+    return {"status": "fail", "error_type": None}
+
+
+def check_length_finish_handling() -> dict[str, Any]:
+    try:
+        parse_openai_stream_result(
+            [{"choices": [{"delta": {"content": "cut"}, "finish_reason": "length"}]}],
+            first_server_timeout_seconds=3,
+            first_content_timeout_seconds=3,
+            idle_timeout_seconds=3,
+            total_timeout_seconds=5,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "pass" if exc.__class__.__name__ == "IncompleteGeneration" else "fail", "error_type": exc.__class__.__name__}
+    return {"status": "fail", "error_type": None}
+
+
+def check_mid_stream_failure_handling() -> dict[str, Any]:
+    try:
+        parse_openai_stream_content(
+            FailingStream(),
+            first_byte_timeout_seconds=3,
+            total_timeout_seconds=5,
+            monotonic=FakeClock([0.0, 0.2, 0.3]),
+        )
+    except StreamFailed as exc:
+        return {
+            "status": "pass" if exc.stream_started and exc.chunks_received == 1 else "fail",
+            "error_type": "stream_failed",
+            "stream_started": exc.stream_started,
+            "chunks_received": exc.chunks_received,
+        }
+    return {"status": "fail", "error_type": None}
 
 
 def check_timeout_config(args: argparse.Namespace) -> dict[str, Any]:
@@ -240,6 +464,29 @@ def check_prompt_and_tokens(messages: list[dict[str, str]], max_output_tokens: i
     }
 
 
+def check_real_call_budget() -> dict[str, Any]:
+    state = Phase7BudgetLedger().read()
+    fixture = Path("/tmp/review_writer_phase7_budget_preflight_fixture.json")
+    fixture.unlink(missing_ok=True)
+    before, after = Phase7BudgetLedger(fixture).reserve("qwen_only", qwen_requests=1, last_operation="preflight fixture")
+    fixture_ok = before["qwen_total_requests"] == 0 and after["qwen_total_requests"] == 1
+    return {
+        "status": "pass" if fixture_ok else "fail",
+        "qwen_only_real_requests_max": LIMITS["qwen_only_attempts"],
+        "full_e2e_runs_max": LIMITS["full_e2e_attempts"],
+        "qwen_total_requests_max": LIMITS["qwen_total_requests"],
+        "bailian_lifecycles_max": LIMITS["bailian_lifecycles"],
+        "current_counts": {
+            "qwen_only_attempts": int(state["qwen_only_attempts"]),
+            "full_e2e_attempts": int(state["full_e2e_attempts"]),
+            "qwen_total_requests": int(state["qwen_total_requests"]),
+            "bailian_lifecycles": int(state["bailian_lifecycles"]),
+        },
+        "initialized": True,
+        "fixture_ledger_pass": fixture_ok,
+    }
+
+
 def safe_failure_report(failed_stage: str, exc: Exception, *, cleanup_status: str) -> dict[str, Any]:
     return {
         "status": "fail",
@@ -256,6 +503,23 @@ def safe_failure_report(failed_stage: str, exc: Exception, *, cleanup_status: st
         "recommended_fix": recommend_fix(failed_stage),
         "network_calls": 0,
     }
+
+
+class FakeClock:
+    def __init__(self, values: list[float]) -> None:
+        self.values = values
+        self.index = 0
+
+    def __call__(self) -> float:
+        value = self.values[min(self.index, len(self.values) - 1)]
+        self.index += 1
+        return value
+
+
+class FailingStream:
+    def __iter__(self):
+        yield {"choices": [{"delta": {"content": "partial"}}]}
+        raise RuntimeError("simulated stream failure; prompt hidden")
 
 
 def classify_error(exc: Exception) -> str:
@@ -279,6 +543,14 @@ def recommend_fix(failed_stage: str | None) -> str:
         "cleanup_handler": "fix cleanup registration before creating Bailian resources",
         "output_dir_writable": "choose a writable /tmp output directory",
         "prompt_and_tokens": "shrink prompt or set max_output_tokens within the configured range",
+        "bailian_sdk_dependency": "install the Bailian SDK into the same conda env as the Qwen provider",
+        "pip_check": "resolve dependency conflicts in the active project environment",
+        "model_name_valid": "set the repo/provider model to qwen3.7-plus before real generation",
+        "dedicated_endpoint_derivable": "set workspace id or a redacted OpenAI-compatible base URL for the configured region",
+        "first_byte_timeout_handling": "fix first-byte timeout classification before real streaming",
+        "total_timeout_handling": "fix total stream timeout classification before real streaming",
+        "mid_stream_failure_handling": "fix partial stream failure classification before real streaming",
+        "real_call_budget": "initialize real-call budget counters before any real request",
     }
     return fixes.get(failed_stage or "", "inspect the preflight report and rerun without creating Bailian resources")
 

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from review_writer.providers import OpenAICompatibleProvider, TextGenerationRequest, TextProvider
+from review_writer.providers.openai_compatible_provider import DEFAULT_QWEN_MODEL
 
 ALLOWED_PAPER_IDS = {"F3I", "F47A", "P403"}
 DEFAULT_SECTION_ID = "phase7-single-section"
@@ -94,6 +95,7 @@ class GenerationResult:
     needs_human_review: bool
     trusted_for_scientific_quality: bool
     human_review_tasks: list[str]
+    provider_metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_safe_dict(self) -> dict[str, Any]:
         return {
@@ -105,6 +107,7 @@ class GenerationResult:
             "needs_human_review": self.needs_human_review,
             "trusted_for_scientific_quality": self.trusted_for_scientific_quality,
             "human_review_tasks": self.human_review_tasks,
+            "provider_metadata": self.provider_metadata,
             "claims": [
                 {
                     "claim_id": claim.claim_id,
@@ -204,7 +207,7 @@ def generate_grounded_section(
         )
         request = TextGenerationRequest(
             messages=build_generation_messages(pack),
-            model=getattr(provider_adapter, "model", "qwen-plus"),
+            model=getattr(provider_adapter, "model", DEFAULT_QWEN_MODEL),
             temperature=0,
             max_output_tokens=max_output_tokens,
             metadata={
@@ -219,8 +222,11 @@ def generate_grounded_section(
             raise ProviderGenerationError(str(error_type), result.metadata)
         text = result.content
         provider = result.provider_name
+        provider_metadata = result.metadata
     else:
         raise ValueError(f"unsupported generation_provider: {generation_provider}")
+    if generation_provider == "offline":
+        provider_metadata = {"network": "not_used", "streaming": False}
     claims = claims_from_section(text, pack)
     tasks = [
         "Verify every cited statement against source PDFs before using this in a scientific review.",
@@ -238,6 +244,7 @@ def generate_grounded_section(
         needs_human_review=True,
         trusted_for_scientific_quality=False,
         human_review_tasks=tasks,
+        provider_metadata=provider_metadata,
     )
 
 

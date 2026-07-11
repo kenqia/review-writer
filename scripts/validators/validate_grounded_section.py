@@ -15,6 +15,12 @@ if str(REPO_ROOT) not in sys.path:
 ALLOWED = {"F3I", "F47A", "P403"}
 PROMPT_LEAKAGE_RE = re.compile(r"\b(system prompt|developer message|workflow|skill instructions|qoderwork)\b", re.I)
 UNSUPPORTED_NUMBER_RE = re.compile(r"\b\d+(?:\.\d+)?\s*(?:%|ee|yield|mol\s*%)\b|doi\s*[:/]|10\.\d{4,9}/", re.I)
+COMPLETE_NEEDS_RE = re.compile(r"\[NEEDS_EVIDENCE:\s*[^\]]+\]", re.I)
+MALFORMED_NEEDS_RE = re.compile(r"\[NEEDS_E(?!VIDENCE:\s*[^\]]+\])", re.I)
+UNSUPPORTED_GENERALIZATION_RE = re.compile(
+    r"\b(most robust|broadly applicable|well-defined|proceeds through|one of the most)\b",
+    re.I,
+)
 
 
 def main() -> int:
@@ -57,23 +63,32 @@ def validate(section_md: Path, evidence_pack_json: Path) -> tuple[dict[str, Any]
     unsupported_claims = []
     prompt_leakage = []
     needs_evidence_tasks = []
+    malformed_markers = []
+    sentence_fragments = []
     covered = 0
     for index, paragraph in enumerate(paragraphs, start=1):
         citations = sorted(set(re.findall(r"\[([A-Z0-9]+)\]", paragraph)))
         unsupported = [paper_id for paper_id in citations if paper_id not in evidence_ids]
         unsupported_citations.extend(unsupported)
-        has_needs = "[NEEDS_EVIDENCE:" in paragraph or paragraph.strip().upper().startswith("[NEEDS_E")
+        has_needs = bool(COMPLETE_NEEDS_RE.search(paragraph))
+        malformed_marker = bool(MALFORMED_NEEDS_RE.search(paragraph)) or ("[NEEDS_EVIDENCE:" in paragraph and not has_needs)
+        if malformed_marker:
+            malformed_markers.append(f"C{index:03d}")
         if has_needs:
             needs_evidence_tasks.append({"claim_id": f"C{index:03d}", "task": paragraph})
         numeric = bool(UNSUPPORTED_NUMBER_RE.search(paragraph))
+        unsupported_generalization = _has_unsupported_generalization(paragraph)
+        sentence_fragment = _looks_like_sentence_fragment(paragraph)
+        if sentence_fragment:
+            sentence_fragments.append(f"C{index:03d}")
         leakage = bool(PROMPT_LEAKAGE_RE.search(paragraph))
         if leakage:
             prompt_leakage.append(f"C{index:03d}")
         factual = not has_needs
         mapped = [paper_id for paper_id in citations if paper_id in evidence_ids]
-        if factual and mapped and not unsupported and not numeric:
+        if factual and mapped and not unsupported and not numeric and not unsupported_generalization and not sentence_fragment:
             covered += 1
-        if factual and (not mapped or unsupported or numeric):
+        if factual and (not mapped or unsupported or numeric or unsupported_generalization or sentence_fragment or malformed_marker):
             unsupported_claims.append(f"C{index:03d}")
         rows.append(
             {
@@ -83,6 +98,9 @@ def validate(section_md: Path, evidence_pack_json: Path) -> tuple[dict[str, Any]
                 "needs_evidence": has_needs,
                 "unsupported_citations": unsupported,
                 "unsupported_number_or_doi": numeric,
+                "unsupported_generalization": unsupported_generalization,
+                "malformed_marker": malformed_marker,
+                "sentence_fragment": sentence_fragment,
                 "prompt_leakage": leakage,
             }
         )
@@ -95,6 +113,10 @@ def validate(section_md: Path, evidence_pack_json: Path) -> tuple[dict[str, Any]
         errors.append("unsupported factual claims present")
     if prompt_leakage:
         errors.append("prompt leakage present")
+    if malformed_markers:
+        errors.append("malformed NEEDS_EVIDENCE marker present")
+    if sentence_fragments:
+        errors.append("sentence fragment present")
     if pack.get("needs_human_review") is not True:
         errors.append("needs_human_review must be true")
     if pack.get("trusted_for_scientific_quality") is not False:
@@ -108,6 +130,10 @@ def validate(section_md: Path, evidence_pack_json: Path) -> tuple[dict[str, Any]
         "unsupported_claim_count": len(unsupported_claims),
         "unsupported_claim_ids": unsupported_claims,
         "prompt_leakage_count": len(prompt_leakage),
+        "malformed_marker_count": len(malformed_markers),
+        "malformed_marker_claim_ids": malformed_markers,
+        "sentence_fragment_count": len(sentence_fragments),
+        "sentence_fragment_claim_ids": sentence_fragments,
         "needs_human_review": pack.get("needs_human_review") is True,
         "trusted_for_scientific_quality": False,
         "human_review_tasks": [
@@ -125,6 +151,31 @@ def claim_paragraphs(section: str) -> list[str]:
         if text and not re.match(r"^#{1,6}\s+", text):
             paragraphs.append(text)
     return paragraphs
+
+
+def _looks_like_sentence_fragment(paragraph: str) -> bool:
+    stripped = paragraph.strip()
+    if not stripped or COMPLETE_NEEDS_RE.search(stripped):
+        return False
+    if re.match(r"^#{1,6}\s+", stripped):
+        return False
+    if stripped.endswith((".", "?", "!", "]")):
+        return False
+    return True
+
+
+def _has_unsupported_generalization(paragraph: str) -> bool:
+    if not UNSUPPORTED_GENERALIZATION_RE.search(paragraph):
+        return False
+    lower = paragraph.lower()
+    cautious_context = (
+        "does not support" in lower
+        or "not support" in lower
+        or "remain manual-review" in lower
+        or "rather than generated facts" in lower
+        or "needs_evidence" in lower
+    )
+    return not cautious_context
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:

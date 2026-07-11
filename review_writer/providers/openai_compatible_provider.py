@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import time
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from typing import Any
 
 from .base import ProviderResult, TextGenerationRequest
@@ -12,6 +13,7 @@ REGION_HOSTS = {
     "ap-northeast-1": "https://{workspace_id}.ap-northeast-1.maas.aliyuncs.com/compatible-mode/v1",
     "ap-southeast-1": "https://{workspace_id}.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
 }
+DEFAULT_QWEN_MODEL = "qwen3.7-plus"
 
 
 class OpenAICompatibleProvider:
@@ -21,7 +23,7 @@ class OpenAICompatibleProvider:
         self,
         *,
         base_url: str = "",
-        model: str = "qwen-plus",
+        model: str = DEFAULT_QWEN_MODEL,
         region: str = "cn-beijing",
         workspace_id: str = "",
         api_key: str = "",
@@ -66,7 +68,7 @@ class OpenAICompatibleProvider:
         return cls(
             enabled=enabled,
             allow_network=allow_network,
-            model=model or os.environ.get("BAILIAN_MODEL") or os.environ.get("ALIBABA_MODEL") or "qwen-plus",
+            model=model or os.environ.get("BAILIAN_MODEL") or os.environ.get("ALIBABA_MODEL") or DEFAULT_QWEN_MODEL,
             region=os.environ.get("BAILIAN_REGION") or os.environ.get("ALIBABA_REGION") or "cn-beijing",
             connect_timeout_seconds=connect_timeout_seconds,
             first_byte_timeout_seconds=first_byte_timeout_seconds,
@@ -92,12 +94,16 @@ class OpenAICompatibleProvider:
                 model=request.model if request.model != "offline" else self.model,
                 messages=request.messages,
                 temperature=request.temperature,
-                max_tokens=request.max_output_tokens,
+                max_completion_tokens=request.max_output_tokens,
                 stream=True,
+                stream_options={"include_usage": True},
+                extra_body={"enable_thinking": False, "enable_search": False},
             )
-            content = parse_openai_stream_content(
+            parsed = parse_openai_stream_result(
                 stream,
-                first_byte_timeout_seconds=self.first_byte_timeout_seconds,
+                first_server_timeout_seconds=self.first_byte_timeout_seconds,
+                first_content_timeout_seconds=self.first_byte_timeout_seconds,
+                idle_timeout_seconds=self.first_byte_timeout_seconds,
                 total_timeout_seconds=self.total_timeout_seconds,
                 monotonic=self.monotonic,
                 started_at=started,
@@ -108,13 +114,14 @@ class OpenAICompatibleProvider:
                 endpoint=endpoint,
                 network="used_once",
                 stream_started=True,
-                chunks_received=count_content_chunks(stream),
+                chunks_received=parsed.telemetry["content_chunks_received"],
                 error_type=None,
             )
+            metadata["stream_telemetry"] = parsed.telemetry
             return ProviderResult(
                 provider_name=self.provider_name,
                 status="ok",
-                content=content.strip(),
+                content=parsed.content.strip(),
                 metadata=metadata,
             )
         except FirstByteTimeout:
@@ -135,6 +142,16 @@ class OpenAICompatibleProvider:
                 env=env,
                 network="attempted_once",
                 stream_started=True,
+            )
+        except IncompleteGeneration:
+            return self._error(
+                "incomplete_generation",
+                "stream stopped because the provider hit the output length limit",
+                started,
+                env=env,
+                network="attempted_once",
+                stream_started=True,
+                chunks_received=0,
             )
         except Exception as exc:  # noqa: BLE001 - provider must return safe reports for every failure.
             error_type = classify_exception(exc)
@@ -217,7 +234,7 @@ class OpenAICompatibleProvider:
         workspace_id = self.workspace_id or os.environ.get(self.workspace_id_env) or os.environ.get("ALIBABA_WORKSPACE_ID") or ""
         base_url = self.base_url or os.environ.get(self.base_url_env) or os.environ.get("ALIBABA_OPENAI_BASE_URL") or ""
         region = self.region or os.environ.get("BAILIAN_REGION") or os.environ.get("ALIBABA_REGION") or "cn-beijing"
-        model = self.model or os.environ.get("BAILIAN_MODEL") or "qwen-plus"
+        model = self.model or os.environ.get("BAILIAN_MODEL") or DEFAULT_QWEN_MODEL
         return {
             "region": region,
             "model": model,
@@ -229,7 +246,7 @@ class OpenAICompatibleProvider:
                 "ALIBABA_WORKSPACE_ID": "SET" if os.environ.get("ALIBABA_WORKSPACE_ID") else "MISSING",
                 self.base_url_env: "SET" if os.environ.get(self.base_url_env) else "MISSING",
                 "BAILIAN_REGION": "SET" if os.environ.get("BAILIAN_REGION") else "MISSING_DEFAULT_CN_BEIJING",
-                "BAILIAN_MODEL": "SET" if os.environ.get("BAILIAN_MODEL") else "MISSING_DEFAULT_QWEN_PLUS",
+                "BAILIAN_MODEL": "SET" if os.environ.get("BAILIAN_MODEL") else "MISSING_DEFAULT_QWEN37_PLUS",
             },
         }
 
@@ -285,6 +302,18 @@ class StreamFailed(RuntimeError):
         self.chunks_received = chunks_received
 
 
+class IncompleteGeneration(RuntimeError):
+    def __init__(self, finish_reason: str) -> None:
+        super().__init__("stream ended before a complete generation was available")
+        self.finish_reason = finish_reason
+
+
+@dataclass(frozen=True)
+class StreamParseResult:
+    content: str
+    telemetry: dict[str, Any]
+
+
 def parse_openai_stream_content(
     chunks: Iterable[Any],
     *,
@@ -293,10 +322,59 @@ def parse_openai_stream_content(
     monotonic: Callable[[], float] = time.monotonic,
     started_at: float | None = None,
 ) -> str:
+    result = parse_openai_stream_result(
+        chunks,
+        first_server_timeout_seconds=first_byte_timeout_seconds,
+        first_content_timeout_seconds=first_byte_timeout_seconds,
+        idle_timeout_seconds=total_timeout_seconds,
+        total_timeout_seconds=total_timeout_seconds,
+        monotonic=monotonic,
+        started_at=started_at,
+    )
+    return result.content
+
+
+def parse_openai_stream_result(
+    chunks: Iterable[Any],
+    *,
+    first_server_timeout_seconds: float | None = None,
+    first_content_timeout_seconds: float | None = None,
+    idle_timeout_seconds: float | None = None,
+    total_timeout_seconds: float,
+    first_byte_timeout_seconds: float | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
+    started_at: float | None = None,
+) -> StreamParseResult:
     started = monotonic() if started_at is None else started_at
+    first_server_timeout_seconds = (
+        first_server_timeout_seconds
+        if first_server_timeout_seconds is not None
+        else first_byte_timeout_seconds
+        if first_byte_timeout_seconds is not None
+        else total_timeout_seconds
+    )
+    first_content_timeout_seconds = (
+        first_content_timeout_seconds
+        if first_content_timeout_seconds is not None
+        else first_byte_timeout_seconds
+        if first_byte_timeout_seconds is not None
+        else first_server_timeout_seconds
+    )
+    idle_timeout_seconds = idle_timeout_seconds if idle_timeout_seconds is not None else total_timeout_seconds
+    first_server_seen = False
     first_content_seen = False
     parts: list[str] = []
-    chunks_received = 0
+    server_chunks_received = 0
+    content_chunks_received = 0
+    reasoning_chunks_received = 0
+    usage_chunk_received = False
+    finish_reason = None
+    prompt_tokens = None
+    completion_tokens = None
+    total_tokens = None
+    first_server_chunk_ms = None
+    first_content_chunk_ms = None
+    last_chunk_at = started
     iterator = iter(chunks)
     while True:
         try:
@@ -304,18 +382,57 @@ def parse_openai_stream_content(
         except StopIteration:
             break
         except Exception as exc:  # noqa: BLE001
-            raise StreamFailed("stream failed while reading chunks", stream_started=first_content_seen, chunks_received=chunks_received) from exc
+            raise StreamFailed("stream failed while reading chunks", stream_started=first_content_seen, chunks_received=content_chunks_received) from exc
         now = monotonic()
-        if not first_content_seen and now - started > first_byte_timeout_seconds:
+        if not first_server_seen and now - started > first_server_timeout_seconds:
             raise FirstByteTimeout()
+        if not first_content_seen and now - started > first_content_timeout_seconds:
+            raise FirstByteTimeout()
+        if first_server_seen and now - last_chunk_at > idle_timeout_seconds:
+            raise TotalStreamTimeout()
         if now - started > total_timeout_seconds:
             raise TotalStreamTimeout()
+        first_server_seen = True
+        if first_server_chunk_ms is None:
+            first_server_chunk_ms = int(max(0.0, now - started) * 1000)
+        server_chunks_received += 1
+        last_chunk_at = now
+        if extract_reasoning_content(chunk):
+            reasoning_chunks_received += 1
+        usage = extract_usage(chunk)
+        if usage:
+            usage_chunk_received = True
+            prompt_tokens = usage.get("prompt_tokens")
+            completion_tokens = usage.get("completion_tokens")
+            total_tokens = usage.get("total_tokens")
+        chunk_finish_reason = extract_finish_reason(chunk)
+        if chunk_finish_reason:
+            finish_reason = chunk_finish_reason
         content = extract_stream_content(chunk)
         if content:
             first_content_seen = True
-            chunks_received += 1
+            if first_content_chunk_ms is None:
+                first_content_chunk_ms = int(max(0.0, now - started) * 1000)
+            content_chunks_received += 1
             parts.append(content)
-    return "".join(parts)
+    if finish_reason == "length":
+        raise IncompleteGeneration(finish_reason)
+    return StreamParseResult(
+        content="".join(parts),
+        telemetry={
+            "server_chunks_received": server_chunks_received,
+            "content_chunks_received": content_chunks_received,
+            "reasoning_chunks_received": reasoning_chunks_received,
+            "usage_chunk_received": usage_chunk_received,
+            "finish_reason": finish_reason,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "first_server_chunk_ms": first_server_chunk_ms,
+            "first_content_chunk_ms": first_content_chunk_ms,
+            "elapsed_ms": int(max(0.0, last_chunk_at - started) * 1000),
+        },
+    )
 
 
 def extract_stream_content(chunk: Any) -> str:
@@ -330,9 +447,39 @@ def extract_stream_content(chunk: Any) -> str:
     return str(getattr(delta, "content", "") or "")
 
 
-def count_content_chunks(_stream: Any) -> int:
-    # The parser owns the streaming iterator; this metadata is best-effort for real SDK objects.
-    return 0
+def extract_reasoning_content(chunk: Any) -> str:
+    if isinstance(chunk, dict):
+        choices = chunk.get("choices") or []
+        delta = (choices[0].get("delta") or {}) if choices else {}
+        return str(delta.get("reasoning_content") or "")
+    choices = getattr(chunk, "choices", None) or []
+    if not choices:
+        return ""
+    delta = getattr(choices[0], "delta", None)
+    return str(getattr(delta, "reasoning_content", "") or "")
+
+
+def extract_finish_reason(chunk: Any) -> str | None:
+    if isinstance(chunk, dict):
+        choices = chunk.get("choices") or []
+        return choices[0].get("finish_reason") if choices else None
+    choices = getattr(chunk, "choices", None) or []
+    return getattr(choices[0], "finish_reason", None) if choices else None
+
+
+def extract_usage(chunk: Any) -> dict[str, Any]:
+    if isinstance(chunk, dict):
+        return chunk.get("usage") or {}
+    usage = getattr(chunk, "usage", None)
+    if not usage:
+        return {}
+    if isinstance(usage, dict):
+        return usage
+    return {
+        "prompt_tokens": getattr(usage, "prompt_tokens", None),
+        "completion_tokens": getattr(usage, "completion_tokens", None),
+        "total_tokens": getattr(usage, "total_tokens", None),
+    }
 
 
 def _default_client_factory(*, api_key: str, base_url: str, timeout: float) -> Any:
@@ -354,6 +501,8 @@ def classify_exception(exc: Exception) -> str:
         return "missing_env"
     if isinstance(exc, StreamFailed):
         return "stream_failed"
+    if isinstance(exc, IncompleteGeneration):
+        return "incomplete_generation"
     status_code = getattr(exc, "status_code", None)
     if status_code == 401:
         return "auth_error_401"
@@ -375,6 +524,7 @@ def safe_exception_summary(exc: Exception, error_type: str) -> str:
         "missing_dependency": "Python package 'openai' is not installed; not installing automatically",
         "missing_env": "missing workspace id or OpenAI-compatible base URL",
         "stream_failed": "stream failed after partial or empty chunks",
+        "incomplete_generation": "stream stopped because the provider hit the output length limit",
         "auth_error_401": "authentication failed with HTTP 401",
         "rate_limit_or_quota_429": "rate limit or quota error with HTTP 429",
         "server_error_5xx": "server returned a 5xx error",
