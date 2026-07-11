@@ -11,7 +11,7 @@
 - `main`: `908239d` (`origin/main`)
 - `feat/chem-review-quality-gates`: merged by PR #1.
 - `feat/orchestrator-rag-generation-pilot`: merged by PR #2.
-- `feat/human-verified-evidence-evaluation`: local Phase 8A branch from latest `main`; do not push in this task.
+- `feat/human-verified-evidence-evaluation`: Phase 8A branch from latest `main`; this task publishes it as a Draft PR only.
 
 ## Integrated PRs
 
@@ -45,7 +45,7 @@ Current phase:
 
 ```text
 Phase 8A: evidence pre-extraction and human-review preparation
-Checkpoint: BUILDING_HUMAN_REVIEW_PACKAGE
+Checkpoint: HUMAN_REVIEW_REQUIRED
 ```
 
 Methodology:
@@ -60,6 +60,14 @@ Current local package target:
 ```text
 local/phase8_evidence/
 ```
+
+Current source status:
+
+- `F47A_SI`: local SI file identity validated.
+- `P403_SI`: local SI file identity validated.
+- `F3I_SI`: `NO_SI_PUBLISHED_ON_OFFICIAL_PAGE`.
+- `core_review_queue`: 2-4 hour priority subset with core-to-atomic mapping.
+- `extended_review_queue`: all atomic review items.
 
 Public status report:
 

@@ -25,6 +25,16 @@ make phase8-review-package-check
 make phase8-dashboard-check
 ```
 
+Current Phase 8A refresh:
+
+- `F47A_SI` and `P403_SI` are local, ignored PDF sources with identity
+  validation records in the local inventory.
+- `F3I_SI` is represented as `NO_SI_PUBLISHED_ON_OFFICIAL_PAGE`; it is not a
+  manual-download blocker for Phase 8A.
+- `extended_review_queue` keeps all atomic review items. `core_review_queue`
+  keeps the 2-4 hour priority subset and is linked back through
+  `core_to_atomic_map.json`.
+
 Local dashboard:
 
 ```bash
