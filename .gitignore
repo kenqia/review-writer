@@ -8,6 +8,7 @@
 !/README.md
 !/Makefile
 !/requirements-ci.txt
+!/requirements-phase8.txt
 !/.env.example
 !/config/
 !/config/**
@@ -53,7 +54,12 @@
 /mineru-outputs/
 /review-projects/
 /review-library/
+*.pdf
 /template/*.pdf
+/local/phase8_evidence/**
+*.si.pdf
+*.supp.pdf
+*.supplement.pdf
 /skills/mineru-precise-parse-review-writer/config/mineru_api_token.txt
 /skills/mineru-precise-parse-review-writer/config/*token*
 !/skills/mineru-precise-parse-review-writer/config/mineru_api_token.example.txt
