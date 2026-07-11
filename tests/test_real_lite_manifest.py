@@ -18,7 +18,7 @@ def main() -> int:
             sys.executable,
             str(SCRIPT),
             "--search-root",
-            str(ROOT.parent),
+            str(ROOT),
             "--repo-root",
             str(ROOT),
             "--output-json",

@@ -40,7 +40,7 @@ jobs:
         run: python3 --version
 
       - name: Run offline release gates
-        run: make release-readiness-check
+        run: make release-readiness-check SEARCH_ROOT="${GITHUB_WORKSPACE}"
 
   phase6-final:
     name: Phase 6 Final Offline Gate

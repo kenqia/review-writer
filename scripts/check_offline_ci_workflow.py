@@ -20,7 +20,7 @@ REQUIRED_TEXT = [
     "python-version: '3.11'",
     "python -m pip install -r requirements-ci.txt",
     "make offline-ci-workflow-check",
-    "make release-readiness-check",
+    'make release-readiness-check SEARCH_ROOT="${GITHUB_WORKSPACE}"',
     "make bailian-phase6-final-check BAILIAN_SDK_PYTHON=python",
     "make portability-check",
 ]
