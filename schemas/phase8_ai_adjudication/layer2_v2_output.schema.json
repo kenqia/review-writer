@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-writer:phase8:v2:dual-mode-independent-output",
+  "title": "V2 dual-mode independent review output",
+  "type": "object",
+  "required": ["blind_task_id", "task_mode", "fact_type", "entity", "reaction_stage", "source_document_id", "pdf_page_index", "printed_page_label", "section", "table_scheme_entry_compound", "short_evidence", "error_categories", "input_manifest_hash"],
+  "properties": {
+    "blind_task_id": {"type": "string", "pattern": "^BT-[0-9a-f]{16}$"},
+    "task_mode": {"enum": ["CANDIDATE_VERIFICATION", "BLIND_DUAL_EXTRACTION"]},
+    "verdict": {"enum": ["SUPPORTED", "PARTIALLY_SUPPORTED", "CONTRADICTED", "INSUFFICIENT_EVIDENCE", "MISCLASSIFIED", "SOURCE_OR_LOCATOR_ERROR"]},
+    "value_as_reported": {"type": ["string", "number", "null"]},
+    "unit_as_reported": {"type": ["string", "null"]},
+    "normalized_value_candidate": {"type": ["string", "number", "null"]},
+    "corrected_value_candidate": {"type": ["string", "number", "null"]},
+    "fact_type": {"type": "string"},
+    "entity": {"type": "string"},
+    "reaction_stage": {"type": "string"},
+    "source_document_id": {"type": "string"},
+    "pdf_page_index": {"type": ["integer", "null"], "minimum": 0},
+    "printed_page_label": {"type": ["string", "null"]},
+    "section": {"type": ["string", "null"]},
+    "table_scheme_entry_compound": {"type": ["string", "null"]},
+    "short_evidence": {"type": ["string", "null"], "maxLength": 500},
+    "directness": {"enum": ["DIRECT_NUMERIC", "DIRECT_TEXTUAL", "TABLE_SUPPORTED", "FIGURE_SUPPORTED", "AUTHOR_INTERPRETATION", "INDIRECT_CONTEXT", "NOT_FOUND"]},
+    "source_found": {"type": "boolean"},
+    "ambiguity_reason": {"type": ["string", "null"], "maxLength": 500},
+    "error_categories": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "input_manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"task_mode": {"const": "CANDIDATE_VERIFICATION"}}},
+      "then": {"required": ["verdict", "corrected_value_candidate"]},
+      "else": {"required": ["value_as_reported", "unit_as_reported", "normalized_value_candidate", "directness", "source_found", "ambiguity_reason"]}
+    }
+  ],
+  "additionalProperties": false
+}

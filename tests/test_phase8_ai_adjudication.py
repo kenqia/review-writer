@@ -400,6 +400,8 @@ class Phase8AIAdjudicationTests(unittest.TestCase):
             "layer2_output.schema.json",
             "layer3_output.schema.json",
             "final_ai_decision.schema.json",
+            "layer1_v2_output.schema.json",
+            "layer2_v2_output.schema.json",
         }
         self.assertEqual(required, {path.name for path in schema_root.glob("*.schema.json")})
         for path in schema_root.glob("*.schema.json"):
