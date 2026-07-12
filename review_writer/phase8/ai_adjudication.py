@@ -426,8 +426,16 @@ def _scan_json_file(path: Path, role: str) -> list[str]:
         lowered = item.lower()
         for term in terms:
             if term in lowered:
-                allowed = role == "layer1" and path.name == "layer1_output.schema.json" and kind == "value" and item in {"TABLE_SUPPORTED", "FIGURE_SUPPORTED"}
-                if not allowed:
+                allowed_directness = (
+                    role == "layer1"
+                    and kind == "value"
+                    and item in {"TABLE_SUPPORTED", "FIGURE_SUPPORTED"}
+                    and (
+                        (path.name == "layer1_output.schema.json" and ".directness." in json_path)
+                        or (path.name == "results.jsonl" and json_path.endswith(".directness"))
+                    )
+                )
+                if not allowed_directness:
                     issues.append(f"{path.relative_to(path.parents[1]).as_posix()} {kind} at {json_path} contains forbidden term {term}")
     return issues
 
@@ -587,10 +595,8 @@ def _compact_candidate(row: dict[str, Any]) -> dict[str, Any]:
         "short_evidence",
         "directness",
         "source_found",
-        "ambiguity_reason",
         "verdict",
         "error_categories",
-        "human_escalation_recommended",
     }
     return {key: row[key] for key in sorted(allowed) if key in row}
 
@@ -629,10 +635,16 @@ def _flag(code: str, message: str, *, blocking: bool = True) -> dict[str, Any]:
 
 def deterministic_rule_flags(candidate: dict[str, Any]) -> list[dict[str, Any]]:
     flags: list[dict[str, Any]] = []
-    value = str(candidate.get("candidate_value") or candidate.get("value_as_reported") or "").strip()
+    value = str(
+        candidate.get("candidate_value")
+        or candidate.get("normalized_value_candidate")
+        or candidate.get("corrected_value_candidate")
+        or candidate.get("value_as_reported")
+        or ""
+    ).strip()
     evidence = str(candidate.get("short_evidence") or "")
-    fact_type = str(candidate.get("fact_type") or candidate.get("field_name") or "").lower()
-    stage = str(candidate.get("reaction_stage") or "").lower()
+    fact_type = str(candidate.get("fact_type") or candidate.get("fact_type_candidate") or candidate.get("field_name") or "").lower()
+    stage = str(candidate.get("reaction_stage") or candidate.get("reaction_stage_candidate") or "").lower()
     if value.upper() in SENTINEL_VALUES:
         flags.append(_flag("SENTINEL_SCIENTIFIC_VALUE", "Workflow sentinel cannot be used as a scientific value."))
     if not candidate.get("source_document_id") or candidate.get("pdf_page_index") is None:
@@ -675,6 +687,357 @@ def deterministic_rule_flags(candidate: dict[str, Any]) -> list[dict[str, Any]]:
     if source_role == "BIBLIOGRAPHY" and fact_type not in {"bibliography", "metadata"}:
         flags.append(_flag("BIBLIOGRAPHY_NOT_SCIENTIFIC_EVIDENCE", "Bibliographic metadata cannot substitute for scientific body evidence."))
     return flags
+
+
+def _alignment_rows(first_rows: list[dict[str, Any]], second_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    first = {row["blind_task_id"]: row for row in first_rows}
+    second = {row["blind_task_id"]: row for row in second_rows}
+    if set(first) != set(second):
+        raise ValueError("A/B output task sets differ")
+
+    def normalized(value: Any) -> str | None:
+        if value is None:
+            return None
+        return re.sub(r"\s+", " ", str(value).strip()).casefold()
+
+    rows = []
+    for blind_id in sorted(first):
+        left = first[blind_id]
+        right = second[blind_id]
+        left_value = left.get("normalized_value_candidate") if left.get("normalized_value_candidate") is not None else left.get("value_as_reported")
+        right_value = right.get("corrected_value_candidate")
+        locator_left = (
+            left.get("source_document_id"),
+            left.get("pdf_page_index"),
+            normalized(left.get("printed_page_label")),
+            normalized(left.get("section")),
+            normalized(left.get("table_scheme_entry_compound")),
+        )
+        locator_right = (
+            right.get("source_document_id"),
+            right.get("pdf_page_index"),
+            normalized(right.get("printed_page_label")),
+            normalized(right.get("section")),
+            normalized(right.get("table_scheme_entry_compound")),
+        )
+        rows.append(
+            {
+                "blind_task_id": blind_id,
+                "exact_value_agreement": normalized(left_value) == normalized(right_value),
+                "locator_agreement": locator_left == locator_right,
+                "fact_type_agreement": normalized(left.get("fact_type")) == normalized(right.get("fact_type_candidate")),
+                "reaction_stage_agreement": normalized(left.get("reaction_stage")) == normalized(right.get("reaction_stage_candidate")),
+            }
+        )
+    return rows
+
+
+def _prepare_layer3_files(
+    workspace: Path,
+    package: list[dict[str, Any]],
+    source_workspace: Path,
+) -> dict[str, Any]:
+    workspace.mkdir(parents=True, exist_ok=False)
+    for directory in ("schemas", "sources", "input", "output"):
+        (workspace / directory).mkdir()
+    atomic_write_text(workspace / "AGENTS.md", (_template_root() / "layer3_AGENTS.md").read_text(encoding="utf-8"))
+    atomic_write_text(workspace / "WORK_ORDER.md", (_template_root() / "layer3_WORK_ORDER.md").read_text(encoding="utf-8"))
+    atomic_write_jsonl(workspace / "input/candidates.jsonl", package)
+    shutil.copy2(_template_root() / "finalize_output.py", workspace / "input/finalize_output.py")
+    shutil.copy2(_schema_root() / "layer3_output.schema.json", workspace / "schemas/adjudication_output.schema.json")
+    source_hashes: dict[str, str] = {}
+    for source in sorted((source_workspace / "sources").glob("*.pdf")):
+        destination = workspace / "sources" / source.name
+        _copy_reflink(source, destination)
+        source_hashes[source.name] = sha256_file(destination)
+    manifest = _build_input_manifest(workspace, "fresh_source_adjudication")
+    atomic_write_json(workspace / "INPUT_MANIFEST.json", manifest)
+    manifest_hash = sha256_file(workspace / "INPUT_MANIFEST.json")
+    atomic_write_text(workspace / "INPUT_MANIFEST.sha256", f"{manifest_hash}  INPUT_MANIFEST.json\n")
+    _make_read_only(workspace)
+    return {"manifest_hash": manifest_hash, "source_hashes": source_hashes}
+
+
+def validate_layer3_workspace(workspace: Path, *, repo_root: Path) -> dict[str, Any]:
+    workspace = workspace.resolve()
+    issues: list[str] = []
+    if _is_within(workspace, repo_root.resolve()):
+        issues.append("workspace is not outside the Git repository")
+    if (workspace / ".git").exists():
+        issues.append("workspace contains .git")
+    for path in workspace.rglob("*"):
+        if path.is_symlink():
+            issues.append(f"symlink is forbidden: {path.relative_to(workspace)}")
+    manifest = verify_manifest(workspace)
+    issues.extend(manifest["issues"])
+    for relative in ("AGENTS.md", "WORK_ORDER.md", "INPUT_MANIFEST.json", "INPUT_MANIFEST.sha256"):
+        path = workspace / relative
+        if not path.is_file():
+            issues.append(f"required file missing: {relative}")
+        elif path.stat().st_mode & stat.S_IWUSR:
+            issues.append(f"input file is writable: {relative}")
+    for directory in ("sources", "input", "schemas"):
+        for path in (workspace / directory).rglob("*"):
+            if path.is_file() and path.stat().st_mode & stat.S_IWUSR:
+                issues.append(f"input file is writable: {path.relative_to(workspace)}")
+    if not (workspace / "output").is_dir() or not (workspace / "output").stat().st_mode & stat.S_IWUSR:
+        issues.append("output directory is not writable")
+    forbidden = ("layer1", "layer2", "extractor", "verifier", "reviewer_1", "human decision", "human_verified", "candidate_x_source", "candidate_y_source")
+    for path in workspace.rglob("*"):
+        if not path.is_file() or path.suffix.lower() == ".pdf":
+            continue
+        relative = path.relative_to(workspace).as_posix().lower()
+        text = path.read_text(encoding="utf-8", errors="replace").lower()
+        for term in forbidden:
+            if term in relative or term in text:
+                issues.append(f"anonymous package contains forbidden identity/context term {term}: {relative}")
+        if re.search(r"chain[-_ ]of[-_ ]thought", text, flags=re.IGNORECASE):
+            issues.append(f"reasoning-trace field leaked: {relative}")
+        if str(repo_root.resolve()).lower() in text or re.search(r"(?:^|[\s\"'])/(?:home|users|mnt)/", text):
+            issues.append(f"absolute source path leaked: {relative}")
+    candidates_path = workspace / "input/candidates.jsonl"
+    if not candidates_path.is_file():
+        issues.append("anonymous candidates input is missing")
+        task_count = 0
+    else:
+        candidates = read_jsonl(candidates_path)
+        ids = [row.get("blind_task_id") for row in candidates]
+        task_count = len(ids)
+        if len(ids) != len(set(ids)) or any(not isinstance(item, str) or not BLIND_ID_RE.fullmatch(item) for item in ids):
+            issues.append("anonymous task IDs are invalid or duplicated")
+        for row in candidates:
+            if set(row) != {"blind_task_id", "candidate_x", "candidate_y", "deterministic_rule_flags"}:
+                issues.append(f"anonymous input has unexpected top-level fields: {row.get('blind_task_id')}")
+        prohibited_key_terms = ("rationale", "confidence", "reviewer_note", "final_decision", "decision_id", "model_name", "session_id", "chain_of_thought")
+        for json_path, kind, item in _walk_json(candidates):
+            if kind == "key" and isinstance(item, str) and any(term in item.lower() for term in prohibited_key_terms):
+                issues.append(f"anonymous input contains prohibited field at {json_path}.{item}")
+    return {
+        "status": "PASS" if not issues else "FAIL",
+        "issues": sorted(set(issues)),
+        "task_count": task_count,
+        "manifest_hash": manifest.get("manifest_hash"),
+    }
+
+
+def prepare_layer3_workspace(
+    *,
+    repo_root: Path,
+    run_root: Path,
+    layer1_workspace: Path,
+    layer2_workspace: Path,
+    random_seed: int,
+) -> dict[str, Any]:
+    repo_root = repo_root.resolve()
+    run_root = run_root.resolve()
+    layer1_workspace = layer1_workspace.resolve()
+    layer2_workspace = layer2_workspace.resolve()
+    if _is_within(run_root, repo_root):
+        raise ValueError("run root must be outside the Git repository")
+    report1 = validate_layer_output(layer1_workspace, "layer1")
+    report2 = validate_layer_output(layer2_workspace, "layer2")
+    pair = validate_ab_pair(layer1_workspace, layer2_workspace, repo_root=repo_root)
+    if report1["status"] != "PASS" or report2["status"] != "PASS" or pair["status"] != "PASS":
+        raise ValueError("A/B outputs and immutable inputs must pass before preparing adjudication")
+    final_workspace = run_root / "layer3_adjudicator"
+    saved_result = run_root / "coordinator/layer3_preparation_result.json"
+    if final_workspace.exists():
+        if not saved_result.is_file():
+            raise FileExistsError("adjudication workspace exists without coordinator resume state")
+        result = read_json(saved_result)
+        validation = validate_layer3_workspace(final_workspace, repo_root=repo_root)
+        if validation["status"] != "PASS":
+            raise ValueError("existing adjudication workspace is invalid")
+        return result
+    first_rows = read_jsonl(layer1_workspace / "output/results.jsonl")
+    second_rows = read_jsonl(layer2_workspace / "output/results.jsonl")
+    package, private_items = build_anonymous_layer3_inputs(first_rows, second_rows, random_seed=random_seed)
+    rule_rows: list[dict[str, Any]] = []
+    for row in package:
+        flags_x = [{**flag, "candidate": "X"} for flag in deterministic_rule_flags(row["candidate_x"])]
+        flags_y = [{**flag, "candidate": "Y"} for flag in deterministic_rule_flags(row["candidate_y"])]
+        row["deterministic_rule_flags"] = flags_x + flags_y
+        rule_rows.append({"blind_task_id": row["blind_task_id"], "flags": row["deterministic_rule_flags"]})
+    temporary = run_root / f".layer3_adjudicator.tmp-{os.getpid()}"
+    if temporary.exists():
+        raise FileExistsError(f"temporary adjudication workspace already exists: {temporary}")
+    state = _prepare_layer3_files(temporary, package, layer1_workspace)
+    validation = validate_layer3_workspace(temporary, repo_root=repo_root)
+    if validation["status"] != "PASS":
+        raise ValueError("prepared adjudication workspace failed validation: " + "; ".join(validation["issues"]))
+    os.replace(temporary, final_workspace)
+    coordinator = run_root / "coordinator"
+    private_payload = {
+        "schema_version": "1.0",
+        "random_seed": random_seed,
+        "first_source": "layer1",
+        "second_source": "layer2",
+        "items": private_items,
+    }
+    atomic_write_json(coordinator / "private_layer_mapping.json", private_payload)
+    alignment = _alignment_rows(first_rows, second_rows)
+    atomic_write_jsonl(coordinator / "ab_alignment.jsonl", alignment)
+    rules_directory = coordinator / "deterministic_rules"
+    atomic_write_jsonl(rules_directory / "rule_results.jsonl", rule_rows)
+    first_as_x = sum(item["candidate_x_source"] == "first" for item in private_items.values())
+    result = {
+        "status": "PREPARED_FOR_INDEPENDENT_LAYER_3",
+        "layer3_workspace": str(final_workspace),
+        "layer3_manifest_hash": state["manifest_hash"],
+        "task_count": len(package),
+        "candidate_x_from_first": first_as_x,
+        "candidate_x_from_second": len(package) - first_as_x,
+        "rule_flag_count": sum(len(row["flags"]) for row in rule_rows),
+        "private_mapping_hash": sha256_file(coordinator / "private_layer_mapping.json"),
+        "alignment_hash": sha256_file(coordinator / "ab_alignment.jsonl"),
+        "rules_hash": sha256_file(rules_directory / "rule_results.jsonl"),
+    }
+    atomic_write_json(saved_result, result)
+    run_manifest_path = coordinator / "run_manifest.json"
+    run_manifest = read_json(run_manifest_path)
+    run_manifest.update(
+        {
+            "stage": result["status"],
+            "layer3_created": True,
+            "layer3_input_manifest_hash": state["manifest_hash"],
+            "layer1_output_manifest_hash": sha256_file(layer1_workspace / "output/OUTPUT_MANIFEST.json"),
+            "layer2_output_manifest_hash": sha256_file(layer2_workspace / "output/OUTPUT_MANIFEST.json"),
+            "private_layer_mapping_hash": result["private_mapping_hash"],
+            "deterministic_rules_hash": result["rules_hash"],
+        }
+    )
+    atomic_write_json(run_manifest_path, run_manifest)
+    return result
+
+
+def _snapshot_file(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        if sha256_file(source) != sha256_file(destination):
+            raise ValueError(f"existing ingest snapshot differs: {destination.name}")
+        return
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
+    os.close(descriptor)
+    try:
+        shutil.copy2(source, temporary)
+        if sha256_file(source) != sha256_file(Path(temporary)):
+            raise RuntimeError(f"ingest snapshot hash mismatch: {source.name}")
+        os.chmod(temporary, 0o444)
+        os.replace(temporary, destination)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def snapshot_ingest_ab(
+    *,
+    evidence_root: Path,
+    run_root: Path,
+    layer1_workspace: Path,
+    layer2_workspace: Path,
+    layer3_result: dict[str, Any],
+) -> dict[str, Any]:
+    ai_root = evidence_root.resolve() / "ai_adjudication"
+    coordinator = run_root.resolve() / "coordinator"
+    for label, workspace in (("layer1", layer1_workspace), ("layer2", layer2_workspace)):
+        for name in ("results.jsonl", "OUTPUT_MANIFEST.json", "OUTPUT_MANIFEST.sha256"):
+            _snapshot_file(workspace.resolve() / "output" / name, ai_root / label / name)
+    _snapshot_file(
+        coordinator / "deterministic_rules/rule_results.jsonl",
+        ai_root / "deterministic_rules/rule_results.jsonl",
+    )
+    alignment = read_jsonl(coordinator / "ab_alignment.jsonl")
+    rule_rows = read_jsonl(coordinator / "deterministic_rules/rule_results.jsonl")
+    total = len(alignment)
+
+    def rate(field: str) -> float | None:
+        return round(sum(bool(row.get(field)) for row in alignment) / total, 6) if total else None
+
+    blocked_ids = {
+        row["blind_task_id"]
+        for row in rule_rows
+        if any(bool(flag.get("blocking")) for flag in row.get("flags", []))
+    }
+    disagreement = {
+        "schema_version": "1.0",
+        "stage": "INGEST_AB_COMPLETE",
+        "task_count": total,
+        "exact_value_agreement_rate": rate("exact_value_agreement"),
+        "locator_agreement_rate": rate("locator_agreement"),
+        "fact_type_agreement_rate": rate("fact_type_agreement"),
+        "reaction_stage_agreement_rate": rate("reaction_stage_agreement"),
+        "rule_blocked_item_count": len(blocked_ids),
+        "rule_block_rate": round(len(blocked_ids) / total, 6) if total else None,
+        "layer3_input_manifest_hash": layer3_result["layer3_manifest_hash"],
+        "method_note": "engineering signal only; not a publication-grade validation estimate",
+    }
+    atomic_write_json(ai_root / "disagreement_report.json", disagreement)
+    run_manifest = read_json(coordinator / "run_manifest.json")
+    atomic_write_json(ai_root / "run_manifest.json", run_manifest)
+    ingest_report = {
+        **disagreement,
+        "layer1_output_manifest_hash": sha256_file(layer1_workspace.resolve() / "output/OUTPUT_MANIFEST.json"),
+        "layer2_output_manifest_hash": sha256_file(layer2_workspace.resolve() / "output/OUTPUT_MANIFEST.json"),
+        "deterministic_rules_hash": layer3_result["rules_hash"],
+        "private_mapping_hash": layer3_result["private_mapping_hash"],
+        "layer3_workspace_created": True,
+        "layer3_scientific_review_started": False,
+    }
+    atomic_write_json(ai_root / "reports/ingest_ab.json", ingest_report)
+    return ingest_report
+
+
+def write_layer3_coordinator_resume(
+    *,
+    run_root: Path,
+    layer1_workspace: Path,
+    layer2_workspace: Path,
+    layer3_result: dict[str, Any],
+    human_budget_used: int,
+    blockers: list[str],
+) -> Path:
+    launch = "请严格遵循当前工作区 AGENTS.md 与 WORK_ORDER.md，离线完成全部匿名裁决任务，只写 schema 要求的结构化结果及输出 manifest；完成后停止，不读取工作区外任何路径。"
+    path = run_root.resolve() / "coordinator/COORDINATOR_RESUME.md"
+    text = f"""# Phase 8 Three-Layer Coordinator Resume
+
+- run ID: `{run_root.resolve().name}`
+- current stage: `PREPARED_FOR_INDEPENDENT_LAYER_3`
+- method: `HUMAN_SPOT_CHECKED_AI_ADJUDICATION`
+- Layer 1 workspace: `{layer1_workspace.resolve()}`
+- Layer 2 workspace: `{layer2_workspace.resolve()}`
+- Layer 3 workspace: `{layer3_result['layer3_workspace']}`
+- Layer 3 input manifest: `{layer3_result['layer3_manifest_hash']}`
+- A/B task count: `{layer3_result['task_count']}`
+- anonymous X/Y order: `{layer3_result['candidate_x_from_first']}/{layer3_result['candidate_x_from_second']}`
+- deterministic rule flags: `{layer3_result['rule_flag_count']}`
+- human budget: `{human_budget_used}/10` used, `{max(0, 10 - human_budget_used)}` remaining
+- Layer 3 scientific review: not started
+- Phase 8B: not started
+
+## Manual Launch
+
+Open only the Layer 3 workspace in a new VS Code window and start a fresh Codex session with no inherited context. Send:
+
+```text
+{launch}
+```
+
+Do not reveal or copy the private X/Y mapping into that workspace.
+
+## Ingest After Layer 3 Finishes
+
+Return to the coordinator session and state that the anonymous adjudication session is complete. The coordinator must verify the output manifest, exact task coverage, unchanged inputs, allowed adjudication labels, and absence of human verification labels before final AI decisions or human spot-check sampling are generated.
+
+## Isolation Scope
+
+This is procedural context isolation, not an operating-system security sandbox and not statistical independence between model weights.
+
+## Input Blockers Carried Forward
+
+{chr(10).join(f'- {item}' for item in blockers) if blockers else '- none'}
+"""
+    atomic_write_text(path, text)
+    return path
 
 
 def reconcile_ai_with_human(ai_rows: list[dict[str, Any]], human_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

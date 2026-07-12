@@ -19,9 +19,11 @@ from review_writer.phase8.ai_adjudication import (
     build_anonymous_layer3_inputs,
     deterministic_rule_flags,
     prepare_ab_workspaces,
+    prepare_layer3_workspace,
     reconcile_ai_with_human,
     select_human_spot_checks,
     validate_layer_output,
+    validate_layer3_workspace,
     validate_workspace,
     verify_manifest,
 )
@@ -217,7 +219,7 @@ class Phase8AIAdjudicationTests(unittest.TestCase):
             "section": "Preparation of substrate 2d",
             "table_scheme_entry_compound": "2d",
             "short_evidence": "isolated as a light yellow solid, 54%",
-            "directness": "DIRECT_NUMERIC",
+            "directness": "TABLE_SUPPORTED",
             "source_found": True,
             "ambiguity_reason": None,
             "input_manifest_hash": result["layer1_manifest_hash"],
@@ -241,6 +243,7 @@ class Phase8AIAdjudicationTests(unittest.TestCase):
         )
         self.assertEqual(finalized.returncode, 0, finalized.stderr)
         self.assertEqual(validate_layer_output(layer1, "layer1")["status"], "PASS")
+        self.assertEqual(validate_workspace(layer1, "layer1", repo_root=self.repo)["status"], "PASS")
         input_file = layer1 / "input/tasks.jsonl"
         os.chmod(input_file, 0o644)
         input_file.write_text(input_file.read_text() + "\n", encoding="utf-8")
@@ -260,6 +263,91 @@ class Phase8AIAdjudicationTests(unittest.TestCase):
         self.assertNotIn("extractor", serialized)
         self.assertNotIn("verifier", serialized)
         self.assertEqual({row["blind_task_id"] for row in package}, set(ids))
+
+    def test_prepare_layer3_workspace_is_anonymous_external_and_idempotent(self) -> None:
+        result = self.prepare()
+        layer1 = Path(result["layer1_workspace"])
+        layer2 = Path(result["layer2_workspace"])
+        tasks1 = [json.loads(line) for line in (layer1 / "input/tasks.jsonl").read_text().splitlines()]
+        tasks2 = [json.loads(line) for line in (layer2 / "input/tasks.jsonl").read_text().splitlines()]
+        rows1 = []
+        rows2 = []
+        for task1, task2 in zip(tasks1, tasks2, strict=True):
+            rows1.append(
+                {
+                    "blind_task_id": task1["blind_task_id"],
+                    "fact_type": task1["fact_category"],
+                    "entity_or_compound": "2d",
+                    "reaction_stage": "substrate_preparation",
+                    "value_as_reported": "54%",
+                    "unit_as_reported": "%",
+                    "normalized_value_candidate": "54%",
+                    "source_document_id": task1["source_document_id"],
+                    "pdf_page_index": 1,
+                    "printed_page_label": "S12",
+                    "section": "Preparation of substrate 2d",
+                    "table_scheme_entry_compound": "2d",
+                    "short_evidence": "isolated as a light yellow solid, 54%",
+                    "directness": "TABLE_SUPPORTED",
+                    "source_found": True,
+                    "ambiguity_reason": None,
+                    "input_manifest_hash": result["layer1_manifest_hash"],
+                }
+            )
+            rows2.append(
+                {
+                    "blind_task_id": task2["blind_task_id"],
+                    "verdict": "MISCLASSIFIED",
+                    "corrected_value_candidate": "54%",
+                    "fact_type_candidate": "substrate_preparation_yield",
+                    "reaction_stage_candidate": "substrate_preparation",
+                    "source_document_id": task2["source_document_id"],
+                    "pdf_page_index": 1,
+                    "printed_page_label": "S12",
+                    "section": "Preparation of substrate 2d",
+                    "table_scheme_entry_compound": "2d",
+                    "short_evidence": "isolated as a light yellow solid, 54%",
+                    "error_categories": ["substrate_preparation_vs_target_reaction"],
+                    "human_escalation_recommended": False,
+                    "input_manifest_hash": result["layer2_manifest_hash"],
+                }
+            )
+        rows1[0]["short_evidence"] = "The author rationale is stated directly in the source."
+        for workspace, rows in [(layer1, rows1), (layer2, rows2)]:
+            write_jsonl(workspace / "output/results.jsonl", rows)
+            finalized = subprocess.run(
+                [sys.executable, str(workspace / "input/finalize_output.py")],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(finalized.returncode, 0, finalized.stderr)
+        prepared = prepare_layer3_workspace(
+            repo_root=self.repo,
+            run_root=Path(result["run_root"]),
+            layer1_workspace=layer1,
+            layer2_workspace=layer2,
+            random_seed=80421,
+        )
+        layer3 = Path(prepared["layer3_workspace"])
+        self.assertEqual(validate_layer3_workspace(layer3, repo_root=self.repo)["status"], "PASS")
+        self.assertFalse((layer3 / "output/results.jsonl").exists())
+        self.assertFalse((layer3 / "coordinator").exists())
+        self.assertTrue((Path(result["run_root"]) / "coordinator/private_layer_mapping.json").is_file())
+        package_text = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in layer3.rglob("*")
+            if path.is_file() and path.suffix.lower() != ".pdf"
+        ).lower()
+        for forbidden in ("layer1", "layer2", "extractor", "verifier", "reviewer_1", "human_verified"):
+            self.assertNotIn(forbidden, package_text)
+        self.assertLessEqual(abs(prepared["candidate_x_from_first"] - prepared["candidate_x_from_second"]), 1)
+        self.assertEqual(prepared, prepare_layer3_workspace(
+            repo_root=self.repo,
+            run_root=Path(result["run_root"]),
+            layer1_workspace=layer1,
+            layer2_workspace=layer2,
+            random_seed=80421,
+        ))
 
     def test_deterministic_rules_flag_54_percent_substrate_preparation_and_other_risks(self) -> None:
         flags = deterministic_rule_flags(

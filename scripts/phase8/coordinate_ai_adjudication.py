@@ -19,12 +19,15 @@ from review_writer.phase8.ai_adjudication import (
     deterministic_rule_flags,
     initialize_local_ai_state,
     prepare_ab_workspaces,
+    prepare_layer3_workspace,
     read_jsonl,
+    snapshot_ingest_ab,
     utc_run_id,
     validate_ab_pair,
     validate_layer_output,
     validate_workspace,
     write_coordinator_resume,
+    write_layer3_coordinator_resume,
 )
 
 
@@ -67,6 +70,12 @@ def parse_args() -> argparse.Namespace:
     layer3.add_argument("--layer2", type=Path, required=True)
     layer3.add_argument("--coordinator", type=Path, required=True)
     layer3.add_argument("--random-seed", type=int, default=80421)
+
+    ingest = subparsers.add_parser("ingest-ab", help="Validate A/B outputs, run rules, and prepare the anonymous adjudication workspace.")
+    ingest.add_argument("--repo-root", type=Path, default=REPO_ROOT)
+    ingest.add_argument("--evidence-root", type=Path, default=DEFAULT_EVIDENCE_ROOT)
+    ingest.add_argument("--run-root", type=Path, required=True)
+    ingest.add_argument("--random-seed", type=int, default=80421)
     return parser.parse_args()
 
 
@@ -122,6 +131,46 @@ def command_layer3(args: argparse.Namespace) -> dict:
     return {"status": "ANONYMOUS_LAYER3_INPUT_BUILT", "item_count": len(package), "public_input": str(public_path), "private_mapping": str(private_path)}
 
 
+def command_ingest_ab(args: argparse.Namespace) -> dict:
+    repo_root = args.repo_root.resolve()
+    evidence_root = args.evidence_root
+    if not evidence_root.is_absolute():
+        evidence_root = repo_root / evidence_root
+    run_root = args.run_root.resolve()
+    layer1 = run_root / "layer1_extractor"
+    layer2 = run_root / "layer2_verifier"
+    layer3 = prepare_layer3_workspace(
+        repo_root=repo_root,
+        run_root=run_root,
+        layer1_workspace=layer1,
+        layer2_workspace=layer2,
+        random_seed=args.random_seed,
+    )
+    ingest = snapshot_ingest_ab(
+        evidence_root=evidence_root,
+        run_root=run_root,
+        layer1_workspace=layer1,
+        layer2_workspace=layer2,
+        layer3_result=layer3,
+    )
+    human_rows = read_jsonl(evidence_root / "review_decisions/reviewer_1.jsonl")
+    human_ids = {
+        row.get("core_review_item_id") or row.get("review_item_id")
+        for row in human_rows
+        if row.get("core_review_item_id") or row.get("review_item_id")
+    }
+    run_manifest = json.loads((run_root / "coordinator/run_manifest.json").read_text(encoding="utf-8"))
+    resume = write_layer3_coordinator_resume(
+        run_root=run_root,
+        layer1_workspace=layer1,
+        layer2_workspace=layer2,
+        layer3_result=layer3,
+        human_budget_used=len(human_ids),
+        blockers=list(run_manifest.get("input_blockers", [])),
+    )
+    return {**layer3, "ingest_report": ingest, "coordinator_resume": str(resume)}
+
+
 def main() -> int:
     args = parse_args()
     try:
@@ -138,8 +187,10 @@ def main() -> int:
             output = [{"blind_task_id": row.get("blind_task_id"), "rule_flags": deterministic_rule_flags(row)} for row in rows]
             atomic_write_jsonl(args.output, output)
             result = {"status": "RULES_WRITTEN", "item_count": len(output), "output": str(args.output)}
-        else:
+        elif args.command == "build-anonymous-layer3-input":
             result = command_layer3(args)
+        else:
+            result = command_ingest_ab(args)
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
         return 0 if result.get("status") not in {"FAIL"} else 1
     except Exception as exc:
