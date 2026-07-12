@@ -18,6 +18,10 @@
 !/qoderwork/**
 !/scripts/
 !/scripts/**
+!/schemas/
+!/schemas/**
+!/templates/
+!/templates/**
 !/tests/
 !/tests/**
 !/skills/
@@ -44,6 +48,7 @@
 /scripts/**/__pycache__/
 /review_writer/**/__pycache__/
 /tests/**/__pycache__/
+/templates/**/__pycache__/
 
 !/allene_classification_rules.py
 !/template/

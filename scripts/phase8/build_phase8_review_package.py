@@ -823,7 +823,9 @@ def build_public_report(source_records: list[dict[str, Any]], biblio: list[dict[
     si_incremental = [row for row in extraction if row.get("source_role") == "SI"]
     return {
         "status": "HUMAN_REVIEW_REQUIRED",
-        "methodology": "AI-assisted pre-extraction followed by single-human verification. It is not independent dual-human data extraction.",
+        "method_label": "HUMAN_SPOT_CHECKED_AI_ADJUDICATION",
+        "methodology": "Context-isolated three-layer AI adjudication with a small human spot check. Engineering validation only; not publication-grade scientific validation.",
+        "human_spot_check_limit": 10,
         "source_inventory": [public_source_record(row) for row in source_records],
         "paper_types": {paper_id: meta["paper_type"] for paper_id, meta in PAPERS.items()},
         "main_pdf_status": {row["paper_id"]: row["status"] for row in source_records if row["source_role"] == "MAIN"},

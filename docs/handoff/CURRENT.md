@@ -4,7 +4,7 @@
 
 - GitHub: `kenqia/review-writer`
 - Local repo placeholder: `<REPO_ROOT>`
-- Last verified date: `2026-07-11` Asia/Shanghai
+- Last verified date: `2026-07-12` Asia/Shanghai
 
 ## Current Branches
 
@@ -44,15 +44,18 @@
 Current phase:
 
 ```text
-Phase 8A: evidence pre-extraction and human-review preparation
-Checkpoint: HUMAN_REVIEW_REQUIRED
+Phase 8A: context-isolated three-layer AI adjudication preparation
+Checkpoint: PREPARED_FOR_INDEPENDENT_LAYER_1_AND_2
 ```
 
 Methodology:
 
 ```text
-AI-assisted pre-extraction followed by single-human verification.
-It is not independent dual-human data extraction.
+HUMAN_SPOT_CHECKED_AI_ADJUDICATION
+
+Context-isolated three-layer AI adjudication with a small human spot check.
+Engineering validation and internal demonstration only; not publication-grade
+scientific validation.
 ```
 
 Current local package target:
@@ -76,10 +79,10 @@ docs/phase8/phase8a_status_report.md
 docs/phase8/phase8a_status_report.json
 ```
 
-Phase 8A must stop at:
+The current coordinator turn must stop at:
 
 ```text
-HUMAN_REVIEW_REQUIRED
+PREPARED_FOR_INDEPENDENT_LAYER_1_AND_2
 ```
 
 ## Safety Notes
@@ -87,8 +90,13 @@ HUMAN_REVIEW_REQUIRED
 - Phase 8A does not create verified bibliography, verified claims, gold evidence packs, final scientific evaluation reports, or regenerated review prose.
 - PDFs, SI, full page text, long excerpts, local image crops, manual decisions, and authenticated caches remain ignored under `local/phase8_evidence/`.
 - Default Phase 8 gates are offline and do not call Qwen, download SI, or invoke MinerU cloud.
+- AI adjudication results remain separate from the human decision log.
+- Effective human decisions take precedence over new AI adjudication and old AI extraction.
+- Human spot checks are capped at 10 unique core items.
+- The isolation is procedural, not an operating-system sandbox or statistical independence between model weights.
 
 ## Next User Action
 
-Use the local Phase 8A review package for single-human verification. Phase 8B
-has not started.
+Run Layer 1 and Layer 2 manually in fresh, separate VS Code Codex sessions
+using the external paths recorded in `COORDINATOR_RESUME.md`. Do not start Layer
+3 until both outputs pass coordinator validation. Phase 8B has not started.

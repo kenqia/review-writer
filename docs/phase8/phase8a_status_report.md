@@ -1,7 +1,9 @@
 # Phase 8A Human Review Package Status
 
 - status: `HUMAN_REVIEW_REQUIRED`
-- methodology: AI-assisted pre-extraction followed by single-human verification. It is not independent dual-human data extraction.
+- method label: `HUMAN_SPOT_CHECKED_AI_ADJUDICATION`
+- methodology: Context-isolated three-layer AI adjudication with a small human spot check. Engineering validation only; not publication-grade scientific validation.
+- human spot-check limit: `10` unique core items
 - source documents: `6`
 - SI identity status: `{'F3I': 'NO_SI_PUBLISHED_ON_OFFICIAL_PAGE', 'F47A': 'SI_VALIDATED', 'P403': 'SI_VALIDATED'}`
 - F3I official SI status: `NO_SI_PUBLISHED_ON_OFFICIAL_PAGE`

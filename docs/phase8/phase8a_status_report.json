@@ -1,6 +1,8 @@
 {
   "status": "HUMAN_REVIEW_REQUIRED",
-  "methodology": "AI-assisted pre-extraction followed by single-human verification. It is not independent dual-human data extraction.",
+  "method_label": "HUMAN_SPOT_CHECKED_AI_ADJUDICATION",
+  "methodology": "Context-isolated three-layer AI adjudication with a small human spot check. Engineering validation only; not publication-grade scientific validation.",
+  "human_spot_check_limit": 10,
   "source_inventory": [
     {
       "source_document_id": "F3I_MAIN",
