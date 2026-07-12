@@ -19,9 +19,12 @@ Layer 1 receives source files, opaque task IDs, fact categories, required output
 fields, and minimal locator hints. It receives no old candidate values,
 rationales, confidence, support status, human decisions, or peer output.
 
-Layer 2 receives source files, opaque task IDs, the old candidate and locator,
-fact type, and a verification rubric. It receives no Layer 1 output, human
-decision, old rationale/confidence, or later-stage result.
+Layer 2 has two V2 modes. `CANDIDATE_VERIFICATION` receives a real candidate,
+fact type, locator-quality-scoped hint, source files, and a verification rubric.
+`BLIND_DUAL_EXTRACTION` receives no old candidate and performs an independent
+entity/field-first extraction. Sentinel or empty candidates are never packaged
+as claims. Neither mode receives Layer 1 output, human decisions, old
+rationale/confidence, or later-stage results.
 
 Layer 3 is created only after both earlier outputs and their immutable-input
 checks pass. It receives anonymous Candidate X/Y structures, deterministic rule
@@ -43,6 +46,23 @@ and bibliography substituted for scientific body evidence.
 
 Rule output is an intermediate control artifact, not a final adjudication.
 
+## V2 Semantic Gates
+
+The first three-layer run is retained as diagnostic evidence only because
+source identity, sentinel, availability, locator, and task-type defects were
+identified. It is not eligible to produce scientific adjudication decisions.
+
+The corrected V2 run requires weighted source-identity validation, one atomic
+fact per task, explicit reaction stages, locator-quality levels, immutable
+manifests, and cross-layer leakage checks before creating Layer 1 or Layer 2.
+Only `EXACT_VERIFIED` locators may carry precise compound, entry, table, scheme,
+or figure labels. Existing human-decided items and unavailable-source statuses
+remain outside the model task set.
+
+One existing human-reviewed case is retained as coordinator-private hidden
+calibration for post-hoc scoring. Its answer is not included in any layer input
+and it does not consume additional human-review budget.
+
 ## Human Budget
 
 The total budget is 10 unique core items. Sampling prioritizes at most two
@@ -56,6 +76,6 @@ an engineering signal only, and not a publication-grade validation estimate.
 
 ## Checkpoints
 
-The current checkpoint is `PREPARED_FOR_INDEPENDENT_LAYER_1_AND_2`. Phase 8B
+The current checkpoint is `PREPARED_FOR_INDEPENDENT_LAYER_1_AND_2_V2`. Phase 8B
 has not started. A coordinator must validate both output manifests and unchanged
 inputs before preparing Layer 3.

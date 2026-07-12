@@ -45,7 +45,7 @@ Current phase:
 
 ```text
 Phase 8A: context-isolated three-layer AI adjudication preparation
-Checkpoint: PREPARED_FOR_INDEPENDENT_LAYER_1_AND_2
+Checkpoint: PREPARED_FOR_INDEPENDENT_LAYER_1_AND_2_V2
 ```
 
 Methodology:
@@ -66,11 +66,15 @@ local/phase8_evidence/
 
 Current source status:
 
-- `F47A_SI`: local SI file identity validated.
-- `P403_SI`: local SI file identity validated.
+- `F3I_MAIN`, `F47A_MAIN`, `F47A_SI`, `P403_MAIN`, and `P403_SI`: V2 weighted
+  source identity validated before packaging.
 - `F3I_SI`: `NO_SI_PUBLISHED_ON_OFFICIAL_PAGE`.
 - `core_review_queue`: 2-4 hour priority subset with core-to-atomic mapping.
 - `extended_review_queue`: all atomic review items.
+- The first three-layer run is diagnostic-only because semantic input defects
+  were identified; its outputs cannot enter final AI decisions.
+- V2 uses atomic tasks, dual-mode independent review, locator-quality levels,
+  and coordinator-private hidden calibration.
 
 Public status report:
 
@@ -82,7 +86,7 @@ docs/phase8/phase8a_status_report.json
 The current coordinator turn must stop at:
 
 ```text
-PREPARED_FOR_INDEPENDENT_LAYER_1_AND_2
+PREPARED_FOR_INDEPENDENT_LAYER_1_AND_2_V2
 ```
 
 ## Safety Notes
@@ -97,6 +101,7 @@ PREPARED_FOR_INDEPENDENT_LAYER_1_AND_2
 
 ## Next User Action
 
-Run Layer 1 and Layer 2 manually in fresh, separate VS Code Codex sessions
-using the external paths recorded in `COORDINATOR_RESUME.md`. Do not start Layer
-3 until both outputs pass coordinator validation. Phase 8B has not started.
+Run V2 Layer 1 and Layer 2 manually in fresh, separate VS Code Codex sessions
+using the external paths recorded in the V2 `COORDINATOR_RESUME.md`. Do not
+start Layer 3 until both outputs pass coordinator validation and deterministic
+rules. Phase 8B has not started.

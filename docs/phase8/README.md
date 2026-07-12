@@ -30,12 +30,17 @@ make phase8-review-package-check
 make phase8-dashboard-check
 make phase8-decision-writer-check
 make phase8-ai-adjudication-check
+make phase8-v2-semantic-input-check
 ```
 
 Current Phase 8A refresh:
 
-- `F47A_SI` and `P403_SI` are local, ignored PDF sources with identity
-  validation records in the local inventory.
+- The first three-layer run is retained as diagnostic evidence only because
+  semantic input defects were identified. It cannot produce scientific AI
+  decisions.
+- The V2 source-identity audit validates all five active main/SI artifacts
+  before packaging. Conflicting identities and unavailable sources are hard
+  blockers.
 - `F3I_SI` is represented as `NO_SI_PUBLISHED_ON_OFFICIAL_PAGE`; it is not a
   manual-download blocker for Phase 8A.
 - `extended_review_queue` keeps all atomic review items. `core_review_queue`
@@ -64,14 +69,21 @@ conda run -n review-writer-phase8 python scripts/review/record_phase8_decision.p
   record --root local/phase8_evidence --input <confirmed-batch.json> --dry-run
 ```
 
-The offline A/B preparation command creates workspaces outside Git:
+The corrected offline V2 preparation command creates fresh workspaces outside
+Git only after semantic hard gates pass:
 
 ```bash
-python3 scripts/phase8/coordinate_ai_adjudication.py prepare-ab \
+conda run -n review-writer-phase8 python \
+  scripts/phase8/prepare_v2_semantic_review.py \
+  --evidence-root local/phase8_evidence \
   --workspace-parent <WORKSPACE_PARENT>
 ```
 
-Layer 1 and Layer 2 are run manually in fresh, separate VS Code Codex sessions.
+V2 uses atomic tasks, locator-quality levels, hidden calibration, and dual-mode
+independent review. Candidate-bearing items use candidate verification; sentinel
+or empty candidates use blind dual extraction and never expose
+`HUMAN_REVIEW_REQUIRED` as a claim. Layer 1 and Layer 2 are run manually in
+fresh, separate VS Code Codex sessions.
 Layer 3 is created only after both earlier outputs and deterministic rules pass
 validation. The isolation is procedural, not an operating-system sandbox or
 statistical independence between model weights. Phase 8B has not started.
