@@ -390,7 +390,7 @@ phase8-v2-semantic-input-check:
 
 phase8-v3-source-first-check:
 	$(PYTHON) tests/test_phase8_v3_source_first.py
-	$(PHASE8_PYTHON) scripts/phase8/prepare_v3_source_first.py --help >/dev/null
+	$(PYTHON) scripts/phase8/prepare_v3_source_first.py --help >/dev/null
 
 bailian-transport-matrix-dry-run:
 	$(PYTHON) tests/test_bailian_transport_matrix_safety.py
