@@ -148,6 +148,49 @@ class Phase8V31ContractTests(unittest.TestCase):
             "status_reason": None if complete else "Synthetic partial coverage.",
         }
 
+    def _partial_coverage(self, task: dict) -> dict:
+        first = task["completion_criteria"]["required_page_indices"][0]
+        return {
+            "coverage_summary": "Synthetic proper-subset coverage.",
+            "pages_examined": [{"source_document_id": first["source_document_id"], "page_indices": [first["page_indices"][0]]}],
+            "sections_examined": ["synthetic partial section"],
+            "status_reason": "Synthetic partial coverage.",
+        }
+
+    @staticmethod
+    def _as_nonnumeric(claim: dict) -> dict:
+        claim.update(
+            {
+                "product_id": None,
+                "reaction_entry": None,
+                "conditions_as_reported": None,
+                "metric_type": "not_applicable",
+                "value_as_reported": None,
+                "unit_as_reported": None,
+                "normalized_value_candidate": None,
+                "normalized_metric_type": None,
+                "normalization_rule": None,
+                "normalization_source_supported": False,
+                "directness": "DIRECT_TEXTUAL",
+            }
+        )
+        return claim
+
+    def _calibration_gold_claim(self, task: dict, *, sequence: int = 1) -> dict:
+        claim = self._claim(task, sequence=sequence)
+        claim.update(
+            {
+                "claim_type": "substrate_preparation_numeric_outcome",
+                "product_id": "aa",
+                "reaction_stage": "substrate_synthesis",
+                "metric_type": "isolated_yield",
+                "value_as_reported": "61%",
+                "unit_as_reported": "%",
+                "epistemic_class": "DIRECT_REPORTED_RESULT",
+            }
+        )
+        return claim
+
     def _claim(self, task: dict, *, sequence: int = 1) -> dict:
         source_id = task["source_document_ids"][0]
         page_index = task["completion_criteria"]["required_page_indices"][0]["page_indices"][0]
@@ -302,7 +345,7 @@ class Phase8V31ContractTests(unittest.TestCase):
     def test_valid_populated_partial_unreadable_and_conflict_rows_finalize(self) -> None:
         rows = self._valid_scientific_rows()
         rows[0]["source_unit_status"] = "PARTIAL"
-        rows[0].update(self._coverage(self._tasks()[0], complete=False))
+        rows[0].update(self._partial_coverage(self._tasks()[0]))
         rows[1]["source_unit_status"] = "SOURCE_UNREADABLE"
         rows[1]["status_reason"] = "Synthetic source could not be decoded."
         rows[1]["coverage_summary"] = "Open attempt recorded; no pages were readable."
@@ -336,6 +379,183 @@ class Phase8V31ContractTests(unittest.TestCase):
         completed = self._finalize(self.scientific, rows)
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         self.assertTrue((self.scientific / "output/OUTPUT_MANIFEST.json").is_file())
+
+    def test_no_qualifying_evidence_requires_full_coverage(self) -> None:
+        rows = self._valid_scientific_rows()
+        for row in rows[1:]:
+            row.update(
+                {
+                    "source_unit_status": "NO_QUALIFYING_EVIDENCE",
+                    "coverage_summary": "Synthetic empty coverage bypass.",
+                    "pages_examined": [],
+                    "sections_examined": [],
+                    "status_reason": "No qualifying evidence was reported.",
+                    "claims": [],
+                }
+            )
+        completed = self._finalize(self.scientific, rows)
+        self.assertNotEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+    def test_full_coverage_no_qualifying_evidence_is_valid(self) -> None:
+        rows = self._valid_scientific_rows()
+        for index, row in enumerate(rows[1:], start=1):
+            task = self._tasks()[index]
+            row.update(
+                {
+                    "source_unit_status": "NO_QUALIFYING_EVIDENCE",
+                    "coverage_summary": "Every required page was inspected without finding a qualifying claim.",
+                    "pages_examined": copy.deepcopy(task["completion_criteria"]["required_page_indices"]),
+                    "sections_examined": ["PAGE_ONLY_COVERAGE_COMPLETE"],
+                    "status_reason": "No qualifying evidence was reported after complete inspection.",
+                    "claims": [],
+                }
+            )
+        completed = self._finalize(self.scientific, rows)
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+    def test_partial_claim_locator_must_be_examined(self) -> None:
+        rows = self._valid_scientific_rows()
+        task = self._tasks()[0]
+        rows[0]["source_unit_status"] = "PARTIAL"
+        rows[0].update(self._partial_coverage(task))
+        last_page = task["completion_criteria"]["required_page_indices"][0]["page_indices"][-1]
+        rows[0]["claims"][0]["evidence_locator"].update(
+            {
+                "pdf_page_index": last_page,
+                "printed_page_label_observed": task["printed_page_labels"]["F3I_MAIN"][str(last_page)],
+            }
+        )
+        completed = self._finalize(self.scientific, rows)
+        self.assertNotEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+    def test_conflict_alternative_locator_must_be_examined(self) -> None:
+        rows = self._valid_scientific_rows()
+        task = self._tasks()[5]
+        rows[5]["source_unit_status"] = "PARTIAL"
+        rows[5].update(self._partial_coverage(task))
+        claim = self._as_nonnumeric(self._claim(task))
+        claim.update({"claim_type": "source_conflict", "source_conflict_detected": True})
+        first_locator = copy.deepcopy(claim["evidence_locator"])
+        last_page = task["completion_criteria"]["required_page_indices"][0]["page_indices"][-1]
+        last_locator = {
+            **first_locator,
+            "pdf_page_index": last_page,
+            "printed_page_label_observed": task["printed_page_labels"]["P403_SI"][str(last_page)],
+            "table_id": "Table synthetic",
+        }
+        claim["source_conflict"] = {
+            "conflict_type": "SOURCE_INTERNAL_LABEL_CONFLICT",
+            "alternatives": [
+                {"reported_value": "label-alpha", "locator": first_locator},
+                {"reported_value": "label-beta", "locator": last_locator},
+            ],
+        }
+        rows[5]["claims"] = [claim]
+        completed = self._finalize(self.scientific, rows)
+        self.assertNotEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+    def test_honest_partial_claim_on_examined_page_is_valid(self) -> None:
+        rows = self._valid_scientific_rows()
+        rows[0]["source_unit_status"] = "PARTIAL"
+        rows[0].update(self._partial_coverage(self._tasks()[0]))
+        completed = self._finalize(self.scientific, rows)
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+    def test_f3i_review_mechanism_is_representable(self) -> None:
+        task = self._tasks()[0]
+        mechanism_rows = self._valid_scientific_rows()
+        mechanism = self._as_nonnumeric(self._claim(task))
+        mechanism.update(
+            {
+                "claim_type": "author_proposed_mechanism",
+                "reaction_stage": "mechanistic_observation",
+                "epistemic_class": "REVIEW_ARTICLE_SUMMARY",
+                "pathway_status": "AUTHOR_PROPOSED",
+                "directness": "AUTHOR_INTERPRETATION",
+            }
+        )
+        mechanism_rows[0]["claims"] = [mechanism]
+        mechanism_result = self._finalize(self.scientific, mechanism_rows)
+        self.assertEqual(mechanism_result.returncode, 0, mechanism_result.stdout + mechanism_result.stderr)
+
+    def test_f3i_qualitative_scope_is_representable(self) -> None:
+        task = self._tasks()[0]
+        scope_rows = self._valid_scientific_rows()
+        scope = self._as_nonnumeric(self._claim(task))
+        scope.update({"claim_type": "scope_result", "epistemic_class": "REVIEW_ARTICLE_SUMMARY", "pathway_status": "NOT_APPLICABLE"})
+        scope_rows[0]["claims"] = [scope]
+        scope_result = self._finalize(self.scientific, scope_rows)
+        self.assertEqual(scope_result.returncode, 0, scope_result.stdout + scope_result.stderr)
+
+    def test_mechanism_source_identity_stage_is_rejected(self) -> None:
+        mechanism_rows = self._valid_scientific_rows()
+        mechanism = self._as_nonnumeric(self._claim(self._tasks()[4]))
+        mechanism.update(
+            {
+                "claim_type": "author_proposed_mechanism",
+                "reaction_stage": "source_identity",
+                "epistemic_class": "AUTHOR_PROPOSED_MECHANISM",
+                "pathway_status": "AUTHOR_PROPOSED",
+                "directness": "AUTHOR_INTERPRETATION",
+            }
+        )
+        mechanism_rows[4]["claims"] = [mechanism]
+        mechanism_result = self._finalize(self.scientific, mechanism_rows)
+        self.assertNotEqual(mechanism_result.returncode, 0, mechanism_result.stdout + mechanism_result.stderr)
+
+    def test_arbitrary_ratio_normalization_is_rejected(self) -> None:
+        ratio_rows = self._valid_scientific_rows()
+        ratio_rows[4]["claims"][0].update(
+            {
+                "metric_type": "er",
+                "value_as_reported": "95:5 er",
+                "unit_as_reported": "er",
+                "normalized_value_candidate": "50:50 er",
+                "normalized_metric_type": "er",
+                "normalization_rule": "Canonicalize the reported ratio.",
+                "normalization_source_supported": True,
+            }
+        )
+        ratio_result = self._finalize(self.scientific, ratio_rows)
+        self.assertNotEqual(ratio_result.returncode, 0, ratio_result.stdout + ratio_result.stderr)
+
+    def test_equivalent_er_and_dr_normalizations_are_valid(self) -> None:
+        for metric in ("er", "dr"):
+            with self.subTest(metric=metric):
+                ratio_rows = self._valid_scientific_rows()
+                ratio_rows[4]["claims"][0].update(
+                    {
+                        "metric_type": metric,
+                        "value_as_reported": f"95:5 {metric}",
+                        "unit_as_reported": metric,
+                        "normalized_value_candidate": "95:5",
+                        "normalized_metric_type": metric,
+                        "normalization_rule": "Canonicalize spacing while preserving ordered components.",
+                        "normalization_source_supported": True,
+                    }
+                )
+                ratio_result = self._finalize(self.scientific, ratio_rows)
+                self.assertEqual(ratio_result.returncode, 0, ratio_result.stdout + ratio_result.stderr)
+
+    def test_calibration_rejects_gold_plus_disguised_forbidden_extra(self) -> None:
+        task = self._tasks(self.calibration)[0]
+        gold = self._calibration_gold_claim(task)
+        extra = self._claim(task, sequence=2)
+        extra.update({"claim_type": "explicit_limitation", "reaction_stage": "target_catalytic_reaction"})
+        row = {
+            "source_unit_id": task["source_unit_id"],
+            "source_unit_status": "COMPLETED",
+            "input_manifest_hash": self._manifest_hash(self.calibration),
+            "task_hash": task["task_hash"],
+            **self._coverage(task),
+            "claims": [gold, extra],
+        }
+        finalized = self._finalize(self.calibration, [row])
+        report = evaluate_v3_1_calibration(Path(self.result["run_root"]))
+        self.assertTrue(
+            finalized.returncode != 0 and report["status"] == "FAIL",
+            {"finalizer_returncode": finalized.returncode, "finalizer_stdout": finalized.stdout, "evaluator": report},
+        )
 
     def test_stage_epistemic_and_conflict_conflations_are_rejected(self) -> None:
         task = self._tasks()[3]
@@ -400,18 +620,7 @@ class Phase8V31ContractTests(unittest.TestCase):
 
     def test_calibration_evaluator_uses_private_gold_and_rejects_wrong_fields(self) -> None:
         task = self._tasks(self.calibration)[0]
-        claim = self._claim(task)
-        claim.update(
-            {
-                "claim_type": "substrate_preparation_numeric_outcome",
-                "product_id": "aa",
-                "reaction_stage": "substrate_synthesis",
-                "metric_type": "isolated_yield",
-                "value_as_reported": "61%",
-                "unit_as_reported": "%",
-                "epistemic_class": "DIRECT_REPORTED_RESULT",
-            }
-        )
+        claim = self._calibration_gold_claim(task)
         row = {
             "source_unit_id": task["source_unit_id"],
             "source_unit_status": "COMPLETED",
@@ -430,6 +639,31 @@ class Phase8V31ContractTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         report = evaluate_v3_1_calibration(Path(self.result["run_root"]))
         self.assertEqual(report["status"], "FAIL")
+
+    def test_v3_1_1_run_uses_new_checkpoint_and_empty_outputs(self) -> None:
+        external = self.base / "external-v3-1-1"
+        result = prepare_v3_1_workspaces(
+            repo_root=self.repo,
+            workspace_parent=external,
+            run_id="phase8_source_first_v3_1_1_20260713T020304Z",
+            sources=self.sources,
+            identity_audits=self.audits,
+            human_events=[self.event],
+            repo_head="feedface",
+            branch="feature",
+            pr_number=3,
+            random_seed=80423,
+            instruction_sources=[],
+            source_metadata=self.source_metadata,
+            pdf_slice_writer=self._fixture_slice_writer,
+        )
+        self.assertEqual(result["schema_version"], "3.1.1")
+        self.assertEqual(result["stage"], "PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3_1_1")
+        for key in ("layerA_inventory_workspace", "calibration_layerA_workspace"):
+            workspace = Path(result[key])
+            self.assertEqual(list((workspace / "output").iterdir()), [])
+            manifest = json.loads((workspace / "INPUT_MANIFEST.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["schema_version"], "3.1.1")
 
 
 if __name__ == "__main__":

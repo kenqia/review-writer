@@ -6,6 +6,8 @@ import os
 import re
 import shutil
 import stat
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Callable
 
@@ -18,7 +20,7 @@ from .ai_adjudication import (
 )
 
 
-V3_1_RUN_ID_RE = re.compile(r"^phase8_source_first_v3_1_\d{8}T\d{6}Z$")
+V3_1_RUN_ID_RE = re.compile(r"^phase8_source_first_v3_1(?:_1)?_\d{8}T\d{6}Z$")
 REQUIRED_SOURCE_IDS = {"F3I_MAIN", "F47A_MAIN", "F47A_SI", "P403_MAIN", "P403_SI"}
 EXPECTED_PAGE_COUNTS = {
     "F3I_MAIN": 39,
@@ -34,6 +36,15 @@ SOURCE_IDENTITIES = {
     "P403_MAIN": ("P403", "MAIN"),
     "P403_SI": ("P403", "SI"),
 }
+
+
+def _contract_version(run_id: str) -> str:
+    return "3.1.1" if run_id.startswith("phase8_source_first_v3_1_1_") else "3.1"
+
+
+def _checkpoint(run_id: str) -> str:
+    suffix = "V3_1_1" if _contract_version(run_id) == "3.1.1" else "V3_1"
+    return f"PREPARED_FOR_SOURCE_FIRST_LAYER_A_{suffix}"
 
 
 def _canonical_hash(value: Any) -> str:
@@ -156,6 +167,7 @@ def _unit(
     included: list[str],
     excluded: list[str],
     completion_basis: str,
+    completed_maximum_claim_count: int | None = None,
 ) -> dict[str, Any]:
     unit_id = _source_unit_id(run_id, unit_kind, index)
     source_ids = list(dict.fromkeys(group["source_document_id"] for group in ranges))
@@ -200,7 +212,9 @@ def _unit(
                 "required_page_indices": ranges,
                 "completed_requires_all_required_pages": True,
                 "completed_minimum_claim_count": 1,
+                "completed_maximum_claim_count": completed_maximum_claim_count,
                 "zero_claim_statuses": ["NO_QUALIFYING_EVIDENCE", "SOURCE_UNREADABLE", "OUT_OF_SCOPE"],
+                "out_of_scope_allowed": False,
                 "completion_basis": completion_basis,
             },
         }
@@ -319,10 +333,11 @@ def build_v3_1_source_units(
             ranges=_ranges(("P403_SI", [calibration_page_index])),
             source_metadata=source_metadata,
             search_scope="EXACT_PAGE",
-            review_question="Inventory every atomic quantitative preparation fact directly reported on the provided exact source page and preserve its reaction stage and entity binding.",
+            review_question="Find exactly one atomic quantitative substrate-preparation fact: the first qualifying fact in source reading order on the provided exact page, preserving its reaction stage and entity binding.",
             included=["substrate_preparation_numeric_outcome", "explicit_limitation", "source_conflict"],
             excluded=common_exclusions + ["Facts located on any page other than the provided exact page."],
-            completion_basis="Inspect the complete provided page and emit every qualifying atomic preparation fact using the shared Layer A contract.",
+            completion_basis="One-item spot-check: inspect the complete page and emit exactly the first qualifying quantitative preparation fact in source reading order.",
+            completed_maximum_claim_count=1,
         )
     ]
     return scientific, calibration
@@ -340,7 +355,7 @@ def _calibration_event(human_events: list[dict[str, Any]]) -> dict[str, Any]:
     return matches[0]
 
 
-def _build_private_gold(event: dict[str, Any], source_metadata: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def _build_private_gold(event: dict[str, Any], source_metadata: dict[str, dict[str, Any]], *, schema_version: str) -> dict[str, Any]:
     locator = event["source_locator"]
     page_index = int(locator["pdf_page_index"])
     value_match = re.search(r"\b\d+(?:\.\d+)?\s*%", str(event.get("edited_value") or ""))
@@ -350,7 +365,9 @@ def _build_private_gold(event: dict[str, Any], source_metadata: dict[str, dict[s
     if len(classification) != 2:
         raise ValueError("private calibration classification must contain fact type and reaction stage")
     return {
-        "schema_version": "3.1",
+        "schema_version": schema_version,
+        "calibration_mode": "ONE_ITEM_SPOT_CHECK",
+        "allowed_extra_quantitative_claims": [],
         "review_item_id": event.get("core_review_item_id") or event.get("review_item_id"),
         "expected": {
             "source_document_id": "P403_SI",
@@ -523,6 +540,7 @@ def _prepare_workspace(
     sources: dict[str, Path],
     source_metadata: dict[str, dict[str, Any]],
     pdf_slice_writer: Callable[[Path, Path, list[int]], None],
+    schema_version: str,
 ) -> dict[str, Any]:
     for directory in ("sources", "input", "schemas", "output"):
         (workspace / directory).mkdir(parents=True, exist_ok=True)
@@ -545,13 +563,13 @@ def _prepare_workspace(
                 "printed_page_labels": {str(page): source_metadata[source_id]["printed_page_labels"][str(page)] for page in group["page_indices"]},
                 "artifact_sha256": sha256_file(destination),
             }
-    atomic_write_json(workspace / "input/source_bindings.json", {"schema_version": "3.1", "artifacts": bindings})
+    atomic_write_json(workspace / "input/source_bindings.json", {"schema_version": schema_version, "artifacts": bindings})
     for name in ("validation_core.py", "verify_input_package.py", "validate_results.py", "finalize_output.py"):
         shutil.copy2(_template_root() / name, workspace / "input" / name)
     for name in ("source_unit.schema.json", "layerA_inventory_output.schema.json"):
         shutil.copy2(_schema_root() / name, workspace / "schemas" / name)
     manifest = {
-        "schema_version": "3.1",
+        "schema_version": schema_version,
         "package_role": package_role,
         "procedural_isolation_only": True,
         "not_os_security_sandbox": True,
@@ -622,8 +640,9 @@ def prepare_v3_1_workspaces(
             if report["status"] != "PASS":
                 raise ValueError(f"existing V3.1 workspace is invalid: {report['issues']}")
         return result
+    schema_version = _contract_version(run_id)
     event = _calibration_event(human_events)
-    private_gold = _build_private_gold(event, metadata)
+    private_gold = _build_private_gold(event, metadata, schema_version=schema_version)
     calibration_page = private_gold["expected"]["pdf_page_index"]
     scientific_tasks, calibration_tasks = build_v3_1_source_units(
         run_id=run_id,
@@ -638,8 +657,8 @@ def prepare_v3_1_workspaces(
     calibration = temporary / "calibration_layerA"
     coordinator.mkdir(parents=True)
     try:
-        _prepare_workspace(workspace=scientific, package_role="SCIENTIFIC_INVENTORY", tasks=scientific_tasks, sources=sources, source_metadata=metadata, pdf_slice_writer=slice_writer)
-        _prepare_workspace(workspace=calibration, package_role="HIDDEN_CALIBRATION", tasks=calibration_tasks, sources=sources, source_metadata=metadata, pdf_slice_writer=slice_writer)
+        _prepare_workspace(workspace=scientific, package_role="SCIENTIFIC_INVENTORY", tasks=scientific_tasks, sources=sources, source_metadata=metadata, pdf_slice_writer=slice_writer, schema_version=schema_version)
+        _prepare_workspace(workspace=calibration, package_role="HIDDEN_CALIBRATION", tasks=calibration_tasks, sources=sources, source_metadata=metadata, pdf_slice_writer=slice_writer, schema_version=schema_version)
         private_values = {
             str(private_gold["expected"][key]).casefold()
             for key in ("product_id", "value_as_reported")
@@ -655,7 +674,7 @@ def prepare_v3_1_workspaces(
         atomic_write_json(
             coordinator / "instruction_chain.json",
             {
-                "schema_version": "3.1",
+                "schema_version": schema_version,
                 "sources": instruction_sources,
                 "procedural_isolation_only": True,
                 "not_os_security_sandbox": True,
@@ -670,12 +689,12 @@ def prepare_v3_1_workspaces(
         if sci_report["status"] != "PASS" or cal_report["status"] != "PASS":
             raise ValueError(f"V3.1 workspace validation failed: scientific={sci_report['issues']} calibration={cal_report['issues']}")
         result = {
-            "schema_version": "3.1",
+            "schema_version": schema_version,
             "run_id": run_id,
             "run_root": str(run_root),
             "layerA_inventory_workspace": str(final_scientific),
             "calibration_layerA_workspace": str(final_calibration),
-            "stage": "PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3_1",
+            "stage": _checkpoint(run_id),
             "scientific_source_unit_count": len(scientific_tasks),
             "calibration_source_unit_count": len(calibration_tasks),
             "scientific_input_manifest_hash": sci_report["manifest_hash"],
@@ -697,7 +716,7 @@ def prepare_v3_1_workspaces(
         atomic_write_json(
             coordinator / "V3_NO_GO_AUDIT.json",
             {
-                "schema_version": "3.1",
+                "schema_version": schema_version,
                 "old_run_id": "phase8_source_first_v3_20260713T103618Z",
                 "verdict": "NO_GO",
                 "bypasses_reproduced": [
@@ -717,10 +736,10 @@ def prepare_v3_1_workspaces(
             coordinator / "COORDINATOR_RESUME.md",
             "\n".join(
                 [
-                    "# Phase 8 V3.1 Coordinator Resume",
+                    f"# Phase 8 V{schema_version} Coordinator Resume",
                     "",
                     f"- run ID: `{run_id}`",
-                    "- checkpoint: `PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3_1`",
+                    f"- checkpoint: `{_checkpoint(run_id)}`",
                     "- scientific Layer A: not started",
                     "- calibration Layer A: not started",
                     "- Layer B/C: not created",
@@ -742,18 +761,64 @@ def prepare_v3_1_workspaces(
 
 def evaluate_v3_1_calibration(run_root: Path) -> dict[str, Any]:
     run_root = run_root.resolve()
-    private = _read_json(run_root / "coordinator/private_calibration.json")
     workspace = run_root / "calibration_layerA"
-    manifest = _read_json(workspace / "output/OUTPUT_MANIFEST.json")
     results_path = workspace / "output/results.jsonl"
     issues: list[str] = []
-    if manifest.get("results_sha256") != sha256_file(results_path):
+    private_path = run_root / "coordinator/private_calibration.json"
+    output_manifest_path = workspace / "output/OUTPUT_MANIFEST.json"
+    if not private_path.is_file():
+        issues.append("private calibration policy is missing")
+        private: dict[str, Any] = {"schema_version": "3.1", "expected": {}, "forbidden_reaction_stage": None}
+    else:
+        private = _read_json(private_path)
+    if not results_path.is_file():
+        issues.append("calibration results are missing")
+    validation = subprocess.run(
+        [sys.executable, str(workspace / "input/validate_results.py"), "--results", str(results_path)],
+        capture_output=True,
+        text=True,
+        cwd=workspace,
+    )
+    if validation.returncode != 0:
+        try:
+            validation_report = json.loads(validation.stdout)
+            issues.extend(f"shared validator: {issue}" for issue in validation_report.get("issues", []))
+        except json.JSONDecodeError:
+            issues.append("shared validator did not return a valid report")
+    if not output_manifest_path.is_file():
+        issues.append("calibration output manifest is missing")
+        manifest: dict[str, Any] = {}
+    else:
+        manifest = _read_json(output_manifest_path)
+    if results_path.is_file() and manifest.get("results_sha256") != sha256_file(results_path):
         issues.append("calibration output manifest does not bind the current results")
-    rows = _read_jsonl(results_path)
+    if manifest.get("input_manifest_hash") != sha256_file(workspace / "INPUT_MANIFEST.json"):
+        issues.append("calibration output manifest does not bind the current input")
+    if manifest.get("package_role") != "HIDDEN_CALIBRATION" or manifest.get("status") != "PASS":
+        issues.append("calibration output manifest has the wrong role or status")
+    rows = _read_jsonl(results_path) if results_path.is_file() else []
     claims = [claim for row in rows for claim in row.get("claims", [])]
     expected = private["expected"]
     matches = []
+    nonnumeric_types = {
+        "explicit_limitation",
+        "author_proposed_mechanism",
+        "experimental_mechanistic_observation",
+        "negative_scope",
+        "source_conflict",
+    }
+    quantitative_claim_ids: list[str] = []
     for claim in claims:
+        numeric_payload = claim.get("metric_type") != "not_applicable" or any(
+            claim.get(key) is not None
+            for key in ("value_as_reported", "unit_as_reported", "normalized_value_candidate", "normalized_metric_type", "normalization_rule")
+        )
+        if claim.get("reaction_stage") == private.get("forbidden_reaction_stage"):
+            issues.append(f"forbidden calibration reaction stage: {claim.get('claim_id')}")
+        if claim.get("claim_type") in nonnumeric_types and numeric_payload:
+            issues.append(f"nonnumeric calibration claim carries quantitative payload: {claim.get('claim_id')}")
+        if numeric_payload:
+            quantitative_claim_ids.append(claim.get("claim_id"))
         locator = claim.get("evidence_locator") or {}
         observed = {
             "source_document_id": claim.get("source_document_id"),
@@ -768,12 +833,17 @@ def evaluate_v3_1_calibration(run_root: Path) -> dict[str, Any]:
             "epistemic_class": claim.get("epistemic_class"),
         }
         normalized_expected = {**expected, "value_as_reported": str(expected["value_as_reported"]).replace(" ", "")}
-        if observed == normalized_expected and claim.get("reaction_stage") != private["forbidden_reaction_stage"]:
+        if observed == normalized_expected and claim.get("reaction_stage") != private.get("forbidden_reaction_stage"):
             matches.append(claim.get("claim_id"))
     if len(matches) != 1:
         issues.append(f"expected exactly one private gold match, found {len(matches)}")
+    allowed_extra_ids = set(private.get("allowed_extra_quantitative_claims", []))
+    unexpected_quantitative = set(quantitative_claim_ids) - set(matches) - allowed_extra_ids
+    if unexpected_quantitative:
+        issues.append(f"unexplained extra quantitative calibration claims: {sorted(unexpected_quantitative)}")
     report = {
-        "schema_version": "3.1",
+        "schema_version": private.get("schema_version", "3.1"),
+        "calibration_mode": private.get("calibration_mode", "ONE_ITEM_SPOT_CHECK"),
         "status": "PASS" if not issues else "FAIL",
         "match_count": len(matches),
         "matched_claim_ids": matches,

@@ -40,7 +40,7 @@ def main() -> int:
         return 1
     input_manifest = read_json(root / "INPUT_MANIFEST.json")
     output_manifest = {
-        "schema_version": "3.1",
+        "schema_version": input_manifest["schema_version"],
         "package_role": input_manifest["package_role"],
         "input_manifest_hash": sha256_file(root / "INPUT_MANIFEST.json"),
         "results_sha256": sha256_file(results),

@@ -12,7 +12,7 @@ from validation_core import validate_results
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Validate V3.1 Layer A structured results.")
+    parser = argparse.ArgumentParser(description="Validate V3.1/V3.1.1 Layer A structured results.")
     parser.add_argument("--results", type=Path, default=Path("output/results.jsonl"))
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]

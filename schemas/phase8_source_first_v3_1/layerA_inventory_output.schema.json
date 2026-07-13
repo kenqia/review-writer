@@ -60,7 +60,7 @@
         "reagent_or_partner_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
         "product_id": {"$ref": "#/$defs/nullableString"},
         "intermediate_id": {"$ref": "#/$defs/nullableString"},
-        "reaction_stage": {"enum": ["target_catalytic_reaction", "substrate_synthesis", "stoichiometric_intermediate_reactivity", "intermediate_isolation", "optimization", "control_experiment", "downstream_transformation", "mechanistic_observation", "source_identity"]},
+        "reaction_stage": {"enum": ["target_catalytic_reaction", "substrate_synthesis", "stoichiometric_intermediate_reactivity", "intermediate_isolation", "optimization", "control_experiment", "downstream_transformation", "mechanistic_observation"]},
         "reaction_entry": {"$ref": "#/$defs/nullableString"},
         "conditions_as_reported": {"$ref": "#/$defs/nullableString"},
         "metric_type": {"enum": ["isolated_yield", "assay_yield", "conversion", "ee", "er", "dr", "temperature", "time", "catalyst_loading", "ratio", "other_numeric", "not_applicable"]},

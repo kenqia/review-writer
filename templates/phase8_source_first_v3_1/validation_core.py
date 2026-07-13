@@ -24,16 +24,24 @@ REACTION_STAGE_BY_CLAIM = {
     "optimization_result": "optimization",
     "control_experiment_result": "control_experiment",
     "downstream_transformation_result": "downstream_transformation",
+    "author_proposed_mechanism": "mechanistic_observation",
+    "experimental_mechanistic_observation": "mechanistic_observation",
 }
 NUMERIC_CLAIM_TYPES = {
     "target_reaction_numeric_outcome",
     "substrate_preparation_numeric_outcome",
     "optimization_result",
-    "scope_result",
     "stoichiometric_result",
     "intermediate_isolation_result",
     "control_experiment_result",
     "downstream_transformation_result",
+}
+NONNUMERIC_CLAIM_TYPES = {
+    "explicit_limitation",
+    "author_proposed_mechanism",
+    "experimental_mechanistic_observation",
+    "negative_scope",
+    "source_conflict",
 }
 NUMERIC_METRICS = {
     "isolated_yield", "assay_yield", "conversion", "ee", "er", "dr",
@@ -170,13 +178,30 @@ def verify_input_package(root: Path) -> list[str]:
     return sorted(set(issues))
 
 
-def _locator_issues(task: dict[str, Any], source_id: str, locator: dict[str, Any], label: str) -> list[str]:
+def _locator_pages(source_id: str, locator: dict[str, Any]) -> set[tuple[str, int]]:
+    page_index = locator.get("pdf_page_index")
+    if locator.get("scope") == "PAGE_WINDOW" and isinstance(locator.get("page_window"), list) and len(locator["page_window"]) == 2:
+        start, end = locator["page_window"]
+        if isinstance(start, int) and isinstance(end, int) and start <= end:
+            return {(source_id, page) for page in range(start, end + 1)}
+    return {(source_id, page_index)}
+
+
+def _locator_issues(
+    task: dict[str, Any],
+    source_id: str,
+    locator: dict[str, Any],
+    label: str,
+    examined_pages: set[tuple[str, int]],
+) -> list[str]:
     issues: list[str] = []
     allowed = _flatten_pages(task["completion_criteria"]["required_page_indices"])
     page_index = locator.get("pdf_page_index")
     if (source_id, page_index) not in allowed:
         issues.append("evidence page is outside the task search scope or source bounds")
         return issues
+    if not _locator_pages(source_id, locator).issubset(examined_pages):
+        issues.append("evidence locator is outside the row pages_examined coverage")
     expected_label = task["printed_page_labels"][source_id][str(page_index)]
     if label != expected_label:
         issues.append("printed page label does not match the observed source-page label")
@@ -199,7 +224,28 @@ def _numeric_value(value: Any) -> float | None:
     return float(match.group(0)) if match else None
 
 
-def _claim_issues(task: dict[str, Any], claim: dict[str, Any]) -> list[str]:
+def _percent_value(value: Any, *, allow_ee: bool) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    suffix = r"(?:%|percent)(?:\s*ee)?|ee\s*%" if allow_ee else r"%|percent"
+    match = re.fullmatch(rf"\s*(-?\d+(?:\.\d+)?)\s*(?:{suffix})\s*", str(value or ""), flags=re.IGNORECASE)
+    return float(match.group(1)) if match else None
+
+
+def _ratio_value(value: Any) -> tuple[float, float] | None:
+    match = re.fullmatch(
+        r"\s*(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)\s*(?:er|dr|ratio)?\s*",
+        str(value or ""),
+        flags=re.IGNORECASE,
+    )
+    return (float(match.group(1)), float(match.group(2))) if match else None
+
+
+def _claim_issues(
+    task: dict[str, Any],
+    claim: dict[str, Any],
+    examined_pages: set[tuple[str, int]],
+) -> list[str]:
     issues: list[str] = []
     source_id = claim["source_document_id"]
     expected_paper, expected_role = SOURCE_IDENTITIES[source_id]
@@ -210,19 +256,49 @@ def _claim_issues(task: dict[str, Any], claim: dict[str, Any]) -> list[str]:
     if claim["claim_type"] not in task["included_claim_classes"]:
         issues.append("claim type is outside the source-unit inclusion contract")
     locator = claim["evidence_locator"]
-    issues.extend(_locator_issues(task, source_id, locator, locator["printed_page_label_observed"]))
+    issues.extend(_locator_issues(task, source_id, locator, locator["printed_page_label_observed"], examined_pages))
     for conflict in (claim.get("source_conflict") or {}).get("alternatives", []):
-        issues.extend(f"conflict alternative: {issue}" for issue in _locator_issues(task, source_id, conflict["locator"], conflict["locator"]["printed_page_label_observed"]))
+        issues.extend(
+            f"conflict alternative: {issue}"
+            for issue in _locator_issues(
+                task,
+                source_id,
+                conflict["locator"],
+                conflict["locator"]["printed_page_label_observed"],
+                examined_pages,
+            )
+        )
     visual = claim["evidence_modality"] in {"TABLE", "FIGURE", "SCHEME", "CAPTION"}
     if visual and not any(locator.get(key) for key in ("table_id", "figure_id", "scheme_id")):
         issues.append("visual evidence requires a table, figure, or scheme locator")
     if claim["evidence_modality"] == "TEXT" and claim["directness"] == "FIGURE_SUPPORTED":
         issues.append("plain-text evidence cannot claim figure-supported directness")
     claim_type = claim["claim_type"]
-    if claim_type in NUMERIC_CLAIM_TYPES:
+    is_numeric = claim_type in NUMERIC_CLAIM_TYPES or (
+        claim_type == "scope_result" and claim["metric_type"] in NUMERIC_METRICS
+    )
+    if is_numeric:
         required = ("product_id", "reaction_entry", "conditions_as_reported", "value_as_reported", "unit_as_reported")
         if claim["metric_type"] not in NUMERIC_METRICS or any(claim.get(key) in (None, "") for key in required):
             issues.append("numeric claim lacks product, entry, conditions, metric, value, or unit binding")
+    if claim_type in NONNUMERIC_CLAIM_TYPES:
+        nonnumeric_fields = (
+            "value_as_reported",
+            "unit_as_reported",
+            "normalized_value_candidate",
+            "normalized_metric_type",
+            "normalization_rule",
+        )
+        if (
+            claim["metric_type"] != "not_applicable"
+            or any(claim.get(key) is not None for key in nonnumeric_fields)
+            or claim["normalization_source_supported"]
+        ):
+            issues.append("nonnumeric claim type cannot carry a quantitative or normalization payload")
+    if claim_type == "scope_result" and claim["metric_type"] == "not_applicable":
+        qualitative_fields = ("value_as_reported", "unit_as_reported", "normalized_value_candidate", "normalized_metric_type", "normalization_rule")
+        if any(claim.get(key) is not None for key in qualitative_fields) or claim["normalization_source_supported"]:
+            issues.append("qualitative scope result cannot carry a quantitative or normalization payload")
     if claim_type in REACTION_STAGE_BY_CLAIM and claim["reaction_stage"] != REACTION_STAGE_BY_CLAIM[claim_type]:
         issues.append("claim type is bound to the wrong reaction stage")
     metric = claim["metric_type"]
@@ -242,15 +318,25 @@ def _claim_issues(task: dict[str, Any], claim: dict[str, Any]) -> list[str]:
     else:
         if claim["normalized_metric_type"] != metric or not claim["normalization_rule"] or not claim["normalization_source_supported"]:
             issues.append("normalization must preserve the reported metric and record a source-supported rule")
-        reported_number = _numeric_value(claim["value_as_reported"])
-        normalized_number = _numeric_value(normalized)
+        if metric in {"isolated_yield", "assay_yield", "conversion", "ee"}:
+            reported_number = _percent_value(claim["value_as_reported"], allow_ee=metric == "ee")
+            normalized_number = _percent_value(normalized, allow_ee=metric == "ee")
+        else:
+            reported_number = _numeric_value(claim["value_as_reported"])
+            normalized_number = _numeric_value(normalized)
         if metric in {"isolated_yield", "assay_yield", "conversion", "ee"} and (reported_number is None or normalized_number != reported_number):
             issues.append("normalized percent value differs from the reported value")
         if metric == "ee" and "er" in str(normalized).casefold():
             issues.append("ee cannot be silently normalized to er")
-    if claim_type == "author_proposed_mechanism" and (claim["epistemic_class"] != "AUTHOR_PROPOSED_MECHANISM" or claim["pathway_status"] != "AUTHOR_PROPOSED"):
+        if metric in {"er", "dr"}:
+            reported_ratio = _ratio_value(claim["value_as_reported"])
+            normalized_ratio = _ratio_value(normalized)
+            if reported_ratio is None or normalized_ratio != reported_ratio:
+                issues.append("normalized ratio differs from the reported ordered ratio")
+    review_summary = claim["paper_id"] == "F3I" and claim["epistemic_class"] == "REVIEW_ARTICLE_SUMMARY"
+    if claim_type == "author_proposed_mechanism" and ((not review_summary and claim["epistemic_class"] != "AUTHOR_PROPOSED_MECHANISM") or claim["pathway_status"] != "AUTHOR_PROPOSED"):
         issues.append("author-proposed mechanism has the wrong epistemic or pathway class")
-    if claim_type == "experimental_mechanistic_observation" and (claim["epistemic_class"] != "EXPERIMENTAL_MECHANISTIC_OBSERVATION" or claim["pathway_status"] != "EXPERIMENTALLY_OBSERVED"):
+    if claim_type == "experimental_mechanistic_observation" and ((not review_summary and claim["epistemic_class"] != "EXPERIMENTAL_MECHANISTIC_OBSERVATION") or claim["pathway_status"] != "EXPERIMENTALLY_OBSERVED"):
         issues.append("experimental mechanism claim has the wrong epistemic or pathway class")
     if claim_type == "intermediate_isolation_result" and (claim["epistemic_class"] != "INTERMEDIATE_ISOLATION" or claim["pathway_status"] != "NOT_PROVEN_BY_ISOLATION"):
         issues.append("intermediate isolation cannot be presented as a proven catalytic pathway")
@@ -306,20 +392,31 @@ def validate_results(root: Path, results_path: Path) -> tuple[list[str], dict[st
                 issues.append(f"COMPLETED row lacks full required page coverage: {row['source_unit_id']}")
             if len(row["claims"]) < task["completion_criteria"]["completed_minimum_claim_count"]:
                 issues.append(f"COMPLETED row lacks required qualifying claims: {row['source_unit_id']}")
+            maximum = task["completion_criteria"].get("completed_maximum_claim_count")
+            if maximum is not None and len(row["claims"]) > maximum:
+                issues.append(f"COMPLETED row exceeds the maximum qualifying claims: {row['source_unit_id']}")
             if row["status_reason"] is not None:
                 issues.append(f"COMPLETED row must not carry a failure reason: {row['source_unit_id']}")
         elif status == "PARTIAL":
-            if not row["status_reason"] or not examined:
-                issues.append(f"PARTIAL row requires a reason and honest page coverage: {row['source_unit_id']}")
-        elif status in {"SOURCE_UNREADABLE", "OUT_OF_SCOPE", "NO_QUALIFYING_EVIDENCE"}:
-            if not row["status_reason"] or row["claims"]:
-                issues.append(f"{status} requires a reason and no claims: {row['source_unit_id']}")
+            if not row["status_reason"] or not examined or examined == required:
+                issues.append(f"PARTIAL row requires a reason and a nonempty proper subset of required pages: {row['source_unit_id']}")
+        elif status == "NO_QUALIFYING_EVIDENCE":
+            if examined != required or not row["sections_examined"] or not row["status_reason"] or row["claims"]:
+                issues.append(f"NO_QUALIFYING_EVIDENCE requires complete coverage, a section marker, a reason, and no claims: {row['source_unit_id']}")
+        elif status == "SOURCE_UNREADABLE":
+            if examined or not row["status_reason"] or row["claims"]:
+                issues.append(f"SOURCE_UNREADABLE requires zero examined pages, a reason, and no claims: {row['source_unit_id']}")
+        elif status == "OUT_OF_SCOPE":
+            if not task["completion_criteria"].get("out_of_scope_allowed", False):
+                issues.append(f"OUT_OF_SCOPE is not allowed by this source unit: {row['source_unit_id']}")
+            if examined or not row["status_reason"] or row["claims"]:
+                issues.append(f"OUT_OF_SCOPE requires zero examined pages, a task-specific reason, and no claims: {row['source_unit_id']}")
         for claim in row["claims"]:
             claim_ids.append(claim["claim_id"])
             expected_prefix = f"CL-{row['source_unit_id']}-"
             if not claim["claim_id"].startswith(expected_prefix):
                 issues.append(f"claim ID does not bind its source unit: {claim['claim_id']}")
-            issues.extend(f"{claim['claim_id']}: {issue}" for issue in _claim_issues(task, claim))
+            issues.extend(f"{claim['claim_id']}: {issue}" for issue in _claim_issues(task, claim, examined))
     if len(claim_ids) != len(set(claim_ids)):
         issues.append("duplicate claim_id in results")
     if not claim_ids:

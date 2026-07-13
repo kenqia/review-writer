@@ -44,7 +44,7 @@
     },
     "completion_criteria": {
       "type": "object", "additionalProperties": false,
-      "required": ["required_page_indices", "completed_requires_all_required_pages", "completed_minimum_claim_count", "zero_claim_statuses", "completion_basis"],
+      "required": ["required_page_indices", "completed_requires_all_required_pages", "completed_minimum_claim_count", "completed_maximum_claim_count", "zero_claim_statuses", "out_of_scope_allowed", "completion_basis"],
       "properties": {
         "required_page_indices": {
           "type": "array", "minItems": 1,
@@ -59,7 +59,9 @@
         },
         "completed_requires_all_required_pages": {"const": true},
         "completed_minimum_claim_count": {"type": "integer", "minimum": 1},
+        "completed_maximum_claim_count": {"type": ["integer", "null"], "minimum": 1},
         "zero_claim_statuses": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["NO_QUALIFYING_EVIDENCE", "SOURCE_UNREADABLE", "OUT_OF_SCOPE"]}},
+        "out_of_scope_allowed": {"type": "boolean"},
         "completion_basis": {"type": "string", "minLength": 20}
       }
     },
