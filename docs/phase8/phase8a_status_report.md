@@ -1,6 +1,6 @@
 # Phase 8A Human Review Package Status
 
-- status: `PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3_1`
+- status: `HUMAN_REVIEW_REQUIRED`
 - method label: `HUMAN_SPOT_CHECKED_AI_ADJUDICATION`
 - methodology: Context-isolated three-layer AI adjudication with a small human spot check. Engineering validation only; not publication-grade scientific validation.
 - human spot-check limit: `10` unique core items

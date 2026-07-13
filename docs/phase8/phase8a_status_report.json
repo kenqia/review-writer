@@ -1,5 +1,5 @@
 {
-  "status": "PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3_1",
+  "status": "HUMAN_REVIEW_REQUIRED",
   "method_label": "HUMAN_SPOT_CHECKED_AI_ADJUDICATION",
   "methodology": "Context-isolated three-layer AI adjudication with a small human spot check. Engineering validation only; not publication-grade scientific validation.",
   "human_spot_check_limit": 10,
@@ -8,8 +8,8 @@
       "source_document_id": "F3I_MAIN",
       "paper_id": "F3I",
       "source_role": "MAIN",
-      "status": "IDENTITY_VALIDATED_STRONG",
-      "identity_match_status": "IDENTITY_VALIDATED_STRONG",
+      "status": "SOURCE_FOUND",
+      "identity_match_status": "SOURCE_FOUND",
       "page_count": 39,
       "hash_prefix": "be65337bc704",
       "source_type": "local_recursive_search"
@@ -18,8 +18,8 @@
       "source_document_id": "F47A_MAIN",
       "paper_id": "F47A",
       "source_role": "MAIN",
-      "status": "IDENTITY_VALIDATED_STRONG",
-      "identity_match_status": "IDENTITY_VALIDATED_STRONG",
+      "status": "SOURCE_FOUND",
+      "identity_match_status": "SOURCE_FOUND",
       "page_count": 2,
       "hash_prefix": "93f41a217ce0",
       "source_type": "local_recursive_search"
@@ -28,8 +28,8 @@
       "source_document_id": "P403_MAIN",
       "paper_id": "P403",
       "source_role": "MAIN",
-      "status": "IDENTITY_VALIDATED_STRONG",
-      "identity_match_status": "IDENTITY_VALIDATED_STRONG",
+      "status": "SOURCE_FOUND",
+      "identity_match_status": "SOURCE_FOUND",
       "page_count": 10,
       "hash_prefix": "8fbc8f252952",
       "source_type": "local_recursive_search"
