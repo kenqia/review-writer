@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-writer:phase8:v3:source-unit",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["source_unit_id", "paper_id", "source_document_ids", "source_roles", "locator_scope", "pdf_page_index", "page_window", "section", "inventory_categories", "review_scope", "task_hash"],
+  "properties": {
+    "source_unit_id": {"type": "string", "pattern": "^SU-[0-9a-f]{16}$"},
+    "paper_id": {"enum": ["F3I", "F47A", "P403"]},
+    "source_document_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["F3I_MAIN", "F47A_MAIN", "F47A_SI", "P403_MAIN", "P403_SI"]}},
+    "source_roles": {"type": "object", "additionalProperties": {"enum": ["MAIN", "SI"]}},
+    "locator_scope": {"enum": ["EXACT_PAGE", "PAGE_WINDOW", "SECTION", "FULL_SOURCE"]},
+    "pdf_page_index": {"type": ["integer", "null"], "minimum": 0},
+    "page_window": {"type": ["array", "null"], "prefixItems": [{"type": "integer", "minimum": 0}, {"type": "integer", "minimum": 0}], "minItems": 2, "maxItems": 2},
+    "section": {"type": ["string", "null"]},
+    "inventory_categories": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string"}},
+    "review_scope": {"type": "string", "minLength": 1},
+    "task_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "allOf": [
+    {"if": {"properties": {"locator_scope": {"const": "EXACT_PAGE"}}}, "then": {"properties": {"pdf_page_index": {"type": "integer"}}}},
+    {"if": {"properties": {"locator_scope": {"const": "PAGE_WINDOW"}}}, "then": {"properties": {"page_window": {"type": "array"}}}},
+    {"if": {"properties": {"locator_scope": {"const": "SECTION"}}}, "then": {"properties": {"section": {"type": "string", "minLength": 1}}}}
+  ]
+}

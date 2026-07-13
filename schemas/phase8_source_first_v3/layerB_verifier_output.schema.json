@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-writer:phase8:v3:layer-b-verifier-output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["claim_id", "verdict", "corrected_claim", "corrected_entity_roles", "corrected_reaction_stage", "corrected_value", "corrected_locator", "short_independent_evidence", "error_categories", "risk_level", "input_manifest_hash", "claim_hash"],
+  "properties": {
+    "claim_id": {"type": "string", "minLength": 1},
+    "verdict": {"enum": ["SUPPORTED", "EDIT_REQUIRED", "CONTRADICTED", "INSUFFICIENT_EVIDENCE", "LOCATOR_ERROR", "ENTITY_BINDING_ERROR", "REACTION_STAGE_ERROR", "FACT_TYPE_ERROR", "SOURCE_CONFLICT"]},
+    "corrected_claim": {"type": ["object", "null"]},
+    "corrected_entity_roles": {"type": ["object", "null"]},
+    "corrected_reaction_stage": {"type": ["string", "null"]},
+    "corrected_value": {"type": ["string", "number", "object", "null"]},
+    "corrected_locator": {"type": ["object", "null"]},
+    "recovery_candidate": {"type": ["object", "null"]},
+    "short_independent_evidence": {"type": ["string", "null"], "maxLength": 500},
+    "error_categories": {"type": "array", "uniqueItems": true, "items": {"enum": ["wrong_value", "wrong_unit", "wrong_entity", "wrong_product", "wrong_reaction_entry", "wrong_reaction_stage", "wrong_fact_type", "wrong_locator", "substrate_vs_product", "substrate_preparation_vs_target_reaction", "ee_vs_er", "unsupported_negative_claim", "mechanism_epistemic_class", "source_conflict"]}},
+    "risk_level": {"type": "integer", "minimum": 0, "maximum": 4},
+    "input_manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "claim_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}
