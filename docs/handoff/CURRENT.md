@@ -44,8 +44,8 @@
 Current phase:
 
 ```text
-Phase 8A: context-isolated three-layer AI adjudication preparation
-Checkpoint: PREPARED_FOR_INDEPENDENT_LAYER_1_AND_2_V2
+Phase 8A: V3 source-first evidence inventory preparation
+Checkpoint: PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3
 ```
 
 Methodology:
@@ -71,10 +71,12 @@ Current source status:
 - `F3I_SI`: `NO_SI_PUBLISHED_ON_OFFICIAL_PAGE`.
 - `core_review_queue`: 2-4 hour priority subset with core-to-atomic mapping.
 - `extended_review_queue`: all atomic review items.
-- The first three-layer run is diagnostic-only because semantic input defects
-  were identified; its outputs cannot enter final AI decisions.
-- V2 uses atomic tasks, dual-mode independent review, locator-quality levels,
-  and coordinator-private hidden calibration.
+- The first three-layer run and V2 are diagnostic-only. V2's 41 tasks are an
+  adversarial task-validation set, not a scientific adjudication queue.
+- V3 replaces fixed-field tasks with source-first inventory over three source
+  units and a shared locator policy.
+- Existing human gold runs as one opaque same-contract calibration unit; it is
+  excluded from scientific claims and consumes no additional human budget.
 
 Public status report:
 
@@ -86,7 +88,7 @@ docs/phase8/phase8a_status_report.json
 The current coordinator turn must stop at:
 
 ```text
-PREPARED_FOR_INDEPENDENT_LAYER_1_AND_2_V2
+PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3
 ```
 
 ## Safety Notes
@@ -94,14 +96,15 @@ PREPARED_FOR_INDEPENDENT_LAYER_1_AND_2_V2
 - Phase 8A does not create verified bibliography, verified claims, gold evidence packs, final scientific evaluation reports, or regenerated review prose.
 - PDFs, SI, full page text, long excerpts, local image crops, manual decisions, and authenticated caches remain ignored under `local/phase8_evidence/`.
 - Default Phase 8 gates are offline and do not call Qwen, download SI, or invoke MinerU cloud.
-- AI adjudication results remain separate from the human decision log.
+- Diagnostic AI results and future scientific claim-verification results remain
+  separate from the human decision log.
 - Effective human decisions take precedence over new AI adjudication and old AI extraction.
 - Human spot checks are capped at 10 unique core items.
 - The isolation is procedural, not an operating-system sandbox or statistical independence between model weights.
 
 ## Next User Action
 
-Run V2 Layer 1 and Layer 2 manually in fresh, separate VS Code Codex sessions
-using the external paths recorded in the V2 `COORDINATOR_RESUME.md`. Do not
-start Layer 3 until both outputs pass coordinator validation and deterministic
-rules. Phase 8B has not started.
+Run only V3 source-first Layer A in a fresh VS Code Codex session using the
+external path recorded in the V3 `COORDINATOR_RESUME.md`. Do not create Layer B
+until Layer A passes strict ingest validation. Do not create Layer C unless the
+same claim has a material A/B conflict. Phase 8B has not started.
