@@ -10,9 +10,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import fitz
-
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -42,6 +39,17 @@ class Phase8V31ContractTests(unittest.TestCase):
         cls.external = cls.base / "external"
         (cls.repo / ".git").mkdir(parents=True)
         cls.sources = cls._make_sources()
+        cls.source_metadata = {
+            source_id: {
+                "source_document_id": source_id,
+                "paper_id": source_id.split("_")[0],
+                "source_role": source_id.rsplit("_", 1)[1],
+                "page_count": page_count,
+                "sha256": sha256(cls.sources[source_id]),
+                "printed_page_labels": {str(index): f"{prefix}-{index + 1}" for index in range(page_count)},
+            }
+            for source_id, (page_count, prefix) in cls._source_specifications().items()
+        }
         cls.audits = {
             source_id: {
                 "source_document_id": source_id,
@@ -77,6 +85,8 @@ class Phase8V31ContractTests(unittest.TestCase):
             pr_number=3,
             random_seed=80423,
             instruction_sources=[],
+            source_metadata=cls.source_metadata,
+            pdf_slice_writer=cls._fixture_slice_writer,
         )
         cls.scientific = Path(cls.result["layerA_inventory_workspace"])
         cls.calibration = Path(cls.result["calibration_layerA_workspace"])
@@ -92,29 +102,31 @@ class Phase8V31ContractTests(unittest.TestCase):
     @classmethod
     def _make_pdf(cls, path: Path, page_count: int, prefix: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        document = fitz.open()
-        for index in range(page_count):
-            page = document.new_page(width=612, height=792)
-            page.insert_text((72, 72), f"Synthetic source {prefix}, page {index}.")
-            page.insert_text((280, 775), f"{prefix}-{index + 1}")
-        document.save(path)
-        document.close()
+        path.write_bytes(f"%PDF synthetic fixture {prefix} pages={page_count}\n".encode())
 
-    @classmethod
-    def _make_sources(cls) -> dict[str, Path]:
-        specifications = {
+    @staticmethod
+    def _source_specifications() -> dict[str, tuple[int, str]]:
+        return {
             "F3I_MAIN": (39, "F3I"),
             "F47A_MAIN": (2, "F47M"),
             "F47A_SI": (3, "F47S"),
             "P403_MAIN": (10, "P403M"),
             "P403_SI": (190, "TESTS"),
         }
+
+    @classmethod
+    def _make_sources(cls) -> dict[str, Path]:
         sources = {}
-        for source_id, (page_count, prefix) in specifications.items():
+        for source_id, (page_count, prefix) in cls._source_specifications().items():
             path = cls.repo / "local/phase8_evidence/sources" / source_id.split("_")[0] / f"{source_id}.pdf"
             cls._make_pdf(path, page_count, prefix)
             sources[source_id] = path
         return sources
+
+    @staticmethod
+    def _fixture_slice_writer(source: Path, destination: Path, original_page_indices: list[int]) -> None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(source.read_bytes() + json.dumps(original_page_indices).encode())
 
     @staticmethod
     def _read_jsonl(path: Path) -> list[dict]:

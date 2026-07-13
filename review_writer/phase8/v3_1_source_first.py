@@ -7,7 +7,7 @@ import re
 import shutil
 import stat
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .ai_adjudication import (
     _is_within,
@@ -522,6 +522,7 @@ def _prepare_workspace(
     tasks: list[dict[str, Any]],
     sources: dict[str, Path],
     source_metadata: dict[str, dict[str, Any]],
+    pdf_slice_writer: Callable[[Path, Path, list[int]], None],
 ) -> dict[str, Any]:
     for directory in ("sources", "input", "schemas", "output"):
         (workspace / directory).mkdir(parents=True, exist_ok=True)
@@ -534,7 +535,7 @@ def _prepare_workspace(
             source_id = group["source_document_id"]
             artifact = task["source_artifacts"][source_id]
             destination = workspace / artifact
-            _write_pdf_slice(sources[source_id], destination, group["page_indices"])
+            pdf_slice_writer(sources[source_id], destination, group["page_indices"])
             bindings[artifact] = {
                 "source_document_id": source_id,
                 "source_role": source_metadata[source_id]["source_role"],
@@ -579,6 +580,8 @@ def prepare_v3_1_workspaces(
     pr_number: int,
     random_seed: int,
     instruction_sources: list[dict[str, Any]],
+    source_metadata: dict[str, dict[str, Any]] | None = None,
+    pdf_slice_writer: Callable[[Path, Path, list[int]], None] | None = None,
 ) -> dict[str, Any]:
     repo_root = repo_root.resolve()
     workspace_parent = workspace_parent.resolve()
@@ -586,14 +589,27 @@ def prepare_v3_1_workspaces(
         raise ValueError("workspace parent must be outside the Git repository")
     if not V3_1_RUN_ID_RE.fullmatch(run_id):
         raise ValueError("invalid V3.1 run ID")
-    source_metadata = inspect_source_metadata(sources)
+    metadata = source_metadata or inspect_source_metadata(sources)
+    if set(metadata) != REQUIRED_SOURCE_IDS:
+        raise ValueError("source metadata must cover exactly the five required source IDs")
+    wrong_counts = {
+        source_id: metadata[source_id].get("page_count")
+        for source_id, expected in EXPECTED_PAGE_COUNTS.items()
+        if metadata[source_id].get("page_count") != expected
+    }
+    if wrong_counts:
+        raise ValueError(f"unexpected source metadata page counts: {wrong_counts}")
+    slice_writer = pdf_slice_writer or _write_pdf_slice
     for source_id, source in sources.items():
         audit = identity_audits.get(source_id, {})
         if audit.get("status") not in {"IDENTITY_VALIDATED_STRONG", "IDENTITY_VALIDATED_PROBABLE"}:
             raise ValueError(f"source identity is not validated: {source_id}")
-        if sha256_file(source) != audit.get("sha256") or source_metadata[source_id]["sha256"] != audit.get("sha256"):
+        if sha256_file(source) != audit.get("sha256") or metadata[source_id]["sha256"] != audit.get("sha256"):
             raise ValueError(f"source hash mismatch: {source_id}")
-        if audit.get("source_role") and audit["source_role"] != source_metadata[source_id]["source_role"]:
+        expected_paper, expected_role = SOURCE_IDENTITIES[source_id]
+        if metadata[source_id].get("paper_id") != expected_paper or metadata[source_id].get("source_role") != expected_role:
+            raise ValueError(f"source metadata identity mismatch: {source_id}")
+        if audit.get("source_role") and audit["source_role"] != metadata[source_id]["source_role"]:
             raise ValueError(f"source-role identity mismatch: {source_id}")
     run_root = workspace_parent / run_id
     existing = run_root / "coordinator/preparation_result.json"
@@ -607,11 +623,11 @@ def prepare_v3_1_workspaces(
                 raise ValueError(f"existing V3.1 workspace is invalid: {report['issues']}")
         return result
     event = _calibration_event(human_events)
-    private_gold = _build_private_gold(event, source_metadata)
+    private_gold = _build_private_gold(event, metadata)
     calibration_page = private_gold["expected"]["pdf_page_index"]
     scientific_tasks, calibration_tasks = build_v3_1_source_units(
         run_id=run_id,
-        source_metadata=source_metadata,
+        source_metadata=metadata,
         calibration_page_index=calibration_page,
     )
     temporary = workspace_parent / f".{run_id}.tmp-{os.getpid()}"
@@ -622,8 +638,8 @@ def prepare_v3_1_workspaces(
     calibration = temporary / "calibration_layerA"
     coordinator.mkdir(parents=True)
     try:
-        _prepare_workspace(workspace=scientific, package_role="SCIENTIFIC_INVENTORY", tasks=scientific_tasks, sources=sources, source_metadata=source_metadata)
-        _prepare_workspace(workspace=calibration, package_role="HIDDEN_CALIBRATION", tasks=calibration_tasks, sources=sources, source_metadata=source_metadata)
+        _prepare_workspace(workspace=scientific, package_role="SCIENTIFIC_INVENTORY", tasks=scientific_tasks, sources=sources, source_metadata=metadata, pdf_slice_writer=slice_writer)
+        _prepare_workspace(workspace=calibration, package_role="HIDDEN_CALIBRATION", tasks=calibration_tasks, sources=sources, source_metadata=metadata, pdf_slice_writer=slice_writer)
         private_values = {
             str(private_gold["expected"][key]).casefold()
             for key in ("product_id", "value_as_reported")

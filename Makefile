@@ -393,9 +393,9 @@ phase8-v3-source-first-check:
 	$(PYTHON) scripts/phase8/prepare_v3_source_first.py --help >/dev/null
 
 phase8-v3-1-source-first-check:
-	$(PHASE8_PYTHON) tests/test_phase8_v3_1_contract.py
-	$(PHASE8_PYTHON) scripts/phase8/prepare_v3_1_source_first.py --help >/dev/null
-	$(PHASE8_PYTHON) scripts/phase8/evaluate_v3_1_calibration.py --help >/dev/null
+	$(PYTHON) tests/test_phase8_v3_1_contract.py
+	$(PYTHON) scripts/phase8/prepare_v3_1_source_first.py --help >/dev/null
+	$(PYTHON) scripts/phase8/evaluate_v3_1_calibration.py --help >/dev/null
 
 bailian-transport-matrix-dry-run:
 	$(PYTHON) tests/test_bailian_transport_matrix_safety.py
