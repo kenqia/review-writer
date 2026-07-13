@@ -275,6 +275,20 @@ class Phase8V31ContractTests(unittest.TestCase):
             text=True,
         )
 
+    def _finalize_and_evaluate_calibration(self, claims: list[dict]) -> tuple[subprocess.CompletedProcess[str], dict]:
+        task = self._tasks(self.calibration)[0]
+        row = {
+            "source_unit_id": task["source_unit_id"],
+            "source_unit_status": "COMPLETED",
+            "input_manifest_hash": self._manifest_hash(self.calibration),
+            "task_hash": task["task_hash"],
+            **self._coverage(task),
+            "claims": claims,
+        }
+        finalized = self._finalize(self.calibration, [row])
+        report = evaluate_v3_1_calibration(Path(self.result["run_root"]))
+        return finalized, report
+
     def test_workspaces_are_separate_immutable_and_scientific_has_eight_shards(self) -> None:
         scientific_tasks = self._tasks()
         calibration_tasks = self._tasks(self.calibration)
@@ -639,6 +653,80 @@ class Phase8V31ContractTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         report = evaluate_v3_1_calibration(Path(self.result["run_root"]))
         self.assertEqual(report["status"], "FAIL")
+
+    def test_calibration_evaluator_canonicalizes_compound_label_and_percent_value(self) -> None:
+        private_path = Path(self.result["run_root"]) / "coordinator/private_calibration.json"
+        original_private = private_path.read_text(encoding="utf-8")
+        private = json.loads(original_private)
+        private["expected"].update({"product_id": "2d", "value_as_reported": "54%", "unit_as_reported": "%"})
+        private_path.write_text(json.dumps(private, ensure_ascii=True, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        try:
+            for value in (54, 54.0, "54"):
+                with self.subTest(value=value):
+                    claim = self._calibration_gold_claim(self._tasks(self.calibration)[0])
+                    claim.update(
+                        {
+                            "product_id": "5-(synthetic-name)-oxazolidine-2,4-dione (2D)",
+                            "value_as_reported": value,
+                            "normalized_value_candidate": None,
+                            "normalized_metric_type": None,
+                            "normalization_rule": None,
+                            "normalization_source_supported": False,
+                        }
+                    )
+                    finalized, report = self._finalize_and_evaluate_calibration([claim])
+                    self.assertEqual(finalized.returncode, 0, finalized.stdout + finalized.stderr)
+                    self.assertEqual(report["status"], "PASS", report)
+                    self.assertEqual(report["match_count"], 1, report)
+        finally:
+            private_path.write_text(original_private, encoding="utf-8")
+
+    def test_calibration_evaluator_rejects_near_labels_wrong_value_locator_and_stage(self) -> None:
+        private_path = Path(self.result["run_root"]) / "coordinator/private_calibration.json"
+        original_private = private_path.read_text(encoding="utf-8")
+        private = json.loads(original_private)
+        private["expected"].update({"product_id": "2d", "value_as_reported": "54%", "unit_as_reported": "%"})
+        private_path.write_text(json.dumps(private, ensure_ascii=True, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        try:
+            task = self._tasks(self.calibration)[0]
+            cases = []
+            for product_id in ("2e", "12d"):
+                claim = self._calibration_gold_claim(task)
+                claim.update({"product_id": product_id, "value_as_reported": 54, "normalized_value_candidate": 54})
+                cases.append((f"product-{product_id}", claim))
+            wrong_value = self._calibration_gold_claim(task)
+            wrong_value.update({"product_id": "2d", "value_as_reported": 55, "normalized_value_candidate": 55})
+            cases.append(("wrong-value", wrong_value))
+            wrong_stage = self._calibration_gold_claim(task)
+            wrong_stage.update({"product_id": "2d", "value_as_reported": 54, "normalized_value_candidate": 54, "reaction_stage": "target_catalytic_reaction"})
+            cases.append(("wrong-stage", wrong_stage))
+            wrong_label = self._calibration_gold_claim(task)
+            wrong_label.update({"product_id": "2d", "value_as_reported": 54, "normalized_value_candidate": 54})
+            wrong_label["evidence_locator"]["printed_page_label_observed"] = "wrong-label"
+            cases.append(("wrong-printed-label", wrong_label))
+            wrong_page = self._calibration_gold_claim(task)
+            wrong_page.update({"product_id": "2d", "value_as_reported": 54, "normalized_value_candidate": 54})
+            wrong_page["evidence_locator"]["pdf_page_index"] += 1
+            cases.append(("wrong-page", wrong_page))
+            for name, claim in cases:
+                with self.subTest(name=name):
+                    _, report = self._finalize_and_evaluate_calibration([claim])
+                    self.assertEqual(report["status"], "FAIL", report)
+        finally:
+            private_path.write_text(original_private, encoding="utf-8")
+
+    def test_calibration_evaluator_rejects_gold_plus_extra_quantitative_claim(self) -> None:
+        task = self._tasks(self.calibration)[0]
+        gold = self._calibration_gold_claim(task)
+        extra = self._calibration_gold_claim(task, sequence=2)
+        extra.update({"product_id": "extra-compound", "value_as_reported": 62, "normalized_value_candidate": 62})
+        _, report = self._finalize_and_evaluate_calibration([gold, extra])
+        self.assertEqual(report["status"], "FAIL", report)
+
+    def test_private_gold_stores_percentage_as_a_numeric_value(self) -> None:
+        private = json.loads((Path(self.result["run_root"]) / "coordinator/private_calibration.json").read_text(encoding="utf-8"))
+        self.assertEqual(private["expected"]["value_as_reported"], 61)
+        self.assertEqual(private["expected"]["unit_as_reported"], "%")
 
     def test_v3_1_1_run_uses_new_checkpoint_and_empty_outputs(self) -> None:
         external = self.base / "external-v3-1-1"

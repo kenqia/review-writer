@@ -8,6 +8,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable
 
@@ -355,6 +356,56 @@ def _calibration_event(human_events: list[dict[str, Any]]) -> dict[str, Any]:
     return matches[0]
 
 
+_COMPOUND_LABEL_TOKEN = r"[a-z0-9]+(?:[-'][a-z0-9]+)*"
+
+
+def _canonical_compound_label(value: Any) -> str | None:
+    text = str(value or "").strip().casefold()
+    if re.fullmatch(_COMPOUND_LABEL_TOKEN, text):
+        return text
+    terminal = re.search(rf"\(({_COMPOUND_LABEL_TOKEN})\)\s*$", text)
+    return terminal.group(1) if terminal else None
+
+
+def _canonical_percent_value(value: Any, unit: Any) -> tuple[Decimal, str] | None:
+    if str(unit or "").strip() != "%" or value is None or isinstance(value, bool):
+        return None
+    text = str(value).strip()
+    if text.endswith("%"):
+        text = text[:-1].strip()
+    if not re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)", text):
+        return None
+    try:
+        number = Decimal(text)
+    except InvalidOperation:
+        return None
+    if not number.is_finite():
+        return None
+    return number, "%"
+
+
+def _calibration_claim_matches(expected: dict[str, Any], claim: dict[str, Any]) -> bool:
+    locator = claim.get("evidence_locator") or {}
+    exact_fields = {
+        "source_document_id": claim.get("source_document_id"),
+        "pdf_page_index": locator.get("pdf_page_index"),
+        "printed_page_label_observed": locator.get("printed_page_label_observed"),
+        "claim_type": claim.get("claim_type"),
+        "reaction_stage": claim.get("reaction_stage"),
+        "metric_type": claim.get("metric_type"),
+        "epistemic_class": claim.get("epistemic_class"),
+    }
+    if any(exact_fields[key] != expected.get(key) for key in exact_fields):
+        return False
+    expected_product = _canonical_compound_label(expected.get("product_id"))
+    observed_product = _canonical_compound_label(claim.get("product_id"))
+    if expected_product is None or observed_product != expected_product:
+        return False
+    expected_value = _canonical_percent_value(expected.get("value_as_reported"), expected.get("unit_as_reported"))
+    observed_value = _canonical_percent_value(claim.get("value_as_reported"), claim.get("unit_as_reported"))
+    return expected_value is not None and observed_value == expected_value
+
+
 def _build_private_gold(event: dict[str, Any], source_metadata: dict[str, dict[str, Any]], *, schema_version: str) -> dict[str, Any]:
     locator = event["source_locator"]
     page_index = int(locator["pdf_page_index"])
@@ -364,6 +415,11 @@ def _build_private_gold(event: dict[str, Any], source_metadata: dict[str, dict[s
     classification = [part.strip() for part in str(event["classification"]).split("/", maxsplit=1)]
     if len(classification) != 2:
         raise ValueError("private calibration classification must contain fact type and reaction stage")
+    canonical_value = _canonical_percent_value(value_match.group(0), "%")
+    if canonical_value is None:
+        raise ValueError("private calibration percentage value cannot be canonicalized")
+    decimal_value = canonical_value[0]
+    stored_value: int | str = int(decimal_value) if decimal_value == decimal_value.to_integral_value() else format(decimal_value, "f")
     return {
         "schema_version": schema_version,
         "calibration_mode": "ONE_ITEM_SPOT_CHECK",
@@ -377,7 +433,7 @@ def _build_private_gold(event: dict[str, Any], source_metadata: dict[str, dict[s
             "reaction_stage": classification[1],
             "product_id": locator.get("compound_label"),
             "metric_type": "isolated_yield",
-            "value_as_reported": value_match.group(0).replace(" ", ""),
+            "value_as_reported": stored_value,
             "unit_as_reported": "%",
             "epistemic_class": "DIRECT_REPORTED_RESULT",
         },
@@ -819,21 +875,7 @@ def evaluate_v3_1_calibration(run_root: Path) -> dict[str, Any]:
             issues.append(f"nonnumeric calibration claim carries quantitative payload: {claim.get('claim_id')}")
         if numeric_payload:
             quantitative_claim_ids.append(claim.get("claim_id"))
-        locator = claim.get("evidence_locator") or {}
-        observed = {
-            "source_document_id": claim.get("source_document_id"),
-            "pdf_page_index": locator.get("pdf_page_index"),
-            "printed_page_label_observed": locator.get("printed_page_label_observed"),
-            "claim_type": claim.get("claim_type"),
-            "reaction_stage": claim.get("reaction_stage"),
-            "product_id": claim.get("product_id"),
-            "metric_type": claim.get("metric_type"),
-            "value_as_reported": str(claim.get("value_as_reported") or "").replace(" ", ""),
-            "unit_as_reported": claim.get("unit_as_reported"),
-            "epistemic_class": claim.get("epistemic_class"),
-        }
-        normalized_expected = {**expected, "value_as_reported": str(expected["value_as_reported"]).replace(" ", "")}
-        if observed == normalized_expected and claim.get("reaction_stage") != private.get("forbidden_reaction_stage"):
+        if _calibration_claim_matches(expected, claim) and claim.get("reaction_stage") != private.get("forbidden_reaction_stage"):
             matches.append(claim.get("claim_id"))
     if len(matches) != 1:
         issues.append(f"expected exactly one private gold match, found {len(matches)}")
