@@ -3,7 +3,7 @@
 ## Scope
 
 `HUMAN_SPOT_CHECKED_AI_ADJUDICATION` is an engineering validation method for
-internal demonstration. V3 combines source-first evidence inventory, independent
+internal demonstration. V3.1 combines source-first evidence inventory, independent
 exact-claim verification, deterministic controls, conflict-only adjudication,
 and at most 10 unique core-item human spot checks. It does not establish a
 publication-grade accuracy estimate.
@@ -59,28 +59,41 @@ wrong entity, reaction stage, or page. V2 is therefore
 Its 41 tasks are an adversarial regression corpus only. Evaluation is limited
 to safe rejection, error categorization, and avoiding incorrect value binding.
 
-## V3 Source-First Method
+## V3 Audit Boundary
 
-Layer A receives three source units and inventories only atomic evidence that
-the sources actually report. Categories are priorities, not required slots. A
-missing category creates no claim. Numeric outcomes bind substrate/partner,
-product, reaction entry, reaction stage, metric, value, and locator explicitly.
+The first V3 preparation is retained unchanged as diagnostic evidence. An
+independent audit returned `NO-GO`: source units lacked executable coverage
+contracts, all-empty results could finalize, task search scope was reused as a
+claim evidence locator, and calibration shared the scientific session without
+a private evaluator. V3 must not be started or used to create scientific
+claims.
 
-Layer A and future Layer B use one shared locator policy: `EXACT_PAGE` cannot
-search elsewhere, `PAGE_WINDOW` stays inside its inclusive window, `SECTION`
-stays inside the named section, and only `FULL_SOURCE` permits a full-document
-search. Printed page labels are observed from pages rather than derived from PDF
-indices.
+## V3.1 Source-First Method
+
+Scientific Layer A receives eight bounded source units and inventories only
+atomic evidence that the sources actually report. F3I is split into three
+non-reference page shards. F47A main+SI and P403 main are bounded full-source
+units. P403 SI is split into methods/mechanism, substrate preparation, and
+product characterization; routine spectra are excluded. Categories are
+priorities, not required slots. A missing category creates no claim. Numeric
+outcomes bind substrate/partner, product, reaction entry, reaction stage,
+metric, value, unit, conditions, and locator explicitly.
+
+Task `search_scope` controls where Layer A may search. Each claim separately
+records an `EXACT_PAGE` or tight `PAGE_WINDOW` evidence locator for future
+Layer B verification. Printed page labels are observed from source-page footers
+and bound in the immutable input manifest rather than derived from PDF indices.
 
 Layer B independently verifies each exact Layer A claim against its original
 source. Layer C is eligible only for a material conflict about the same claim's
 value, entity, product, reaction stage, fact type, locator, or epistemic class.
 Different but independently valid open-inventory facts are not conflicts.
 
-The existing human-reviewed calibration is now executed as an opaque,
-page-scoped source unit using the same Layer A schema and prompt. Its gold stays
-coordinator-private, it is excluded from the scientific queue, and it consumes
-no additional human-review budget.
+The existing human-reviewed calibration is prepared in a separate workspace
+for a separate fresh session using the same core schema, prompt, validator, and
+finalizer. The calibration page is absent from the scientific workspace. Gold
+and scoring stay coordinator-private; calibration is excluded from the
+scientific queue and consumes no additional human-review budget.
 
 ## Human Budget
 
@@ -95,5 +108,6 @@ an engineering signal only, and not a publication-grade validation estimate.
 
 ## Checkpoints
 
-The current checkpoint is `PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3`. Layer A has
-not started. Layer B and Layer C have not been created. Phase 8B has not started.
+The current checkpoint is `PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3_1`. Scientific
+Layer A and calibration Layer A have not started. Layer B and Layer C have not
+been created. Phase 8B has not started.

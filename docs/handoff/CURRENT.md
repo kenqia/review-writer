@@ -44,8 +44,8 @@
 Current phase:
 
 ```text
-Phase 8A: V3 source-first evidence inventory preparation
-Checkpoint: PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3
+Phase 8A: V3.1 source-first Layer A contract remediation
+Checkpoint: PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3_1
 ```
 
 Methodology:
@@ -73,10 +73,15 @@ Current source status:
 - `extended_review_queue`: all atomic review items.
 - The first three-layer run and V2 are diagnostic-only. V2's 41 tasks are an
   adversarial task-validation set, not a scientific adjudication queue.
-- V3 replaces fixed-field tasks with source-first inventory over three source
-  units and a shared locator policy.
-- Existing human gold runs as one opaque same-contract calibration unit; it is
-  excluded from scientific claims and consumes no additional human budget.
+- The audited V3 preparation is frozen with a `NO-GO` verdict and remains
+  diagnostic-only. It must not be started.
+- V3.1 replaces the broad V3 units with eight bounded scientific shards,
+  executable completion contracts, distinct search/evidence locators, and
+  cross-field semantic validation.
+- Existing human gold is prepared in a separate calibration workspace and
+  future fresh session. The scientific workspace does not contain its task or
+  source page. Calibration remains outside scientific claims and consumes no
+  additional human budget.
 
 Public status report:
 
@@ -88,7 +93,7 @@ docs/phase8/phase8a_status_report.json
 The current coordinator turn must stop at:
 
 ```text
-PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3
+PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3_1
 ```
 
 ## Safety Notes
@@ -104,7 +109,8 @@ PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3
 
 ## Next User Action
 
-Run only V3 source-first Layer A in a fresh VS Code Codex session using the
-external path recorded in the V3 `COORDINATOR_RESUME.md`. Do not create Layer B
-until Layer A passes strict ingest validation. Do not create Layer C unless the
-same claim has a material A/B conflict. Phase 8B has not started.
+Do not run either V3.1 Layer A workspace until a new independent audit approves
+the preparation. When approved, open the scientific and calibration workspace
+paths from V3.1 `COORDINATOR_RESUME.md` in separate VS Code windows and separate
+fresh Codex sessions. Do not create Layer B until both outputs pass their
+respective ingest/evaluation gates. Layer C and Phase 8B have not started.

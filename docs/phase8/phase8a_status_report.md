@@ -1,6 +1,6 @@
 # Phase 8A Human Review Package Status
 
-- status: `HUMAN_REVIEW_REQUIRED`
+- status: `PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3_1`
 - method label: `HUMAN_SPOT_CHECKED_AI_ADJUDICATION`
 - methodology: Context-isolated three-layer AI adjudication with a small human spot check. Engineering validation only; not publication-grade scientific validation.
 - human spot-check limit: `10` unique core items
@@ -24,5 +24,12 @@
 - local package path: `local/phase8_evidence`
 - dashboard command: `make phase8-dashboard-check && conda run -n review-writer-phase8 python scripts/review/serve_phase8_evidence_review.py --root local/phase8_evidence --host 127.0.0.1 --port 8787`
 
-Current checkpoint: HUMAN_REVIEW_REQUIRED.
+V3 audit verdict: `NO-GO`; frozen diagnostic evidence only.
+V3.1 scientific source units: `8`.
+V3.1 calibration source units: `1`, separate workspace/session.
+Scientific Layer A started: `False`.
+Calibration Layer A started: `False`.
+Layer B/C created: `False`.
+
+Current checkpoint: PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3_1.
 Phase 8B has not started.
