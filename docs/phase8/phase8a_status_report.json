@@ -121,12 +121,14 @@
   "verified_status_present": false,
   "human_download_required": false,
   "v3_audit_verdict": "NO_GO_DIAGNOSTIC_ONLY",
-  "v3_1_scientific_source_unit_count": 8,
-  "v3_1_calibration_source_unit_count": 1,
+  "v3_1_acceptance_verdict": "NO_GO_FROZEN_NOT_EXECUTABLE",
+  "v3_1_1_scientific_source_unit_count": 8,
+  "v3_1_1_calibration_source_unit_count": 1,
+  "v3_1_1_calibration_mode": "ONE_ITEM_SPOT_CHECK",
   "scientific_layer_a_started": false,
   "calibration_layer_a_started": false,
   "layer_b_created": false,
   "layer_c_created": false,
-  "checkpoint": "PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3_1",
+  "checkpoint": "PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3_1_1",
   "phase8b_started": false
 }

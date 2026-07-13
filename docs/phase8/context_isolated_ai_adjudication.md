@@ -3,7 +3,7 @@
 ## Scope
 
 `HUMAN_SPOT_CHECKED_AI_ADJUDICATION` is an engineering validation method for
-internal demonstration. V3.1 combines source-first evidence inventory, independent
+internal demonstration. V3.1.1 combines source-first evidence inventory, independent
 exact-claim verification, deterministic controls, conflict-only adjudication,
 and at most 10 unique core-item human spot checks. It does not establish a
 publication-grade accuracy estimate.
@@ -68,7 +68,13 @@ claim evidence locator, and calibration shared the scientific session without
 a private evaluator. V3 must not be started or used to create scientific
 claims.
 
-## V3.1 Source-First Method
+## V3.1.1 Source-First Method
+
+The frozen V3.1 run received an independent `NO-GO` acceptance verdict after
+coverage, row-locator containment, qualitative claim, mechanism epistemic,
+ratio-normalization, and calibration-evaluator bypasses were reproduced. It
+remains unchanged and cannot supply scientific claims. V3.1.1 is a bounded
+remediation of those findings, not an architecture redesign.
 
 Scientific Layer A receives eight bounded source units and inventories only
 atomic evidence that the sources actually report. F3I is split into three
@@ -89,7 +95,7 @@ source. Layer C is eligible only for a material conflict about the same claim's
 value, entity, product, reaction stage, fact type, locator, or epistemic class.
 Different but independently valid open-inventory facts are not conflicts.
 
-The existing human-reviewed calibration is prepared in a separate workspace
+The existing human-reviewed calibration is prepared as a one-item spot-check in a separate workspace
 for a separate fresh session using the same core schema, prompt, validator, and
 finalizer. The calibration page is absent from the scientific workspace. Gold
 and scoring stay coordinator-private; calibration is excluded from the
@@ -108,6 +114,6 @@ an engineering signal only, and not a publication-grade validation estimate.
 
 ## Checkpoints
 
-The current checkpoint is `PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3_1`. Scientific
+The current checkpoint is `PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3_1_1`. Scientific
 Layer A and calibration Layer A have not started. Layer B and Layer C have not
 been created. Phase 8B has not started.

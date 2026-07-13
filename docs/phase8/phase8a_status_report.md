@@ -25,11 +25,12 @@
 - dashboard command: `make phase8-dashboard-check && conda run -n review-writer-phase8 python scripts/review/serve_phase8_evidence_review.py --root local/phase8_evidence --host 127.0.0.1 --port 8787`
 
 V3 audit verdict: `NO-GO`; frozen diagnostic evidence only.
-V3.1 scientific source units: `8`.
-V3.1 calibration source units: `1`, separate workspace/session.
+V3.1 acceptance verdict: `NO-GO`; frozen and not executable.
+V3.1.1 scientific source units: `8`.
+V3.1.1 calibration source units: `1`, separate one-item spot-check workspace/session.
 Scientific Layer A started: `False`.
 Calibration Layer A started: `False`.
 Layer B/C created: `False`.
 
-Current checkpoint: PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3_1.
+Current checkpoint: PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3_1_1.
 Phase 8B has not started.

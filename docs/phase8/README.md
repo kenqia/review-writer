@@ -75,17 +75,18 @@ conda run -n review-writer-phase8 python scripts/review/record_phase8_decision.p
 ```
 
 The V3 preparation below is retained for compatibility only and must not be
-started. V3.1 creates separate scientific and calibration workspaces outside
+started. The frozen V3.1 run also has a `NO-GO` acceptance verdict. V3.1.1
+creates new separate scientific and calibration workspaces outside
 Git:
 
 ```bash
 conda run -n review-writer-phase8 python \
-  scripts/phase8/prepare_v3_1_source_first.py \
+  scripts/phase8/prepare_v3_1_1_source_first.py \
   --evidence-root local/phase8_evidence \
   --workspace-parent <WORKSPACE_PARENT>
 ```
 
-V3.1 Layer A inventories only atomic evidence actually present in eight source
+V3.1.1 Layer A inventories only atomic evidence actually present in eight source
 units: three F3I page shards, F47A main+SI, P403 main, and three P403 SI shards
 for methods/mechanism, substrate preparation, and product characterization.
 F3I references and P403 routine spectra are excluded. The coordinator-reserved
@@ -102,5 +103,5 @@ coverage, uniqueness, task-hash, and source-integrity validation. Layer C may
 later receive only material conflicts about the same claim. The isolation is
 procedural, not an operating-system sandbox or statistical independence between
 model weights. The current checkpoint is
-`PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3_1`. Neither Layer A session has started,
+`PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3_1_1`. Neither Layer A session has started,
 Layer B/C do not exist, and Phase 8B has not started.
