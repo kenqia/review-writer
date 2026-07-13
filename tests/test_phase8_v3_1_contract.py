@@ -62,7 +62,7 @@ class Phase8V31ContractTests(unittest.TestCase):
                 "source_document_id": "P403_SI",
                 "pdf_page_index": 11,
                 "printed_page_label": "stale-label",
-                "compound_label": "compound-fixture",
+                "compound_label": "aa",
             },
         }
         cls.result = prepare_v3_1_workspaces(
@@ -392,7 +392,7 @@ class Phase8V31ContractTests(unittest.TestCase):
         claim.update(
             {
                 "claim_type": "substrate_preparation_numeric_outcome",
-                "product_id": "compound-fixture",
+                "product_id": "aa",
                 "reaction_stage": "substrate_synthesis",
                 "metric_type": "isolated_yield",
                 "value_as_reported": "61%",

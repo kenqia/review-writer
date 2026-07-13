@@ -49,6 +49,32 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def _scalar_values(value: Any):
+    if isinstance(value, dict):
+        for child in value.values():
+            yield from _scalar_values(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _scalar_values(child)
+    else:
+        yield value
+
+
+def _private_value_leaks(path: Path, private_values: set[str]) -> list[str]:
+    if path.suffix.lower() == ".json":
+        values = {str(value).casefold() for value in _scalar_values(_read_json(path))}
+        return sorted(private_values & values)
+    if path.suffix.lower() == ".jsonl":
+        values = {str(value).casefold() for row in _read_jsonl(path) for value in _scalar_values(row)}
+        return sorted(private_values & values)
+    text = path.read_text(encoding="utf-8", errors="replace").casefold()
+    return sorted(
+        value
+        for value in private_values
+        if re.search(rf"(?<![a-z0-9_]){re.escape(value)}(?![a-z0-9_])", text)
+    )
+
+
 def _source_unit_id(run_id: str, role: str, index: int) -> str:
     digest = hashlib.sha256(f"{run_id}\0{role}\0{index}".encode()).hexdigest()[:16]
     return f"SU-{digest}"
@@ -606,8 +632,7 @@ def prepare_v3_1_workspaces(
         for path in [*scientific.rglob("*"), *calibration.rglob("*")]:
             if not path.is_file() or path.suffix.lower() == ".pdf":
                 continue
-            folded = path.read_text(encoding="utf-8", errors="replace").casefold()
-            leaked = sorted(value for value in private_values if value in folded)
+            leaked = _private_value_leaks(path, private_values)
             if leaked:
                 raise ValueError(f"private calibration value leaked into public package: {path.relative_to(temporary)}")
         atomic_write_json(coordinator / "private_calibration.json", private_gold)
