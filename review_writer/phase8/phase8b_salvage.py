@@ -24,7 +24,7 @@ STAGE_FAILED = "PHASE8B_SALVAGE_BLOCKED"
 CITATION_BY_PAPER = {"F3I": 1, "F47A": 2, "P403": 3}
 PAPER_BY_CITATION = {value: key for key, value in CITATION_BY_PAPER.items()}
 REVIEW_FRAME_RE = re.compile(r"\b(review|review-level|review literature|survey|overview)\b", re.IGNORECASE)
-TRAILING_CITATION_RE = re.compile(r"\s*\[\d+(?:\s*,\s*\d+)*\](?=[.!?]?\s*$)")
+NUMERIC_CITATION_RE = re.compile(r"\[\d+(?:\s*,\s*\d+)*\]")
 ALIAS_PATTERNS = {
     "CO2_EQUIVALENT_TO_CARBON_DIOXIDE": re.compile(r"\b(?:co2|carbon[ -]dioxide)\b", re.IGNORECASE),
 }
@@ -86,7 +86,8 @@ def _fixed_citation_marker(paper_ids: list[str]) -> tuple[list[int], str]:
 
 
 def _rewrite_citation(text: str, marker: str) -> str:
-    without = TRAILING_CITATION_RE.sub("", _normal_text(text)).rstrip(". ")
+    without = NUMERIC_CITATION_RE.sub("", _normal_text(text))
+    without = re.sub(r"\s+([,.;:!?])", r"\1", without).rstrip(". ")
     return f"{without} {marker}."
 
 
@@ -250,7 +251,8 @@ def validate_salvaged_payload(payload: dict[str, Any], final_rows: list[dict[str
         expected_citations, marker = _fixed_citation_marker(expected_papers)
         if sentence.get("source_paper_ids") != expected_papers or sentence.get("numeric_citation_ids") != expected_citations:
             blockers.append(_blocker("CITATION_WRONG_PAPER", "citation metadata does not match supporting paper", sentence_id))
-        if not text.endswith(f"{marker}."):
+        markers = NUMERIC_CITATION_RE.findall(text)
+        if markers != [marker] or not text.endswith(f"{marker}."):
             blockers.append(_blocker("CITATION_WRONG_PAPER", "citation marker does not match supporting paper", sentence_id))
         unsupported_numbers = _numeric_tokens(text) - _supported_numeric_tokens(support_rows)
         if unsupported_numbers:

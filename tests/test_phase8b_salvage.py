@@ -200,6 +200,18 @@ class Phase8BSalvageTests(unittest.TestCase):
             {"citation_id": 3, "paper_id": "P403"},
         ])
 
+    def test_all_legacy_numeric_citations_are_rewritten_but_reaction_notation_is_preserved(self) -> None:
+        raw = raw_attempt()
+        sentence = next(row for row in raw["sentences"] if row["sentence_id"] == "S2")
+        sentence["text"] = "A review discusses [2+2] chemistry [7] and a persistent limitation [8]."
+        raw["paragraphs"][0]["text"] = " ".join(row["text"] for row in raw["sentences"][:2])
+        salvage = salvage_attempt2(raw, self.rows)
+        text = next(row["text"] for row in salvage["payload"]["sentences"] if row["sentence_id"] == "S2")
+        self.assertIn("[2+2]", text)
+        self.assertNotIn("[7]", text)
+        self.assertNotIn("[8]", text)
+        self.assertEqual(text.count("[1]"), 1)
+
     def test_alias_normalization_and_warnings_do_not_block(self) -> None:
         report = validate_salvaged_payload(self.salvage["payload"], self.rows)
         self.assertEqual(report["status"], "PASS", report["blockers"])
