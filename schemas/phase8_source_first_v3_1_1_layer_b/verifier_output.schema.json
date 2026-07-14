@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-writer:phase8:v3.1.1:layer-b-verifier-output",
+  "$defs": {
+    "nullableString": {"type": ["string", "null"]},
+    "evidenceLocator": {
+      "type": "object", "additionalProperties": false,
+      "required": ["scope", "pdf_page_index", "page_window", "printed_page_label_observed", "section", "table_id", "scheme_id", "figure_id", "entry_id"],
+      "properties": {
+        "scope": {"enum": ["EXACT_PAGE", "PAGE_WINDOW"]},
+        "pdf_page_index": {"type": "integer", "minimum": 0},
+        "page_window": {"oneOf": [{"type": "null"}, {"type": "array", "prefixItems": [{"type": "integer", "minimum": 0}, {"type": "integer", "minimum": 0}], "minItems": 2, "maxItems": 2}]},
+        "printed_page_label_observed": {"type": "string", "minLength": 1},
+        "section": {"$ref": "#/$defs/nullableString"},
+        "table_id": {"$ref": "#/$defs/nullableString"},
+        "scheme_id": {"$ref": "#/$defs/nullableString"},
+        "figure_id": {"$ref": "#/$defs/nullableString"},
+        "entry_id": {"$ref": "#/$defs/nullableString"}
+      }
+    },
+    "correctedFields": {
+      "type": "object", "additionalProperties": false, "minProperties": 1,
+      "properties": {
+        "claim_type": {"type": "string"},
+        "substrate_ids": {"type": "array", "items": {"type": "string"}},
+        "reagent_or_partner_ids": {"type": "array", "items": {"type": "string"}},
+        "product_id": {"$ref": "#/$defs/nullableString"},
+        "intermediate_id": {"$ref": "#/$defs/nullableString"},
+        "reaction_stage": {"type": "string"},
+        "reaction_entry": {"$ref": "#/$defs/nullableString"},
+        "metric_type": {"type": "string"},
+        "value_as_reported": {"type": ["string", "number", "null"]},
+        "unit_as_reported": {"$ref": "#/$defs/nullableString"},
+        "evidence_locator": {"$ref": "#/$defs/evidenceLocator"},
+        "epistemic_class": {"type": "string"},
+        "pathway_status": {"type": "string"},
+        "source_conflict": {"type": ["object", "null"]}
+      }
+    }
+  },
+  "type": "object", "additionalProperties": false,
+  "required": ["verifier_task_id", "claim_id", "claim_hash", "task_hash", "input_manifest_hash", "verdict", "corrected_fields", "observed_evidence_locator", "short_independent_evidence", "error_categories", "source_conflict_assessment", "risk_level"],
+  "properties": {
+    "verifier_task_id": {"type": "string", "pattern": "^VB-[0-9a-f]{16}$"},
+    "claim_id": {"type": "string", "minLength": 1},
+    "claim_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "task_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "input_manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "verdict": {"enum": ["SUPPORTED", "EDIT_REQUIRED", "CONTRADICTED", "INSUFFICIENT_EVIDENCE", "LOCATOR_ERROR", "ENTITY_BINDING_ERROR", "REACTION_STAGE_ERROR", "FACT_TYPE_ERROR", "SOURCE_CONFLICT"]},
+    "corrected_fields": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/correctedFields"}]},
+    "observed_evidence_locator": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/evidenceLocator"}]},
+    "short_independent_evidence": {"type": "string", "minLength": 1, "maxLength": 500},
+    "error_categories": {"type": "array", "uniqueItems": true, "items": {"enum": ["wrong_value", "wrong_unit", "wrong_entity", "wrong_product", "wrong_reaction_entry", "wrong_reaction_stage", "wrong_fact_type", "wrong_locator", "substrate_vs_product", "substrate_preparation_vs_target_reaction", "ee_vs_er", "unsupported_negative_claim", "mechanism_epistemic_class", "source_conflict"]}},
+    "source_conflict_assessment": {"enum": ["NOT_APPLICABLE", "FAITHFULLY_RECORDED", "INCOMPLETE_OR_INACCURATE", "UNRESOLVED"]},
+    "risk_level": {"type": "integer", "minimum": 0, "maximum": 4}
+  }
+}
