@@ -425,6 +425,33 @@ class Phase8V311ClosureTests(unittest.TestCase):
                 previous_human_budget_used=6,
             )
 
+    def test_public_docs_report_phase8a_closure_without_private_paths(self) -> None:
+        report = json.loads((REPO_ROOT / "docs/phase8/phase8a_status_report.json").read_text(encoding="utf-8"))
+        self.assertEqual(report["status"], "COMPLETE")
+        self.assertEqual(report["checkpoint"], "PHASE8A_COMPLETE_PR3_READY_FOR_REVIEW")
+        self.assertEqual(report["scientific_layer_a_row_count"], 8)
+        self.assertEqual(report["scientific_layer_a_claim_count"], 44)
+        self.assertEqual(report["layer_b_completed_count"], 44)
+        self.assertEqual(report["human_budget"]["total_used"], 10)
+        self.assertEqual(report["human_budget"]["remaining"], 0)
+        self.assertFalse(report["layer_c_created"])
+        self.assertFalse(report["phase8b_started"])
+        public_paths = [
+            REPO_ROOT / "README.md",
+            REPO_ROOT / "docs/handoff/CURRENT.md",
+            REPO_ROOT / "docs/phase8/README.md",
+            REPO_ROOT / "docs/phase8/phase8a_status_report.md",
+            REPO_ROOT / "docs/phase8/phase8a_status_report.json",
+        ]
+        public_text = "\n".join(path.read_text(encoding="utf-8") for path in public_paths)
+        self.assertIn("HUMAN_SPOT_CHECKED_AI_ADJUDICATION", public_text)
+        self.assertIn("PHASE8A_COMPLETE_PR3_READY_FOR_REVIEW", public_text)
+        self.assertNotIn("/home/", public_text)
+        self.assertNotIn("AI_REVIEW_WORKSPACES", public_text)
+        builder = (REPO_ROOT / "scripts/phase8/build_phase8_review_package.py").read_text(encoding="utf-8")
+        self.assertNotIn('default=Path("docs/phase8/phase8a_status_report.json")', builder)
+        self.assertNotIn('default=Path("docs/phase8/phase8a_status_report.md")', builder)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

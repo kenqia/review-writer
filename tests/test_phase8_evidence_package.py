@@ -68,7 +68,10 @@ def test_no_forbidden_public_phase8_outputs() -> None:
 
 def test_source_inventory_shape() -> None:
     data = json.loads(PUBLIC_REPORT.read_text(encoding="utf-8"))
-    assert data["status"] == "HUMAN_REVIEW_REQUIRED"
+    assert data["status"] == "COMPLETE"
+    assert data["checkpoint"] == "PHASE8A_COMPLETE_PR3_READY_FOR_REVIEW"
+    assert data["human_budget"]["total_used"] == 10
+    assert data["human_budget"]["remaining"] == 0
     assert len(data["source_inventory"]) == 6
     assert data["f3i_official_si_status"] == "NO_SI_PUBLISHED_ON_OFFICIAL_PAGE"
     assert data["si_identity_status"]["F47A"] == "SI_VALIDATED"

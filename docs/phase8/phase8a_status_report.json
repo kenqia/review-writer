@@ -1,8 +1,15 @@
 {
-  "status": "HUMAN_REVIEW_REQUIRED",
+  "status": "COMPLETE",
   "method_label": "HUMAN_SPOT_CHECKED_AI_ADJUDICATION",
-  "methodology": "Context-isolated three-layer AI adjudication with a small human spot check. Engineering validation only; not publication-grade scientific validation.",
+  "methodology": "Context-isolated source-first inventory and exact-claim verification with a small human spot check. Engineering validation and internal demonstration only; this does not establish publication-level scientific validation or complete human review.",
   "human_spot_check_limit": 10,
+  "human_budget": {
+    "previously_used": 6,
+    "newly_recorded": 4,
+    "total_used": 10,
+    "maximum": 10,
+    "remaining": 0
+  },
   "source_inventory": [
     {
       "source_document_id": "F3I_MAIN",
@@ -125,10 +132,44 @@
   "v3_1_1_scientific_source_unit_count": 8,
   "v3_1_1_calibration_source_unit_count": 1,
   "v3_1_1_calibration_mode": "ONE_ITEM_SPOT_CHECK",
-  "scientific_layer_a_started": false,
-  "calibration_layer_a_started": false,
-  "layer_b_created": false,
+  "calibration_status": "PASS",
+  "scientific_layer_a_started": true,
+  "scientific_layer_a_completed": true,
+  "scientific_layer_a_row_count": 8,
+  "scientific_layer_a_claim_count": 44,
+  "layer_b_created": true,
+  "layer_b_completed": true,
+  "layer_b_completed_count": 44,
+  "layer_b_verdict_distribution": {
+    "SUPPORTED": 29,
+    "LOCATOR_ERROR": 4,
+    "REACTION_STAGE_ERROR": 2,
+    "ENTITY_BINDING_ERROR": 1,
+    "SOURCE_CONFLICT": 7,
+    "INSUFFICIENT_EVIDENCE": 1
+  },
+  "final_disposition_distribution": {
+    "AI_SUPPORTED": 29,
+    "AI_CORRECTED_LOCATOR": 4,
+    "AI_CORRECTED_REACTION_STAGE": 2,
+    "AI_CORRECTED_ENTITY": 1,
+    "HUMAN_SPOT_CHECKED_CORRECTED_ACCEPT": 1,
+    "SOURCE_CONFLICT_RETAINED": 7
+  },
+  "final_claim_count": 44,
+  "usable_non_conflict_claim_count": 37,
+  "retained_source_conflict_count": 7,
+  "human_review_required_count": 0,
+  "closure_artifact_hashes": {
+    "final_claims_sha256": "c2aae9212fe798f94e1aca3637d6c7ee24e0f6980c89c9c1e6fc870045c80352",
+    "closure_summary_sha256": "a48d1cd31b4b6b70332000dfa0b41384a8e6ff53446920836d0c9ca4b23317d4",
+    "human_decision_report_sha256": "de50a81f5d7c841ca0edae0cd25dcb2daee1f2e7fe34392d017be1c754b062c4",
+    "closure_manifest_sha256": "cef91cc2b48fc40f20275e6db1d258d5adae3a295016d52893c2230d81d3a3cd"
+  },
+  "calibration_layer_a_started": true,
+  "calibration_layer_a_completed": true,
   "layer_c_created": false,
-  "checkpoint": "PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3_1_1",
+  "layer_c_status": "SKIPPED_AS_UNNECESSARY",
+  "checkpoint": "PHASE8A_COMPLETE_PR3_READY_FOR_REVIEW",
   "phase8b_started": false
 }

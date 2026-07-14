@@ -26,6 +26,7 @@ make bailian-phase6-final-check
 make retrieval-generation-check
 make grounded-section-check
 make phase7-pilot-dry-run
+make phase8-v3-1-1-closure-check
 ```
 
 ## Bailian RAG No-upload Preflight
@@ -55,3 +56,16 @@ Official Bailian KB management uses Alibaba Cloud SDK credentials (`ALIBABA_CLOU
 Phase 6d adds offline-safe Retrieve contract introspection and retrieval QA dry-run gates. Real Bailian smoke/clean lifecycles remain explicit commands and write sensitive resource identifiers only to ignored `/tmp` reports.
 
 Phase 7 adds an offline default retrieval-generation pilot for one grounded section. Default checks do not upload; controlled pilots require explicit authorization. Generated sections remain `needs_human_review=true` and are not final scientific review text.
+
+## Phase 8A Evidence Adjudication
+
+Phase 8A is complete at `PHASE8A_COMPLETE_PR3_READY_FOR_REVIEW` under the
+`HUMAN_SPOT_CHECKED_AI_ADJUDICATION` method. Calibration passed; source-first
+Layer A produced 8 rows and 44 claims; exact-claim Layer B completed 44/44;
+four bounded human spot checks used the remaining budget, for 10/10 total.
+
+The final engineering result contains 37 usable or deterministically corrected
+non-conflict claims and 7 retained source-internal conflicts. Layer C was
+skipped as unnecessary. Phase 8B has not started. This is an engineering and
+internal-demonstration result, not a claim of publication-level scientific
+validation or complete human review.

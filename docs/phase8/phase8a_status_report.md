@@ -1,36 +1,38 @@
-# Phase 8A Human Review Package Status
+# Phase 8A Closure Status
 
-- status: `HUMAN_REVIEW_REQUIRED`
+- status: `COMPLETE`
+- checkpoint: `PHASE8A_COMPLETE_PR3_READY_FOR_REVIEW`
 - method label: `HUMAN_SPOT_CHECKED_AI_ADJUDICATION`
-- methodology: Context-isolated three-layer AI adjudication with a small human spot check. Engineering validation only; not publication-grade scientific validation.
-- human spot-check limit: `10` unique core items
-- source documents: `6`
-- SI identity status: `{'F3I': 'NO_SI_PUBLISHED_ON_OFFICIAL_PAGE', 'F47A': 'SI_VALIDATED', 'P403': 'SI_VALIDATED'}`
-- F3I official SI status: `NO_SI_PUBLISHED_ON_OFFICIAL_PAGE`
-- bibliography status counts: `{'BIBLIOGRAPHY_CANDIDATE_CONFIRMED': 2, 'BIBLIOGRAPHY_UNCONFIRMED': 1}`
-- update query summary: `{'NO_UPDATE_FOUND_IN_CHECKED_SOURCES': 3}`
-- SI incremental extraction items: `30`
-- numeric candidates: `35`
-- mechanism candidates: `3`
-- figure candidates: `3`
-- Phase 7 claims: `10`
-- core queue size: `53`
-- extended queue size: `115`
-- core atomic mapping count: `53`
-- Qwen calls: `0`
-- MinerU calls: `0`
-- network calls: `3`
-- VERIFIED status present: `False`
-- local package path: `local/phase8_evidence`
-- dashboard command: `make phase8-dashboard-check && conda run -n review-writer-phase8 python scripts/review/serve_phase8_evidence_review.py --root local/phase8_evidence --host 127.0.0.1 --port 8787`
+- calibration: `PASS`
+- scientific Layer A: `8 rows / 44 claims`
+- exact-claim Layer B: `44/44 completed`
+- Layer B verdicts: `29 SUPPORTED`, `4 LOCATOR_ERROR`, `2 REACTION_STAGE_ERROR`, `1 ENTITY_BINDING_ERROR`, `7 SOURCE_CONFLICT`, `1 INSUFFICIENT_EVIDENCE`
+- final records: `44/44`
+- usable or deterministically corrected non-conflict claims: `37`
+- retained source-internal conflicts: `7`
+- human-review-required claims: `0`
+- human spot checks completed: `4`
+- human budget: `10/10`, remaining `0`
+- Layer C: `SKIPPED_AS_UNNECESSARY`
+- Phase 8B started: `False`
 
-V3 audit verdict: `NO-GO`; frozen diagnostic evidence only.
-V3.1 acceptance verdict: `NO-GO`; frozen and not executable.
-V3.1.1 scientific source units: `8`.
-V3.1.1 calibration source units: `1`, separate one-item spot-check workspace/session.
-Scientific Layer A started: `False`.
-Calibration Layer A started: `False`.
-Layer B/C created: `False`.
+Final disposition distribution:
 
-Current checkpoint: PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3_1_1.
-Phase 8B has not started.
+- `AI_SUPPORTED`: `29`, including one fixed-rule human spot check
+- `AI_CORRECTED_LOCATOR`: `4`
+- `AI_CORRECTED_REACTION_STAGE`: `2`
+- `AI_CORRECTED_ENTITY`: `1`, human-confirmed
+- `HUMAN_SPOT_CHECKED_CORRECTED_ACCEPT`: `1`
+- `SOURCE_CONFLICT_RETAINED`: `7`, including one human-confirmed conflict
+
+Closure hashes:
+
+- final claims: `c2aae9212fe798f94e1aca3637d6c7ee24e0f6980c89c9c1e6fc870045c80352`
+- closure summary: `a48d1cd31b4b6b70332000dfa0b41384a8e6ff53446920836d0c9ca4b23317d4`
+- human decision application report: `de50a81f5d7c841ca0edae0cd25dcb2daee1f2e7fe34392d017be1c754b062c4`
+- closure hash manifest: `cef91cc2b48fc40f20275e6db1d258d5adae3a295016d52893c2230d81d3a3cd`
+
+This is an engineering-validation and internal-demonstration result. It does
+not establish publication-level scientific validation or complete human
+review. No PDF, screenshot, private calibration value, source excerpt, or
+individual human decision record is included in Git.

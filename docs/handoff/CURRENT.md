@@ -4,14 +4,14 @@
 
 - GitHub: `kenqia/review-writer`
 - Local repo placeholder: `<REPO_ROOT>`
-- Last verified date: `2026-07-12` Asia/Shanghai
+- Last verified date: `2026-07-14` Asia/Shanghai
 
 ## Current Branches
 
 - `main`: `908239d` (`origin/main`)
 - `feat/chem-review-quality-gates`: merged by PR #1.
 - `feat/orchestrator-rag-generation-pilot`: merged by PR #2.
-- `feat/human-verified-evidence-evaluation`: Phase 8A branch from latest `main`; this task publishes it as a Draft PR only.
+- `feat/human-verified-evidence-evaluation`: Phase 8A complete; PR #3 is prepared for formal review and remains unmerged.
 
 ## Integrated PRs
 
@@ -41,11 +41,11 @@
 
 ## Phase 8A
 
-Current phase:
+Current phase status:
 
 ```text
-Phase 8A: V3.1.1 bounded Layer A acceptance remediation
-Checkpoint: PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3_1_1
+Phase 8A: complete
+Checkpoint: PHASE8A_COMPLETE_PR3_READY_FOR_REVIEW
 ```
 
 Methodology:
@@ -53,9 +53,10 @@ Methodology:
 ```text
 HUMAN_SPOT_CHECKED_AI_ADJUDICATION
 
-Context-isolated three-layer AI adjudication with a small human spot check.
-Engineering validation and internal demonstration only; not publication-grade
-scientific validation.
+Context-isolated source-first inventory and exact-claim verification with a
+small human spot check. Engineering validation and internal demonstration
+only; it does not establish publication-level scientific validation or
+complete human review.
 ```
 
 Current local package target:
@@ -77,15 +78,15 @@ Current source status:
   diagnostic-only. It must not be started.
 - The frozen V3.1 run also has an independent `NO-GO` acceptance verdict. It is
   retained unchanged and must not be started.
-- V3.1.1 retains the eight bounded scientific shards and closes only the
-  confirmed acceptance bypasses: status-specific coverage, row-examined
-  locator containment, qualitative payloads, mechanism epistemics/stages,
-  deterministic stereochemical normalization, and private calibration
-  evaluation.
-- Existing human gold is prepared in a separate calibration workspace and
-  future fresh session. The scientific workspace does not contain its task or
-  source page. Calibration remains outside scientific claims and consumes no
-  additional human budget.
+- V3.1.1 calibration passed. Scientific Layer A completed 8 rows / 44 claims.
+- Exact-claim Layer B completed 44/44 with 29 `SUPPORTED`, 4 locator errors,
+  2 reaction-stage errors, 1 entity-binding error, 7 faithfully recorded
+  source conflicts, and 1 insufficient-evidence result.
+- Deterministic reconciliation and four bounded human spot checks produced 44
+  final records: 37 usable or deterministically corrected non-conflict claims
+  and 7 retained source-internal conflicts.
+- Human budget is 10/10. Layer C was skipped as unnecessary. Phase 8B has not
+  started.
 
 Public status report:
 
@@ -94,18 +95,18 @@ docs/phase8/phase8a_status_report.md
 docs/phase8/phase8a_status_report.json
 ```
 
-The current coordinator turn must stop at:
+Final checkpoint:
 
 ```text
-PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3_1_1
+PHASE8A_COMPLETE_PR3_READY_FOR_REVIEW
 ```
 
 ## Safety Notes
 
-- Phase 8A does not create verified bibliography, verified claims, gold evidence packs, final scientific evaluation reports, or regenerated review prose.
+- Phase 8A closure does not create regenerated review prose or claim complete human review.
 - PDFs, SI, full page text, long excerpts, local image crops, manual decisions, and authenticated caches remain ignored under `local/phase8_evidence/`.
 - Default Phase 8 gates are offline and do not call Qwen, download SI, or invoke MinerU cloud.
-- Diagnostic AI results and future scientific claim-verification results remain
+- Diagnostic AI results and scientific claim-verification results remain
   separate from the human decision log.
 - Effective human decisions take precedence over new AI adjudication and old AI extraction.
 - Human spot checks are capped at 10 unique core items.
@@ -113,8 +114,5 @@ PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3_1_1
 
 ## Next User Action
 
-Do not run either V3.1.1 Layer A workspace until a targeted independent re-audit
-approves the preparation. When approved, open the scientific and calibration
-workspace paths from V3.1.1 `COORDINATOR_RESUME.md` in separate VS Code windows and separate
-fresh Codex sessions. Do not create Layer B until both outputs pass their
-respective ingest/evaluation gates. Layer C and Phase 8B have not started.
+Review PR #3. Do not merge it as part of the Phase 8A closure workflow. Do not
+start Phase 8B without a new explicit instruction.

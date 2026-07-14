@@ -5,7 +5,6 @@ import argparse
 import csv
 import hashlib
 import json
-import os
 import re
 import shutil
 import sys
@@ -21,7 +20,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from review_writer.phase8.schemas import AI_STATUSES, CLAIM_SUPPORT_STATUSES, EVIDENCE_DIRECTNESS, MECHANISM_CLASSES
+from review_writer.phase8.schemas import (  # noqa: E402
+    AI_STATUSES,
+    CLAIM_SUPPORT_STATUSES,
+    EVIDENCE_DIRECTNESS,
+    MECHANISM_CLASSES,
+)
 
 PAPERS = {
     "F3I": {
@@ -150,8 +154,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build Phase 8A human-review evidence package.")
     parser.add_argument("--paper-root", type=Path, action="append", default=[])
     parser.add_argument("--output-root", type=Path, default=Path("local/phase8_evidence"))
-    parser.add_argument("--public-report-json", type=Path, default=Path("docs/phase8/phase8a_status_report.json"))
-    parser.add_argument("--public-report-md", type=Path, default=Path("docs/phase8/phase8a_status_report.md"))
+    parser.add_argument("--public-report-json", type=Path, default=None)
+    parser.add_argument("--public-report-md", type=Path, default=None)
     parser.add_argument("--phase7-section", type=Path, default=Path("/tmp/review_writer_phase7_full_e2e_r2_attempt1/generated_section.md"))
     parser.add_argument("--allow-network-metadata", action="store_true")
     parser.add_argument("--strict", action="store_true")
@@ -189,9 +193,11 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     write_csv(args.output_root / "review_queue/extended_review_queue.csv", extended_units)
     write_manual_download(args.output_root, source_records)
     report = build_public_report(source_records, biblio_records, update_records, extraction_records, extended_units, core_units, phase7_claims, network_calls)
-    args.public_report_json.parent.mkdir(parents=True, exist_ok=True)
-    write_json(args.public_report_json, report)
-    args.public_report_md.write_text(render_report(report), encoding="utf-8")
+    public_report_json = args.public_report_json or args.output_root / "reports/initial_package_status.json"
+    public_report_md = args.public_report_md or args.output_root / "reports/initial_package_status.md"
+    public_report_json.parent.mkdir(parents=True, exist_ok=True)
+    write_json(public_report_json, report)
+    public_report_md.write_text(render_report(report), encoding="utf-8")
     return report
 
 
@@ -920,7 +926,7 @@ def write_manual_download(root: Path, source_records: list[dict[str, Any]]) -> N
                 "",
                 f"- paper title: `{record.get('title_candidate')}`",
                 f"- DOI: `{record.get('doi_candidate')}`",
-                f"- file type: `SI`",
+                "- file type: `SI`",
                 f"- status: `{record.get('status')}`",
                 "- official source description: publisher supplementary information or DOI landing page",
                 f"- suggested local save path: `local/phase8_evidence/sources/{record['paper_id']}/{si_id}.pdf`",

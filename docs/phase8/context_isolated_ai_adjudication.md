@@ -5,8 +5,8 @@
 `HUMAN_SPOT_CHECKED_AI_ADJUDICATION` is an engineering validation method for
 internal demonstration. V3.1.1 combines source-first evidence inventory, independent
 exact-claim verification, deterministic controls, conflict-only adjudication,
-and at most 10 unique core-item human spot checks. It does not establish a
-publication-grade accuracy estimate.
+and a total budget of 10 human-reviewed items. It does not establish a
+publication-level scientific accuracy estimate or complete human review.
 
 AI stages never write human decision events. Their outputs live under ignored
 local evidence and external workspace trees. Effective human decisions take
@@ -20,11 +20,11 @@ shared locator policy, preferred evidence categories, and the output schema. It
 receives no old candidate matrix, human decision, gold answer, or V2 result.
 
 Layer B is created only after strict Layer A ingest. It receives each concrete
-claim, its claim hash and locator scope, the original source, and a verification
+claim, its claim hash and structured `evidence_locator`, the original source, and a verification
 rubric. It receives no Layer A confidence/rationale, human decision, gold
 answer, other claim verdict, or later-stage output.
 
-Layer C is created only when Layer A and Layer B materially disagree about the
+Layer C is eligible only when Layer A and Layer B materially disagree about the
 same claim. It is not used to compare different valid facts, repair invalid
 tasks, or adjudicate unavailable sources.
 
@@ -101,19 +101,20 @@ finalizer. The calibration page is absent from the scientific workspace. Gold
 and scoring stay coordinator-private; calibration is excluded from the
 scientific queue and consumes no additional human-review budget.
 
-## Human Budget
+## Human Budget And Closure
 
-The total budget is 10 unique core items. Sampling prioritizes at most two
-highest-risk cases, includes the highest-risk mechanism/figure/negative-claim
-case when available, and includes at least one fixed-seed low-risk consensus
-sample when capacity remains. Cases above the budget remain unresolved rather
-than being presented as human-confirmed.
+Six earlier core-item decisions and four final claim-level spot checks used the
+complete 10-item budget. The final four comprised one insufficient-evidence
+claim, one retained source conflict, one entity correction, and one supported
+claim selected by a fixed SHA-256 rule. No fifth decision was added.
 
 Any human comparison metrics are described as a small human spot-check sample,
-an engineering signal only, and not a publication-grade validation estimate.
+an engineering signal only, and not a publication-level validation estimate.
 
 ## Checkpoints
 
-The current checkpoint is `PREPARED_FOR_SOURCE_FIRST_LAYER_A_V3_1_1`. Scientific
-Layer A and calibration Layer A have not started. Layer B and Layer C have not
-been created. Phase 8B has not started.
+The current checkpoint is `PHASE8A_COMPLETE_PR3_READY_FOR_REVIEW`. Calibration
+passed, scientific Layer A completed 8 rows / 44 claims, Layer B completed
+44/44, and deterministic reconciliation plus four spot checks produced 44
+final records with no remaining human-review-required claim. Layer C was
+skipped as unnecessary. Phase 8B has not started.
