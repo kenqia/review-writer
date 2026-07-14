@@ -91,14 +91,21 @@ class OpenAICompatibleProvider:
             endpoint = self._resolve_endpoint(env)
             client_factory = self.client_factory or _default_client_factory
             client = client_factory(api_key=api_key, base_url=endpoint["base_url"], timeout=self.connect_timeout_seconds)
+            request_kwargs: dict[str, Any] = {
+                "model": request.model if request.model != "offline" else self.model,
+                "messages": request.messages,
+                "temperature": request.temperature,
+                "max_completion_tokens": request.max_output_tokens,
+                "stream": True,
+                "stream_options": {"include_usage": True},
+                "extra_body": {"enable_thinking": False, "enable_search": False},
+            }
+            if request.response_format:
+                if request.response_format != "json_object":
+                    raise ValueError(f"unsupported response format: {request.response_format}")
+                request_kwargs["response_format"] = {"type": "json_object"}
             stream = client.chat.completions.create(
-                model=request.model if request.model != "offline" else self.model,
-                messages=request.messages,
-                temperature=request.temperature,
-                max_completion_tokens=request.max_output_tokens,
-                stream=True,
-                stream_options={"include_usage": True},
-                extra_body={"enable_thinking": False, "enable_search": False},
+                **request_kwargs,
             )
             parsed = parse_openai_stream_result(
                 stream,
