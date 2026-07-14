@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import sys
 from copy import deepcopy  # noqa: F401
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,6 +37,15 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement, parse_xml  # noqa: F401
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
+
+try:
+    from review_writer.docx_links import link_citations_and_dois
+except ModuleNotFoundError:
+    # Keep the repo-local skill executable when invoked by absolute path.
+    _REPO_ROOT = Path(__file__).resolve().parents[3]
+    if str(_REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(_REPO_ROOT))
+    from review_writer.docx_links import link_citations_and_dois
 
 try:
     from latex2word import LatexToWordElement
@@ -829,7 +839,13 @@ def convert(md_path: Path, out_path: Path, template_path: Path) -> None:
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(out_path))
+    link_report = link_citations_and_dois(out_path)
     print(f"[md2docx] Saved -> {out_path}")
+    print(
+        "[md2docx] Linked citations/DOIs -> "
+        f"{link_report['internal_hyperlink_count']} internal, "
+        f"{link_report['doi_hyperlink_count']} DOI"
+    )
 
 
 # ---------------------------------------------------------------------------
