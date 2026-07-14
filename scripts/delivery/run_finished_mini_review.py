@@ -22,6 +22,7 @@ from review_writer.delivery.finished_review import (  # noqa: E402
     generate_finished_review_with_bounded_repair,
     render_final_review,
     verify_frozen_inputs,
+    write_failed_generation_diagnostic,
     write_finished_review_package,
 )
 from review_writer.docx_links import inspect_docx_citation_links  # noqa: E402
@@ -247,6 +248,23 @@ def main() -> int:
             provider = QwenJsonProvider(selected_model, args)
         generation = generate_finished_review_with_bounded_repair(provider, final_rows, evidence_plan, BIBLIOGRAPHY)
         if generation["validation"]["blockers"]:
+            diagnostic_root = output_root.with_name(f"{output_root.name}-failed")
+            write_failed_generation_diagnostic(
+                output_root=diagnostic_root,
+                payload=generation["payload"],
+                final_rows=final_rows,
+                bibliography_metadata=BIBLIOGRAPHY,
+                validation=generation["validation"],
+                generation_manifest={
+                    "actual_model": selected_model,
+                    "request_count": generation["request_count"],
+                    "repair_used": generation["repair_used"],
+                    "attempts": generation["attempts"],
+                    "capability_check": capability,
+                    "repo_head": repo_head,
+                    "input_hashes": input_hashes,
+                },
+            )
             raise ValueError(f"Qwen output retained blockers after bounded repair: {generation['validation']['blockers']}")
         markdown, _citations = render_final_review(generation["payload"], final_rows, BIBLIOGRAPHY)
         docx_path, docx_integrity, temporary = _export_docx(markdown, args.docx_python.resolve(), repo_root)

@@ -22,6 +22,7 @@ from review_writer.delivery.finished_review import (
     generate_finished_review_with_bounded_repair,
     validate_finished_review_payload,
     verify_frozen_inputs,
+    write_failed_generation_diagnostic,
     write_finished_review_package,
 )
 
@@ -323,6 +324,25 @@ class FinishedReviewDeliveryTests(unittest.TestCase):
             self.assertEqual(len((root / "sentence_claim_map.jsonl").read_text(encoding="utf-8").splitlines()), 9)
             self.assertIn(QODERWORK_PROMPT, (root / "qoderwork_run_record.md").read_text(encoding="utf-8"))
             self.assertEqual(json.loads((root / "quality_report.json").read_text())["docx_integrity"]["status"], "PASS")
+
+    def test_failed_bounded_generation_persists_candidate_before_exit(self) -> None:
+        payload = valid_payload()
+        payload["sections"][0]["paragraphs"][0]["sentences"][0]["text"] = "An unsupported result gave 55% ee."
+        validation = validate_finished_review_payload(payload, final_rows(), bibliography(), min_words=1)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "failed-candidate"
+            write_failed_generation_diagnostic(
+                output_root=root,
+                payload=payload,
+                final_rows=final_rows(),
+                bibliography_metadata=bibliography(),
+                validation=validation,
+                generation_manifest={"request_count": 2},
+            )
+            self.assertTrue((root / "candidate_review.md").is_file())
+            self.assertTrue((root / "model_payload.json").is_file())
+            self.assertTrue((root / "validation.json").is_file())
+            self.assertTrue((root / "HASH_MANIFEST.sha256").is_file())
 
 
 if __name__ == "__main__":

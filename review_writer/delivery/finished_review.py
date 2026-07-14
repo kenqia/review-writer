@@ -614,6 +614,34 @@ def _render_quality(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def write_failed_generation_diagnostic(
+    *,
+    output_root: Path,
+    payload: dict[str, Any],
+    final_rows: list[dict[str, Any]],
+    bibliography_metadata: dict[str, dict[str, Any]],
+    validation: dict[str, Any],
+    generation_manifest: dict[str, Any],
+) -> Path:
+    """Persist a complete failed candidate before the bounded generator exits."""
+    output_root = Path(output_root).resolve()
+    if output_root.exists():
+        raise ValueError(f"failed generation diagnostic already exists: {output_root}")
+    output_root.mkdir(parents=True)
+    markdown, _citations = render_final_review(payload, final_rows, bibliography_metadata)
+    atomic_write_text(output_root / "candidate_review.md", markdown)
+    atomic_write_json(output_root / "model_payload.json", payload)
+    atomic_write_json(output_root / "validation.json", validation)
+    atomic_write_json(output_root / "generation_manifest.json", generation_manifest)
+    manifest_lines = [
+        f"{sha256_file(path)}  {path.name}"
+        for path in sorted(output_root.iterdir())
+        if path.is_file() and path.name != "HASH_MANIFEST.sha256"
+    ]
+    atomic_write_text(output_root / "HASH_MANIFEST.sha256", "\n".join(manifest_lines) + "\n")
+    return output_root
+
+
 def write_finished_review_package(
     *,
     output_root: Path,
