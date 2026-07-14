@@ -15,6 +15,7 @@ if str(REPO_ROOT) not in sys.path:
 from review_writer.phase8.phase8b_grounded_revision_v2 import (  # noqa: E402
     build_generation_request,
     build_section_evidence_plan,
+    canonicalize_model_payload,
     generate_with_bounded_repair,
     prepare_vertical_slice_v2,
     validate_prose_payload,
@@ -271,6 +272,19 @@ class FakeProvider:
         }
 
 
+class ErrorProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def generate(self, _request: dict) -> dict:
+        self.calls += 1
+        return {
+            "status": "error",
+            "content": "",
+            "metadata": {"model": "qwen3.7-max", "region": "cn-beijing", "error_type": "first_byte_timeout"},
+        }
+
+
 class Phase8BGroundedVerticalSliceV2Tests(unittest.TestCase):
     def setUp(self) -> None:
         self.rows = build_final_rows()
@@ -305,6 +319,29 @@ class Phase8BGroundedVerticalSliceV2Tests(unittest.TestCase):
         self.assertEqual(len(request["final_non_conflict_claims"]), 37)
         self.assertNotIn("CL-CONFLICT-1", serialized)
         self.assertEqual(len(request["section_evidence_plan"]["claim_accounting"]), 37)
+
+    def test_equivalent_model_schema_aliases_are_canonicalized(self) -> None:
+        payload = valid_payload()
+        payload["citation_order"] = ["F47A"]
+        payload["paragraphs"] = [
+            {"paragraph_id": "P1", "text": payload["sentences"][0]["text"]}
+        ]
+        payload["sentences"][0]["factual_bindings"] = [
+            {
+                "binding_type": "product",
+                "bound_text_span": "allene 3am",
+                "claim_id": "CL-F47A-YIELD",
+            }
+        ]
+        canonical = canonicalize_model_payload(payload)
+        self.assertEqual(canonical["citation_order"], [{"citation_id": 1, "paper_id": "F47A"}])
+        self.assertEqual(canonical["paragraphs"][0]["sentence_ids"], ["S1"])
+        self.assertEqual(
+            canonical["sentences"][0]["factual_bindings"],
+            [{"kind": "product", "text": "allene 3am", "claim_ids": ["CL-F47A-YIELD"]}],
+        )
+        report = validate_prose_payload(canonical, self.rows, self.plan, self.metadata)
+        self.assertEqual(report["status"], "PASS", report["issues"])
 
     def test_conflict_and_unsupported_number_or_entity_are_rejected(self) -> None:
         payload = valid_payload()
@@ -411,6 +448,13 @@ class Phase8BGroundedVerticalSliceV2Tests(unittest.TestCase):
         provider = FakeProvider([invalid, invalid, valid_payload()])
         result = generate_with_bounded_repair(provider, {}, self.rows, self.plan, self.metadata)
         self.assertEqual(provider.calls, 2)
+        self.assertEqual(result["validation"]["status"], "FAIL")
+
+    def test_provider_error_does_not_consume_deterministic_repair(self) -> None:
+        provider = ErrorProvider()
+        result = generate_with_bounded_repair(provider, {}, self.rows, self.plan, self.metadata)
+        self.assertEqual(provider.calls, 1)
+        self.assertEqual(result["request_count"], 1)
         self.assertEqual(result["validation"]["status"], "FAIL")
 
     def test_external_run_separates_44_accounting_from_selected_sentence_mapping(self) -> None:

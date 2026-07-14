@@ -109,7 +109,11 @@ def _theme_for_claim(claim: dict[str, Any]) -> str:
 
 def _cluster_key(claim: dict[str, Any]) -> tuple[str, str]:
     product_id = _normal_text(claim.get("product_id")).casefold()
-    if product_id and claim.get("metric_type") not in (None, "not_applicable"):
+    if (
+        product_id
+        and claim.get("metric_type") not in (None, "not_applicable")
+        and claim.get("claim_type") == "stoichiometric_result"
+    ):
         return str(claim.get("paper_id")), f"numeric-product:{product_id}"
     return (
         str(claim.get("paper_id")),
@@ -549,6 +553,55 @@ def _parse_json_content(content: str) -> dict[str, Any]:
     return parsed
 
 
+def canonicalize_model_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    canonical = json.loads(json.dumps(payload, ensure_ascii=False))
+    citation_order = canonical.get("citation_order")
+    if isinstance(citation_order, list) and all(isinstance(item, str) for item in citation_order):
+        canonical["citation_order"] = [
+            {"citation_id": index, "paper_id": paper_id}
+            for index, paper_id in enumerate(citation_order, start=1)
+        ]
+    sentences = canonical.get("sentences")
+    if not isinstance(sentences, list):
+        sentences = []
+    for sentence in sentences:
+        if not isinstance(sentence, dict):
+            continue
+        bindings = sentence.get("factual_bindings")
+        if not isinstance(bindings, list):
+            continue
+        normalized_bindings = []
+        for binding in bindings:
+            if not isinstance(binding, dict):
+                normalized_bindings.append(binding)
+                continue
+            if {"binding_type", "bound_text_span", "claim_id"}.issubset(binding):
+                normalized_bindings.append(
+                    {
+                        "kind": binding["binding_type"],
+                        "text": binding["bound_text_span"],
+                        "claim_ids": [binding["claim_id"]],
+                    }
+                )
+            else:
+                normalized_bindings.append(binding)
+        sentence["factual_bindings"] = normalized_bindings
+    paragraphs = canonical.get("paragraphs")
+    if isinstance(paragraphs, list):
+        for paragraph in paragraphs:
+            if not isinstance(paragraph, dict) or isinstance(paragraph.get("sentence_ids"), list):
+                continue
+            paragraph_text = _normal_text(paragraph.get("text"))
+            paragraph["sentence_ids"] = [
+                sentence["sentence_id"]
+                for sentence in sentences
+                if isinstance(sentence, dict)
+                and isinstance(sentence.get("sentence_id"), str)
+                and _normal_text(sentence.get("text")) in paragraph_text
+            ]
+    return canonical
+
+
 def generate_with_bounded_repair(
     provider: Any,
     request: dict[str, Any],
@@ -569,7 +622,8 @@ def generate_with_bounded_repair(
             "raw_content": response.get("content", ""),
         }
         attempts.append(attempt)
-        if response.get("status") != "ok":
+        provider_succeeded = response.get("status") == "ok"
+        if not provider_succeeded:
             validation = {
                 "status": "FAIL",
                 "issue_count": 1,
@@ -577,7 +631,7 @@ def generate_with_bounded_repair(
             }
         else:
             try:
-                payload = _parse_json_content(response.get("content", ""))
+                payload = canonicalize_model_payload(_parse_json_content(response.get("content", "")))
                 validation = validate_prose_payload(payload, final_rows, evidence_plan, citation_metadata)
             except (json.JSONDecodeError, ValueError) as exc:
                 validation = {
@@ -585,6 +639,8 @@ def generate_with_bounded_repair(
                     "issue_count": 1,
                     "issues": [_issue("INVALID_MODEL_JSON", str(exc))],
                 }
+        if not provider_succeeded:
+            break
         if validation["status"] == "PASS":
             break
         if attempt_number == 1:
@@ -647,6 +703,19 @@ def build_generation_request(
                 "numeric_citation_ids",
                 "factual_bindings",
             ],
+            "paragraph_schema": {
+                "required_keys": ["paragraph_id", "theme", "sentence_ids"],
+                "sentence_ids": "ordered IDs from the top-level sentences array",
+            },
+            "factual_binding_schema": {
+                "required_keys": ["kind", "text", "claim_ids"],
+                "kind_values": ["chemical_entity", "catalyst", "product", "condition", "numeric_result"],
+                "text": "an exact text span present in both the sentence and at least one bound claim",
+            },
+            "citation_schema": {
+                "citation_order_entries": {"citation_id": "integer", "paper_id": "F3I | F47A | P403"},
+                "rule": "Assign exactly one bibliography number per cited paper, not one number per claim.",
+            },
             "writing_rules": [
                 "Organize by scientific strategy, selectivity control, stereocontrol, and mechanistic relationship rather than by paper.",
                 "Open with a synthesis judgment and use transitions between paragraphs.",
@@ -658,6 +727,7 @@ def build_generation_request(
                 "Exclude all source conflicts and all facts absent from the provided claims.",
                 "Every sentence, including synthesis sentences, must bind at least one claim.",
                 "Omitted claims must include a concise reason_code and selected plus omitted must account for all 37 claims.",
+                "Never use a scientific value from an evidence-plan omitted claim, including the excluded 76% result.",
             ],
         },
     }
@@ -748,6 +818,7 @@ def prepare_vertical_slice_v2(
                 "status": attempt.get("status"),
                 "model": metadata.get("model"),
                 "region": metadata.get("region"),
+                "error_type": metadata.get("error_type"),
                 "endpoint": "redacted",
                 "usage": {
                     "prompt_tokens": telemetry.get("prompt_tokens"),
