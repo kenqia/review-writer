@@ -1,0 +1,175 @@
+{
+  "status": "COMPLETE",
+  "method_label": "HUMAN_SPOT_CHECKED_AI_ADJUDICATION",
+  "methodology": "Context-isolated source-first inventory and exact-claim verification with a small human spot check. Engineering validation and internal demonstration only; this does not establish publication-level scientific validation or complete human review.",
+  "human_spot_check_limit": 10,
+  "human_budget": {
+    "previously_used": 6,
+    "newly_recorded": 4,
+    "total_used": 10,
+    "maximum": 10,
+    "remaining": 0
+  },
+  "source_inventory": [
+    {
+      "source_document_id": "F3I_MAIN",
+      "paper_id": "F3I",
+      "source_role": "MAIN",
+      "status": "SOURCE_FOUND",
+      "identity_match_status": "SOURCE_FOUND",
+      "page_count": 39,
+      "hash_prefix": "be65337bc704",
+      "source_type": "local_recursive_search"
+    },
+    {
+      "source_document_id": "F47A_MAIN",
+      "paper_id": "F47A",
+      "source_role": "MAIN",
+      "status": "SOURCE_FOUND",
+      "identity_match_status": "SOURCE_FOUND",
+      "page_count": 2,
+      "hash_prefix": "93f41a217ce0",
+      "source_type": "local_recursive_search"
+    },
+    {
+      "source_document_id": "P403_MAIN",
+      "paper_id": "P403",
+      "source_role": "MAIN",
+      "status": "SOURCE_FOUND",
+      "identity_match_status": "SOURCE_FOUND",
+      "page_count": 10,
+      "hash_prefix": "8fbc8f252952",
+      "source_type": "local_recursive_search"
+    },
+    {
+      "source_document_id": "F3I_SI",
+      "paper_id": "F3I",
+      "source_role": "SI",
+      "status": "NO_SI_PUBLISHED_ON_OFFICIAL_PAGE",
+      "identity_match_status": "NO_SI_PUBLISHED_ON_OFFICIAL_PAGE",
+      "page_count": null,
+      "hash_prefix": null,
+      "source_type": "official_lookup_no_si_found"
+    },
+    {
+      "source_document_id": "F47A_SI",
+      "paper_id": "F47A",
+      "source_role": "SI",
+      "status": "SI_VALIDATED",
+      "identity_match_status": "SI_VALIDATED",
+      "page_count": 3,
+      "hash_prefix": "5d26ebf0e2e1",
+      "source_type": "user_downloaded_local_file"
+    },
+    {
+      "source_document_id": "P403_SI",
+      "paper_id": "P403",
+      "source_role": "SI",
+      "status": "SI_VALIDATED",
+      "identity_match_status": "SI_VALIDATED",
+      "page_count": 190,
+      "hash_prefix": "9c0549eb99df",
+      "source_type": "user_downloaded_local_file"
+    }
+  ],
+  "paper_types": {
+    "F3I": "review/background",
+    "F47A": "research article / representative method",
+    "P403": "research article / recent progress"
+  },
+  "main_pdf_status": {
+    "F3I": "SOURCE_FOUND",
+    "F47A": "SOURCE_FOUND",
+    "P403": "SOURCE_FOUND"
+  },
+  "si_status": {
+    "F3I": "NO_SI_PUBLISHED_ON_OFFICIAL_PAGE",
+    "F47A": "SI_VALIDATED",
+    "P403": "SI_VALIDATED"
+  },
+  "si_identity_status": {
+    "F3I": "NO_SI_PUBLISHED_ON_OFFICIAL_PAGE",
+    "F47A": "SI_VALIDATED",
+    "P403": "SI_VALIDATED"
+  },
+  "si_incremental_extraction_count": 30,
+  "f3i_official_si_status": "NO_SI_PUBLISHED_ON_OFFICIAL_PAGE",
+  "bibliography_status_counts": {
+    "BIBLIOGRAPHY_CANDIDATE_CONFIRMED": 2,
+    "BIBLIOGRAPHY_UNCONFIRMED": 1
+  },
+  "bibliography_conflict_count": 0,
+  "update_query_summary": {
+    "NO_UPDATE_FOUND_IN_CHECKED_SOURCES": 3
+  },
+  "field_counts_by_paper": {
+    "F3I": 24,
+    "F47A": 39,
+    "P403": 39
+  },
+  "numeric_candidate_count": 35,
+  "mechanism_candidate_count": 3,
+  "figure_candidate_count": 3,
+  "phase7_claim_count": 10,
+  "phase7_risk_distribution": {
+    "tier1": 5,
+    "tier2": 5
+  },
+  "core_review_queue_size": 53,
+  "extended_review_queue_size": 115,
+  "core_atomic_mapping_count": 53,
+  "conflict_or_missing_source_count": 0,
+  "qwen_calls": 0,
+  "mineru_calls": 0,
+  "network_calls": 3,
+  "dashboard_command": "make phase8-dashboard-check && conda run -n review-writer-phase8 python scripts/review/serve_phase8_evidence_review.py --root local/phase8_evidence --host 127.0.0.1 --port 8787",
+  "local_package_path": "local/phase8_evidence",
+  "estimated_human_review_hours": "2-4",
+  "verified_status_present": false,
+  "human_download_required": false,
+  "v3_audit_verdict": "NO_GO_DIAGNOSTIC_ONLY",
+  "v3_1_acceptance_verdict": "NO_GO_FROZEN_NOT_EXECUTABLE",
+  "v3_1_1_scientific_source_unit_count": 8,
+  "v3_1_1_calibration_source_unit_count": 1,
+  "v3_1_1_calibration_mode": "ONE_ITEM_SPOT_CHECK",
+  "calibration_status": "PASS",
+  "scientific_layer_a_started": true,
+  "scientific_layer_a_completed": true,
+  "scientific_layer_a_row_count": 8,
+  "scientific_layer_a_claim_count": 44,
+  "layer_b_created": true,
+  "layer_b_completed": true,
+  "layer_b_completed_count": 44,
+  "layer_b_verdict_distribution": {
+    "SUPPORTED": 29,
+    "LOCATOR_ERROR": 4,
+    "REACTION_STAGE_ERROR": 2,
+    "ENTITY_BINDING_ERROR": 1,
+    "SOURCE_CONFLICT": 7,
+    "INSUFFICIENT_EVIDENCE": 1
+  },
+  "final_disposition_distribution": {
+    "AI_SUPPORTED": 29,
+    "AI_CORRECTED_LOCATOR": 4,
+    "AI_CORRECTED_REACTION_STAGE": 2,
+    "AI_CORRECTED_ENTITY": 1,
+    "HUMAN_SPOT_CHECKED_CORRECTED_ACCEPT": 1,
+    "SOURCE_CONFLICT_RETAINED": 7
+  },
+  "final_claim_count": 44,
+  "usable_non_conflict_claim_count": 37,
+  "retained_source_conflict_count": 7,
+  "human_review_required_count": 0,
+  "closure_artifact_hashes": {
+    "final_claims_sha256": "c2aae9212fe798f94e1aca3637d6c7ee24e0f6980c89c9c1e6fc870045c80352",
+    "closure_summary_sha256": "a48d1cd31b4b6b70332000dfa0b41384a8e6ff53446920836d0c9ca4b23317d4",
+    "human_decision_report_sha256": "de50a81f5d7c841ca0edae0cd25dcb2daee1f2e7fe34392d017be1c754b062c4",
+    "closure_manifest_sha256": "cef91cc2b48fc40f20275e6db1d258d5adae3a295016d52893c2230d81d3a3cd"
+  },
+  "calibration_layer_a_started": true,
+  "calibration_layer_a_completed": true,
+  "layer_c_created": false,
+  "layer_c_status": "SKIPPED_AS_UNNECESSARY",
+  "checkpoint": "PHASE8A_COMPLETE_PR3_READY_FOR_REVIEW",
+  "phase8b_started": false
+}

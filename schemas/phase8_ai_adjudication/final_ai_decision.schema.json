@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-writer:phase8:final-ai-decision",
+  "title": "Final AI decision event",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["core_review_item_id", "final_ai_status", "superseded_by_human_decision"],
+  "properties": {
+    "core_review_item_id": {"type": "string"},
+    "final_ai_status": {"enum": ["AI_CONSENSUS_ACCEPT", "AI_CONSENSUS_EDIT", "AI_CONSENSUS_REJECT", "AI_CONSENSUS_CANNOT_VERIFY", "AI_ADJUDICATED_ACCEPT", "AI_ADJUDICATED_EDIT", "AI_ADJUDICATED_REJECT", "AI_ADJUDICATED_CANNOT_VERIFY", "AI_UNRESOLVED", "RULE_BLOCKED"]},
+    "superseded_by_human_decision": {"type": "boolean"},
+    "human_decision_id": {"type": ["string", "null"]}
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-writer:phase8:v3:layer-a-inventory-output",
+  "$defs": {
+    "nullableString": {"type": ["string", "null"]},
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claim_id", "paper_id", "source_document_id", "source_role", "claim_type", "substrate_ids", "reagent_or_partner_ids", "product_id", "intermediate_id", "reaction_stage", "reaction_entry", "conditions_as_reported", "metric_type", "value_as_reported", "unit_as_reported", "normalized_value_candidate", "locator_scope", "pdf_page_index", "printed_page_label_observed", "section", "table_id", "scheme_id", "figure_id", "entry_id", "short_evidence", "evidence_modality", "directness", "epistemic_class", "review_relevance"],
+      "properties": {
+        "claim_id": {"type": "string", "pattern": "^CL-SU-[0-9a-f]{16}-[0-9]{3}$"},
+        "paper_id": {"enum": ["F3I", "F47A", "P403"]},
+        "source_document_id": {"enum": ["F3I_MAIN", "F47A_MAIN", "F47A_SI", "P403_MAIN", "P403_SI"]},
+        "source_role": {"enum": ["MAIN", "SI"]},
+        "claim_type": {"enum": ["target_reaction_numeric_outcome", "substrate_preparation_numeric_outcome", "optimization_result", "scope_result", "negative_scope", "explicit_limitation", "author_proposed_mechanism", "experimental_mechanistic_observation", "figure_table_scheme_evidence", "source_identity_provenance"]},
+        "substrate_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "reagent_or_partner_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "product_id": {"$ref": "#/$defs/nullableString"},
+        "intermediate_id": {"$ref": "#/$defs/nullableString"},
+        "reaction_stage": {"type": "string", "minLength": 1},
+        "reaction_entry": {"$ref": "#/$defs/nullableString"},
+        "conditions_as_reported": {"$ref": "#/$defs/nullableString"},
+        "metric_type": {"enum": ["isolated_yield", "assay_yield", "conversion", "ee", "er", "dr", "temperature", "time", "catalyst_loading", "ratio", "other_numeric", "not_applicable"]},
+        "value_as_reported": {"type": ["string", "number", "null"]},
+        "unit_as_reported": {"$ref": "#/$defs/nullableString"},
+        "normalized_value_candidate": {"type": ["string", "number", "null"]},
+        "locator_scope": {"enum": ["EXACT_PAGE", "PAGE_WINDOW", "SECTION", "FULL_SOURCE"]},
+        "pdf_page_index": {"type": "integer", "minimum": 0},
+        "printed_page_label_observed": {"$ref": "#/$defs/nullableString"},
+        "section": {"$ref": "#/$defs/nullableString"},
+        "table_id": {"$ref": "#/$defs/nullableString"},
+        "scheme_id": {"$ref": "#/$defs/nullableString"},
+        "figure_id": {"$ref": "#/$defs/nullableString"},
+        "entry_id": {"$ref": "#/$defs/nullableString"},
+        "short_evidence": {"type": "string", "minLength": 1, "maxLength": 500},
+        "evidence_modality": {"enum": ["TEXT", "TABLE", "FIGURE", "SCHEME", "CAPTION", "METADATA"]},
+        "directness": {"enum": ["DIRECT_NUMERIC", "DIRECT_TEXTUAL", "TABLE_SUPPORTED", "FIGURE_SUPPORTED", "AUTHOR_INTERPRETATION", "INDIRECT_CONTEXT"]},
+        "epistemic_class": {"enum": ["DIRECT_REPORTED_RESULT", "AUTHOR_PROPOSED_MECHANISM", "EXPERIMENTAL_MECHANISTIC_OBSERVATION", "INTERMEDIATE_ISOLATION", "REVIEW_ARTICLE_SUMMARY", "AI_INFERENCE"]},
+        "review_relevance": {"enum": ["HIGH", "MEDIUM", "LOW"]}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"metric_type": {"enum": ["isolated_yield", "assay_yield", "ee", "er", "dr"]}}, "required": ["metric_type"]},
+          "then": {"properties": {"product_id": {"type": "string", "minLength": 1}, "reaction_entry": {"type": "string", "minLength": 1}}}
+        }
+      ]
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["source_unit_id", "source_unit_status", "input_manifest_hash", "task_hash", "claims"],
+  "properties": {
+    "source_unit_id": {"type": "string", "pattern": "^SU-[0-9a-f]{16}$"},
+    "source_unit_status": {"enum": ["COMPLETED", "SOURCE_UNREADABLE"]},
+    "input_manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "task_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "claims": {"type": "array", "items": {"$ref": "#/$defs/claim"}}
+  }
+}

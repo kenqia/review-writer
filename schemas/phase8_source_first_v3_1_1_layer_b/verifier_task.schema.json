@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-writer:phase8:v3.1.1:layer-b-verifier-task",
+  "$defs": {
+    "nullableString": {"type": ["string", "null"]},
+    "evidenceLocator": {
+      "type": "object", "additionalProperties": false,
+      "required": ["scope", "pdf_page_index", "page_window", "printed_page_label_observed", "section", "table_id", "scheme_id", "figure_id", "entry_id"],
+      "properties": {
+        "scope": {"enum": ["EXACT_PAGE", "PAGE_WINDOW"]},
+        "pdf_page_index": {"type": "integer", "minimum": 0},
+        "page_window": {"oneOf": [{"type": "null"}, {"type": "array", "prefixItems": [{"type": "integer", "minimum": 0}, {"type": "integer", "minimum": 0}], "minItems": 2, "maxItems": 2}]},
+        "printed_page_label_observed": {"type": "string", "minLength": 1},
+        "section": {"$ref": "#/$defs/nullableString"},
+        "table_id": {"$ref": "#/$defs/nullableString"},
+        "scheme_id": {"$ref": "#/$defs/nullableString"},
+        "figure_id": {"$ref": "#/$defs/nullableString"},
+        "entry_id": {"$ref": "#/$defs/nullableString"}
+      }
+    },
+    "claim": {
+      "type": "object", "additionalProperties": false,
+      "required": ["claim_id", "paper_id", "source_document_id", "source_role", "claim_type", "substrate_ids", "reagent_or_partner_ids", "product_id", "intermediate_id", "reaction_stage", "reaction_entry", "conditions_as_reported", "metric_type", "value_as_reported", "unit_as_reported", "normalized_value_candidate", "normalized_metric_type", "normalization_rule", "normalization_source_supported", "evidence_locator", "short_evidence", "evidence_modality", "directness", "epistemic_class", "pathway_status", "source_conflict_detected", "source_conflict"],
+      "properties": {
+        "claim_id": {"type": "string", "pattern": "^CL-SU-[0-9a-f]{16}-[0-9]{3}$"},
+        "paper_id": {"enum": ["F3I", "F47A", "P403"]},
+        "source_document_id": {"enum": ["F3I_MAIN", "F47A_MAIN", "F47A_SI", "P403_MAIN", "P403_SI"]},
+        "source_role": {"enum": ["MAIN", "SI"]},
+        "claim_type": {"type": "string", "minLength": 1},
+        "substrate_ids": {"type": "array", "items": {"type": "string"}},
+        "reagent_or_partner_ids": {"type": "array", "items": {"type": "string"}},
+        "product_id": {"$ref": "#/$defs/nullableString"},
+        "intermediate_id": {"$ref": "#/$defs/nullableString"},
+        "reaction_stage": {"type": "string", "minLength": 1},
+        "reaction_entry": {"$ref": "#/$defs/nullableString"},
+        "conditions_as_reported": {"$ref": "#/$defs/nullableString"},
+        "metric_type": {"type": "string", "minLength": 1},
+        "value_as_reported": {"type": ["string", "number", "null"]},
+        "unit_as_reported": {"$ref": "#/$defs/nullableString"},
+        "normalized_value_candidate": {"type": ["string", "number", "null"]},
+        "normalized_metric_type": {"$ref": "#/$defs/nullableString"},
+        "normalization_rule": {"$ref": "#/$defs/nullableString"},
+        "normalization_source_supported": {"type": "boolean"},
+        "evidence_locator": {"$ref": "#/$defs/evidenceLocator"},
+        "short_evidence": {"type": "string", "minLength": 1, "maxLength": 500},
+        "evidence_modality": {"type": "string", "minLength": 1},
+        "directness": {"type": "string", "minLength": 1},
+        "epistemic_class": {"type": "string", "minLength": 1},
+        "pathway_status": {"type": "string", "minLength": 1},
+        "source_conflict_detected": {"type": "boolean"},
+        "source_conflict": {"type": ["object", "null"]}
+      }
+    }
+  },
+  "type": "object", "additionalProperties": false,
+  "required": ["verifier_task_id", "source_unit_id", "claim_id", "claim_hash", "claim", "source_document_id", "source_role", "source_artifact", "allowed_original_page_indices", "source_binding", "task_hash"],
+  "properties": {
+    "verifier_task_id": {"type": "string", "pattern": "^VB-[0-9a-f]{16}$"},
+    "source_unit_id": {"type": "string", "pattern": "^SU-[0-9a-f]{16}$"},
+    "claim_id": {"type": "string", "pattern": "^CL-SU-[0-9a-f]{16}-[0-9]{3}$"},
+    "claim_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "claim": {"$ref": "#/$defs/claim"},
+    "source_document_id": {"type": "string", "minLength": 1},
+    "source_role": {"enum": ["MAIN", "SI"]},
+    "source_artifact": {"type": "string", "pattern": "^sources/VB-[0-9a-f]{16}__[A-Za-z0-9_]+\\.pdf$"},
+    "allowed_original_page_indices": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "integer", "minimum": 0}},
+    "source_binding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source_document_id", "source_role", "original_source_sha256", "upstream_artifact_sha256", "packaged_artifact_sha256", "original_page_indices", "packaged_page_indices", "original_to_packaged_page_index", "printed_page_labels"],
+      "properties": {
+        "source_document_id": {"type": "string"},
+        "source_role": {"enum": ["MAIN", "SI"]},
+        "original_source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "upstream_artifact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "packaged_artifact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "original_page_indices": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "integer", "minimum": 0}},
+        "packaged_page_indices": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "integer", "minimum": 0}},
+        "original_to_packaged_page_index": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "integer", "minimum": 0}},
+        "printed_page_labels": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string", "minLength": 1}}
+      }
+    },
+    "task_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

@@ -4,38 +4,29 @@
 
 - GitHub: `kenqia/review-writer`
 - Local repo placeholder: `<REPO_ROOT>`
-- Last verified date: `2026-07-11` Asia/Shanghai
+- Last verified date: `2026-07-14` Asia/Shanghai
 
 ## Current Branches
 
-- `main`: `506c066` (`origin/main`)
-- `feat/chem-review-quality-gates`: `35c078c` (`origin/feat/chem-review-quality-gates`)
-- `feat/orchestrator-rag-generation-pilot`: stacked on `feat/chem-review-quality-gates`; local closure commits include provider routing, real preflight, grounded validation hardening, Qwen runtime dependency documentation, unified runtime stabilization, and Phase 7 real E2E closure.
+- `main`: `908239d` (`origin/main`)
+- `feat/chem-review-quality-gates`: merged by PR #1.
+- `feat/orchestrator-rag-generation-pilot`: merged by PR #2.
+- `feat/human-verified-evidence-evaluation`: Phase 8A complete; PR #3 is prepared for formal review and remains unmerged.
 
-## Current Commits
-
-- `a28e4b2 ci: add offline validation workflow`
-- `e0d4ce9 ci: make release readiness portable`
-- `35c078c ci: pin release readiness to repo fixtures`
-- `e01d765 feat: add orchestrator retrieval generation pilot`
-- `fbee482 Merge branch 'feat/chem-review-quality-gates' into feat/orchestrator-rag-generation-pilot`
-- `73a7245 Merge branch 'feat/chem-review-quality-gates' into feat/orchestrator-rag-generation-pilot`
-- Previous expected Phase 6 commit exists: `4a3cac1 feat: complete bailian retrieval qa`
-- Previous expected Phase 7 commit was rebased from `5e11fe7` to `e01d765`
-
-## Open PRs
+## Integrated PRs
 
 - PR #1: <https://github.com/kenqia/review-writer/pull/1>
   - Base: `main`
   - Head: `feat/chem-review-quality-gates`
-  - Status: Open Draft
-  - Current head after reconciliation: `35c078c`
-  - Body updated with Phase 5h-6d summary, Phase 6 final metrics, and controlled-pilot safety wording.
+  - Status: merged
+  - Merge commit: `b3b6e3a6a897e44ccc7f106d2823ca5f24ef9ada`
+  - Final audit: `docs/pr/pr1_final_merge_audit.md`
 - PR #2: <https://github.com/kenqia/review-writer/pull/2>
-  - Base: `feat/chem-review-quality-gates`
+  - Base after retarget: `main`
   - Head: `feat/orchestrator-rag-generation-pilot`
-  - Status: Open Draft
-  - Stacked on PR #1.
+  - Status: merged
+  - Merge commit: `908239d733837352d66e15dd189c7d9f7990b6df`
+  - Final audit: `docs/pr/pr2_final_merge_audit.md`
 
 ## Completed Phases
 
@@ -46,77 +37,82 @@
 - Phase 5a-5g: tiny/real-lite E2E, dashboard QA, eval baseline, portability and merge-readiness.
 - Phase 5h-5k: reality audit, QoderWork CN validation, clean 3-paper preparation and vertical slice.
 - Phase 6a-6d: Bailian no-upload preflight, local retrieval baseline, sanitized small-KB pilot scaffolding, SDK diagnostics, retrieval QA, and Phase 6 final offline gate.
-- CI reconciliation: offline GitHub Actions workflow added for PR/push gates.
+- Phase 7: complete and integrated into `main`; controlled Qwen-only and full Bailian + Qwen E2E completed with `Sections: ready_for_human_review`.
 
-## Current Phase 7 Blocker
+## Phase 8A
 
-None for Phase 7 real E2E closure. The controlled real pilot completed in the
-unified `review-writer-bailian` environment.
-
-Latest verified real closure:
-
-- `review-writer-bailian` has Bailian SDK and `openai==1.93.0`.
-- `python -m pip check`: pass.
-- `make phase7-real-preflight`: pass with `network_calls=0`.
-- Qwen-only streaming smoke: pass.
-- Full Bailian + Qwen E2E: pass.
-- Model: `qwen3.7-plus`.
-- Region reported safely as `cn-beijing`; dedicated endpoint used; endpoint redacted.
-- Transport modes: Bailian `no_proxy`; Qwen `openai_sdk_default`.
-- Full E2E retrieval evidence count: `3` (`F3I`, `F47A`, `P403`).
-- Full E2E EvidencePack hash prefix: `02ded82c3494`.
-- Qwen-only stream: `server_chunks_received=122`, `content_chunks_received=119`, `finish_reason=stop`, `prompt_tokens=692`, `completion_tokens=395`, `total_tokens=1087`.
-- Full E2E stream: `stream_started=true`, `server_chunks_received=106`, `content_chunks_received=103`, `finish_reason=stop`, `prompt_tokens=581`, `completion_tokens=341`, `total_tokens=922`.
-- Full E2E grounding: claim-evidence coverage `1.0`, unsupported claims `0`, unsupported citations `0`, prompt leakage `0`.
-- Malformed marker count: `0`.
-- Checkpoint: `Sections: ready_for_human_review`.
-- Temporary file/index cleanup: pass.
-- Real-call counts in this closure run: Qwen-only requests `1`, full E2E runs `1`, total Qwen requests `2`, Bailian lifecycles `1`, evidence-backed retries `0`.
-
-## Offline Gates
-
-Fresh local gates run during reconciliation and Phase 7 closure:
-
-```bash
-make release-readiness-check
-make bailian-phase6-final-check
-make phase7-pilot-dry-run
-make phase7-real-preflight
-make offline-ci-workflow-check
-make quality-check
-make smoke
-```
-
-CI workflow:
+Current phase status:
 
 ```text
-.github/workflows/offline-ci.yml
+Phase 8A: complete
+Checkpoint: PHASE8A_COMPLETE_PR3_READY_FOR_REVIEW
 ```
 
-CI jobs:
+Methodology:
 
-- workflow syntax/static guard
-- release readiness
-- Phase 6 final offline gate with CI SDK inspection dependencies
-- safety and portability checks
+```text
+HUMAN_SPOT_CHECKED_AI_ADJUDICATION
 
-## Real-Pilot Status
+Context-isolated source-first inventory and exact-claim verification with a
+small human spot check. Engineering validation and internal demonstration
+only; it does not establish publication-level scientific validation or
+complete human review.
+```
 
-- Default checks do not call Qwen/Bailian, upload files, or create knowledge bases.
-- Controlled real pilots require explicit authorization, sanitized payloads, `/tmp` reports, and best-effort cleanup.
-- Latest closure attempt used one Qwen-only real call and one full Bailian + Qwen E2E call.
-- Full E2E created one temporary Bailian file/index lifecycle from the clean 3-paper compact payload and cleaned it up successfully.
-- Reports are under `/tmp/review_writer_phase7_real_qwen_only_1.*` and `/tmp/review_writer_phase7_real_full_e2e_1.*`; they contain only redacted/safe fields.
+Current local package target:
 
-## Known Caveats
+```text
+local/phase8_evidence/
+```
 
-- `release-readiness-check` can use local external demo metadata when `SEARCH_ROOT` points outside the repo. GitHub CI validates deterministic repository gates and safety plumbing, but does not prove local external paper-library availability.
-- Phase 6 final SDK contract introspection requires Bailian SDK packages. CI installs the pinned inspection dependencies from `requirements-ci.txt`; local default remains `review-writer-bailian` via `BAILIAN_SDK_PYTHON`.
-- PR #1 and PR #2 are Draft and must not be merged without human review.
-- AGENTS.md remains reserved for stable project rules; this file owns the current commit/PR/blocker state.
+Current source status:
 
-## Next Issue
+- `F3I_MAIN`, `F47A_MAIN`, `F47A_SI`, `P403_MAIN`, and `P403_SI`: V2 weighted
+  source identity validated before packaging.
+- `F3I_SI`: `NO_SI_PUBLISHED_ON_OFFICIAL_PAGE`.
+- `core_review_queue`: 2-4 hour priority subset with core-to-atomic mapping.
+- `extended_review_queue`: all atomic review items.
+- The first three-layer run and V2 are diagnostic-only. V2's 41 tasks are an
+  adversarial task-validation set, not a scientific adjudication queue.
+- The audited V3 preparation is frozen with a `NO-GO` verdict and remains
+  diagnostic-only. It must not be started.
+- The frozen V3.1 run also has an independent `NO-GO` acceptance verdict. It is
+  retained unchanged and must not be started.
+- V3.1.1 calibration passed. Scientific Layer A completed 8 rows / 44 claims.
+- Exact-claim Layer B completed 44/44 with 29 `SUPPORTED`, 4 locator errors,
+  2 reaction-stage errors, 1 entity-binding error, 7 faithfully recorded
+  source conflicts, and 1 insufficient-evidence result.
+- Deterministic reconciliation and four bounded human spot checks produced 44
+  final records: 37 usable or deterministically corrected non-conflict claims
+  and 7 retained source-internal conflicts.
+- Human budget is 10/10. Layer C was skipped as unnecessary. Phase 8B has not
+  started.
 
-Phase 7 stops at `Sections: ready_for_human_review`. Do not treat generated
-sections as final scientific review text without a separate human scientific
-evidence review.
+Public status report:
+
+```text
+docs/phase8/phase8a_status_report.md
+docs/phase8/phase8a_status_report.json
+```
+
+Final checkpoint:
+
+```text
+PHASE8A_COMPLETE_PR3_READY_FOR_REVIEW
+```
+
+## Safety Notes
+
+- Phase 8A closure does not create regenerated review prose or claim complete human review.
+- PDFs, SI, full page text, long excerpts, local image crops, manual decisions, and authenticated caches remain ignored under `local/phase8_evidence/`.
+- Default Phase 8 gates are offline and do not call Qwen, download SI, or invoke MinerU cloud.
+- Diagnostic AI results and scientific claim-verification results remain
+  separate from the human decision log.
+- Effective human decisions take precedence over new AI adjudication and old AI extraction.
+- Human spot checks are capped at 10 unique core items.
+- The isolation is procedural, not an operating-system sandbox or statistical independence between model weights.
+
+## Next User Action
+
+Review PR #3. Do not merge it as part of the Phase 8A closure workflow. Do not
+start Phase 8B without a new explicit instruction.

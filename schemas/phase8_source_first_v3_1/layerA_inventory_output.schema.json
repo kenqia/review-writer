@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-writer:phase8:v3.1:layer-a-inventory-output",
+  "$defs": {
+    "nullableString": {"type": ["string", "null"]},
+    "evidenceLocator": {
+      "type": "object", "additionalProperties": false,
+      "required": ["scope", "pdf_page_index", "page_window", "printed_page_label_observed", "section", "table_id", "scheme_id", "figure_id", "entry_id"],
+      "properties": {
+        "scope": {"enum": ["EXACT_PAGE", "PAGE_WINDOW"]},
+        "pdf_page_index": {"type": "integer", "minimum": 0},
+        "page_window": {
+          "oneOf": [
+            {"type": "null"},
+            {"type": "array", "prefixItems": [{"type": "integer", "minimum": 0}, {"type": "integer", "minimum": 0}], "minItems": 2, "maxItems": 2}
+          ]
+        },
+        "printed_page_label_observed": {"type": "string", "minLength": 1},
+        "section": {"$ref": "#/$defs/nullableString"},
+        "table_id": {"$ref": "#/$defs/nullableString"},
+        "scheme_id": {"$ref": "#/$defs/nullableString"},
+        "figure_id": {"$ref": "#/$defs/nullableString"},
+        "entry_id": {"$ref": "#/$defs/nullableString"}
+      }
+    },
+    "conflictAlternative": {
+      "type": "object", "additionalProperties": false,
+      "required": ["reported_value", "locator"],
+      "properties": {
+        "reported_value": {"type": ["string", "number"], "minLength": 1},
+        "locator": {"$ref": "#/$defs/evidenceLocator"}
+      }
+    },
+    "sourceConflict": {
+      "type": "object", "additionalProperties": false,
+      "required": ["conflict_type", "alternatives"],
+      "properties": {
+        "conflict_type": {"enum": ["SOURCE_INTERNAL_LABEL_CONFLICT", "SOURCE_INTERNAL_VALUE_CONFLICT", "CAPTION_FOOTNOTE_CONFLICT"]},
+        "alternatives": {"type": "array", "minItems": 2, "items": {"$ref": "#/$defs/conflictAlternative"}}
+      }
+    },
+    "claim": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "claim_id", "paper_id", "source_document_id", "source_role", "claim_type",
+        "substrate_ids", "reagent_or_partner_ids", "product_id", "intermediate_id",
+        "reaction_stage", "reaction_entry", "conditions_as_reported", "metric_type",
+        "value_as_reported", "unit_as_reported", "normalized_value_candidate",
+        "normalized_metric_type", "normalization_rule", "normalization_source_supported",
+        "evidence_locator", "short_evidence", "evidence_modality", "directness",
+        "epistemic_class", "pathway_status", "source_conflict_detected", "source_conflict"
+      ],
+      "properties": {
+        "claim_id": {"type": "string", "pattern": "^CL-SU-[0-9a-f]{16}-[0-9]{3}$"},
+        "paper_id": {"enum": ["F3I", "F47A", "P403"]},
+        "source_document_id": {"enum": ["F3I_MAIN", "F47A_MAIN", "F47A_SI", "P403_MAIN", "P403_SI"]},
+        "source_role": {"enum": ["MAIN", "SI"]},
+        "claim_type": {"enum": ["target_reaction_numeric_outcome", "substrate_preparation_numeric_outcome", "optimization_result", "scope_result", "negative_scope", "explicit_limitation", "author_proposed_mechanism", "experimental_mechanistic_observation", "stoichiometric_result", "intermediate_isolation_result", "control_experiment_result", "downstream_transformation_result", "source_conflict"]},
+        "substrate_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "reagent_or_partner_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "product_id": {"$ref": "#/$defs/nullableString"},
+        "intermediate_id": {"$ref": "#/$defs/nullableString"},
+        "reaction_stage": {"enum": ["target_catalytic_reaction", "substrate_synthesis", "stoichiometric_intermediate_reactivity", "intermediate_isolation", "optimization", "control_experiment", "downstream_transformation", "mechanistic_observation"]},
+        "reaction_entry": {"$ref": "#/$defs/nullableString"},
+        "conditions_as_reported": {"$ref": "#/$defs/nullableString"},
+        "metric_type": {"enum": ["isolated_yield", "assay_yield", "conversion", "ee", "er", "dr", "temperature", "time", "catalyst_loading", "ratio", "other_numeric", "not_applicable"]},
+        "value_as_reported": {"type": ["string", "number", "null"]},
+        "unit_as_reported": {"$ref": "#/$defs/nullableString"},
+        "normalized_value_candidate": {"type": ["string", "number", "null"]},
+        "normalized_metric_type": {"type": ["string", "null"]},
+        "normalization_rule": {"$ref": "#/$defs/nullableString"},
+        "normalization_source_supported": {"type": "boolean"},
+        "evidence_locator": {"$ref": "#/$defs/evidenceLocator"},
+        "short_evidence": {"type": "string", "minLength": 1, "maxLength": 500},
+        "evidence_modality": {"enum": ["TEXT", "TABLE", "FIGURE", "SCHEME", "CAPTION"]},
+        "directness": {"enum": ["DIRECT_NUMERIC", "DIRECT_TEXTUAL", "TABLE_SUPPORTED", "FIGURE_SUPPORTED", "AUTHOR_INTERPRETATION", "INDIRECT_CONTEXT"]},
+        "epistemic_class": {"enum": ["DIRECT_REPORTED_RESULT", "AUTHOR_PROPOSED_MECHANISM", "EXPERIMENTAL_MECHANISTIC_OBSERVATION", "INTERMEDIATE_ISOLATION", "REVIEW_ARTICLE_SUMMARY"]},
+        "pathway_status": {"enum": ["NOT_APPLICABLE", "AUTHOR_PROPOSED", "EXPERIMENTALLY_OBSERVED", "NOT_PROVEN_BY_ISOLATION"]},
+        "source_conflict_detected": {"type": "boolean"},
+        "source_conflict": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sourceConflict"}]}
+      }
+    },
+    "pageCoverage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source_document_id", "page_indices"],
+      "properties": {
+        "source_document_id": {"type": "string", "minLength": 1},
+        "page_indices": {"type": "array", "uniqueItems": true, "items": {"type": "integer", "minimum": 0}}
+      }
+    }
+  },
+  "type": "object", "additionalProperties": false,
+  "required": ["source_unit_id", "source_unit_status", "input_manifest_hash", "task_hash", "coverage_summary", "pages_examined", "sections_examined", "status_reason", "claims"],
+  "properties": {
+    "source_unit_id": {"type": "string", "pattern": "^SU-[0-9a-f]{16}$"},
+    "source_unit_status": {"enum": ["COMPLETED", "PARTIAL", "SOURCE_UNREADABLE", "OUT_OF_SCOPE", "NO_QUALIFYING_EVIDENCE"]},
+    "input_manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "task_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "coverage_summary": {"type": "string", "minLength": 1},
+    "pages_examined": {"type": "array", "items": {"$ref": "#/$defs/pageCoverage"}},
+    "sections_examined": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "status_reason": {"$ref": "#/$defs/nullableString"},
+    "claims": {"type": "array", "items": {"$ref": "#/$defs/claim"}}
+  }
+}

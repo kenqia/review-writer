@@ -1,7 +1,8 @@
-.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check eval-baseline-check portability-check reality-audit-check clean-3paper-recommend-check clean-3paper-approval-check clean-3paper-pdf-verify-check clean-3paper-biblio-check clean-3paper-biblio-web-check clean-3paper-claims-check clean-3paper-e2e-check clean-3paper-eval-check dashboard-clean-3paper-check bailian-rag-preflight-check rag-local-retrieval-check bailian-small-kb-payload-check bailian-payload-parse-readiness-check bailian-small-kb-pilot-dry-run bailian-small-kb-official-sdk-dry-run bailian-official-pilot-fix-check bailian-sdk-e2e-closure-check bailian-small-kb-official-sdk-real-command bailian-lease-probe-dry-run bailian-lease-probe-real-command bailian-endpoint-diagnostics-check bailian-minimal-lease-repro-dry-run bailian-minimal-lease-repro-real-command bailian-sdk-transport-introspection bailian-retrieval-contract-check bailian-retrieval-qa-dry-run bailian-phase6-final-check retrieval-generation-check grounded-section-check phase7-pilot-dry-run phase7-real-preflight bailian-transport-matrix-dry-run bailian-transport-matrix-real-command bailian-category-introspection bailian-category-discovery-dry-run bailian-category-discovery-real-command bailian-category-lease-reprobe-real-command bailian-category-type-matrix-dry-run bailian-category-type-matrix-real-command bailian-sdk-env-check bailian-sdk-env-strict-check offline-ci-workflow-check release-readiness-check
+.PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check eval-baseline-check portability-check reality-audit-check clean-3paper-recommend-check clean-3paper-approval-check clean-3paper-pdf-verify-check clean-3paper-biblio-check clean-3paper-biblio-web-check clean-3paper-claims-check clean-3paper-e2e-check clean-3paper-eval-check dashboard-clean-3paper-check bailian-rag-preflight-check rag-local-retrieval-check bailian-small-kb-payload-check bailian-payload-parse-readiness-check bailian-small-kb-pilot-dry-run bailian-small-kb-official-sdk-dry-run bailian-official-pilot-fix-check bailian-sdk-e2e-closure-check bailian-small-kb-official-sdk-real-command bailian-lease-probe-dry-run bailian-lease-probe-real-command bailian-endpoint-diagnostics-check bailian-minimal-lease-repro-dry-run bailian-minimal-lease-repro-real-command bailian-sdk-transport-introspection bailian-retrieval-contract-check bailian-retrieval-qa-dry-run bailian-phase6-final-check retrieval-generation-check grounded-section-check phase7-pilot-dry-run phase7-real-preflight phase8-preflight phase8-source-inventory-check phase8-extraction-check phase8-review-package-check phase8-dashboard-check phase8-decision-writer-check phase8-ai-adjudication-check phase8-v2-semantic-input-check phase8-v3-source-first-check phase8-v3-1-source-first-check phase8-v3-1-1-source-first-check phase8-v3-1-1-layer-b-check phase8-v3-1-1-reconciliation-check phase8-v3-1-1-closure-check bailian-transport-matrix-dry-run bailian-transport-matrix-real-command bailian-category-introspection bailian-category-discovery-dry-run bailian-category-discovery-real-command bailian-category-lease-reprobe-real-command bailian-category-type-matrix-dry-run bailian-category-type-matrix-real-command bailian-sdk-env-check bailian-sdk-env-strict-check offline-ci-workflow-check release-readiness-check
 
 PYTHON ?= python3
 BAILIAN_SDK_PYTHON ?= conda run -n review-writer-bailian python
+PHASE8_PYTHON ?= conda run -n review-writer-phase8 python
 REPO_ROOT ?= $(CURDIR)
 SEARCH_ROOT ?= $(abspath $(REPO_ROOT)/..)
 REAL_LITE_OUTPUT_ROOT ?= /tmp/review_writer_real_lite_e2e
@@ -361,6 +362,56 @@ phase7-real-preflight:
 		--output-json /tmp/review_writer_phase7_real_preflight.json \
 		--output-md /tmp/review_writer_phase7_real_preflight.md
 
+phase8-preflight:
+	$(PHASE8_PYTHON) tests/test_phase8_evidence_package.py preflight
+
+phase8-source-inventory-check:
+	$(PHASE8_PYTHON) tests/test_phase8_evidence_package.py source_inventory
+
+phase8-extraction-check:
+	$(PHASE8_PYTHON) tests/test_phase8_evidence_package.py extraction
+
+phase8-review-package-check:
+	$(PHASE8_PYTHON) tests/test_phase8_evidence_package.py review_package
+
+phase8-dashboard-check:
+	$(PHASE8_PYTHON) tests/test_phase8_evidence_package.py dashboard
+
+phase8-decision-writer-check:
+	$(PHASE8_PYTHON) tests/test_phase8_evidence_package.py decision_writer
+
+phase8-ai-adjudication-check:
+	$(PYTHON) tests/test_phase8_ai_adjudication.py
+	$(PYTHON) scripts/phase8/coordinate_ai_adjudication.py --help >/dev/null
+
+phase8-v2-semantic-input-check:
+	$(PYTHON) tests/test_phase8_v2_semantic_inputs.py
+	$(PYTHON) scripts/phase8/prepare_v2_semantic_review.py --help >/dev/null
+
+phase8-v3-source-first-check:
+	$(PYTHON) tests/test_phase8_v3_source_first.py
+	$(PYTHON) scripts/phase8/prepare_v3_source_first.py --help >/dev/null
+
+phase8-v3-1-source-first-check:
+	$(PYTHON) tests/test_phase8_v3_1_contract.py
+	$(PYTHON) scripts/phase8/prepare_v3_1_source_first.py --help >/dev/null
+	$(PYTHON) scripts/phase8/evaluate_v3_1_calibration.py --help >/dev/null
+
+phase8-v3-1-1-source-first-check:
+	$(PYTHON) scripts/phase8/prepare_v3_1_1_source_first.py --help >/dev/null
+
+phase8-v3-1-1-layer-b-check:
+	$(PYTHON) tests/test_phase8_v3_1_1_layer_b.py
+	$(PYTHON) scripts/phase8/prepare_v3_1_1_layer_b.py --help >/dev/null
+
+phase8-v3-1-1-reconciliation-check:
+	$(PYTHON) tests/test_phase8_v3_1_1_reconciliation.py
+	$(PYTHON) scripts/phase8/prepare_v3_1_1_final_reconciliation.py --help >/dev/null
+
+phase8-v3-1-1-closure-check:
+	$(PYTHON) tests/test_phase8_v3_1_1_closure.py
+	$(PYTHON) scripts/phase8/close_v3_1_1_phase8a.py --help >/dev/null
+
 bailian-transport-matrix-dry-run:
 	$(PYTHON) tests/test_bailian_transport_matrix_safety.py
 	$(PYTHON) scripts/rag/bailian_transport_matrix.py \
@@ -435,3 +486,10 @@ release-readiness-check:
 	$(MAKE) dashboard-real-lite-check
 	$(MAKE) eval-baseline-check
 	$(MAKE) portability-check
+	$(MAKE) phase8-ai-adjudication-check
+	$(MAKE) phase8-v3-source-first-check
+	$(MAKE) phase8-v3-1-source-first-check
+	$(MAKE) phase8-v3-1-1-source-first-check
+	$(MAKE) phase8-v3-1-1-layer-b-check
+	$(MAKE) phase8-v3-1-1-reconciliation-check
+	$(MAKE) phase8-v3-1-1-closure-check

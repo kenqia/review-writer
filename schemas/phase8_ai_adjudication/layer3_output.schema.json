@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-writer:phase8:fresh-source-adjudication-output",
+  "title": "Fresh source adjudication output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["blind_task_id", "adjudication", "final_value_candidate", "fact_type", "reaction_stage", "source_locator", "short_evidence", "resolved_error_categories", "unresolved_error_categories", "human_risk_score", "human_escalation_recommended", "input_manifest_hash"],
+  "properties": {
+    "blind_task_id": {"type": "string", "pattern": "^BT-[0-9a-f]{16}$"},
+    "adjudication": {"enum": ["AI_ACCEPT", "AI_EDIT", "AI_REJECT", "AI_CANNOT_VERIFY", "AI_UNRESOLVED_CONFLICT", "RULE_BLOCKED"]},
+    "final_value_candidate": {"type": ["string", "number", "null"]},
+    "fact_type": {"type": ["string", "null"]},
+    "reaction_stage": {"type": ["string", "null"]},
+    "source_locator": {"type": "object"},
+    "short_evidence": {"type": ["string", "null"], "maxLength": 500},
+    "resolved_error_categories": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "unresolved_error_categories": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "human_risk_score": {"type": "integer", "minimum": 0, "maximum": 4},
+    "human_escalation_recommended": {"type": "boolean"},
+    "input_manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

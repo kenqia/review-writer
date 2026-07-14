@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from review_writer.phase8.v3_1_1_layer_b import prepare_v3_1_1_layer_b
+
+
+EXPECTED_LAYER_A_RESULTS_SHA256 = "94757ac4bf7517655633a5b14f23ccc80ed36f3a817e5d16e5889046a03c17da"
+EXPECTED_LAYER_A_INPUT_MANIFEST_HASH = "013b4ef4af792afe824a74bc6d40e050ea3fd97b83ad3925fc1327f697219715"
+DEFAULT_LAYER_A_RUN_ID = "phase8_source_first_v3_1_1_20260713T150606Z"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Prepare the isolated V3.1.1 Layer B exact-claim verifier workspace.")
+    parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
+    parser.add_argument("--workspace-parent", type=Path, default=REPO_ROOT.parent / "AI_REVIEW_WORKSPACES")
+    parser.add_argument("--layer-a-run-root", type=Path, default=None)
+    parser.add_argument("--run-id", default=None)
+    parser.add_argument("--pr-number", type=int, default=3)
+    return parser.parse_args()
+
+
+def git_value(repo_root: Path, *arguments: str) -> str:
+    completed = subprocess.run(["git", "-C", str(repo_root), *arguments], capture_output=True, text=True)
+    if completed.returncode != 0:
+        raise RuntimeError(completed.stderr.strip() or "git metadata lookup failed")
+    return completed.stdout.strip()
+
+
+def require_pushed_clean_head(repo_root: Path) -> tuple[str, str]:
+    if git_value(repo_root, "status", "--porcelain"):
+        raise ValueError("Layer B generation requires a clean committed worktree")
+    head = git_value(repo_root, "rev-parse", "HEAD")
+    upstream = git_value(repo_root, "rev-parse", "@{upstream}")
+    if head != upstream:
+        raise ValueError("Layer B generation requires HEAD to equal its pushed upstream")
+    return head, git_value(repo_root, "branch", "--show-current")
+
+
+def run_id_now() -> str:
+    return time.strftime("phase8_exact_claim_layer_b_v3_1_1_%Y%m%dT%H%M%SZ", time.gmtime())
+
+
+def main() -> int:
+    args = parse_args()
+    try:
+        repo_root = args.repo_root.resolve()
+        workspace_parent = args.workspace_parent.resolve()
+        layer_a_run_root = args.layer_a_run_root.resolve() if args.layer_a_run_root else workspace_parent / DEFAULT_LAYER_A_RUN_ID
+        head, branch = require_pushed_clean_head(repo_root)
+        result = prepare_v3_1_1_layer_b(
+            repo_root=repo_root,
+            workspace_parent=workspace_parent,
+            run_id=args.run_id or run_id_now(),
+            layer_a_workspace=layer_a_run_root / "layerA_inventory",
+            expected_layer_a_results_sha256=EXPECTED_LAYER_A_RESULTS_SHA256,
+            expected_layer_a_input_manifest_hash=EXPECTED_LAYER_A_INPUT_MANIFEST_HASH,
+            repo_head=head,
+            branch=branch,
+            pr_number=args.pr_number,
+        )
+        print(json.dumps({"status": "PASS", **result}, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+    except Exception as exc:
+        print(f"phase8-v3.1.1-layer-b: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

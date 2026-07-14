@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-writer:phase8:v2:blind-source-extraction-output",
+  "title": "V2 blind source extraction output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["blind_task_id", "task_mode", "fact_type", "entity", "reaction_stage", "value_as_reported", "unit_as_reported", "normalized_value_candidate", "source_document_id", "pdf_page_index", "printed_page_label", "section", "table_scheme_entry_compound", "short_evidence", "directness", "source_found", "ambiguity_reason", "input_manifest_hash"],
+  "properties": {
+    "blind_task_id": {"type": "string", "pattern": "^BT-[0-9a-f]{16}$"},
+    "task_mode": {"enum": ["CANDIDATE_VERIFICATION", "BLIND_DUAL_EXTRACTION"]},
+    "fact_type": {"type": "string"},
+    "entity": {"type": "string"},
+    "reaction_stage": {"type": "string"},
+    "value_as_reported": {"type": ["string", "number", "null"]},
+    "unit_as_reported": {"type": ["string", "null"]},
+    "normalized_value_candidate": {"type": ["string", "number", "null"]},
+    "source_document_id": {"type": "string"},
+    "pdf_page_index": {"type": ["integer", "null"], "minimum": 0},
+    "printed_page_label": {"type": ["string", "null"]},
+    "section": {"type": ["string", "null"]},
+    "table_scheme_entry_compound": {"type": ["string", "null"]},
+    "short_evidence": {"type": ["string", "null"], "maxLength": 500},
+    "directness": {"enum": ["DIRECT_NUMERIC", "DIRECT_TEXTUAL", "TABLE_SUPPORTED", "FIGURE_SUPPORTED", "AUTHOR_INTERPRETATION", "INDIRECT_CONTEXT", "NOT_FOUND"]},
+    "source_found": {"type": "boolean"},
+    "ambiguity_reason": {"type": ["string", "null"], "maxLength": 500},
+    "input_manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}
