@@ -1,0 +1,12 @@
+{
+  "task_id": "TASK-ID",
+  "role": "implementation-owner",
+  "session_id_reference": "captured-by-orchestrator",
+  "status": "PARTIAL",
+  "changed_files": ["docs/safe-artifact.md"],
+  "created_artifacts": [],
+  "checks": [{"requirement_id": "TASK-ID-A01", "command": "offline command", "status": "not-run", "evidence": "Not yet run."}],
+  "unresolved_findings": [],
+  "risk_notes": ["Sanitized template only."],
+  "recommended_next_action": "Return control to the Leader."
+}

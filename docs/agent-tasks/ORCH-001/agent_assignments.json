@@ -1,0 +1,38 @@
+{
+  "task_id": "ORCH-001",
+  "parallel_worktrees": false,
+  "human_approval": {
+    "status": "not-required",
+    "recorded_by": "leader"
+  },
+  "assignments": [
+    {
+      "role": "implementation-owner",
+      "worktree": "review-writer",
+      "session_policy": "persistent",
+      "sandbox_mode": "workspace-write",
+      "status": "active"
+    },
+    {
+      "role": "scientific-reviewer",
+      "worktree": "review-writer",
+      "session_policy": "fresh",
+      "sandbox_mode": "read-only",
+      "status": "planned"
+    },
+    {
+      "role": "artifact-reviewer",
+      "worktree": "review-writer",
+      "session_policy": "fresh",
+      "sandbox_mode": "read-only",
+      "status": "planned"
+    },
+    {
+      "role": "final-verifier",
+      "worktree": "review-writer",
+      "session_policy": "fresh",
+      "sandbox_mode": "read-only",
+      "status": "planned"
+    }
+  ]
+}

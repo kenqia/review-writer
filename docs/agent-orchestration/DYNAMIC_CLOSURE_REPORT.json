@@ -1,0 +1,45 @@
+{
+  "task_id": "ORCH-001",
+  "attempt": "dynamic-closure-supplement",
+  "date": "2026-07-16",
+  "cli_version": "codex-cli 0.142.4",
+  "model": "gpt-5.6-terra",
+  "reasoning_effort": "medium",
+  "sandbox": "read-only",
+  "task_fixture_id": "DRYRUN-002",
+  "health_check_attempt_1": {
+    "status": "PARTIAL",
+    "classification": "TRANSIENT_UPSTREAM_ERROR",
+    "thread_captured": true,
+    "contract_validated": false,
+    "fixture": "/tmp/kenqia-agent-orchestration-dry-run-20260716T172836-health-1"
+  },
+  "waited_60_seconds": true,
+  "health_check_attempt_2": {
+    "status": "PARTIAL",
+    "classification": "TRANSIENT_UPSTREAM_ERROR",
+    "thread_captured": true,
+    "contract_validated": false,
+    "fixture": "/tmp/kenqia-agent-orchestration-dry-run-20260716T173524-health-2"
+  },
+  "full_exec": "not-run-health-gate-failed",
+  "resume": "not-run-health-gate-failed",
+  "same_session": "not-tested",
+  "second_contract_validated": false,
+  "model_fallback_used": false,
+  "metadata_fallback_observed": true,
+  "unauthorized_agent_writes": 0,
+  "infrastructure_repair": {
+    "finding_id": "ORCH-001-DYN-01",
+    "owner_session_resumed": true,
+    "status": "resolved"
+  },
+  "static_regression": "PASS",
+  "final_status": "PARTIAL",
+  "dynamic_environment": "ENVIRONMENT_UNDETERMINED",
+  "cleanup_commands": [
+    "rm -rf /tmp/kenqia-agent-orchestration-dry-run/",
+    "rm -rf /tmp/kenqia-agent-orchestration-dry-run-20260716T172836-health-1/",
+    "rm -rf /tmp/kenqia-agent-orchestration-dry-run-20260716T173524-health-2/"
+  ]
+}

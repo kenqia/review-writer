@@ -1,0 +1,5 @@
+# Owner-Review Orchestration
+
+This layer makes one Implementation Owner the sole writer for a work package, then routes independent review to fresh read-only sessions. Start with `AGENT_OPERATING_MODEL.md`; use the scripts only in preview mode unless explicit execution approval is present.
+
+`make agent-orchestration-check` is offline-only and never invokes a model. `scripts/agent-orchestration/run_dry_run.sh` is preview-only by default, including when `--fixture` and `--task-id` are supplied. The legacy `--classify-existing` path only classifies the fixed recovered fixture without an execution call. The separately authorized live modes require a new, nonexistent absolute `/tmp/kenqia-agent-orchestration-dry-run-*` fixture and an uppercase task ID such as `DRYRUN-002`: `--health-check` performs one read-only initial exec, while `--execute` performs one initial exec followed by one same-session resume. Neither mode retries or falls back; raw events, stderr, outputs, and opaque session data remain in that fixture's `.runtime/` directory.

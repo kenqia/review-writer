@@ -1,0 +1,50 @@
+{
+  "task_id": "ORCH-001",
+  "reviewer_role": "final-verifier",
+  "findings": [
+    {
+      "finding_id": "ORCH-001-V01",
+      "reviewer_role": "final-verifier",
+      "severity": "blocker",
+      "requirement_id": "ORCH-001-A03",
+      "evidence": "The generic template contains stub launch, resume, merge, dry-run, and one-field schemas; detailed operating docs and task-package creation or role-policy validation are missing while the two-test gate passes.",
+      "affected_paths": ["docs/agent-orchestration/", "scripts/agent-orchestration/", "docs/agent-contracts/", "tests/test_agent_orchestration.py"],
+      "required_fix": "Synchronize the complete validated generic implementation with configurable model handling and full offline coverage, without project-specific content.",
+      "acceptance_test": "Template gate covers mocked initial/resume same-session lifecycle, role result routing, contracts, assignments, recursive sanitization, dynamic classification, and preview no-call without ORCH-001.",
+      "status": "resolved"
+    },
+    {
+      "finding_id": "ORCH-001-V02",
+      "reviewer_role": "final-verifier",
+      "severity": "blocker",
+      "requirement_id": "ORCH-001-A03",
+      "evidence": "All role launch commands use worker_result.schema.json and run_plan always validates WORKER_RESULT, although Scientific and Artifact Reviewers must output FINDINGS only.",
+      "affected_paths": ["scripts/agent-orchestration/orchestration_lib.py", "scripts/agent-orchestration/reviewer_launch.py", "tests/test_agent_orchestration.py"],
+      "required_fix": "Route output schema and validation by role: Scientific, Artifact, and applicable Explorer sessions use FINDINGS; Owner and Final Verifier use WORKER_RESULT.",
+      "acceptance_test": "Mock JSONL proves correct schema and validator for each role, and rejects a wrong result kind.",
+      "status": "resolved"
+    },
+    {
+      "finding_id": "ORCH-001-V03",
+      "reviewer_role": "final-verifier",
+      "severity": "blocker",
+      "requirement_id": "ORCH-001-A03",
+      "evidence": "resume_owner has only --execute while build_resume_command unconditionally selects workspace-write.",
+      "affected_paths": ["scripts/agent-orchestration/resume_owner.py", "scripts/agent-orchestration/orchestration_lib.py", "tests/test_agent_orchestration.py"],
+      "required_fix": "Require an independent --allow-workspace-write opt-in for executable resume, while preserving a no-call preview.",
+      "acceptance_test": "Execute without allow is rejected; execute plus allow builds supported resume; preview makes no call and leaks no private marker.",
+      "status": "resolved"
+    },
+    {
+      "finding_id": "ORCH-001-V04",
+      "reviewer_role": "final-verifier",
+      "severity": "major",
+      "requirement_id": "ORCH-001-A05",
+      "evidence": "classify-existing converts any EXEC_FAILURE to MODEL_UNAVAILABLE and PARTIAL even without an explicit model or provider availability signal.",
+      "affected_paths": ["scripts/agent-orchestration/run_dry_run.py", "tests/test_agent_orchestration.py"],
+      "required_fix": "Remove blanket override; use the same explicit availability classifier as live mode.",
+      "acceptance_test": "Existing generic or argument failure is FAIL, while existing unknown-model or provider 5xx is PARTIAL.",
+      "status": "resolved"
+    }
+  ]
+}

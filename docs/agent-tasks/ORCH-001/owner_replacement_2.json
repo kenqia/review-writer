@@ -1,0 +1,13 @@
+{
+  "task_id": "ORCH-001",
+  "recorded_at": "2026-07-16T03:00:00+08:00",
+  "prior_owner_status": "stopped",
+  "replacement_criterion": "The current Owner failed to resolve the same Final Verifier blockers in two consecutive repair rounds.",
+  "reason": "V01 complete generic-template synchronization and V04 existing-runtime model-unavailability classification remained open after two explicit repair attempts.",
+  "replacement_scope": [
+    "review-writer orchestration files required for V01-V04 verification",
+    "/home/kenqia/templates/kenqia-ai-project-template orchestration paths"
+  ],
+  "concurrency": "Sequential clean-room replacement; the prior Owner was stopped before launch.",
+  "approval_basis": "ORCH-001 frozen Owner replacement criteria and user authorization for orchestration infrastructure."
+}

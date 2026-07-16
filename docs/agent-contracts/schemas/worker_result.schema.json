@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WORKER_RESULT",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["task_id", "role", "session_id_reference", "status", "changed_files", "created_artifacts", "checks", "unresolved_findings", "risk_notes", "recommended_next_action"],
+  "properties": {"task_id": {"type": "string", "minLength": 1}, "role": {"enum": ["leader", "implementation-owner", "scientific-reviewer", "artifact-reviewer", "final-verifier", "explorer", "integration-owner"]}, "session_id_reference": {"type": "string", "pattern": "^captured-by-[A-Za-z0-9-]+$"}, "status": {"type": "string"}, "changed_files": {"$ref": "#/$defs/paths"}, "created_artifacts": {"$ref": "#/$defs/paths"}, "checks": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["requirement_id", "command", "status", "evidence"], "properties": {"requirement_id": {"type": "string", "minLength": 1}, "command": {"type": "string", "minLength": 1}, "status": {"enum": ["passed", "failed", "not-run"]}, "evidence": {"type": "string", "minLength": 1}}}}, "unresolved_findings": {"type": "array", "items": {"type": "string", "minLength": 1}}, "risk_notes": {"type": "array", "items": {"type": "string", "minLength": 1}}, "recommended_next_action": {"type": "string", "minLength": 1}},
+  "allOf": [{"if": {"properties": {"role": {"const": "final-verifier"}}}, "then": {"properties": {"status": {"enum": ["PASS", "BLOCKED", "ENVIRONMENT_UNDETERMINED"]}}}, "else": {"properties": {"status": {"enum": ["PASS", "PARTIAL", "FAIL"]}}}}],
+  "$defs": {"paths": {"type": "array", "items": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._+@=:/ -]+$"}}}
+}

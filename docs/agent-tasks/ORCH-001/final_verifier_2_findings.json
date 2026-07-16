@@ -1,0 +1,28 @@
+{
+  "task_id": "ORCH-001",
+  "reviewer_role": "final-verifier",
+  "findings": [
+    {
+      "finding_id": "ORCH-001-V2-01",
+      "reviewer_role": "final-verifier",
+      "severity": "major",
+      "requirement_id": "ORCH-001-A05",
+      "evidence": "A fresh probe classifies a pure unknown-model signal as FAIL while model-not-found and provider-502 are PARTIAL.",
+      "affected_paths": ["scripts/agent-orchestration/run_dry_run.py", "tests/test_agent_orchestration.py"],
+      "required_fix": "Recognize only the explicit unknown model signal as model unavailable without broadening generic or argument failures.",
+      "acceptance_test": "Pure unknown model is PARTIAL; argument and generic failure remain FAIL; classify-existing stays offline.",
+      "status": "resolved"
+    },
+    {
+      "finding_id": "ORCH-001-V2-02",
+      "reviewer_role": "final-verifier",
+      "severity": "major",
+      "requirement_id": "ORCH-001-A03",
+      "evidence": "The generic template test contains a fixed /tmp path instead of deriving a sibling from the configured fixture.",
+      "affected_paths": ["tests/test_agent_orchestration.py"],
+      "required_fix": "Derive the sibling path from run_dry_run.FIXTURE or another generic fixture value.",
+      "acceptance_test": "Template focused tests and gate pass; forbidden-string scan has no project-specific path match.",
+      "status": "resolved"
+    }
+  ]
+}

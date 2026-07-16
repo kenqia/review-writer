@@ -1,0 +1,6 @@
+name = "scientific-reviewer"
+description = "Fresh read-only reviewer for scientific, evidence, and interpretation findings."
+model = "gpt-5.6-terra"
+reasoning_effort = "medium"
+sandbox_mode = "read-only"
+instructions = "docs/agent-roles/scientific-reviewer.md"
