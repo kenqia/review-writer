@@ -13,6 +13,7 @@ from typing import Any, Iterable
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+PROCESS_TIMEOUT_SECONDS = 600
 ROLES = {
     "leader",
     "implementation-owner",
@@ -355,17 +356,18 @@ def _prompt(role: str, task_path: str, session_mode: str) -> str:
         f"Role: {role}. Task package: {task_path}. Session policy: {session_mode}. "
         "Read only the task package and explicitly allowed artifacts. Do not invoke nested codex exec. "
         "Do not read authentication material, install dependencies, commit, push, publish, deploy, or perform remote writes. "
-        "Return a validated WORKER_RESULT or FINDINGS JSON object as appropriate."
+        "Return a concise natural-language report: status, changes, checks, unresolved issues, and next step. "
+        "The Leader interprets report meaning; the runner records transport evidence only."
     )
 
 
 def _codex_command(model: str, reasoning_effort: str, sandbox: str, prompt: str, result_kind: str, resume: str | None = None) -> list[str]:
-    schema = REPO_ROOT / "docs/agent-contracts/schemas" / ("findings.schema.json" if result_kind == "findings" else "worker_result.schema.json")
+    """Build a no-Schema command with all route controls before a resume reference."""
     command = ["codex", "exec"]
     if resume is not None:
-        command += ["resume", "--json", "--output-schema", str(schema), "--model", model, "-c", f'sandbox_mode="{sandbox}"', "-c", f"model_reasoning_effort={reasoning_effort}", resume, prompt]
+        command += ["resume", "--json", "--output-last-message", ".runtime/last-message.txt", "--model", model, "-c", 'model_provider="custom"', "-c", f'sandbox_mode="{sandbox}"', "-c", f"model_reasoning_effort={reasoning_effort}", resume, prompt]
     else:
-        command += ["--json", "--output-schema", str(schema), "--model", model, "--sandbox", sandbox, "-c", f"model_reasoning_effort={reasoning_effort}", prompt]
+        command += ["--json", "--output-last-message", ".runtime/last-message.txt", "--model", model, "--sandbox", sandbox, "-c", 'model_provider="custom"', "-c", f"model_reasoning_effort={reasoning_effort}", prompt]
     return command
 
 
@@ -373,6 +375,8 @@ def build_owner_command(
     task_dir: Path, *, execute: bool, workspace_write: bool, allow_workspace_write: bool = False,
     model: str = "gpt-5.6-terra", reasoning_effort: str = "medium"
 ) -> LaunchPlan:
+    if execute and (model != "gpt-5.6-terra" or reasoning_effort != "medium"):
+        raise ValueError("executable launches require the qualified Terra/custom/medium route")
     if workspace_write and not (execute and allow_workspace_write):
         raise ValueError("workspace-write requires --execute and --allow-workspace-write")
     task_path = _task_path(task_dir)
@@ -382,6 +386,8 @@ def build_owner_command(
 
 
 def build_resume_command(task_dir: Path, session_reference: str, *, execute: bool, allow_workspace_write: bool = False, model: str = "gpt-5.6-terra", reasoning_effort: str = "medium") -> LaunchPlan:
+    if execute and (model != "gpt-5.6-terra" or reasoning_effort != "medium"):
+        raise ValueError("executable launches require the qualified Terra/custom/medium route")
     if execute and not allow_workspace_write:
         raise ValueError("workspace-write resume requires --execute and --allow-workspace-write")
     if not re.fullmatch(r"[A-Za-z0-9._-]+", session_reference):
@@ -392,6 +398,8 @@ def build_resume_command(task_dir: Path, session_reference: str, *, execute: boo
 
 
 def build_reviewer_command(task_dir: Path, role: str, *, execute: bool, model: str = "gpt-5.6-terra", reasoning_effort: str = "medium") -> LaunchPlan:
+    if execute and (model != "gpt-5.6-terra" or reasoning_effort != "medium"):
+        raise ValueError("executable launches require the qualified Terra/custom/medium route")
     if role not in READ_ONLY_ROLES - {"leader"}:
         raise ValueError("review role must be a fresh read-only reviewer or verifier")
     task_path = _task_path(task_dir)
@@ -402,36 +410,30 @@ def build_reviewer_command(task_dir: Path, role: str, *, execute: bool, model: s
 
 def run_plan(plan: LaunchPlan, runtime_dir: Path) -> int:
     print(f"SAFETY: sandbox={plan.sandbox}; execute={plan.execute}; no fallback; no nested codex exec.")
-    print(f"COMMAND: codex exec {plan.turn} [redacted JSON/output-schema invocation]")
+    print(f"COMMAND: codex exec {plan.turn} [redacted no-Schema JSON invocation]")
     if not plan.execute:
         print("PREVIEW: no model call was made.")
         return 0
     task = load_json(plan.task_dir / "task_spec.json")
-    matrix = load_json(plan.task_dir / "acceptance_matrix.json")
-    turn_dir = runtime_dir / str(task["task_id"]) / plan.turn
+    turn_identity = f"{plan.turn}-{plan.role}" if plan.turn == "review" else plan.turn
+    turn_dir = runtime_dir / str(task["task_id"]) / turn_identity
     turn_dir.mkdir(parents=True, exist_ok=True)
     command = list(plan.command)
-    command[-1:-1] = ["--output-last-message", str(turn_dir / "final-output.json")]
-    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    output_index = command.index("--output-last-message") + 1
+    command[output_index] = str(turn_dir / "last-message.txt")
+    completed = subprocess.run(command, capture_output=True, text=True, check=False, timeout=PROCESS_TIMEOUT_SECONDS)
     (turn_dir / "events.jsonl").write_text(completed.stdout, encoding="utf-8")
     (turn_dir / "stderr.log").write_text(completed.stderr, encoding="utf-8")
     thread = _extract_thread_id(completed.stdout)
     if thread:
         (turn_dir / "session-reference.txt").write_text(thread + "\n", encoding="utf-8")
-    result = _extract_agent_result(completed.stdout, turn_dir / "final-output.json")
     errors = ["missing thread reference"] if thread is None else []
     if plan.turn == "resume":
         initial = runtime_dir / str(task["task_id"]) / "initial" / "session-reference.txt"
         if not initial.is_file() or initial.read_text(encoding="utf-8").strip() != thread:
             errors.append("resume thread does not match initial thread")
-    if result is None:
-        errors.append(f"missing {plan.result_kind}")
-    else:
-        if plan.result_kind == "findings":
-            errors.extend(validate_role_result(plan.role, result))
-        else:
-            errors.extend(validate_role_result(plan.role, result))
-            errors.extend(validate_worker_result_context(result, task, matrix))
+    # Worker reports are natural language.  Contract utilities remain available for
+    # historical/offline packages, but must not turn prose into a workflow decision.
     return completed.returncode if not errors else 1
 
 
@@ -449,9 +451,9 @@ def merge_findings(reports: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def sanitize_summary(payload: dict[str, Any]) -> dict[str, Any]:
-    blocked = {"session_id", "session", "thread_id", "raw_log", "stderr", "events", "full_output", "token", "authorization", "cookie"}
+    blocked = {"session_id", "session", "session_id_reference", "thread_id", "turn_id", "thread_reference", "thread_ref", "session_reference", "session_ref", "turn_reference", "turn_ref", "raw_log", "stderr", "stdout", "events", "full_output", "last_message", "prompt", "reply", "replies", "response", "responses", "output", "auth", "token", "authorization", "cookie"}
     def clean(value: Any, key: str = "") -> Any:
-        if key.lower() in blocked and key != "session_id_reference":
+        if key.lower() in blocked:
             return None
         if isinstance(value, dict):
             return {child: cleaned for child, item in value.items() if (cleaned := clean(item, child)) is not None}

@@ -1,0 +1,29 @@
+{
+  "manifest_version": 1,
+  "qualified_cli_version": "0.144.5",
+  "model": "gpt-5.6-terra",
+  "model_provider": "custom",
+  "reasoning_effort": "medium",
+  "timeout_seconds": 600,
+  "provider_output_schema": false,
+  "contract_mode": "natural_language_with_leader_extraction",
+  "qualification_status": "qualified_external_leader_grade_4",
+  "workflow_grade": "Grade 4 / Production External Leader",
+  "contract_grade": "natural_language_with_leader_extraction / qualified",
+  "qualification": [
+    {"id": "Q0", "name": "route snapshot", "status": "recorded", "count": "1 snapshot"},
+    {"id": "Q1", "name": "plain exec", "status": "historical", "count": "0.142.4: 3/3"},
+    {"id": "Q2", "name": "JSON events", "status": "historical", "count": "0.142.4: 2/2"},
+    {"id": "Q3", "name": "provider Output Schema capability", "status": "unsupported", "count": "0/2 on 0.142.4 and 0/2 on 0.144.5; recorded only"},
+    {"id": "Q4", "name": "same-session resume", "status": "historical", "count": "0.142.4: 2/2"},
+    {"id": "Q5", "name": "sandbox", "status": "historical", "count": "0.142.4: one pass per sandbox"},
+    {"id": "Q6", "name": "Owner-resume-fresh Reviewer closure", "status": "passed", "count": "0.144.5: 1/1; three complete turns, deterministic phase-1/phase-2 evidence, same Owner, fresh read-only Reviewer, and three non-empty natural-language last messages"},
+    {"id": "Q7", "name": "native subagent", "status": "disabled_unqualified", "count": "not used"}
+  ],
+  "q6_route": {"model": "gpt-5.6-terra", "provider": "custom", "reasoning_effort": "medium", "timeout_seconds": 600, "output_schema": false, "fallback": false},
+  "q6_evidence": "all three turns emitted thread.started, turn.started, and turn.completed without turn.failed/main_failed; phase-2 controlled content matched exactly; auxiliary 401 was non-blocking; sanitized tracked evidence contains no opaque runtime reference",
+  "warnings": ["0.144.5 no-Schema metadata smoke: 1/1", "unknown metadata fixed by CLI 0.144.5", "auxiliary 401 appeared in each Q6 turn but did not block completed main turns"],
+  "grade_4_limits": "does not authorize parallel Writers, native subagents, fallback models, route drift, or automatic semantic acceptance; human checkpoints and fresh review remain mandatory",
+  "upgrade_gate": "exact version and bundled Terra metadata must preflight before a live run",
+  "rollback": "return to known-good 0.144.5 outside the repository; do not enable fallback"
+}

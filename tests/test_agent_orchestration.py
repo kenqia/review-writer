@@ -147,9 +147,7 @@ class AgentOrchestrationTests(unittest.TestCase):
             json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(result)}}),
         ))
         self.assertEqual("offline-thread-placeholder", run_dry_run.extract_thread_id(events))
-        self.assertEqual(result, run_dry_run.extract_worker_result(events))
-        self.assertEqual(result, run_dry_run.extract_worker_result(events.replace(json.dumps(result), f"```\n{json.dumps(result)}\n```")))
-        self.assertEqual([], orchestration_lib.validate_contract("worker_result", run_dry_run.extract_worker_result(events)))
+        self.assertIn("agent_message", events)
         exec_command = run_dry_run.build_exec_command("prompt")
         resume_command = run_dry_run.build_resume_command("offline-thread-placeholder", "prompt")
         self.assertIn("--sandbox", exec_command)
@@ -233,7 +231,9 @@ class AgentOrchestrationTests(unittest.TestCase):
                 self.assertEqual(0, run_dry_run.main(["--execute", "--fixture", str(fixture), "--task-id", task_id]))
                 self.assertEqual(2, run.call_count)
                 self.assertEqual(["codex", "exec"], run.call_args_list[0].args[0][:2])
-                self.assertIn("--output-schema", run.call_args_list[0].args[0])
+                self.assertNotIn("--output-schema", run.call_args_list[0].args[0])
+                self.assertIn("--output-last-message", run.call_args_list[0].args[0])
+                self.assertIn('model_provider="custom"', run.call_args_list[0].args[0])
                 self.assertIn("--model", run.call_args_list[0].args[0])
                 self.assertIn("gpt-5.6-terra", run.call_args_list[0].args[0])
                 self.assertEqual(["codex", "exec", "resume"], run.call_args_list[1].args[0][:3])
@@ -264,7 +264,7 @@ class AgentOrchestrationTests(unittest.TestCase):
             with mock.patch.object(run_dry_run, "FIXTURE", fixture):
                 run_dry_run.write_fixture()
                 self.assertEqual(
-                    {"AGENTS.md", "ACCEPTANCE_MATRIX.json", "README.md", "TASK_SPEC.json", "WORKER_RESULT.schema.json"},
+                    {"AGENTS.md", "ACCEPTANCE_MATRIX.json", "README.md", "TASK_SPEC.json"},
                     {path.name for path in fixture.iterdir() if path.name != ".runtime"},
                 )
                 args = type("Args", (), {"static_result": "not-run"})()
@@ -345,7 +345,9 @@ class AgentOrchestrationTests(unittest.TestCase):
             orchestration_lib.build_resume_command(task_dir, "opaque-session-marker", execute=True)
         resumed = orchestration_lib.build_resume_command(task_dir, "opaque-session-marker", execute=True, allow_workspace_write=True)
         self.assertIn("--json", initial.command)
-        self.assertIn("--output-schema", initial.command)
+        self.assertNotIn("--output-schema", initial.command)
+        self.assertIn("--output-last-message", initial.command)
+        self.assertIn('model_provider="custom"', initial.command)
         self.assertNotIn("--sandbox", resumed.command)
         self.assertIn('sandbox_mode="workspace-write"', resumed.command)
         preview = orchestration_lib.build_owner_command(task_dir, execute=False, workspace_write=False)
@@ -355,6 +357,23 @@ class AgentOrchestrationTests(unittest.TestCase):
             self.assertNotIn(initial.prompt, rendered)
             self.assertNotIn("opaque-session-marker", rendered)
             run.assert_not_called()
+
+    def test_all_live_launch_builders_use_natural_language_last_messages_without_schema(self) -> None:
+        task_dir = REPO_ROOT / "docs/agent-tasks/ORCH-001"
+        plans = (
+            orchestration_lib.build_owner_command(task_dir, execute=False, workspace_write=False),
+            orchestration_lib.build_resume_command(task_dir, "recorded-session", execute=False),
+            orchestration_lib.build_reviewer_command(task_dir, "scientific-reviewer", execute=False),
+        )
+        commands = [*plans, type("Plan", (), {"command": run_dry_run.build_exec_command("natural report")})(), type("Plan", (), {"command": run_dry_run.build_resume_command("recorded-session", "natural report")})()]
+        for plan in commands:
+            self.assertIn("--json", plan.command)
+            self.assertIn("--output-last-message", plan.command)
+            self.assertIn("gpt-5.6-terra", plan.command)
+            self.assertIn('model_provider="custom"', plan.command)
+            self.assertIn("model_reasoning_effort=medium", plan.command)
+            self.assertNotIn("--output-schema", plan.command)
+        self.assertLess(plans[1].command.index("--json"), plans[1].command.index("recorded-session"))
 
     def test_assignment_modes_and_scope_classification_are_strict(self) -> None:
         assignments = orchestration_lib.load_json(REPO_ROOT / "docs/agent-tasks/ORCH-001/agent_assignments.json")
@@ -396,6 +415,10 @@ class AgentOrchestrationTests(unittest.TestCase):
         self.assertEqual("workspace-write", execute_write.sandbox)
         self.assertTrue(execute_write.execute)
         self.assertNotIn("shell", " ".join(execute_write.command).lower())
+        with self.assertRaises(ValueError):
+            orchestration_lib.build_owner_command(task_path, execute=True, workspace_write=False, model="other-model")
+        with self.assertRaises(ValueError):
+            orchestration_lib.build_reviewer_command(task_path, "scientific-reviewer", execute=True, reasoning_effort="high")
 
     def test_resume_and_reviewer_commands_preserve_session_rules(self) -> None:
         task_path = REPO_ROOT / "docs" / "agent-tasks" / "ORCH-001"
@@ -407,6 +430,11 @@ class AgentOrchestrationTests(unittest.TestCase):
         self.assertEqual("read-only", reviewer.sandbox)
         self.assertIn("fresh", reviewer.prompt.lower())
 
+    def test_reviewer_runtime_paths_are_role_distinct(self) -> None:
+        task = REPO_ROOT / "docs" / "agent-tasks" / "ORCH-001"
+        identities = {f"{orchestration_lib.build_reviewer_command(task, role, execute=False).turn}-{role}" for role in ("scientific-reviewer", "artifact-reviewer", "final-verifier")}
+        self.assertEqual(3, len(identities))
+
     def test_role_output_contract_routing_rejects_wrong_result_kind(self) -> None:
         task_path = REPO_ROOT / "docs" / "agent-tasks" / "ORCH-001"
         findings = orchestration_lib.load_json(REPO_ROOT / "docs" / "agent-contracts/examples/findings.example.json")
@@ -414,14 +442,14 @@ class AgentOrchestrationTests(unittest.TestCase):
         for role in ("scientific-reviewer", "artifact-reviewer", "explorer"):
             plan = orchestration_lib.build_reviewer_command(task_path, role, execute=False)
             self.assertEqual("findings", plan.result_kind)
-            self.assertIn("findings.schema.json", " ".join(plan.command))
+            self.assertNotIn("--output-schema", plan.command)
             matching = deepcopy(findings)
             matching["reviewer_role"] = role
             self.assertEqual([], orchestration_lib.validate_role_result(role, matching))
             self.assertTrue(orchestration_lib.validate_role_result(role, worker_result))
         verifier = orchestration_lib.build_reviewer_command(task_path, "final-verifier", execute=False)
         self.assertEqual("worker_result", verifier.result_kind)
-        self.assertIn("worker_result.schema.json", " ".join(verifier.command))
+        self.assertNotIn("--output-schema", verifier.command)
         verifier_result = deepcopy(worker_result)
         verifier_result["role"] = "final-verifier"
         self.assertEqual([], orchestration_lib.validate_role_result("final-verifier", verifier_result))
@@ -449,6 +477,25 @@ class AgentOrchestrationTests(unittest.TestCase):
         self.assertNotIn("raw_log", report)
         ignore_text = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
         self.assertIn("/.agent-orchestration-runs/", ignore_text)
+
+    def test_sanitizers_remove_nested_runtime_references_and_prose(self) -> None:
+        private = "nested-private-reference"
+        aliases = ("replies", "response", "responses", "thread_reference", "thread_ref", "session_reference", "session_ref", "turn_reference", "turn_ref")
+        payload = {"outer": [{"session_id_reference": private, "prompt": "private prompt"}, {alias: private for alias in aliases}], "events": {"raw_log": private}, "safe": ["ok"]}
+        rendered = json.dumps(orchestration_lib.sanitize_summary(payload))
+        self.assertNotIn(private, rendered)
+        self.assertNotIn("private prompt", rendered)
+        self.assertEqual("ok", orchestration_lib.sanitize_summary(payload)["safe"][0])
+
+    def test_dry_run_sanitized_report_recursively_removes_private_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary) / "fixture"
+            (fixture / ".runtime").mkdir(parents=True)
+            with mock.patch.object(run_dry_run, "FIXTURE", fixture):
+                run_dry_run.sanitized_report(nested=[{"thread_id": "private", "prompt": "private prose", "safe": "ok", "responses": "private", "thread_ref": "private", "session_ref": "private", "turn_ref": "private"}])
+            rendered = (fixture / ".runtime" / "sanitized-report.json").read_text(encoding="utf-8")
+            self.assertNotIn("private", rendered)
+            self.assertIn("ok", rendered)
 
     def test_cli_preview_and_contract_validation_are_offline(self) -> None:
         result = subprocess.run(

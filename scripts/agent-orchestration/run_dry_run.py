@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable
 
-from orchestration_lib import REPO_ROOT, validate_contract
+from orchestration_lib import REPO_ROOT
 
 
 FIXED_FIXTURE = Path("/tmp/kenqia-agent-orchestration-dry-run")
@@ -21,6 +21,7 @@ FIXTURE = FIXED_FIXTURE
 MODEL = "gpt-5.6-terra"
 REASONING_EFFORT = "medium"
 SANDBOX = "read-only"
+PROCESS_TIMEOUT_SECONDS = 600
 TASK_ID_PATTERN = re.compile(r"[A-Z][A-Z0-9]*-\d{3}")
 
 
@@ -85,36 +86,34 @@ def write_fixture(task_id: str = "DRY-RUN") -> None:
     }
     matrix = {"task_id": task_id, "items": [{
         "id": f"{task_id}-A01", "requirement": "Return a valid result.", "evidence_required": "Agent message JSON.",
-        "verification_command": "read README.md", "expected_result": "valid JSON", "owner": "Final Verifier",
+        "verification_command": "read README.md", "expected_result": "natural-language report", "owner": "Final Verifier",
         "severity": "blocker", "status": "pending",
     }]}
     (FIXTURE / "TASK_SPEC.json").write_text(json.dumps(task_spec, indent=2) + "\n", encoding="utf-8")
     (FIXTURE / "ACCEPTANCE_MATRIX.json").write_text(json.dumps(matrix, indent=2) + "\n", encoding="utf-8")
-    shutil.copyfile(REPO_ROOT / "docs" / "agent-contracts" / "schemas" / "worker_result.schema.json", FIXTURE / "WORKER_RESULT.schema.json")
 
 
 def prompt_for(phase: str, task_id: str = "DRY-RUN") -> str:
     return (
         f"This is the {phase} read-only confirmation for {task_id}. Read only AGENTS.md, README.md, TASK_SPEC.json, "
-        "ACCEPTANCE_MATRIX.json, and WORKER_RESULT.schema.json in this fixture. Do not write files, do not "
-        "invoke nested codex exec, and do not access paths outside the fixture. Return exactly one valid JSON "
-        f"WORKER_RESULT with task_id {task_id}, role final-verifier, status PASS, and session_id_reference captured-by-orchestrator."
+        "ACCEPTANCE_MATRIX.json in this fixture. Do not write files, do not invoke nested codex exec, and do not "
+        "access paths outside the fixture. Return a concise natural-language report with status, checks, unresolved issues, and next step."
     )
 
 
 def build_exec_command(prompt: str) -> list[str]:
     return [
-        "codex", "exec", "--skip-git-repo-check", "--json", "--output-schema", str(FIXTURE / "WORKER_RESULT.schema.json"),
-        "--output-last-message", str(runtime_path("first.output.txt")), "--model", MODEL, "--sandbox", SANDBOX,
+        "codex", "exec", "--skip-git-repo-check", "--json", "--output-last-message", str(runtime_path("first.output.txt")),
+        "--model", MODEL, "--sandbox", SANDBOX, "-c", 'model_provider="custom"',
         "-c", f"model_reasoning_effort={REASONING_EFFORT}", prompt,
     ]
 
 
 def build_resume_command(thread_id: str, prompt: str) -> list[str]:
     return [
-        "codex", "exec", "resume", "--skip-git-repo-check", "--json", "--output-schema", str(FIXTURE / "WORKER_RESULT.schema.json"),
-        "--output-last-message", str(runtime_path("resume.output.txt")), "--model", MODEL,
-        "-c", f'sandbox_mode="{SANDBOX}"', "-c", f"model_reasoning_effort={REASONING_EFFORT}", thread_id, prompt,
+        "codex", "exec", "resume", "--skip-git-repo-check", "--json", "--output-last-message", str(runtime_path("resume.output.txt")),
+        "--model", MODEL, "-c", 'model_provider="custom"', "-c", f'sandbox_mode="{SANDBOX}"',
+        "-c", f"model_reasoning_effort={REASONING_EFFORT}", thread_id, prompt,
     ]
 
 
@@ -135,29 +134,6 @@ def extract_thread_id(events: str) -> str | None:
         if event.get("type") == "thread.started" and isinstance(event.get("thread_id"), str):
             return event["thread_id"]
     return None
-
-
-def _decode_agent_message(text: str) -> dict[str, Any] | None:
-    stripped = text.strip()
-    fenced = re.fullmatch(r"```(?:json)?\s*(\{.*\})\s*```", stripped, re.DOTALL)
-    if fenced:
-        stripped = fenced.group(1)
-    try:
-        value = json.loads(stripped)
-    except json.JSONDecodeError:
-        return None
-    return value if isinstance(value, dict) else None
-
-
-def extract_worker_result(events: str) -> dict[str, Any] | None:
-    result: dict[str, Any] | None = None
-    for event in event_objects(events):
-        item = event.get("item")
-        if event.get("type") == "item.completed" and isinstance(item, dict) and item.get("type") == "agent_message" and isinstance(item.get("text"), str):
-            candidate = _decode_agent_message(item["text"])
-            if candidate is not None:
-                result = candidate
-    return result
 
 
 def _metadata_values(value: Any, key: str | None = None) -> Iterable[str]:
@@ -197,7 +173,7 @@ def path_within_fixture(path: Path, fixture: Path) -> bool:
 
 
 def run(command: list[str], output_name: str) -> tuple[int, str, str]:
-    completed = subprocess.run(command, cwd=FIXTURE, capture_output=True, text=True, check=False)
+    completed = subprocess.run(command, cwd=FIXTURE, capture_output=True, text=True, check=False, timeout=PROCESS_TIMEOUT_SECONDS)
     runtime_path(f"{output_name}.events.jsonl").write_text(completed.stdout, encoding="utf-8")
     runtime_path(f"{output_name}.stderr.log").write_text(completed.stderr, encoding="utf-8")
     return completed.returncode, completed.stdout, completed.stderr
@@ -238,7 +214,16 @@ def warning_flags(*streams: str) -> list[str]:
 
 
 def sanitized_report(**report: Any) -> None:
-    runtime_path("sanitized-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    private = {"thread_id", "turn_id", "session", "session_id", "session_id_reference", "thread_reference", "thread_ref", "session_reference", "session_ref", "turn_reference", "turn_ref", "prompt", "reply", "replies", "response", "responses", "last_message", "stdout", "stderr", "events", "raw_log", "full_output", "output", "auth", "authorization", "token", "cookie"}
+    def clean(value: Any, key: str = "") -> Any:
+        if key.lower() in private:
+            return None
+        if isinstance(value, dict):
+            return {child: cleaned for child, item in value.items() if (cleaned := clean(item, child)) is not None}
+        if isinstance(value, list):
+            return [clean(item) for item in value]
+        return value
+    runtime_path("sanitized-report.json").write_text(json.dumps(clean(report), indent=2) + "\n", encoding="utf-8")
 
 
 def report(status: str, args: argparse.Namespace, *, mode: str = "legacy", task_id: str = "DRY-RUN", first_events: str = "", resume_events: str = "", first_stderr: str = "", resume_stderr: str = "", first_contract: str = "not-run", resume_contract: str = "not-run", model_status: str = "not-run", thread_captured: bool = False, resume_status: str = "not-run", same_thread: bool = False, agent_write: bool = False, exec_succeeded: bool = False, resume_attempted: bool = False, resume_succeeded: bool = False, limitations: list[str] | None = None) -> None:
@@ -268,40 +253,13 @@ def classify_first_turn(events: str, stderr: str, *, first_returncode: int) -> d
     flags = warning_flags(events, stderr)
     thread_id = extract_thread_id(events)
     scope_errors = event_scope_errors(events, FIXTURE)
-    result = extract_worker_result(events)
     if scope_errors:
         return {"status": "FAIL", "model_status": "SCOPE_VIOLATION", "thread_captured": thread_id is not None, "first_contract": "FAIL", "warning_flags": flags, "fallback_model": False, "fallback_metadata": "metadata-fallback" in flags, "limitations": scope_errors}
-    if result is not None and validate_contract("worker_result", result):
-        return {"status": "FAIL", "model_status": "MALFORMED_RESULT", "thread_captured": thread_id is not None, "first_contract": "FAIL", "warning_flags": flags, "fallback_model": False, "fallback_metadata": "metadata-fallback" in flags, "limitations": ["A successful turn emitted a malformed WORKER_RESULT."]}
-    if result is None and model_unavailable(events + "\n" + stderr):
-        return {"status": "PARTIAL", "model_status": "MODEL_UNAVAILABLE", "thread_captured": thread_id is not None, "first_contract": "not-validated", "warning_flags": flags, "fallback_model": False, "fallback_metadata": "metadata-fallback" in flags, "limitations": ["The requested model turn ended before producing a WORKER_RESULT; no retry or fallback model was used."]}
-    if result is None and first_returncode != 0:
+    if first_returncode != 0 and model_unavailable(events + "\n" + stderr):
+        return {"status": "PARTIAL", "model_status": "MODEL_UNAVAILABLE", "thread_captured": thread_id is not None, "first_contract": "not-applicable-natural-language", "warning_flags": flags, "fallback_model": False, "fallback_metadata": "metadata-fallback" in flags, "limitations": ["The requested model turn ended before a complete transport result; no retry or fallback model was used."]}
+    if first_returncode != 0:
         return {"status": "FAIL", "model_status": "EXEC_FAILURE", "thread_captured": thread_id is not None, "first_contract": "not-validated", "warning_flags": flags, "fallback_model": False, "fallback_metadata": "metadata-fallback" in flags, "limitations": ["The first turn failed without an explicit model/provider unavailability signal."]}
-    if result is None:
-        return {"status": "FAIL", "model_status": "NO_RESULT", "thread_captured": thread_id is not None, "first_contract": "not-validated", "warning_flags": flags, "fallback_model": False, "fallback_metadata": "metadata-fallback" in flags, "limitations": ["A successful first turn produced no WORKER_RESULT."]}
-    return {"status": "PASS", "model_status": "MODEL_AVAILABLE", "thread_captured": thread_id is not None, "first_contract": "PASS", "warning_flags": flags, "fallback_model": False, "fallback_metadata": "metadata-fallback" in flags, "limitations": []}
-
-
-def validate_dry_run_result(result: dict[str, Any] | None, task_id: str) -> list[str]:
-    if result is None:
-        return ["missing WORKER_RESULT"]
-    errors = validate_contract("worker_result", result)
-    if result.get("task_id") != task_id:
-        errors.append("result task_id does not match requested task_id")
-    if result.get("role") != "final-verifier":
-        errors.append("result role must be final-verifier")
-    if result.get("status") != "PASS":
-        errors.append("result status must be PASS")
-    if result.get("changed_files") != [] or result.get("created_artifacts") != []:
-        errors.append("result must report no changed files or created artifacts")
-    checks = result.get("checks")
-    if not isinstance(checks, list) or not checks or any(not isinstance(check, dict) or check.get("status") != "passed" for check in checks):
-        errors.append("result must contain non-empty passed checks")
-    elif f"{task_id}-A01" not in {check.get("requirement_id") for check in checks}:
-        errors.append("result checks do not cover the requested acceptance requirement")
-    if result.get("unresolved_findings") != []:
-        errors.append("result must contain no unresolved findings")
-    return errors
+    return {"status": "PASS", "model_status": "MODEL_AVAILABLE", "thread_captured": thread_id is not None, "first_contract": "not-applicable-natural-language", "warning_flags": flags, "fallback_model": False, "fallback_metadata": "metadata-fallback" in flags, "limitations": []}
 
 
 def classify_existing(args: argparse.Namespace) -> int:
@@ -335,16 +293,13 @@ def run_dynamic(args: argparse.Namespace, *, mode: str, task_id: str) -> int:
         print("PARTIAL: model command unavailable")
         return 0
     first = classify_first_turn(first_events, first_stderr, first_returncode=first_rc)
-    first_result = extract_worker_result(first_events)
-    first_errors = validate_dry_run_result(first_result, task_id)
     if first["status"] == "PARTIAL":
         _write_dynamic_report("PARTIAL", args, mode=mode, task_id=task_id, first_events=first_events, first_stderr=first_stderr, first_contract=first["first_contract"], model_status=first["model_status"], thread_captured=first["thread_captured"], limitations=first["limitations"])
         print("PARTIAL: requested model unavailable")
         return 0
-    if first["status"] == "FAIL" or first_rc != 0 or not first["thread_captured"] or first_errors:
-        limitations = first["limitations"] + first_errors
-        _write_dynamic_report("FAIL", args, mode=mode, task_id=task_id, first_events=first_events, first_stderr=first_stderr, first_contract="FAIL" if first_errors else first["first_contract"], model_status=first["model_status"], thread_captured=first["thread_captured"], limitations=limitations)
-        print("FAIL: initial contract, scope, or execution validation failed")
+    if first["status"] == "FAIL" or first_rc != 0 or not first["thread_captured"]:
+        _write_dynamic_report("FAIL", args, mode=mode, task_id=task_id, first_events=first_events, first_stderr=first_stderr, first_contract=first["first_contract"], model_status=first["model_status"], thread_captured=first["thread_captured"], limitations=first["limitations"])
+        print("FAIL: initial transport, scope, or execution validation failed")
         return 1
     if before != inventory(FIXTURE):
         _write_dynamic_report("FAIL", args, mode=mode, task_id=task_id, first_events=first_events, first_stderr=first_stderr, first_contract="PASS", model_status="MODEL_AVAILABLE", thread_captured=True, agent_write=True, limitations=["Fixture SHA-256 content inventory changed outside .runtime."])
@@ -363,20 +318,18 @@ def run_dynamic(args: argparse.Namespace, *, mode: str, task_id: str) -> int:
         print("PARTIAL: resume command unavailable")
         return 0
     resumed = classify_first_turn(resume_events, resume_stderr, first_returncode=resume_rc)
-    resume_result = extract_worker_result(resume_events)
-    resume_errors = validate_dry_run_result(resume_result, task_id)
     resume_thread = extract_thread_id(resume_events)
     same_thread = resume_thread == thread_id
     if resumed["status"] == "PARTIAL":
         _write_dynamic_report("PARTIAL", args, mode=mode, task_id=task_id, first_events=first_events, resume_events=resume_events, first_stderr=first_stderr, resume_stderr=resume_stderr, first_contract="PASS", resume_contract=resumed["first_contract"], model_status=resumed["model_status"], thread_captured=True, resume_status="unavailable", same_thread=same_thread, exec_succeeded=True, resume_attempted=True, limitations=resumed["limitations"])
         print("PARTIAL: resume model unavailable")
         return 0
-    if resumed["status"] == "FAIL" or resume_rc != 0 or resume_errors or not same_thread:
-        limitations = resumed["limitations"] + resume_errors
+    if resumed["status"] == "FAIL" or resume_rc != 0 or not same_thread:
+        limitations = list(resumed["limitations"])
         if not same_thread:
             limitations.append("Resume event stream did not report the initial thread id.")
-        _write_dynamic_report("FAIL", args, mode=mode, task_id=task_id, first_events=first_events, resume_events=resume_events, first_stderr=first_stderr, resume_stderr=resume_stderr, first_contract="PASS", resume_contract="FAIL" if resume_errors else resumed["first_contract"], model_status=resumed["model_status"], thread_captured=True, resume_status="failed", same_thread=same_thread, exec_succeeded=True, resume_attempted=True, limitations=limitations)
-        print("FAIL: resume contract, scope, or session validation failed")
+        _write_dynamic_report("FAIL", args, mode=mode, task_id=task_id, first_events=first_events, resume_events=resume_events, first_stderr=first_stderr, resume_stderr=resume_stderr, first_contract="not-applicable-natural-language", resume_contract=resumed["first_contract"], model_status=resumed["model_status"], thread_captured=True, resume_status="failed", same_thread=same_thread, exec_succeeded=True, resume_attempted=True, limitations=limitations)
+        print("FAIL: resume transport, scope, or session validation failed")
         return 1
     if before != inventory(FIXTURE):
         _write_dynamic_report("FAIL", args, mode=mode, task_id=task_id, first_events=first_events, resume_events=resume_events, first_stderr=first_stderr, resume_stderr=resume_stderr, first_contract="PASS", resume_contract="PASS", model_status="MODEL_AVAILABLE", thread_captured=True, resume_status="passed", same_thread=True, agent_write=True, exec_succeeded=True, resume_attempted=True, resume_succeeded=True, limitations=["Fixture SHA-256 content inventory changed outside .runtime."])
