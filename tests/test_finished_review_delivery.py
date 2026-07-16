@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -16,15 +21,18 @@ from review_writer.delivery.finished_review import (
     DEFAULT_MODE,
     QODERWORK_PROMPT,
     REQUIRED_OUTPUTS,
+    STAGE_READY,
     build_qwen_generation_request,
     build_finished_review_plan,
     delivery_stops_at_checkpoint,
+    export_qoderwork_flat_package,
     generate_finished_review_with_bounded_repair,
     validate_finished_review_payload,
     verify_frozen_inputs,
     write_failed_generation_diagnostic,
     write_finished_review_package,
 )
+from scripts.delivery.run_finished_mini_review import _validate_curated_editorial_shape
 
 
 def _row(
@@ -174,14 +182,12 @@ def valid_payload() -> dict:
     sections = []
     for index, heading in enumerate(
         [
-            "1. Introduction and Scope",
-            "2. Catalytic Strategies and Selectivity Control",
-            "2.1 Review-Level Context",
-            "2.2 Palladium-Catalyzed Construction of Axially Chiral Allenes",
-            "2.3 Asymmetric Allenylation with Phosphine Oxides",
-            "3. Mechanistic Evidence and Evidence Boundaries",
-            "4. Cross-Study Comparison and Limitations",
-            "5. Conclusions",
+            "1. Scope and Source Selection",
+            "2. Catalyst and Ligand Control of Selectivity",
+            "3. Substrate Architecture and Reaction Boundaries",
+            "4. Mechanistic Evidence: Dynamic Intermediates, Coordination, and Competing Models",
+            "5. Transferable Design Principles and Limitations",
+            "6. Conclusions",
         ],
         start=1,
     ):
@@ -189,7 +195,7 @@ def valid_payload() -> dict:
         sections.append({"heading": heading, "paragraphs": [{"paragraph_id": f"P{index}", "purpose": "bounded synthesis", "sentences": [sentence]}]})
     abstract_sentence = dict(fact, sentence_id="A1")
     return {
-        "title": "Representative Strategies in Asymmetric Allene Chemistry: Catalysis, Reactivity, and Mechanistic Evidence",
+        "title": "Palladium-Centered Strategies for Asymmetric Allene Synthesis: Selectivity Control, Substrate Constraints, and Mechanistic Evidence",
         "abstract_sentences": [abstract_sentence],
         "keywords": ["allene chemistry", "asymmetric catalysis", "evidence synthesis"],
         "sections": sections,
@@ -211,32 +217,198 @@ def valid_payload() -> dict:
 
 
 class FinishedReviewDeliveryTests(unittest.TestCase):
+    def _writer_kwargs(self, root: Path, *, generation_manifest: dict | None = None, baseline_markdown: Path | None = None) -> dict:
+        docx = root.parent / "source.docx"
+        docx.write_bytes(b"PK\x03\x04dummy")
+        return {
+            "output_root": root,
+            "payload": valid_payload(),
+            "final_rows": final_rows(),
+            "bibliography_metadata": bibliography(),
+            "evidence_plan": build_finished_review_plan(final_rows()),
+            "generation_manifest": generation_manifest
+            or {
+                "current_run_model_requests": 0,
+                "authoring_mode": "codex_exec_curated_revision",
+                "authoring_agent_model": "gpt-5.6-terra",
+                "final_text_origin": "CURATED_FROM_FROZEN_FINAL_CLAIMS_NO_EXTERNAL_PROVIDER_CALL",
+                "reused_upstream_generation_payload": False,
+            },
+            "docx_source": docx,
+            "docx_integrity": {"status": "PASS", "bookmark_count": 3, "internal_hyperlink_count": 9, "doi_hyperlink_count": 3},
+            "baseline_markdown": baseline_markdown,
+            "repository_root": REPO_ROOT,
+            "min_words": 1,
+        }
+
+    def test_curated_writer_rejects_each_wrong_provenance_value(self) -> None:
+        expected = {
+            "current_run_model_requests": 0,
+            "authoring_mode": "codex_exec_curated_revision",
+            "authoring_agent_model": "gpt-5.6-terra",
+            "final_text_origin": "CURATED_FROM_FROZEN_FINAL_CLAIMS_NO_EXTERNAL_PROVIDER_CALL",
+            "reused_upstream_generation_payload": False,
+        }
+        wrong_values = {
+            "current_run_model_requests": 1,
+            "authoring_mode": "provider_generation",
+            "authoring_agent_model": "other-model",
+            "final_text_origin": "PROVIDER_GENERATED_FROM_FROZEN_FINAL_CLAIMS",
+            "reused_upstream_generation_payload": True,
+        }
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as temp_dir:
+            baseline = Path(temp_dir) / "baseline.md"
+            baseline.write_text("# baseline\n", encoding="utf-8")
+            for field, wrong_value in wrong_values.items():
+                with self.subTest(field=field):
+                    manifest = {**expected, field: wrong_value}
+                    kwargs = self._writer_kwargs(Path(temp_dir) / field, generation_manifest=manifest, baseline_markdown=baseline)
+                    with self.assertRaisesRegex(ValueError, "curated provenance"):
+                        write_finished_review_package(**kwargs)
+
+    def test_finished_writer_requires_baseline_before_creating_output_tree(self) -> None:
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as temp_dir:
+            root = Path(temp_dir) / "missing-baseline"
+            kwargs = self._writer_kwargs(root)
+            with self.assertRaisesRegex(ValueError, "baseline Markdown is required"):
+                write_finished_review_package(**kwargs)
+            self.assertFalse(root.exists())
+
+    def test_finished_writer_records_repo_relative_baseline_outside_repo_cwd(self) -> None:
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as temp_dir, tempfile.TemporaryDirectory(dir="/tmp") as outside_cwd:
+            root = Path(temp_dir) / "outside-cwd-package"
+            baseline = Path(temp_dir) / "baseline.md"
+            baseline.write_text("# baseline\n", encoding="utf-8")
+            previous_cwd = Path.cwd()
+            try:
+                os.chdir(outside_cwd)
+                result = write_finished_review_package(**self._writer_kwargs(root, baseline_markdown=baseline))
+            finally:
+                os.chdir(previous_cwd)
+            provenance = json.loads((Path(result["output_root"]) / "baseline_provenance.json").read_text(encoding="utf-8"))
+            self.assertEqual(provenance["baseline_source_repo_relative_path"], baseline.relative_to(REPO_ROOT).as_posix())
+            self.assertEqual(provenance["baseline_sha256"], hashlib.sha256(baseline.read_bytes()).hexdigest())
+
+    def test_finished_writer_rejects_baseline_outside_explicit_repository_root(self) -> None:
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as temp_dir, tempfile.TemporaryDirectory(dir="/tmp") as outside_dir:
+            baseline = Path(outside_dir) / "baseline.md"
+            baseline.write_text("# outside\n", encoding="utf-8")
+            kwargs = self._writer_kwargs(Path(temp_dir) / "outside-baseline", baseline_markdown=baseline)
+            with self.assertRaisesRegex(ValueError, "repository root"):
+                write_finished_review_package(**kwargs)
+
+    @staticmethod
+    def _curated_payload_with_conclusion(paragraph_word_counts: list[int]) -> dict:
+        return {
+            "sections": [
+                {
+                    "heading": "6. Conclusions",
+                    "paragraphs": [
+                        {"sentences": [{"text": " ".join(["evidence"] * word_count)}]}
+                        for word_count in paragraph_word_counts
+                    ],
+                }
+            ]
+        }
+
+    def test_curated_editorial_shape_accepts_three_paragraph_conclusion_in_word_band(self) -> None:
+        metrics = _validate_curated_editorial_shape(self._curated_payload_with_conclusion([100, 100, 100]))
+        self.assertEqual(metrics, {"conclusion_section_count": 1, "conclusion_paragraph_count": 3, "conclusion_word_count": 300})
+
+    def test_curated_editorial_shape_rejects_wrong_conclusion_paragraph_count(self) -> None:
+        with self.assertRaisesRegex(ValueError, "exactly 3 conclusion paragraphs; found 2"):
+            _validate_curated_editorial_shape(self._curated_payload_with_conclusion([150, 150]))
+
+    def test_curated_editorial_shape_rejects_out_of_band_conclusion_word_count(self) -> None:
+        with self.assertRaisesRegex(ValueError, "280-340 English prose words.*found 270"):
+            _validate_curated_editorial_shape(self._curated_payload_with_conclusion([90, 90, 90]))
+
+    def test_curated_runner_uses_local_revision_mode_without_payload_input(self) -> None:
+        source = (REPO_ROOT / "scripts/delivery/run_finished_mini_review.py").read_text(encoding="utf-8")
+        self.assertIn("--curated-revision", source)
+        self.assertNotIn("--curated-payload", source)
+        self.assertNotIn("_build_product_quality_revision", source)
+        self.assertNotIn("base_payload", source)
+        self.assertNotIn("curated_payload", source)
+        self.assertNotIn("copy.deepcopy", source)
+        main_source = source[source.index("def main()") :]
+        self.assertNotIn("model_payload.json", main_source)
+        self.assertNotIn("read_text(encoding=\"utf-8\")", main_source[main_source.index("if args.curated_revision") : main_source.index("elif args.mock_response")])
+        self.assertIn("payload = _build_codex_curated_revision(final_rows)", main_source)
+
+    def test_finished_stage_requires_full_text_human_review(self) -> None:
+        self.assertEqual(STAGE_READY, "HUMAN_FULL_TEXT_REVIEW_REQUIRED")
+
+    def test_validator_requires_exact_ordered_section_list(self) -> None:
+        payload = valid_payload()
+        payload["sections"].append(payload["sections"][0])
+        report = validate_finished_review_payload(payload, final_rows(), bibliography(), min_words=1)
+        self.assertIn("REQUIRED_SECTIONS_MISMATCH", {item["code"] for item in report["blockers"]})
+
     def test_continuous_delivery_is_explicit_opt_in(self) -> None:
         self.assertTrue(delivery_stops_at_checkpoint(DEFAULT_MODE, blockers=[]))
         self.assertFalse(delivery_stops_at_checkpoint(CONTINUOUS_MODE, blockers=[]))
         self.assertTrue(delivery_stops_at_checkpoint(CONTINUOUS_MODE, blockers=[{"code": "UNSUPPORTED_NUMBER"}]))
 
-    def test_evidence_plan_excludes_conflicts_and_unsupported_dba_76_binding(self) -> None:
+    def test_evidence_plan_exposes_all_non_conflicts_as_candidates(self) -> None:
         plan = build_finished_review_plan(final_rows())
         self.assertEqual(plan["available_non_conflict_claim_count"], 37)
         self.assertEqual(plan["retained_conflict_count"], 7)
-        self.assertNotIn("F47A-76", plan["selected_claim_ids"])
-        selected = set(plan["selected_claim_ids"])
-        self.assertTrue({"F47A-YIELD", "F47A-EE", "F47A-74", "F47A-62"}.issubset(selected))
-        self.assertTrue(all(not value.startswith("CONFLICT-") for value in selected))
+        self.assertEqual(len(plan["candidate_claim_ids"]), 37)
+        self.assertIn("F47A-76", plan["candidate_claim_ids"])
+        self.assertTrue(all(not value.startswith("CONFLICT-") for value in plan["candidate_claim_ids"]))
         self.assertEqual(len(plan["claim_accounting"]), 44)
+        self.assertTrue(all(row["plan_status"] == "CANDIDATE" for row in plan["claim_accounting"][:37]))
 
     def test_qwen_request_contains_only_selected_final_claim_fields(self) -> None:
         rows = final_rows()
         plan = build_finished_review_plan(rows)
         request = build_qwen_generation_request(rows, plan, bibliography())
         self.assertEqual(request["delivery_mode"], CONTINUOUS_MODE)
-        self.assertNotIn("F47A-76", {row["claim_id"] for row in request["claims"]})
+        self.assertEqual(len(request["claims"]), 37)
         self.assertFalse(any(row["claim_id"].startswith("CONFLICT-") for row in request["claims"]))
         self.assertFalse(any("final_disposition" in row for row in request["claims"]))
         self.assertNotIn("CONFLICT-", json.dumps(request))
         self.assertNotIn("claim_accounting", request["evidence_plan"])
         self.assertIn("连续生成第一份完整英文迷你综述成品", QODERWORK_PROMPT)
+
+    def test_reviewer_synthesis_requires_two_claims_and_two_sources(self) -> None:
+        payload = valid_payload()
+        payload["abstract_sentences"][0] = {
+            "sentence_id": "A1",
+            "sentence_role": "reviewer_synthesis",
+            "text": "Together, the sources frame palladium control as a coupled ligand and substrate problem.",
+            "supporting_claim_ids": ["F3I-CONTEXT", "F47A-YIELD"],
+            "source_paper_ids": ["F3I", "F47A"],
+            "material_supporting_claim_ids_by_paper": {"F3I": ["F3I-CONTEXT"], "F47A": ["F47A-YIELD"]},
+            "evidence_role": "CROSS_STUDY_INTERPRETATION",
+        }
+        payload["selected_claim_ids"] = ["F3I-CONTEXT", "F47A-YIELD"]
+        payload["intentionally_omitted_claim_ids"] = sorted(
+            row["claim_id"] for row in final_rows()
+            if row["final_disposition"] != "SOURCE_CONFLICT_RETAINED" and row["claim_id"] not in payload["selected_claim_ids"]
+        )
+        report = validate_finished_review_payload(payload, final_rows(), bibliography(), min_words=1)
+        self.assertEqual(report["blocker_count"], 0, report["blockers"])
+
+        payload["abstract_sentences"][0]["supporting_claim_ids"] = ["F47A-YIELD"]
+        payload["abstract_sentences"][0]["source_paper_ids"] = ["F47A"]
+        report = validate_finished_review_payload(payload, final_rows(), bibliography(), min_words=1)
+        self.assertIn("INVALID_REVIEWER_SYNTHESIS", {item["code"] for item in report["blockers"]})
+
+    def test_reviewer_synthesis_requires_material_support_from_each_cited_paper(self) -> None:
+        payload = valid_payload()
+        sentence = payload["sections"][0]["paragraphs"][0]["sentences"][0]
+        sentence.update(
+            {
+                "sentence_role": "reviewer_synthesis",
+                "supporting_claim_ids": ["F47A-YIELD", "P403-YIELD"],
+                "source_paper_ids": ["F47A", "P403"],
+                "material_supporting_claim_ids_by_paper": {"F47A": ["F47A-YIELD"], "P403": []},
+            }
+        )
+        report = validate_finished_review_payload(payload, final_rows(), bibliography(), min_words=1)
+        self.assertIn("IMMATERIAL_REVIEWER_SYNTHESIS_SOURCE", {item["code"] for item in report["blockers"]})
 
     def test_generation_repairs_true_blockers_once_at_most(self) -> None:
         broken = valid_payload()
@@ -291,7 +463,7 @@ class FinishedReviewDeliveryTests(unittest.TestCase):
         self.assertEqual(report["blocker_count"], 0, report["blockers"])
 
     def test_frozen_input_hash_mismatch_stops_delivery(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as temp_dir:
             root = Path(temp_dir)
             claims = root / "claims.jsonl"
             manifest = root / "HASH_MANIFEST.sha256"
@@ -302,28 +474,65 @@ class FinishedReviewDeliveryTests(unittest.TestCase):
 
     def test_writer_creates_complete_closed_package(self) -> None:
         payload = valid_payload()
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as temp_dir:
             root = Path(temp_dir) / "case-01-allene-mini-review"
             docx = Path(temp_dir) / "source.docx"
+            baseline = Path(temp_dir) / "continuous.md"
             docx.write_bytes(b"PK\x03\x04dummy")
+            baseline.write_text("# Earlier title\n\nEarlier prose.\n", encoding="utf-8")
             result = write_finished_review_package(
                 output_root=root,
+                repository_root=REPO_ROOT,
                 payload=payload,
                 final_rows=final_rows(),
                 bibliography_metadata=bibliography(),
                 evidence_plan=build_finished_review_plan(final_rows()),
-                generation_manifest={"model": "offline-test", "request_count": 0},
-                qoderwork_status="MANUAL_QODERWORK_EXECUTION_REQUIRED",
+                generation_manifest={
+                    "current_run_model_requests": 0,
+                    "authoring_mode": "codex_exec_curated_revision",
+                    "authoring_agent_model": "gpt-5.6-terra",
+                    "final_text_origin": "CURATED_FROM_FROZEN_FINAL_CLAIMS_NO_EXTERNAL_PROVIDER_CALL",
+                    "reused_upstream_generation_payload": False,
+                },
                 docx_source=docx,
                 docx_integrity={"status": "PASS", "bookmark_count": 3, "internal_hyperlink_count": 9, "doi_hyperlink_count": 3},
+                baseline_markdown=baseline,
                 min_words=1,
             )
-            self.assertEqual(result["stage"], "FIRST_FINISHED_QODERWORK_REVIEW_READY_FOR_HUMAN_QUALITY_REVIEW")
+            self.assertEqual(result["stage"], "HUMAN_FULL_TEXT_REVIEW_REQUIRED")
             self.assertTrue(all((root / name).is_file() for name in REQUIRED_OUTPUTS))
-            self.assertEqual((root / "03_figure_redraw/skip_reason.md").read_text(encoding="utf-8").strip(), "No source-paper figures are included in this bounded working draft.\nThe manuscript uses one original evidence comparison table generated\nfrom the verified Phase 8A claim ledger.")
-            self.assertEqual(len((root / "sentence_claim_map.jsonl").read_text(encoding="utf-8").splitlines()), 9)
+            accounting = json.loads((root / "evidence/final_claim_accounting.json").read_text())
+            self.assertEqual(
+                {row["accounting_status"] for row in accounting},
+                {"used", "intentionally_omitted", "retained_conflict"},
+            )
+            self.assertIn("No source-paper figures", (root / "03_figure_redraw/skip_reason.md").read_text(encoding="utf-8"))
+            self.assertEqual(len((root / "sentence_claim_map.jsonl").read_text(encoding="utf-8").splitlines()), 7)
             self.assertIn(QODERWORK_PROMPT, (root / "qoderwork_run_record.md").read_text(encoding="utf-8"))
             self.assertEqual(json.loads((root / "quality_report.json").read_text())["docx_integrity"]["status"], "PASS")
+            self.assertTrue((root / "design_principles_table.csv").is_file())
+            self.assertTrue((root / "full_evidence_claim_table.xlsx").is_file())
+            baseline_provenance = json.loads((root / "baseline_provenance.json").read_text(encoding="utf-8"))
+            self.assertEqual(baseline_provenance["baseline_source_repo_relative_path"], baseline.relative_to(REPO_ROOT).as_posix())
+            self.assertEqual(baseline_provenance["baseline_sha256"], hashlib.sha256(baseline.read_bytes()).hexdigest())
+            manifest_entries = [line.split("  ", 1)[1] for line in (root / "HASH_MANIFEST.sha256").read_text().splitlines()]
+            self.assertTrue(all((root / item).is_file() for item in manifest_entries))
+            subprocess.run(["sha256sum", "-c", "HASH_MANIFEST.sha256"], cwd=root, check=True, capture_output=True, text=True)
+            flat_root = Path(temp_dir) / "flat-export"
+            export_result = export_qoderwork_flat_package(root, flat_root)
+            self.assertEqual(export_result["copied_file_count"], len(manifest_entries))
+            flat_manifest = json.loads((flat_root / "flat_export_manifest.json").read_text())
+            self.assertEqual(flat_manifest["copied_file_count"], len(flat_manifest["copied_files"]))
+            self.assertTrue(all((flat_root / item["flat_relative_path"]).is_file() for item in flat_manifest["copied_files"]))
+            subprocess.run(["sha256sum", "-c", "HASH_MANIFEST.sha256"], cwd=flat_root, check=True, capture_output=True, text=True)
+            with zipfile.ZipFile(root / "full_evidence_claim_table.xlsx") as archive:
+                sheet = ET.fromstring(archive.read("xl/worksheets/sheet1.xml"))
+                styles = ET.fromstring(archive.read("xl/styles.xml"))
+            ns = {"x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+            self.assertIsNotNone(sheet.find("x:cols", ns))
+            self.assertIsNotNone(sheet.find("x:sheetViews/x:sheetView/x:pane[@state='frozen']", ns))
+            self.assertIsNotNone(sheet.find("x:autoFilter", ns))
+            self.assertGreater(len(styles.findall("x:cellXfs/x:xf", ns)), 1)
 
     def test_failed_bounded_generation_persists_candidate_before_exit(self) -> None:
         payload = valid_payload()

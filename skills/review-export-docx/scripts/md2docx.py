@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from docx import Document
+from docx.enum.style import WD_STYLE_TYPE
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement, parse_xml  # noqa: F401
 from docx.oxml.ns import qn
@@ -105,9 +106,9 @@ _FONT_SPEC: Dict[str, Dict] = {
 # Heading level -> (para_style_key, font_spec_key)
 _HEADING_FORMAT: Dict[int, Tuple[str, str]] = {
     1: ("title", "title"),
-    2: ("body",  "h2"),
-    3: ("body",  "h3"),
-    4: ("body",  "h4"),
+    2: ("Heading 1", "h2"),
+    3: ("Heading 2", "h3"),
+    4: ("Heading 3", "h4"),
     5: ("body",  "body"),
     6: ("body",  "body"),
 }
@@ -294,11 +295,15 @@ def _split_script_segments(text: str) -> List[Tuple[str, str]]:
         prev = text[index - 1]
         if prev in "-–—/[ ":
             return False
-        if prev.isalpha():
+        if prev == ")":
             return True
-        if prev in ")]}" and index >= 2 and text[index - 2].isalpha():
-            return True
-        return False
+        start = index - 1
+        while start >= 0 and text[start].isalpha():
+            start -= 1
+        formula = text[start + 1:index]
+        elements = re.findall(r"[A-Z][a-z]?", formula)
+        valid_elements = {"B", "C", "H", "N", "O", "F", "P", "S", "Cl", "Br", "I", "Na", "K", "Pd", "Pt", "Rh", "Ni", "Au", "Ag", "Cs", "Si"}
+        return bool(formula and "".join(elements) == formula and all(element in valid_elements for element in elements))
 
     def flush() -> None:
         nonlocal current
@@ -375,7 +380,7 @@ def _para(
     force_bold: bool = False,
     force_italic: bool = False,
 ):
-    p = doc.add_paragraph(style=_S.get(style_key, _S["body"]))
+    p = doc.add_paragraph(style=_S.get(style_key, style_key))
     if inline_text:
         apply_runs(p, parse_inline(inline_text),
                    spec_key=spec_key,
@@ -403,8 +408,16 @@ def _set_cell_borders(cell) -> None:
 def _add_table(doc: Document, header: List[str], rows: List[List[str]]) -> None:
     ncols = max(len(header), max((len(r) for r in rows), default=1))
     table = doc.add_table(rows=1 + len(rows), cols=ncols)
+    table.autofit = False
+    usable_width = _usable_page_width_inches(doc)
+    proportions = [0.16, 0.20, 0.19, 0.21, 0.24] if ncols == 5 else [1 / ncols] * ncols
+    header_properties = table.rows[0]._tr.get_or_add_trPr()
+    repeat = OxmlElement("w:tblHeader")
+    repeat.set(qn("w:val"), "true")
+    header_properties.append(repeat)
     for j, h in enumerate(header):
         cell = table.cell(0, j)
+        cell.width = Inches(usable_width * proportions[j])
         cell.text = ""
         cell.paragraphs[0].style = doc.styles[_S["table_body"]]
         apply_runs(cell.paragraphs[0], parse_inline(h),
@@ -413,6 +426,7 @@ def _add_table(doc: Document, header: List[str], rows: List[List[str]]) -> None:
     for i, row in enumerate(rows):
         for j in range(ncols):
             cell = table.cell(i + 1, j)
+            cell.width = Inches(usable_width * proportions[j])
             cell.text = ""
             cell.paragraphs[0].style = doc.styles[_S["table_body"]]
             apply_runs(cell.paragraphs[0],
@@ -664,14 +678,22 @@ def _collect_static_toc_entries(blocks: List[Block]) -> List[Tuple[int, str]]:
     return entries
 
 
-def _insert_static_toc(doc: Document, entries: List[Tuple[int, str]]) -> None:
-    for level, text in entries:
-        p = doc.add_paragraph(style=_S["body"])
-        if level == 3:
-            p.paragraph_format.left_indent = Inches(0.32)
-        elif level >= 4:
-            p.paragraph_format.left_indent = Inches(0.58)
-        apply_runs(p, parse_inline(text), spec_key="body")
+def _insert_toc_field(doc: Document) -> None:
+    paragraph = doc.add_paragraph(style=_S["body"])
+    run = paragraph.add_run()
+    begin = OxmlElement("w:fldChar")
+    begin.set(qn("w:fldCharType"), "begin")
+    begin.set(qn("w:dirty"), "true")
+    instruction = OxmlElement("w:instrText")
+    instruction.set(qn("xml:space"), "preserve")
+    instruction.text = ' TOC \\o "1-3" \\h \\z \\u '
+    separate = OxmlElement("w:fldChar")
+    separate.set(qn("w:fldCharType"), "separate")
+    placeholder = OxmlElement("w:t")
+    placeholder.text = "Right-click and update field to build the table of contents."
+    end = OxmlElement("w:fldChar")
+    end.set(qn("w:fldCharType"), "end")
+    run._r.extend([begin, instruction, separate, placeholder, end])
 
 
 # ---------------------------------------------------------------------------
@@ -687,6 +709,26 @@ def _clear_body(doc: Document) -> None:
         body.append(sect_pr)
 
 
+def _ensure_heading_styles(doc: Document) -> None:
+    for level in (1, 2, 3):
+        name = f"Heading {level}"
+        try:
+            style = doc.styles[name]
+        except KeyError:
+            style = doc.styles.add_style(name, WD_STYLE_TYPE.PARAGRAPH)
+        style.font.name = "Times New Roman"
+        style.font.size = Pt({1: 14, 2: 12, 3: 12}[level])
+        style.font.bold = level < 3
+        style.font.italic = level > 1
+        style.paragraph_format.keep_with_next = True
+        properties = style._element.get_or_add_pPr()
+        outline = properties.find(qn("w:outlineLvl"))
+        if outline is None:
+            outline = OxmlElement("w:outlineLvl")
+            properties.append(outline)
+        outline.set(qn("w:val"), str(level - 1))
+
+
 # ---------------------------------------------------------------------------
 # Main converter
 # ---------------------------------------------------------------------------
@@ -694,9 +736,14 @@ def _clear_body(doc: Document) -> None:
 def convert(md_path: Path, out_path: Path, template_path: Path) -> None:
     md_text = md_path.read_text(encoding="utf-8")
     blocks  = tokenize(md_text)
-    toc_entries = _collect_static_toc_entries(blocks)
     doc     = Document(str(template_path))
+    _ensure_heading_styles(doc)
     _clear_body(doc)
+    title_block = next((block for block in blocks if block.kind == "heading" and block.level == 1), None)
+    if title_block:
+        doc.core_properties.title = _plain_text(title_block.text)
+    doc.core_properties.author = "review-writer"
+    doc.core_properties.last_modified_by = "review-writer"
 
     ctx: str           = "body"
     front_matter: bool = False
@@ -709,7 +756,7 @@ def convert(md_path: Path, out_path: Path, template_path: Path) -> None:
         if inserted_toc_heading:
             return
         _para(doc, "body", "h2", "Table of Contents", force_bold=True)
-        _insert_static_toc(doc, toc_entries)
+        _insert_toc_field(doc)
         inserted_toc_heading = True
 
     for block in blocks:
