@@ -1,71 +1,77 @@
 # Product Positioning
 
-## Current Product
+Status: `CURRENT_POSITIONING_SUMMARY`
 
-The repository is currently best described as a **chemistry-oriented review
-workflow with a demonstrated, case-specific scientific evidence verification
-pipeline**. Among the five audit choices, it sits between:
+Last updated: 2026-07-19
 
-```text
-2. chemistry-domain review agent
-3. general multi-source scientific evidence integration system
-```
+The authoritative product definition is
+[Product North Star](../product/PRODUCT_NORTH_STAR.md). This document preserves
+the concise positioning and competition boundary.
 
-It is not yet a general system under choice 3 because the executed Phase 7/8
-path binds paper IDs, source units, claim counts, section structure, and
-reconciliation assumptions to the allene case. It is not a complete AI Scientist
-under choice 4 because it does not demonstrate hypothesis generation,
-experimental planning/execution, or feedback from experiments. It is more than
-a validator collection under choice 5 because a real Qwen/Bailian path, an
-evidence ledger, independent claim verification, grounded synthesis, a human
-review surface, and deterministic correction have all run.
+## User-facing position
 
-## Competition Product Definition
+> An offline-first literature-review workbench for chemistry researchers. A
+> user supplies a research question and a bounded set of papers with supporting
+> information; the system preserves traceable evidence and scientific
+> disagreement, pauses for repeated user review, and produces a revisable DOCX
+> whose material scientific claims can be traced to their sources.
 
-The intended product is:
+The final expert-facing deliverable is one clean DOCX. Internal evidence,
+claim, conflict, revision, checkpoint, and hash artifacts provide the audit
+trail but are not the primary user deliverable.
 
-> A Qwen- and Alibaba Cloud Bailian-based, traceable scientific evidence
-> integration and Grounded Synthesis assistant. Given a research question and a
-> bounded set of papers, supplements, or scientific records, it builds a source
-> inventory and evidence ledger, locates and independently verifies claims,
-> preserves conflicts and missing evidence, incorporates bounded human feedback,
-> and produces a cited synthesis with an auditable before/after diff.
+## Honest current stage
 
-This is a productization target, not a claim that every element is currently
-available through one generic user-facing entrypoint.
+The repository has a credible technical kernel and one deep chemistry case. It
+is crossing from a research-workflow codebase into a reusable product. It does
+not yet demonstrate a general product, publication-grade scientific
+acceptance, autonomous scientific discovery, an experimental feedback loop, or
+cross-domain generality.
 
-## Capability Tiers
+Its strongest differentiators are:
 
-| Tier | Capability | Evidence | Assessment |
-| --- | --- | --- | --- |
-| Demonstrated | Qwen generation through Alibaba OpenAI-compatible endpoint | `reports/model_generation_manifest.json` in the frozen Phase 8B V2 external run records Qwen 3.7 Max, two bounded requests, token usage, redacted endpoint, and no API key | Real but case-specific |
-| Demonstrated | Bailian create/index/retrieve/cleanup | `docs/rag/bailian_manual_success_record.md:5` and `docs/rag/bailian_retrieval_qa.md:5` | Real sanitized pilot, not product UI |
-| Demonstrated | Source-first claim inventory, exact-claim verification, conflict retention | `docs/phase8/phase8a_status_report.md:7` | Strongest technical asset; allene case only |
-| Demonstrated | Deterministic grounded-synthesis salvage and provenance hashes | `review_writer/phase8/phase8b_salvage.py:225`; external salvage report has zero blockers | Strong case evidence, not a generic service |
-| Implemented | Provider abstractions and offline safety | `review_writer/providers/base.py`; `config/providers.example.yaml:7` | Reusable core |
-| Implemented | Local multi-stage review dashboard and HTTP endpoints | `view/serve_review_dashboard.py:39` | Useful shell, not connected to Phase 8 evidence outputs |
-| Documented/partial | End-to-end review orchestration | `skills/review-writing-orchestrator/SKILL.md:12` | Workflow exists, but its discovery and blueprint defaults remain allene-specific |
-| Missing | One generic project manifest and command/API that accepts a new case without code edits | No repository-wide matches for `project_name`, `research_question`, `source_files`, `output_language`, `citation_style`, `human_review_policy`, or `privacy_policy` | Primary productization gap |
-| Missing | Second clean-room execution and three-way baseline comparison | Only allene demo roots and fixtures exist | Generalization not demonstrated |
+- source and SI identity plus exact locators;
+- evidence-governed claims rather than free-form RAG prose;
+- explicit retention of missing evidence and scientific conflict;
+- repeated, hash-bound human checkpoints with revision propagation;
+- a practical final DOCX and visual-review boundary.
 
-## Case Study 01
+## Architecture position
 
-All allene-specific assets should be presented as:
+The internal statement is:
 
-```text
-Case Study 01 - Asymmetric Allene Chemistry
-```
+> Chemistry-first, case-neutral, evidence-governed review workflow with
+> auditable single-user checkpoints.
 
-The case demonstrates depth: main-paper/SI identity handling, 44 extracted
-claims, independent verification, seven retained source-internal conflicts,
-four bounded spot checks, and a grounded synthesis candidate. Its IDs, fixed
-counts, classification rules, and frozen hashes remain case fixtures or audit
-records. They must not define the product's default schema.
+`Case-neutral` does not mean domain-neutral. `Single-user checkpoints` means
+one user may complete all review moments; it does not mean multiple people are
+required or that one person's different review perspectives are independent
+expert reviews.
 
-## Honest Boundary
+`Offline-first` separates offline preparation and validation, optional
+authorized provider execution, and local review/export. It must not be
+marketed as fully offline when the selected Qwen, Bailian, search, or retrieval
+path requires network access.
 
-The repository demonstrates an evidence-grounded scientific review loop in one
-chemistry case. It does not yet demonstrate domain-independent scientific data
-integration, autonomous scientific discovery, publication-grade validation, or
-an experimental research loop.
+## Case 01 role
 
+Case 01 is a reference implementation, regression fixture, and audit record.
+It demonstrates depth but must remain behind the public project and artifact
+contracts. Its paper IDs, allene rules, fixed claim counts, and frozen hashes
+cannot define the public schema.
+
+Case 01 v5 is the approved golden calibration. The first strong reuse proof is
+a later new 20-40-paper chemistry review through the same public contract,
+without topic-specific production-code changes.
+
+## Productization priorities
+
+1. Stabilize the generic project, artifact, corpus, checkpoint, and release
+   contracts.
+2. Exercise them through Case 01 v5 and the minimal bilingual checkpoint UI.
+3. Run a new large chemistry review in Windows-native QoderWork CN.
+4. Harden the one-entry user experience and reproducible evaluation.
+
+The binding sequence is [PRODUCT_ROADMAP.md](../product/PRODUCT_ROADMAP.md).
+Historical competition audits remain evidence of how the gaps were found, but
+they no longer define current sequencing.

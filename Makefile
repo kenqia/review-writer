@@ -9,6 +9,8 @@ REAL_LITE_OUTPUT_ROOT ?= /tmp/review_writer_real_lite_e2e
 
 smoke:
 	/usr/bin/python3 tests/test_fresh_source_syntax.py
+	$(PYTHON) tests/test_project_manifest_schema.py
+	$(PYTHON) tests/test_project_manifest_resolver.py
 	$(PYTHON) -m py_compile $$(find skills view scripts -name '*.py' -type f)
 	$(PYTHON) skills/review-writing-orchestrator/scripts/project_status.py --help >/dev/null
 	$(PYTHON) skills/review-final-audit-release/scripts/final_audit_scan.py --help >/dev/null

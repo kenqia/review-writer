@@ -1,71 +1,85 @@
 # review-writer
 
-`review-writer` is an offline-first workflow scaffold for chemistry review writing, QoderWork skill orchestration, deterministic quality gates, provider adapters, and demo/eval harnesses.
+`review-writer` is an offline-first literature-review workbench for chemistry
+researchers. A user supplies a research question and a bounded set of main
+papers and supporting information; the workflow preserves traceable evidence
+and scientific disagreement, pauses for repeated user review, and produces a
+revisable DOCX whose material claims can be traced back to source locators.
 
-Core safety boundary:
+The final expert-facing deliverable is one clean DOCX. Evidence inventories,
+claim registries, retrieval bundles, conflicts, revision histories, validation
+reports, and hash manifests are internal product artifacts.
 
-- generated paper libraries, PDFs, MinerU outputs, local project outputs, and secrets are external data
-- default checks do not call Qwen, DashScope, MinerU, Bailian, image APIs, or upload files
-- `.env` files and real provider keys must not be committed
+## Current status
 
-Useful gates:
+The repository has a credible technical kernel and one deep chemistry case. It
+is transitioning from a research-workflow codebase into a reusable product. It
+is not yet a generic product, an AI Scientist, a fully autonomous writer, or a
+publication-ready manuscript generator.
+
+Case 01 remains a reference implementation, regression fixture, and audit
+record. The next product work is to stabilize the case-neutral project,
+artifact, and checkpoint contracts; run Case 01 v5 as a golden calibration;
+then run a new 20-40-paper chemistry review without adding topic-specific
+production code.
+
+See the current authority documents:
+
+- [Product North Star](docs/product/PRODUCT_NORTH_STAR.md)
+- [Unified Checkpoint Contract](docs/product/CHECKPOINT_CONTRACT.md)
+- [Product Roadmap](docs/product/PRODUCT_ROADMAP.md)
+- [Architecture decision](docs/decisions/ADR-001-chemistry-first-evidence-governed-workbench.md)
+- [Current product handoff](docs/handoff/PRODUCT_LEADER_CURRENT.md)
+
+## Target user experience
+
+The intended Windows-native QoderWork CN flow is:
+
+1. clone or download the repository and open it as the current workspace;
+2. put MAIN and SI files in a local project input directory;
+3. provide a topic and the paper directory to one `chem-review-orchestrator`
+   entry;
+4. review only the current or affected task in a bilingual localhost dashboard;
+5. approve, revise, request evidence, or exclude material, then resume;
+6. receive one clean DOCX after scientific, consistency, and visual checks.
+
+This single-prompt product entry is the accepted target and is **not yet a
+complete supported command in the current repository**. Do not treat the
+internal phase scripts as the future user interface.
+
+## Execution and evidence boundary
+
+- Offline preparation, hashing, deterministic validation, local checkpoint
+  state, and export checks are the default.
+- Qwen, Bailian, search providers, and other network execution are optional and
+  require explicit project policy and user authorization.
+- Default CI does not call providers, upload papers, or read credentials.
+- Model-suggested sources remain candidates until source identity, required
+  full text, and locators pass evidence governance.
+- Final writing reads approved claims by default; missing support creates a
+  blocking evidence issue instead of being filled from model memory or free
+  retrieval.
+- A self-reviewed draft is not an independently expert-reviewed release.
+
+`Offline-first` does not mean `fully offline` when a selected model or search
+provider requires a network connection.
+
+## Local data safety
+
+Generated paper libraries, source PDFs/SI, MinerU outputs, project outputs,
+private review notes, and credentials are external data and must not be
+committed. Keep real secrets out of the repository; document provider setup
+only with `.env.example` and `config/providers.example.yaml`.
+
+## Developer verification
+
+Run deterministic local checks before any model or API step:
 
 ```bash
-make release-readiness-check
-make clean-3paper-e2e-check
-make clean-3paper-eval-check
-make dashboard-clean-3paper-check
-make bailian-rag-preflight-check
-make rag-local-retrieval-check
-make bailian-small-kb-payload-check
-make bailian-small-kb-pilot-dry-run
-make bailian-small-kb-official-sdk-dry-run
-make bailian-retrieval-contract-check
-make bailian-retrieval-qa-dry-run
-make bailian-phase6-final-check
-make retrieval-generation-check
-make grounded-section-check
-make phase7-pilot-dry-run
-make phase8-v3-1-1-closure-check
+make smoke
+make quality-check
 ```
 
-## Bailian RAG No-upload Preflight
-
-Phase 6a adds a dry-run preflight for a future Bailian RAG pilot. It only builds and checks a small corpus manifest from `demo_projects/clean_3paper_allene_review`; it does not upload data, create a knowledge base, call Bailian, call Qwen, or read PDFs.
-
-Run:
-
-```bash
-make bailian-rag-preflight-check
-```
-
-The generated manifest is written to `/tmp/bailian_no_upload_corpus_manifest.json` and is intentionally not committed. A real Bailian pilot remains blocked until explicit user authorization in a later phase.
-
-Phase 6b adds an offline local retrieval sanity check over that manifest:
-
-```bash
-make rag-local-retrieval-check
-```
-
-This check uses token matching only. It does not call Bailian, create a knowledge base, call Qwen, upload files, or mark the clean 3-paper draft as scientifically verified.
-
-Phase 6c adds dry-run gates for a possible Bailian small-KB pilot. Default make targets only build a sanitized `/tmp` payload and verify the pilot wrapper; they do not upload data or create a knowledge base.
-
-Official Bailian KB management uses Alibaba Cloud SDK credentials (`ALIBABA_CLOUD_ACCESS_KEY_ID`, `ALIBABA_CLOUD_ACCESS_KEY_SECRET`, `WORKSPACE_ID`), not only `DASHSCOPE_API_KEY`. The official SDK path is gated behind `--use-official-sdk` plus explicit network/upload flags and stays dry-run in default checks.
-
-Phase 6d adds offline-safe Retrieve contract introspection and retrieval QA dry-run gates. Real Bailian smoke/clean lifecycles remain explicit commands and write sensitive resource identifiers only to ignored `/tmp` reports.
-
-Phase 7 adds an offline default retrieval-generation pilot for one grounded section. Default checks do not upload; controlled pilots require explicit authorization. Generated sections remain `needs_human_review=true` and are not final scientific review text.
-
-## Phase 8A Evidence Adjudication
-
-Phase 8A is complete at `PHASE8A_COMPLETE_PR3_READY_FOR_REVIEW` under the
-`HUMAN_SPOT_CHECKED_AI_ADJUDICATION` method. Calibration passed; source-first
-Layer A produced 8 rows and 44 claims; exact-claim Layer B completed 44/44;
-four bounded human spot checks used the remaining budget, for 10/10 total.
-
-The final engineering result contains 37 usable or deterministically corrected
-non-conflict claims and 7 retained source-internal conflicts. Layer C was
-skipped as unnecessary. Phase 8B has not started. This is an engineering and
-internal-demonstration result, not a claim of publication-level scientific
-validation or complete human review.
+More specialized historical Phase 6-8 and provider dry-run targets remain in
+the [Makefile](Makefile) for regression and audit work. They are implementation
+details, not the primary product quick start.

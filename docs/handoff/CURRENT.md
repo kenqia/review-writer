@@ -1,5 +1,11 @@
 # Review-Writer Current Handoff
 
+> **Historical Phase 8 handoff — superseded for current product direction.**
+> This file preserves the state recorded on 2026-07-14. Branch, PR, phase, and
+> next-action statements below must not be used as current instructions. Use
+> [Product Leader Current Handoff](PRODUCT_LEADER_CURRENT.md) and the
+> [Product Roadmap](../product/PRODUCT_ROADMAP.md).
+
 ## Repository
 
 - GitHub: `kenqia/review-writer`
