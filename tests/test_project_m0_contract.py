@@ -27,6 +27,7 @@ from review_writer.project.contract import (
     validate_snapshot_package,
     seal_snapshot_package,
     consume_pinned_source,
+    adapt_manifest_package,
 )
 from review_writer.project.adapters import FROZEN_ADAPTER_ID, resolve_adapter
 
@@ -38,6 +39,15 @@ CLI = ROOT / "scripts/project.py"
 class M0ContractTests(unittest.TestCase):
     def load_manifest(self) -> dict:
         return json.loads((FIXTURE / "project.manifest.json").read_text(encoding="utf-8"))
+
+    def adapter_package(self) -> tuple[dict, dict, dict]:
+        root = FIXTURE.parent / "case01-adapter"
+        manifest = json.loads((root / "project.manifest.json").read_text(encoding="utf-8"))
+        raw = json.loads((root / "fixture.json").read_text(encoding="utf-8"))
+        before = copy.deepcopy(raw)
+        result = adapt_manifest_package(manifest, root, raw)
+        self.assertEqual(raw, before)
+        return manifest, raw, result["package"]
 
     def test_synthetic_manifest_validates_files_pairing_hashes_and_portable_collisions(self) -> None:
         manifest = self.load_manifest()
@@ -61,16 +71,16 @@ class M0ContractTests(unittest.TestCase):
             self.assertIn("CONFIG_SNAPSHOT_PACKAGE_REQUIRED", status.stderr)
 
     def test_strict_package_rejects_duplicate_identities_and_double_current_registration(self) -> None:
-        raw = json.loads((FIXTURE.parent / "case01-adapter/fixture.json").read_text(encoding="utf-8"))
+        _manifest, raw, package = self.adapter_package()
         self.assertTrue(all("document_role" not in source for source in raw["sources"]))
         self.assertEqual({source["source_role"] for source in raw["sources"]}, {"MAIN", "SI"})
         self.assertTrue(all("legacy_kind" in conflict and not {"comparability", "classification", "status"} & set(conflict) for conflict in raw["conflicts"]))
         adapted_raw = resolve_adapter(FROZEN_ADAPTER_ID)(raw)
         self.assertTrue(all(source["document_role"] in {"MAIN", "SI"} for source in adapted_raw["sources"]))
-        self.assertTrue(all((conflict["comparability"], conflict["classification"], conflict["status"]) == ("EXPLICITLY_INCOMPARABLE", "SOURCE_INTERNAL_CONFLICT", "EXCLUDED") for conflict in adapted_raw["conflicts"]))
+        self.assertTrue(all((conflict["comparability_status"], conflict["classification"], conflict["status"], conflict["manuscript_treatment"]) == ("NONCOMPARABLE", "SOURCE_INTERNAL_CONFLICT", "RESOLVED", "EXCLUDED") for conflict in adapted_raw["conflicts"]))
         missing_kind = copy.deepcopy(raw); missing_kind["conflicts"][0].pop("legacy_kind")
         with self.assertRaises(ValueError): resolve_adapter(FROZEN_ADAPTER_ID)(missing_kind)
-        package = seal_snapshot_package(adapted_raw)
+        self.assertTrue(validate_snapshot_package(package)["closed"])
         duplicate = json.loads(json.dumps(package)); duplicate["sources"].append(duplicate["sources"][0])
         with self.assertRaises(ContractError): validate_snapshot_package(duplicate)
         double = json.loads(json.dumps(package)); extra = json.loads(json.dumps(double["claims"][0])); extra["claim_version_id"] = "good@2"; extra["claim_version"] = 2; double["claims"].append(extra); double["decisions"].append({"event_id": "register-second", "claim_version_id": "good@2", "event_type": "REGISTER", "record_sha256": ""});
@@ -125,10 +135,11 @@ class M0ContractTests(unittest.TestCase):
         self.assertTrue(source_is_claim_eligible(sources[0], claim["evidence_refs"][0]))
 
     def test_conflict_matrix_and_immutable_closure_reject_tamper_and_overwrite(self) -> None:
-        matrix = conflict_compatibility_matrix({"comparability": "EXPLICITLY_INCOMPARABLE", "classification": "SOURCE_INTERNAL_CONFLICT", "status": "EXCLUDED"})
-        self.assertFalse(matrix["permits_manuscript_treatment"])
-        with self.assertRaisesRegex(ContractError, "CONFLICT_COMBINATION_INVALID"):
-            conflict_compatibility_matrix({"comparability": "EXPLICITLY_INCOMPARABLE", "classification": "ACADEMIC_CONTROVERSY", "status": "ACTIVE"})
+        matrix = conflict_compatibility_matrix({"comparability_status": "NONCOMPARABLE", "classification": "SOURCE_INTERNAL_CONFLICT", "status": "RESOLVED", "manuscript_treatment": "EXCLUDED"})
+        self.assertEqual(matrix["manuscript_treatment"], "EXCLUDED")
+        for conflict in ({}, {"comparability_status": "UNKNOWN", "classification": "SOURCE_INTERNAL_CONFLICT", "status": "RESOLVED", "manuscript_treatment": "EXCLUDED"}, {"comparability_status": "NONCOMPARABLE", "classification": "ACADEMIC_CONTROVERSY", "status": "ACCEPTED_UNRESOLVED", "manuscript_treatment": "UNRESOLVED_CONTROVERSY"}, {"comparability_status": "COMPARABLE", "classification": "SOURCE_INTERNAL_CONFLICT", "status": "OPEN", "manuscript_treatment": "UNRESOLVED_CONTROVERSY"}, {"comparability_status": "COMPARABLE", "classification": "CROSS_SOURCE_DISAGREEMENT", "status": "DISMISSED_AS_ARTIFACT", "manuscript_treatment": "ATTRIBUTED_POSITIONS"}):
+            with self.assertRaisesRegex(ContractError, "CONFLICT_COMBINATION_INVALID"): conflict_compatibility_matrix(conflict)
+        self.assertEqual(conflict_compatibility_matrix({"comparability_status": "COMPARABLE", "classification": "ACADEMIC_CONTROVERSY", "status": "ACCEPTED_UNRESOLVED", "manuscript_treatment": "ATTRIBUTED_POSITIONS"})["status"], "ACCEPTED_UNRESOLVED")
         with tempfile.TemporaryDirectory() as tmp:
             destination = Path(tmp) / "snapshot.json"
             record = {"artifact_ref": {"artifact_id": "snapshot-1", "artifact_sha256": ""}, "payload": {"ok": True}}

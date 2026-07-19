@@ -11,7 +11,7 @@ def adapt_frozen_legacy_package(raw: dict) -> dict:
         source["document_role"] = role
     for conflict in value.get("conflicts", []):
         if conflict.get("legacy_kind") != "SOURCE_INTERNAL": raise ValueError("legacy conflict kind required")
-        conflict.update({"comparability": "EXPLICITLY_INCOMPARABLE", "classification": "SOURCE_INTERNAL_CONFLICT", "status": "EXCLUDED"})
+        conflict.update({"comparability_status": "NONCOMPARABLE", "classification": "SOURCE_INTERNAL_CONFLICT", "status": "RESOLVED", "manuscript_treatment": "EXCLUDED"})
     return value
 
 ADAPTER_DISPATCH = {FROZEN_ADAPTER_ID: adapt_frozen_legacy_package}

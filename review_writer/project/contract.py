@@ -10,9 +10,10 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .manifest import ManifestResolutionError, resolve_project_manifest
+from .manifest import ManifestResolutionError, resolve_project_manifest, resolved_config_sha256
 from .path_safety import PathSafetyError, validate_relative_path, validate_source_file, validate_source_inputs
 from .adapters import PRODUCT_ADAPTER_IDS
+from .adapters import resolve_adapter
 
 
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -86,6 +87,19 @@ def validate_manifest_inputs(manifest: dict[str, Any], manifest_directory: Path)
     resolved["source_hashes"] = hashes
     return resolved
 
+def adapt_manifest_package(manifest: dict[str, Any], manifest_directory: Path, raw_package: dict[str, Any]) -> dict[str, Any]:
+    """Case-neutral production entry: manifest-selected static adapter, then closure validation."""
+    resolved = validate_manifest_inputs(manifest, manifest_directory)
+    adapter_id = resolved.get("adapter_ref")
+    if not adapter_id: _fail("ADAPTER_REF_REQUIRED", "raw package adaptation requires manifest adapter_ref")
+    try: adapted = resolve_adapter(adapter_id)(raw_package)
+    except ValueError as exc: _fail("ADAPTER_REF_INVALID", str(exc))
+    config = resolved_config_sha256({key: value for key, value in resolved.items() if key != "source_hashes"})
+    if adapted.get("project_id") != resolved["project_id"] or adapted.get("resolved_config_sha256") != config or {source.get("source_id"): source.get("content_sha256") for source in adapted.get("sources", [])} != resolved["source_hashes"]:
+        _fail("ADAPTER_PACKAGE_BINDING_INVALID", "adapted package does not bind manifest project/config/corpus")
+    sealed = seal_snapshot_package(adapted)
+    return {"package": sealed, "view": validate_snapshot_package(sealed)}
+
 
 def source_is_claim_eligible(source: dict[str, Any], reference: dict[str, Any]) -> bool:
     return (
@@ -137,11 +151,17 @@ def _derive_registry_view(claims: list[dict[str, Any]], decisions: list[dict[str
 
 def conflict_compatibility_matrix(conflict: dict[str, Any]) -> dict[str, Any]:
     """Validate explicit comparability input; never infer scientific comparability."""
-    incomparable = conflict.get("comparability") == "EXPLICITLY_INCOMPARABLE"
-    invalid = incomparable and (conflict.get("classification"), conflict.get("status")) != ("SOURCE_INTERNAL_CONFLICT", "EXCLUDED")
-    if invalid:
-        _fail("CONFLICT_COMBINATION_INVALID", "incomparable records may only be excluded source-internal conflicts")
-    return {"classification": conflict.get("classification"), "status": conflict.get("status"), "permits_manuscript_treatment": not incomparable and conflict.get("status") == "ACTIVE"}
+    domains = {"comparability_status": {"COMPARABLE", "PARTIALLY_COMPARABLE", "NONCOMPARABLE"}, "classification": {"SOURCE_INTERNAL_CONFLICT", "CROSS_SOURCE_DISAGREEMENT", "ACADEMIC_CONTROVERSY"}, "status": {"OPEN", "RESOLVED", "ACCEPTED_UNRESOLVED", "DISMISSED_AS_ARTIFACT"}, "manuscript_treatment": {"BLOCKED", "EXCLUDED", "ATTRIBUTED_POSITIONS", "UNRESOLVED_CONTROVERSY", "RESOLVED_SYNTHESIS"}}
+    if any(conflict.get(key) not in values for key, values in domains.items()): _fail("CONFLICT_COMBINATION_INVALID", "explicit conflict enum missing or unknown")
+    comp, classification, status, treatment = (conflict["comparability_status"], conflict["classification"], conflict["status"], conflict["manuscript_treatment"])
+    valid = True
+    if status == "DISMISSED_AS_ARTIFACT": valid = treatment == "EXCLUDED"
+    if classification in {"SOURCE_INTERNAL_CONFLICT", "CROSS_SOURCE_DISAGREEMENT"} and treatment == "UNRESOLVED_CONTROVERSY": valid = False
+    if classification == "ACADEMIC_CONTROVERSY" and status == "ACCEPTED_UNRESOLVED": valid = treatment in {"UNRESOLVED_CONTROVERSY", "ATTRIBUTED_POSITIONS"}
+    if status == "RESOLVED": valid = treatment in {"EXCLUDED", "RESOLVED_SYNTHESIS"}
+    if comp == "NONCOMPARABLE": valid = classification == "SOURCE_INTERNAL_CONFLICT" and status == "RESOLVED" and treatment == "EXCLUDED"
+    if not valid: _fail("CONFLICT_COMBINATION_INVALID", "explicit conflict matrix rejects combination")
+    return {key: conflict[key] for key in domains}
 
 
 def _canonical_bytes(value: Any) -> bytes:
