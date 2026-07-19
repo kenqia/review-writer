@@ -24,11 +24,11 @@ from review_writer.project.contract import (
     verify_closure,
     adapt_legacy_case_sources,
     project_id_is_locked,
-    adapt_legacy_case_package,
     validate_snapshot_package,
     seal_snapshot_package,
     consume_pinned_source,
 )
+from review_writer.project.adapters import FROZEN_ADAPTER_ID, resolve_adapter
 
 
 FIXTURE = ROOT / "tests/fixtures/m0/synthetic"
@@ -61,7 +61,7 @@ class M0ContractTests(unittest.TestCase):
             self.assertIn("CONFIG_SNAPSHOT_PACKAGE_REQUIRED", status.stderr)
 
     def test_strict_package_rejects_duplicate_identities_and_double_current_registration(self) -> None:
-        package = seal_snapshot_package(adapt_legacy_case_package(json.loads((FIXTURE.parent / "case01-adapter/fixture.json").read_text(encoding="utf-8"))))
+        package = seal_snapshot_package(resolve_adapter(FROZEN_ADAPTER_ID)(json.loads((FIXTURE.parent / "case01-adapter/fixture.json").read_text(encoding="utf-8"))))
         duplicate = json.loads(json.dumps(package)); duplicate["sources"].append(duplicate["sources"][0])
         with self.assertRaises(ContractError): validate_snapshot_package(duplicate)
         double = json.loads(json.dumps(package)); extra = json.loads(json.dumps(double["claims"][0])); extra["claim_version_id"] = "good@2"; extra["claim_version"] = 2; double["claims"].append(extra); double["decisions"].append({"event_id": "register-second", "claim_version_id": "good@2", "event_type": "REGISTER", "record_sha256": ""});
@@ -123,7 +123,7 @@ class M0ContractTests(unittest.TestCase):
         self.assertFalse(project_id_is_locked([]))
 
     def test_snapshot_package_validates_bound_records_and_detects_each_tamper(self) -> None:
-        package = seal_snapshot_package(adapt_legacy_case_package(json.loads((FIXTURE.parent / "case01-adapter/fixture.json").read_text(encoding="utf-8"))))
+        package = seal_snapshot_package(resolve_adapter(FROZEN_ADAPTER_ID)(json.loads((FIXTURE.parent / "case01-adapter/fixture.json").read_text(encoding="utf-8"))))
         view = validate_snapshot_package(package)
         self.assertTrue(view["closed"])
         self.assertEqual(view["summary"], {"project": "CLOSED", "corpus": "CLOSED", "claims": "CLOSED", "checkpoint": "CLOSED", "run": "CLOSED", "release": "CLOSED"})
@@ -137,7 +137,7 @@ class M0ContractTests(unittest.TestCase):
                 validate_snapshot_package(broken)
 
     def test_claim_validation_rejects_zero_evidence_ai_inference_and_stale_dependencies(self) -> None:
-        package = seal_snapshot_package(adapt_legacy_case_package(json.loads((FIXTURE.parent / "case01-adapter/fixture.json").read_text(encoding="utf-8"))))
+        package = seal_snapshot_package(resolve_adapter(FROZEN_ADAPTER_ID)(json.loads((FIXTURE.parent / "case01-adapter/fixture.json").read_text(encoding="utf-8"))))
         zero = json.loads(json.dumps(package))
         zero["claims"][0]["evidence_refs"] = []
         with self.assertRaises(ContractError):

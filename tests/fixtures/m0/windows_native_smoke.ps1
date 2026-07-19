@@ -22,6 +22,10 @@ for bad in ('C:/x','\\server\\share\\x','a\\x','a/../x'):
 try: validate_source_inputs(seed,['a/x.txt','a/X.txt']); raise AssertionError('case collision')
 except PathSafetyError: pass
 outside=root/'outside'; outside.mkdir(exist_ok=True); (outside/'x.txt').write_text('synthetic')
+internal=seed/'inside'; internal.mkdir(exist_ok=True); (internal/'x.txt').write_text('synthetic')
+jinternal=seed/'internal-j'; subprocess.run(['cmd','/c','mklink','/J',str(jinternal),str(internal)],check=True,capture_output=True)
+try: validate_source_file(seed,'internal-j/x.txt'); raise AssertionError('internal junction')
+except PathSafetyError: pass
 junction=seed/'j'; subprocess.run(['cmd','/c','mklink','/J',str(junction),str(outside)],check=True,capture_output=True)
 try: validate_source_file(seed,'j/x.txt'); raise AssertionError('escape')
 except PathSafetyError: pass

@@ -1,9 +1,15 @@
 """Standard-library-only portable source-path validation for M0."""
 from __future__ import annotations
 import re
+import stat
 from pathlib import Path
 
 class PathSafetyError(ValueError): pass
+
+def _is_reparse_component(path: Path) -> bool:
+    if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()): return True
+    try: return bool(getattr(path.lstat(), "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+    except OSError: return False
 
 def validate_relative_path(value: str) -> str:
     if not isinstance(value, str) or not value or "\\" in value or value.startswith("/") or re.match(r"^[A-Za-z]:", value) or value.startswith("//"):
@@ -17,7 +23,7 @@ def validate_source_file(root: Path, relative: str) -> Path:
     candidate = root
     for part in relative.split("/"):
         candidate = candidate / part
-        if candidate.is_symlink(): raise PathSafetyError("source input component is reparse point")
+        if _is_reparse_component(candidate): raise PathSafetyError("source input component is reparse point")
     actual = candidate.resolve(strict=True)
     try: actual.relative_to(root)
     except ValueError as exc: raise PathSafetyError("reparse escape") from exc
