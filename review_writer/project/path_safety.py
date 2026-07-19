@@ -14,8 +14,10 @@ def validate_relative_path(value: str) -> str:
 
 def validate_source_file(root: Path, relative: str) -> Path:
     relative = validate_relative_path(relative); root = root.resolve(strict=True)
-    candidate = root.joinpath(*relative.split("/"))
-    if candidate.is_symlink(): raise PathSafetyError("source input is reparse point")
+    candidate = root
+    for part in relative.split("/"):
+        candidate = candidate / part
+        if candidate.is_symlink(): raise PathSafetyError("source input component is reparse point")
     actual = candidate.resolve(strict=True)
     try: actual.relative_to(root)
     except ValueError as exc: raise PathSafetyError("reparse escape") from exc

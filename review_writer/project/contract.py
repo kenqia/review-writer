@@ -255,7 +255,8 @@ def validate_snapshot_package(package: dict[str, Any]) -> dict[str, Any]:
         return {record[field]: record for record in records}
     sources = indexed(package.get("sources", []), "source_id", "SOURCE_IDENTITY_INVALID")
     parses = indexed(package.get("parses", []), "parse_artifact_id", "PARSE_IDENTITY_INVALID")
-    if not sources or not parses or any(_verify_record(source, "SOURCE_RECORD_HASH_INVALID") or source.get("project_id") != project_id or not _require_hash(source.get("content_sha256"), "SOURCE_HASH_INVALID") for source in sources.values()):
+    source_enums = {"document_role": {"MAIN", "SI"}, "governance_status": {"INCLUDED", "EXCLUDED"}, "usage_role": {"EVIDENCE", "BACKGROUND", "DISCOVERY_ONLY"}, "availability_status": {"PARSED", "FULL_TEXT_AVAILABLE", "METADATA_ONLY"}, "integrity_status": {"VALIDATED", "QUARANTINED", "UNVERIFIED"}}
+    if not sources or not parses or any(_verify_record(source, "SOURCE_RECORD_HASH_INVALID") or source.get("project_id") != project_id or not _require_hash(source.get("content_sha256"), "SOURCE_HASH_INVALID") or any(field in source and source.get(field) not in values for field, values in source_enums.items()) for source in sources.values()):
         _fail("SOURCE_RECORD_INVALID", "source record binding missing")
     for parse in parses.values():
         _verify_record(parse, "PARSE_RECORD_HASH_INVALID")
@@ -265,6 +266,7 @@ def validate_snapshot_package(package: dict[str, Any]) -> dict[str, Any]:
     if not claims: _fail("CLAIM_RECORD_INVALID", "claims required")
     for claim in claims.values(): _verify_record(claim, "CLAIM_RECORD_HASH_INVALID"); _validate_claim(claim, sources, parses)
     decisions = package.get("decisions", [])
+    indexed(decisions, "event_id", "DECISION_IDENTITY_INVALID")
     allowed_events = {"EVIDENCE_SUPPORT", "REGISTER", "REJECT", "WITHDRAW", "SUPERSEDE", "CHECKPOINT_APPROVE"}
     states = {key: {"support": "NOT_EVALUATED", "registered": False} for key in claims}
     for event in decisions:
@@ -283,7 +285,9 @@ def validate_snapshot_package(package: dict[str, Any]) -> dict[str, Any]:
             lineage = claims[version_id]["claim_id"]; registered_by_lineage[lineage] = registered_by_lineage.get(lineage, 0) + 1
     if any(count > 1 for count in registered_by_lineage.values()): _fail("CLAIM_CURRENT_AMBIGUOUS", "one lineage may have only one registered current version")
     view = _derive_registry_view(list(claims.values()), decisions, list(sources.values()), active_scope_claim_ids={item["claim_id"] for item in claims.values()})
-    for conflict in package.get("conflicts", []): _verify_record(conflict, "CONFLICT_RECORD_HASH_INVALID"); conflict_compatibility_matrix(conflict)
+    conflicts = package.get("conflicts", [])
+    indexed(conflicts, "conflict_id", "CONFLICT_IDENTITY_INVALID")
+    for conflict in conflicts: _verify_record(conflict, "CONFLICT_RECORD_HASH_INVALID"); conflict_compatibility_matrix(conflict)
     for claim_id, claim in claims.items():
         if claim["epistemic_class"] == "REVIEWER_SYNTHESIS":
             deps = claim["supporting_claim_refs"]
@@ -301,8 +305,6 @@ def validate_snapshot_package(package: dict[str, Any]) -> dict[str, Any]:
 def adapt_legacy_case_package(legacy: dict[str, Any]) -> dict[str, Any]:
     """Copy and map only legacy roles; no frozen input is modified."""
     adapted = copy.deepcopy(legacy)
-    for source in adapted.get("sources", []):
-        source.setdefault("source_role", "MAIN")
     adapted["sources"] = adapt_legacy_case_sources(adapted.get("sources", []))
     for conflict in adapted.get("conflicts", []):
         conflict.update({"comparability": "EXPLICITLY_INCOMPARABLE", "classification": "SOURCE_INTERNAL_CONFLICT", "status": "EXCLUDED"})

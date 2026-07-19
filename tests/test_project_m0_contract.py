@@ -66,6 +66,10 @@ class M0ContractTests(unittest.TestCase):
         with self.assertRaises(ContractError): validate_snapshot_package(duplicate)
         double = json.loads(json.dumps(package)); extra = json.loads(json.dumps(double["claims"][0])); extra["claim_version_id"] = "good@2"; extra["claim_version"] = 2; double["claims"].append(extra); double["decisions"].append({"event_id": "register-second", "claim_version_id": "good@2", "event_type": "REGISTER", "record_sha256": ""});
         with self.assertRaises(ContractError): validate_snapshot_package(double)
+        duplicate_event = json.loads(json.dumps(package)); duplicate_event["decisions"].append(duplicate_event["decisions"][0])
+        with self.assertRaises(ContractError): validate_snapshot_package(duplicate_event)
+        duplicate_conflict = json.loads(json.dumps(package)); duplicate_conflict["conflicts"].append(duplicate_conflict["conflicts"][0])
+        with self.assertRaises(ContractError): validate_snapshot_package(duplicate_conflict)
 
     def test_source_consumption_rechecks_pinned_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -168,6 +172,8 @@ class M0ContractTests(unittest.TestCase):
             outside = Path(tmp) / "outside.txt"; outside.write_text("outside")
             (root / "external.txt").symlink_to(outside)
             with self.assertRaises(ContractError): validate_source_path(root, "external.txt")
+            (root / "dir").symlink_to(root, target_is_directory=True)
+            with self.assertRaises(ContractError): validate_source_path(root, "dir/good.txt")
 
     def test_production_multi_input_validator_rejects_case_collision_and_generic_core_has_no_case_id(self) -> None:
         from review_writer.project.path_safety import PathSafetyError, validate_source_inputs

@@ -42,12 +42,12 @@ def _read_snapshot_hash(path: Path) -> str:
     return snapshot_hash
 
 
-def _validate_report(manifest_path: Path) -> dict[str, Any]:
+def _validate_report(manifest_path: Path, allowed_adapter_refs: frozenset[str] = frozenset()) -> dict[str, Any]:
     try:
         editable = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ManifestResolutionError("PROJECT_MANIFEST_UNREADABLE", str(exc)) from exc
-    resolved = validate_manifest_inputs(editable, manifest_path.parent)
+    resolved = validate_manifest_inputs(editable, manifest_path.parent, allowed_adapter_refs=allowed_adapter_refs)
     from review_writer.project.manifest import resolved_config_sha256
     config_hash = resolved_config_sha256({key: value for key, value in resolved.items() if key != "source_hashes"})
     return {
@@ -59,8 +59,8 @@ def _validate_report(manifest_path: Path) -> dict[str, Any]:
     }
 
 
-def _status_report(manifest_path: Path, snapshot_path: Path) -> dict[str, Any]:
-    validate = _validate_report(manifest_path)
+def _status_report(manifest_path: Path, snapshot_path: Path, allowed_adapter_refs: frozenset[str] = frozenset()) -> dict[str, Any]:
+    validate = _validate_report(manifest_path, allowed_adapter_refs)
     resolved, config_hash = load_resolved_project_manifest(manifest_path)
     snapshot_hash = _read_snapshot_hash(snapshot_path)
     changed = config_hash != snapshot_hash
@@ -94,10 +94,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     validate = subparsers.add_parser("validate", help="Validate and resolve one editable ProjectManifest")
     validate.add_argument("--manifest", type=Path, required=True)
+    validate.add_argument("--allowed-adapter-ref", action="append", default=[])
 
     status = subparsers.add_parser("status", help="Compare current resolved config with an immutable snapshot")
     status.add_argument("--manifest", type=Path, required=True)
     status.add_argument("--snapshot", type=Path, required=True)
+    status.add_argument("--allowed-adapter-ref", action="append", default=[])
     return parser
 
 
@@ -105,9 +107,9 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.command == "validate":
-            report = _validate_report(args.manifest)
+            report = _validate_report(args.manifest, frozenset(args.allowed_adapter_ref))
         else:
-            report = _status_report(args.manifest, args.snapshot)
+            report = _status_report(args.manifest, args.snapshot, frozenset(args.allowed_adapter_ref))
     except (ManifestResolutionError, ContractError) as exc:
         print(json.dumps({"status": "INVALID", "error_code": exc.code, "message": str(exc)}), file=sys.stderr)
         return 2
