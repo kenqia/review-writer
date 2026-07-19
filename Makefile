@@ -33,7 +33,7 @@ m0-portability-check:
 	@! rg -n 'P403|F3I|F47A|44/37/7|allene' review_writer/project schemas/project scripts/project.py
 
 windows-m0-smoke:
-	powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/fixtures/m0/windows_native_smoke.ps1
+	powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/fixtures/m0/windows_native_smoke.ps1 -RepoRoot "$$(wslpath -w $(CURDIR))"
 
 finished-review-delivery-check:
 	/usr/bin/python3 tests/test_fresh_source_syntax.py

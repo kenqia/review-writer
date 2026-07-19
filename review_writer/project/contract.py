@@ -257,13 +257,18 @@ def validate_snapshot_package(package: dict[str, Any]) -> dict[str, Any]:
     sources = indexed(package.get("sources", []), "source_id", "SOURCE_IDENTITY_INVALID")
     parses = indexed(package.get("parses", []), "parse_artifact_id", "PARSE_IDENTITY_INVALID")
     source_enums = {"document_role": {"MAIN", "SI"}, "governance_status": {"INCLUDED", "EXCLUDED"}, "usage_role": {"EVIDENCE", "BACKGROUND", "DISCOVERY_ONLY"}, "availability_status": {"PARSED", "FULL_TEXT_AVAILABLE", "METADATA_ONLY"}, "integrity_status": {"VALIDATED", "QUARANTINED", "UNVERIFIED"}}
-    required_source = {"project_id", "source_id", "source_version", "content_sha256", "document_role", "usage_role", "governance_status", "availability_status", "integrity_status", "active_parse_artifact_id", "relative_path"}
-    if not sources or not parses or any(_verify_record(source, "SOURCE_RECORD_HASH_INVALID") or not required_source <= set(source) or source.get("project_id") != project_id or not isinstance(source.get("source_version"), str) or not source["source_version"] or not _require_hash(source.get("content_sha256"), "SOURCE_HASH_INVALID") or not isinstance(source.get("relative_path"), str) or any(source.get(field) not in values for field, values in source_enums.items()) or (source.get("availability_status") == "PARSED" and (not isinstance(source.get("active_parse_artifact_id"), str) or not source["active_parse_artifact_id"])) for source in sources.values()):
+    required_source = {"project_id", "source_id", "source_version", "supersedes_source_version", "status_reason_code", "validation_report_ref", "content_sha256", "document_role", "usage_role", "governance_status", "availability_status", "integrity_status", "active_parse_artifact_id", "relative_path"}
+    if not sources or not parses or any(_verify_record(source, "SOURCE_RECORD_HASH_INVALID") or not required_source <= set(source) or source.get("project_id") != project_id or not isinstance(source.get("source_version"), str) or not source["source_version"] or not isinstance(source.get("status_reason_code"), str) or not source["status_reason_code"] or not isinstance(source.get("validation_report_ref"), str) or not source["validation_report_ref"] or (source.get("supersedes_source_version") is not None and (not isinstance(source.get("supersedes_source_version"), str) or not source["supersedes_source_version"])) or not _require_hash(source.get("content_sha256"), "SOURCE_HASH_INVALID") or not isinstance(source.get("relative_path"), str) or any(source.get(field) not in values for field, values in source_enums.items()) or (source.get("availability_status") == "PARSED" and (not isinstance(source.get("active_parse_artifact_id"), str) or not source["active_parse_artifact_id"])) for source in sources.values()):
         _fail("SOURCE_RECORD_INVALID", "source record binding missing")
     for parse in parses.values():
         _verify_record(parse, "PARSE_RECORD_HASH_INVALID")
         if parse.get("project_id") != project_id or parse.get("source_id") not in sources or parse.get("source_content_sha256") != sources[parse["source_id"]].get("content_sha256"):
             _fail("PARSE_ARTIFACT_INVALID", "parse must bind current source hash")
+    for source in sources.values():
+        if source["availability_status"] == "PARSED":
+            parse = parses.get(source["active_parse_artifact_id"])
+            if not parse or parse.get("project_id") != project_id or parse.get("source_id") != source["source_id"] or parse.get("source_content_sha256") != source["content_sha256"] or parse.get("validation_status") != "VALIDATED":
+                _fail("PARSE_ARTIFACT_INVALID", "active parse does not close source record")
     claims = indexed(package.get("claims", []), "claim_version_id", "CLAIM_IDENTITY_INVALID")
     if not claims: _fail("CLAIM_RECORD_INVALID", "claims required")
     for claim in claims.values(): _verify_record(claim, "CLAIM_RECORD_HASH_INVALID"); _validate_claim(claim, sources, parses)

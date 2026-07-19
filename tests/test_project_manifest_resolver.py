@@ -178,7 +178,7 @@ class ProjectManifestResolverTests(unittest.TestCase):
                     for nested in value: unseal(nested)
             unseal(snapshot_payload["snapshot_package"])
             fixture_source = snapshot_payload["snapshot_package"]["sources"][0]
-            fixture_source.update({"project_id": base["project_id"], "source_id": "SYN001_MAIN", "document_role": "MAIN", "relative_path": "syn001/main.pdf", "content_sha256": __import__("hashlib").sha256(source_path.read_bytes()).hexdigest()})
+            fixture_source.update({"project_id": base["project_id"], "source_id": "SYN001_MAIN", "document_role": "MAIN", "relative_path": "syn001/main.pdf", "content_sha256": __import__("hashlib").sha256(source_path.read_bytes()).hexdigest(), "supersedes_source_version": None, "status_reason_code": "SYNTHETIC", "validation_report_ref": "report"})
             snapshot_payload["snapshot_package"]["project_id"] = base["project_id"]
             snapshot_payload["snapshot_package"]["parses"][0].update({"project_id": base["project_id"], "source_id": "SYN001_MAIN", "source_content_sha256": fixture_source["content_sha256"]})
             snapshot_payload["snapshot_package"]["claims"][0]["project_id"] = base["project_id"]

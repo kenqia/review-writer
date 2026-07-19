@@ -1,3 +1,4 @@
+param([Parameter(Mandatory=$true)][string]$RepoRoot)
 $ErrorActionPreference = 'Stop'
 $temp = [IO.Path]::GetFullPath($env:TEMP)
 $root = [IO.Path]::GetFullPath((Join-Path $temp 'review-writer-m0-pr-a-windows-smoke'))
@@ -5,7 +6,7 @@ if ((Split-Path -Parent $root) -ne $temp -or (Split-Path -Leaf $root) -ne 'revie
 New-Item -ItemType Directory -Force $root | Out-Null
 $data = Join-Path $root 'data'; if (Test-Path -LiteralPath $data) { Remove-Item -LiteralPath $data -Recurse -Force }
 $outside = Join-Path $root 'outside'; if (Test-Path -LiteralPath $outside) { Remove-Item -LiteralPath $outside -Recurse -Force }
-$src = '\\wsl.localhost\Ubuntu\home\kenqia\my_folder\review-writer'
+$src = [IO.Path]::GetFullPath($RepoRoot)
 foreach ($item in @('review_writer\project\path_safety.py','schemas\project\project_manifest.schema.json','tests\fixtures\m0\synthetic\project.manifest.json')) {
   $to = Join-Path $root $item; New-Item -ItemType Directory -Force (Split-Path -Parent $to) | Out-Null; Copy-Item (Join-Path $src $item) $to -Force
 }

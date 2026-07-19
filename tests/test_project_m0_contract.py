@@ -89,6 +89,16 @@ class M0ContractTests(unittest.TestCase):
         with self.assertRaises(ContractError) as error: validate_snapshot_package(seal_snapshot_package(broken))
         self.assertEqual(error.exception.code, "SOURCE_RECORD_INVALID")
 
+    def test_parsed_source_requires_closed_active_parse_and_audit_fields(self) -> None:
+        raw = json.loads((FIXTURE.parent / "case01-adapter/fixture.json").read_text(encoding="utf-8"))
+        adapted = resolve_adapter(FROZEN_ADAPTER_ID)(raw)
+        for field in ("status_reason_code", "validation_report_ref", "supersedes_source_version"):
+            broken = copy.deepcopy(adapted); broken["sources"][0].pop(field)
+            with self.assertRaises(ContractError): validate_snapshot_package(seal_snapshot_package(broken))
+        broken = copy.deepcopy(adapted); broken["sources"][0]["active_parse_artifact_id"] = "missing"
+        with self.assertRaises(ContractError) as error: validate_snapshot_package(seal_snapshot_package(broken))
+        self.assertEqual(error.exception.code, "PARSE_ARTIFACT_INVALID")
+
     def test_source_consumption_rechecks_pinned_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); source = root / "paper.txt"; source.write_text("pinned", encoding="utf-8")
