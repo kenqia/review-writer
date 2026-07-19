@@ -42,11 +42,13 @@ class M0ContractTests(unittest.TestCase):
 
     def adapter_package(self) -> tuple[dict, dict, dict]:
         root = FIXTURE.parent / "case01-adapter"
+        source_bytes = (root / "fixture.json").read_bytes()
         manifest = json.loads((root / "project.manifest.json").read_text(encoding="utf-8"))
         raw = json.loads((root / "fixture.json").read_text(encoding="utf-8"))
         before = copy.deepcopy(raw)
         result = adapt_manifest_package(manifest, root, raw)
         self.assertEqual(raw, before)
+        self.assertEqual((root / "fixture.json").read_bytes(), source_bytes)
         return manifest, raw, result["package"]
 
     def test_synthetic_manifest_validates_files_pairing_hashes_and_portable_collisions(self) -> None:
@@ -153,7 +155,7 @@ class M0ContractTests(unittest.TestCase):
             self.assertFalse(verify_closure(destination))
 
     def test_snapshot_package_validates_bound_records_and_detects_each_tamper(self) -> None:
-        package = seal_snapshot_package(resolve_adapter(FROZEN_ADAPTER_ID)(json.loads((FIXTURE.parent / "case01-adapter/fixture.json").read_text(encoding="utf-8"))))
+        _manifest, _raw, package = self.adapter_package()
         view = validate_snapshot_package(package)
         self.assertTrue(view["closed"])
         self.assertEqual(view["summary"], {"project": "CLOSED", "corpus": "CLOSED", "claims": "CLOSED", "checkpoint": "CLOSED", "run": "CLOSED", "release": "CLOSED"})
@@ -167,7 +169,7 @@ class M0ContractTests(unittest.TestCase):
                 validate_snapshot_package(broken)
 
     def test_claim_validation_rejects_zero_evidence_ai_inference_and_stale_dependencies(self) -> None:
-        package = seal_snapshot_package(resolve_adapter(FROZEN_ADAPTER_ID)(json.loads((FIXTURE.parent / "case01-adapter/fixture.json").read_text(encoding="utf-8"))))
+        _manifest, _raw, package = self.adapter_package()
         zero = json.loads(json.dumps(package))
         zero["claims"][0]["evidence_refs"] = []
         with self.assertRaises(ContractError):

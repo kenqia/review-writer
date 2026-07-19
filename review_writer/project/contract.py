@@ -95,7 +95,9 @@ def adapt_manifest_package(manifest: dict[str, Any], manifest_directory: Path, r
     try: adapted = resolve_adapter(adapter_id)(raw_package)
     except ValueError as exc: _fail("ADAPTER_REF_INVALID", str(exc))
     config = resolved_config_sha256({key: value for key, value in resolved.items() if key != "source_hashes"})
-    if adapted.get("project_id") != resolved["project_id"] or adapted.get("resolved_config_sha256") != config or {source.get("source_id"): source.get("content_sha256") for source in adapted.get("sources", [])} != resolved["source_hashes"]:
+    manifest_sources = {item["source_id"]: (resolved["source_hashes"][item["source_id"]], item["relative_path"], item["document_role"], item["usage_role"]) for item in resolved["initial_source_inputs"]}
+    package_sources = {source.get("source_id"): (source.get("content_sha256"), source.get("relative_path"), source.get("document_role"), source.get("usage_role")) for source in adapted.get("sources", [])}
+    if adapted.get("project_id") != resolved["project_id"] or adapted.get("resolved_config_sha256") != config or package_sources != manifest_sources:
         _fail("ADAPTER_PACKAGE_BINDING_INVALID", "adapted package does not bind manifest project/config/corpus")
     sealed = seal_snapshot_package(adapted)
     return {"package": sealed, "view": validate_snapshot_package(sealed)}
@@ -154,13 +156,20 @@ def conflict_compatibility_matrix(conflict: dict[str, Any]) -> dict[str, Any]:
     domains = {"comparability_status": {"COMPARABLE", "PARTIALLY_COMPARABLE", "NONCOMPARABLE"}, "classification": {"SOURCE_INTERNAL_CONFLICT", "CROSS_SOURCE_DISAGREEMENT", "ACADEMIC_CONTROVERSY"}, "status": {"OPEN", "RESOLVED", "ACCEPTED_UNRESOLVED", "DISMISSED_AS_ARTIFACT"}, "manuscript_treatment": {"BLOCKED", "EXCLUDED", "ATTRIBUTED_POSITIONS", "UNRESOLVED_CONTROVERSY", "RESOLVED_SYNTHESIS"}}
     if any(conflict.get(key) not in values for key, values in domains.items()): _fail("CONFLICT_COMBINATION_INVALID", "explicit conflict enum missing or unknown")
     comp, classification, status, treatment = (conflict["comparability_status"], conflict["classification"], conflict["status"], conflict["manuscript_treatment"])
-    valid = True
-    if status == "DISMISSED_AS_ARTIFACT": valid = treatment == "EXCLUDED"
-    if classification in {"SOURCE_INTERNAL_CONFLICT", "CROSS_SOURCE_DISAGREEMENT"} and treatment == "UNRESOLVED_CONTROVERSY": valid = False
-    if classification == "ACADEMIC_CONTROVERSY" and status == "ACCEPTED_UNRESOLVED": valid = treatment in {"UNRESOLVED_CONTROVERSY", "ATTRIBUTED_POSITIONS"}
-    if status == "RESOLVED": valid = treatment in {"EXCLUDED", "RESOLVED_SYNTHESIS"}
-    if comp == "NONCOMPARABLE": valid = classification == "SOURCE_INTERNAL_CONFLICT" and status == "RESOLVED" and treatment == "EXCLUDED"
-    if not valid: _fail("CONFLICT_COMBINATION_INVALID", "explicit conflict matrix rejects combination")
+    if classification == "ACADEMIC_CONTROVERSY" and comp != "COMPARABLE": _fail("CONFLICT_COMBINATION_INVALID", "academic controversy requires comparable positions")
+    if comp == "NONCOMPARABLE":
+        if (classification, status, treatment) != ("SOURCE_INTERNAL_CONFLICT", "RESOLVED", "EXCLUDED"): _fail("CONFLICT_COMBINATION_INVALID", "noncomparable matrix")
+    elif status == "DISMISSED_AS_ARTIFACT":
+        if treatment != "EXCLUDED": _fail("CONFLICT_COMBINATION_INVALID", "dismissed artifact matrix")
+    elif status == "RESOLVED":
+        if treatment not in {"EXCLUDED", "RESOLVED_SYNTHESIS"}: _fail("CONFLICT_COMBINATION_INVALID", "resolved matrix")
+    elif classification in {"SOURCE_INTERNAL_CONFLICT", "CROSS_SOURCE_DISAGREEMENT"}:
+        if status not in {"OPEN", "ACCEPTED_UNRESOLVED"} or treatment not in {"BLOCKED", "EXCLUDED", "ATTRIBUTED_POSITIONS"}: _fail("CONFLICT_COMBINATION_INVALID", "source disagreement matrix")
+    elif classification == "ACADEMIC_CONTROVERSY" and status == "ACCEPTED_UNRESOLVED":
+        if treatment not in {"UNRESOLVED_CONTROVERSY", "ATTRIBUTED_POSITIONS"}: _fail("CONFLICT_COMBINATION_INVALID", "academic accepted matrix")
+    elif classification == "ACADEMIC_CONTROVERSY" and status == "OPEN":
+        if treatment != "BLOCKED": _fail("CONFLICT_COMBINATION_INVALID", "academic open matrix")
+    else: _fail("CONFLICT_COMBINATION_INVALID", "explicit conflict matrix rejects combination")
     return {key: conflict[key] for key in domains}
 
 
