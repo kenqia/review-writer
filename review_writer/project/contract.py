@@ -102,7 +102,7 @@ def source_is_claim_eligible(source: dict[str, Any], reference: dict[str, Any]) 
     )
 
 
-def claim_registry_view(claims: list[dict[str, Any]], decisions: list[dict[str, Any]], sources: list[dict[str, Any]], *, active_scope_claim_ids: set[str]) -> dict[str, dict[str, Any]]:
+def _derive_registry_view(claims: list[dict[str, Any]], decisions: list[dict[str, Any]], sources: list[dict[str, Any]], *, active_scope_claim_ids: set[str]) -> dict[str, dict[str, Any]]:
     """Build the M0 current/eligibility view from supplied immutable records."""
     source_by_id = {item.get("source_id"): item for item in sources}
     by_version = {item["claim_version_id"]: item for item in claims}
@@ -195,10 +195,12 @@ def verify_closure(path: Path) -> bool:
         return False
 
 
-def snapshot_view(artifact: dict[str, Any], checkpoint: dict[str, Any], run: dict[str, Any], release: dict[str, Any]) -> dict[str, Any]:
-    digest = artifact.get("artifact_sha256")
-    closed = bool(SHA256.fullmatch(str(digest))) and all(item.get(key) == digest for item, key in ((checkpoint, "approved_artifact_sha256"), (run, "snapshot_artifact_sha256"), (release, "release_artifact_sha256")))
-    return {"artifact_id": artifact.get("artifact_id"), "closed": closed}
+def consume_pinned_source(root: Path, relative_path: str, pinned_sha256: str) -> Path:
+    """Reopen the declared ordinary source and require its current byte hash."""
+    actual = validate_source_path(root, relative_path)
+    if hashlib.sha256(actual.read_bytes()).hexdigest() != _require_hash(pinned_sha256, "SOURCE_HASH_INVALID"):
+        _fail("SOURCE_CONTENT_DRIFT", "source bytes differ from immutable pinned hash")
+    return actual
 
 
 def adapt_legacy_case_sources(legacy_sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -246,15 +248,20 @@ def validate_snapshot_package(package: dict[str, Any]) -> dict[str, Any]:
     digest = _require_hash(ref.get("content_sha256"), "ARTIFACT_HASH_INVALID")
     if artifact.get("artifact_id") != ref.get("artifact_id") or digest != hashlib.sha256(_canonical_bytes(artifact.get("content"))).hexdigest():
         _fail("ARTIFACT_REF_INVALID", "artifact identity mismatch")
-    sources = {source.get("source_id"): source for source in package.get("sources", [])}
-    parses = {parse.get("parse_artifact_id"): parse for parse in package.get("parses", [])}
+    def indexed(records: list[dict[str, Any]], field: str, code: str) -> dict[str, dict[str, Any]]:
+        values = [record.get(field) for record in records]
+        if any(not isinstance(value, str) or not value for value in values) or len(values) != len(set(values)):
+            _fail(code, "duplicate or missing immutable identity")
+        return {record[field]: record for record in records}
+    sources = indexed(package.get("sources", []), "source_id", "SOURCE_IDENTITY_INVALID")
+    parses = indexed(package.get("parses", []), "parse_artifact_id", "PARSE_IDENTITY_INVALID")
     if not sources or not parses or any(_verify_record(source, "SOURCE_RECORD_HASH_INVALID") or source.get("project_id") != project_id or not _require_hash(source.get("content_sha256"), "SOURCE_HASH_INVALID") for source in sources.values()):
         _fail("SOURCE_RECORD_INVALID", "source record binding missing")
     for parse in parses.values():
         _verify_record(parse, "PARSE_RECORD_HASH_INVALID")
         if parse.get("project_id") != project_id or parse.get("source_id") not in sources or parse.get("source_content_sha256") != sources[parse["source_id"]].get("content_sha256"):
             _fail("PARSE_ARTIFACT_INVALID", "parse must bind current source hash")
-    claims = {claim.get("claim_version_id"): claim for claim in package.get("claims", [])}
+    claims = indexed(package.get("claims", []), "claim_version_id", "CLAIM_IDENTITY_INVALID")
     if not claims: _fail("CLAIM_RECORD_INVALID", "claims required")
     for claim in claims.values(): _verify_record(claim, "CLAIM_RECORD_HASH_INVALID"); _validate_claim(claim, sources, parses)
     decisions = package.get("decisions", [])
@@ -270,7 +277,12 @@ def validate_snapshot_package(package: dict[str, Any]) -> dict[str, Any]:
             if event.get("evidence_support_status") not in {"SUPPORTED", "PARTIALLY_SUPPORTED", "UNSUPPORTED", "CONTRADICTED"}: _fail("CLAIM_DECISION_INVALID", "support status invalid")
             state["support"] = event["evidence_support_status"]
         elif event["event_type"] == "REGISTER": state["registered"] = True
-    view = claim_registry_view(list(claims.values()), decisions, list(sources.values()), active_scope_claim_ids={item["claim_id"] for item in claims.values()})
+    registered_by_lineage: dict[str, int] = {}
+    for version_id, state in states.items():
+        if state["registered"]:
+            lineage = claims[version_id]["claim_id"]; registered_by_lineage[lineage] = registered_by_lineage.get(lineage, 0) + 1
+    if any(count > 1 for count in registered_by_lineage.values()): _fail("CLAIM_CURRENT_AMBIGUOUS", "one lineage may have only one registered current version")
+    view = _derive_registry_view(list(claims.values()), decisions, list(sources.values()), active_scope_claim_ids={item["claim_id"] for item in claims.values()})
     for conflict in package.get("conflicts", []): _verify_record(conflict, "CONFLICT_RECORD_HASH_INVALID"); conflict_compatibility_matrix(conflict)
     for claim_id, claim in claims.items():
         if claim["epistemic_class"] == "REVIEWER_SYNTHESIS":
@@ -289,6 +301,8 @@ def validate_snapshot_package(package: dict[str, Any]) -> dict[str, Any]:
 def adapt_legacy_case_package(legacy: dict[str, Any]) -> dict[str, Any]:
     """Copy and map only legacy roles; no frozen input is modified."""
     adapted = copy.deepcopy(legacy)
+    for source in adapted.get("sources", []):
+        source.setdefault("source_role", "MAIN")
     adapted["sources"] = adapt_legacy_case_sources(adapted.get("sources", []))
     for conflict in adapted.get("conflicts", []):
         conflict.update({"comparability": "EXPLICITLY_INCOMPARABLE", "classification": "SOURCE_INTERNAL_CONFLICT", "status": "EXCLUDED"})

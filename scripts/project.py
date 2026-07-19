@@ -20,7 +20,7 @@ from review_writer.project.manifest import (  # noqa: E402
     ManifestResolutionError,
     load_resolved_project_manifest,
 )
-from review_writer.project.contract import ContractError, snapshot_view, validate_manifest_inputs, validate_snapshot_package  # noqa: E402
+from review_writer.project.contract import ContractError, validate_manifest_inputs, validate_snapshot_package  # noqa: E402
 
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -78,6 +78,8 @@ def _status_report(manifest_path: Path, snapshot_path: Path) -> dict[str, Any]:
         if not isinstance(package, dict):
             raise ManifestResolutionError("CONFIG_SNAPSHOT_PACKAGE_REQUIRED", "status requires one sealed snapshot_package")
         package_view = validate_snapshot_package(package)
+        if package.get("resolved_config_sha256") != snapshot_hash:
+            raise ManifestResolutionError("CONFIG_SNAPSHOT_PACKAGE_DRIFT", "sealed package config hash differs from outer snapshot")
         report["snapshot_summary"] = package_view["summary"]
         report["closure"] = {"closed": package_view["closed"]}
     except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:

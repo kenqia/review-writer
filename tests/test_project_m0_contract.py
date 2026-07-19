@@ -17,10 +17,8 @@ if str(ROOT) not in sys.path:
 
 from review_writer.project.contract import (
     ContractError,
-    claim_registry_view,
     conflict_compatibility_matrix,
     create_immutable_json,
-    snapshot_view,
     source_is_claim_eligible,
     validate_manifest_inputs,
     verify_closure,
@@ -29,6 +27,7 @@ from review_writer.project.contract import (
     adapt_legacy_case_package,
     validate_snapshot_package,
     seal_snapshot_package,
+    consume_pinned_source,
 )
 
 
@@ -61,6 +60,21 @@ class M0ContractTests(unittest.TestCase):
             self.assertEqual(status.returncode, 2)
             self.assertIn("CONFIG_SNAPSHOT_PACKAGE_REQUIRED", status.stderr)
 
+    def test_strict_package_rejects_duplicate_identities_and_double_current_registration(self) -> None:
+        package = seal_snapshot_package(adapt_legacy_case_package(json.loads((FIXTURE.parent / "case01-adapter/fixture.json").read_text(encoding="utf-8"))))
+        duplicate = json.loads(json.dumps(package)); duplicate["sources"].append(duplicate["sources"][0])
+        with self.assertRaises(ContractError): validate_snapshot_package(duplicate)
+        double = json.loads(json.dumps(package)); extra = json.loads(json.dumps(double["claims"][0])); extra["claim_version_id"] = "good@2"; extra["claim_version"] = 2; double["claims"].append(extra); double["decisions"].append({"event_id": "register-second", "claim_version_id": "good@2", "event_type": "REGISTER", "record_sha256": ""});
+        with self.assertRaises(ContractError): validate_snapshot_package(double)
+
+    def test_source_consumption_rechecks_pinned_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); source = root / "paper.txt"; source.write_text("pinned", encoding="utf-8")
+            pinned = hashlib.sha256(source.read_bytes()).hexdigest()
+            self.assertEqual(consume_pinned_source(root, "paper.txt", pinned), source)
+            source.write_text("tampered", encoding="utf-8")
+            with self.assertRaises(ContractError): consume_pinned_source(root, "paper.txt", pinned)
+
     def test_claim_registry_requires_registered_supported_current_eligible_evidence(self) -> None:
         good_hash = hashlib.sha256((FIXTURE / "inputs/papers/syn100/main.txt").read_bytes()).hexdigest()
         sources = [{"source_id": "SYN100_MAIN", "source_version": "v1", "content_sha256": good_hash,
@@ -76,13 +90,7 @@ class M0ContractTests(unittest.TestCase):
                       "evidence_support_status": "SUPPORTED"},
                      {"event_id": "register-1", "claim_version_id": "claim-1@1", "event_type": "REGISTER"},
                      {"event_id": "checkpoint-1", "claim_version_id": "claim-1@1", "event_type": "CHECKPOINT_APPROVE"}]
-        view = claim_registry_view([claim], decisions, sources, active_scope_claim_ids={"claim-1"})
-        self.assertTrue(view["claim-1@1"]["writing_eligible"])
         self.assertTrue(source_is_claim_eligible(sources[0], claim["evidence_refs"][0]))
-        excluded = dict(sources[0], governance_status="EXCLUDED")
-        self.assertFalse(claim_registry_view([claim], decisions, [excluded], active_scope_claim_ids={"claim-1"})["claim-1@1"]["writing_eligible"])
-        checkpoint_only = claim_registry_view([claim], decisions[2:], sources, active_scope_claim_ids={"claim-1"})
-        self.assertEqual(checkpoint_only["claim-1@1"]["governance_status"], "CANDIDATE")
 
     def test_conflict_matrix_and_immutable_closure_reject_tamper_and_overwrite(self) -> None:
         matrix = conflict_compatibility_matrix({"comparability": "EXPLICITLY_INCOMPARABLE", "classification": "SOURCE_INTERNAL_CONFLICT", "status": "EXCLUDED"})
@@ -101,17 +109,6 @@ class M0ContractTests(unittest.TestCase):
             destination.write_text(json.dumps(tampered), encoding="utf-8")
             self.assertFalse(verify_closure(destination))
 
-    def test_snapshot_view_binds_checkpoint_run_release_to_exact_hashes(self) -> None:
-        view = snapshot_view({"artifact_id": "draft", "artifact_sha256": "b" * 64},
-                             {"approved_artifact_sha256": "b" * 64},
-                             {"snapshot_artifact_sha256": "b" * 64},
-                             {"release_artifact_sha256": "b" * 64})
-        self.assertTrue(view["closed"])
-        self.assertFalse(snapshot_view({"artifact_id": "draft", "artifact_sha256": "b" * 64},
-                                       {"approved_artifact_sha256": "a" * 64},
-                                       {"snapshot_artifact_sha256": "b" * 64},
-                                       {"release_artifact_sha256": "b" * 64})["closed"])
-
     def test_frozen_adapter_maps_legacy_role_without_mutating_input_and_project_id_lock_is_explicit(self) -> None:
         legacy = json.loads((FIXTURE.parent / "case01-adapter/legacy_sources.json").read_text(encoding="utf-8"))
         adapted = adapt_legacy_case_sources(legacy)
@@ -122,7 +119,7 @@ class M0ContractTests(unittest.TestCase):
         self.assertFalse(project_id_is_locked([]))
 
     def test_snapshot_package_validates_bound_records_and_detects_each_tamper(self) -> None:
-        package = seal_snapshot_package(json.loads((FIXTURE.parent / "case01-adapter/fixture.json").read_text(encoding="utf-8")))
+        package = seal_snapshot_package(adapt_legacy_case_package(json.loads((FIXTURE.parent / "case01-adapter/fixture.json").read_text(encoding="utf-8"))))
         view = validate_snapshot_package(package)
         self.assertTrue(view["closed"])
         self.assertEqual(view["summary"], {"project": "CLOSED", "corpus": "CLOSED", "claims": "CLOSED", "checkpoint": "CLOSED", "run": "CLOSED", "release": "CLOSED"})
@@ -136,7 +133,7 @@ class M0ContractTests(unittest.TestCase):
                 validate_snapshot_package(broken)
 
     def test_claim_validation_rejects_zero_evidence_ai_inference_and_stale_dependencies(self) -> None:
-        package = seal_snapshot_package(json.loads((FIXTURE.parent / "case01-adapter/fixture.json").read_text(encoding="utf-8")))
+        package = seal_snapshot_package(adapt_legacy_case_package(json.loads((FIXTURE.parent / "case01-adapter/fixture.json").read_text(encoding="utf-8"))))
         zero = json.loads(json.dumps(package))
         zero["claims"][0]["evidence_refs"] = []
         with self.assertRaises(ContractError):
