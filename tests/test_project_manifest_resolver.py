@@ -186,6 +186,20 @@ class ProjectManifestResolverTests(unittest.TestCase):
             for key in ("checkpoint", "run", "release"): snapshot_payload["snapshot_package"][key]["project_id"] = base["project_id"]
             snapshot_payload["snapshot_package"] = __import__("review_writer.project.contract", fromlist=["seal_snapshot_package"]).seal_snapshot_package({key: value for key, value in snapshot_payload["snapshot_package"].items() if key != "record_sha256"})
             snapshot_path.write_text(json.dumps(snapshot_payload), encoding="utf-8")
+            project_mismatch = copy.deepcopy(snapshot_payload)
+            unseal(project_mismatch["snapshot_package"])
+            for record in [project_mismatch["snapshot_package"], *project_mismatch["snapshot_package"]["sources"], *project_mismatch["snapshot_package"]["parses"], *project_mismatch["snapshot_package"]["claims"], project_mismatch["snapshot_package"]["checkpoint"], project_mismatch["snapshot_package"]["run"], project_mismatch["snapshot_package"]["release"]]: record["project_id"] = "other-project"
+            project_mismatch["snapshot_package"] = __import__("review_writer.project.contract", fromlist=["seal_snapshot_package"]).seal_snapshot_package(project_mismatch["snapshot_package"])
+            mismatch_path = root / "project-mismatch.json"; mismatch_path.write_text(json.dumps(project_mismatch), encoding="utf-8")
+            mismatch = subprocess.run([sys.executable, str(CLI_PATH), "status", "--manifest", str(manifest_path), "--snapshot", str(mismatch_path)], cwd=ROOT, text=True, capture_output=True, check=False)
+            self.assertEqual(mismatch.returncode, 2); self.assertIn("CONFIG_SNAPSHOT_PROJECT_DRIFT", mismatch.stderr)
+            corpus_mismatch = copy.deepcopy(snapshot_payload)
+            unseal(corpus_mismatch["snapshot_package"]); changed_hash = "d" * 64
+            corpus_mismatch["snapshot_package"]["sources"][0]["content_sha256"] = changed_hash; corpus_mismatch["snapshot_package"]["parses"][0]["source_content_sha256"] = changed_hash; corpus_mismatch["snapshot_package"]["claims"][0]["evidence_refs"][0]["source_content_sha256"] = changed_hash
+            corpus_mismatch["snapshot_package"] = __import__("review_writer.project.contract", fromlist=["seal_snapshot_package"]).seal_snapshot_package(corpus_mismatch["snapshot_package"])
+            mismatch_path.write_text(json.dumps(corpus_mismatch), encoding="utf-8")
+            mismatch = subprocess.run([sys.executable, str(CLI_PATH), "status", "--manifest", str(manifest_path), "--snapshot", str(mismatch_path)], cwd=ROOT, text=True, capture_output=True, check=False)
+            self.assertEqual(mismatch.returncode, 2); self.assertIn("CONFIG_SNAPSHOT_CORPUS_DRIFT", mismatch.stderr)
             equivalent = copy.deepcopy(base)
             equivalent["initial_user_intent"]["goal"] = "  Cafe\u0301 goal\ncontinued\u2003"
             equivalent_path.write_text(json.dumps(equivalent, ensure_ascii=False), encoding="utf-8")

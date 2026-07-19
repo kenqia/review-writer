@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import copy
 import json
 import subprocess
 import tempfile
@@ -60,15 +61,33 @@ class M0ContractTests(unittest.TestCase):
             self.assertIn("CONFIG_SNAPSHOT_PACKAGE_REQUIRED", status.stderr)
 
     def test_strict_package_rejects_duplicate_identities_and_double_current_registration(self) -> None:
-        package = seal_snapshot_package(resolve_adapter(FROZEN_ADAPTER_ID)(json.loads((FIXTURE.parent / "case01-adapter/fixture.json").read_text(encoding="utf-8"))))
+        raw = json.loads((FIXTURE.parent / "case01-adapter/fixture.json").read_text(encoding="utf-8"))
+        self.assertTrue(all("document_role" not in source for source in raw["sources"]))
+        self.assertEqual({source["source_role"] for source in raw["sources"]}, {"MAIN", "SI"})
+        self.assertTrue(all("legacy_kind" in conflict and not {"comparability", "classification", "status"} & set(conflict) for conflict in raw["conflicts"]))
+        adapted_raw = resolve_adapter(FROZEN_ADAPTER_ID)(raw)
+        self.assertTrue(all(source["document_role"] in {"MAIN", "SI"} for source in adapted_raw["sources"]))
+        self.assertTrue(all((conflict["comparability"], conflict["classification"], conflict["status"]) == ("EXPLICITLY_INCOMPARABLE", "SOURCE_INTERNAL_CONFLICT", "EXCLUDED") for conflict in adapted_raw["conflicts"]))
+        missing_kind = copy.deepcopy(raw); missing_kind["conflicts"][0].pop("legacy_kind")
+        with self.assertRaises(ValueError): resolve_adapter(FROZEN_ADAPTER_ID)(missing_kind)
+        package = seal_snapshot_package(adapted_raw)
         duplicate = json.loads(json.dumps(package)); duplicate["sources"].append(duplicate["sources"][0])
         with self.assertRaises(ContractError): validate_snapshot_package(duplicate)
         double = json.loads(json.dumps(package)); extra = json.loads(json.dumps(double["claims"][0])); extra["claim_version_id"] = "good@2"; extra["claim_version"] = 2; double["claims"].append(extra); double["decisions"].append({"event_id": "register-second", "claim_version_id": "good@2", "event_type": "REGISTER", "record_sha256": ""});
         with self.assertRaises(ContractError): validate_snapshot_package(double)
-        duplicate_event = json.loads(json.dumps(package)); duplicate_event["decisions"].append(duplicate_event["decisions"][0])
-        with self.assertRaises(ContractError): validate_snapshot_package(duplicate_event)
-        duplicate_conflict = json.loads(json.dumps(package)); duplicate_conflict["conflicts"].append(duplicate_conflict["conflicts"][0])
-        with self.assertRaises(ContractError): validate_snapshot_package(duplicate_conflict)
+        duplicate_event = copy.deepcopy(adapted_raw); duplicate_event["decisions"].append(copy.deepcopy(duplicate_event["decisions"][0]))
+        with self.assertRaises(ContractError) as error: validate_snapshot_package(seal_snapshot_package(duplicate_event))
+        self.assertEqual(error.exception.code, "DECISION_IDENTITY_INVALID")
+        duplicate_conflict = copy.deepcopy(adapted_raw); duplicate_conflict["conflicts"].append(copy.deepcopy(duplicate_conflict["conflicts"][0]))
+        with self.assertRaises(ContractError) as error: validate_snapshot_package(seal_snapshot_package(duplicate_conflict))
+        self.assertEqual(error.exception.code, "CONFLICT_IDENTITY_INVALID")
+        for field in ("document_role", "source_version", "active_parse_artifact_id"):
+            broken = copy.deepcopy(adapted_raw); broken["sources"][2].pop(field)
+            with self.assertRaises(ContractError) as error: validate_snapshot_package(seal_snapshot_package(broken))
+            self.assertEqual(error.exception.code, "SOURCE_RECORD_INVALID")
+        broken = copy.deepcopy(adapted_raw); broken["sources"][0]["active_parse_artifact_id"] = ""
+        with self.assertRaises(ContractError) as error: validate_snapshot_package(seal_snapshot_package(broken))
+        self.assertEqual(error.exception.code, "SOURCE_RECORD_INVALID")
 
     def test_source_consumption_rechecks_pinned_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
