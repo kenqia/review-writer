@@ -12,6 +12,7 @@ from typing import Any
 
 from .manifest import ManifestResolutionError, resolve_project_manifest
 from .path_safety import PathSafetyError, validate_relative_path, validate_source_file, validate_source_inputs
+from .adapters import PRODUCT_ADAPTER_IDS
 
 
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -48,7 +49,7 @@ def validate_source_path(root: Path, relative: str) -> Path:
     except PathSafetyError as exc: _fail("SOURCE_PATH_REPARSE", str(exc))
 
 
-def validate_manifest_inputs(manifest: dict[str, Any], manifest_directory: Path, *, allowed_adapter_refs: frozenset[str] = frozenset()) -> dict[str, Any]:
+def validate_manifest_inputs(manifest: dict[str, Any], manifest_directory: Path) -> dict[str, Any]:
     """Resolve manifest and read only ordinary, contained source inputs to hash them."""
     try:
         resolved = resolve_project_manifest(manifest)
@@ -57,7 +58,7 @@ def validate_manifest_inputs(manifest: dict[str, Any], manifest_directory: Path,
     if resolved["output_language"] != "en" or resolved["citation_style"] != "BRACKETED_NUMERIC":
         _fail("PROJECT_CONSTANT_INVALID", "output_language=en and citation_style=BRACKETED_NUMERIC are required")
     adapter = resolved.get("adapter_ref")
-    if adapter is not None and adapter not in allowed_adapter_refs:
+    if adapter is not None and adapter not in PRODUCT_ADAPTER_IDS:
         _fail("ADAPTER_REF_INVALID", "adapter_ref is not a product-maintained closed ID")
     root_value = _portable_path(resolved["paths"]["seed_source_root"])
     root = (Path(manifest_directory) / root_value).resolve(strict=True)
@@ -256,7 +257,8 @@ def validate_snapshot_package(package: dict[str, Any]) -> dict[str, Any]:
     sources = indexed(package.get("sources", []), "source_id", "SOURCE_IDENTITY_INVALID")
     parses = indexed(package.get("parses", []), "parse_artifact_id", "PARSE_IDENTITY_INVALID")
     source_enums = {"document_role": {"MAIN", "SI"}, "governance_status": {"INCLUDED", "EXCLUDED"}, "usage_role": {"EVIDENCE", "BACKGROUND", "DISCOVERY_ONLY"}, "availability_status": {"PARSED", "FULL_TEXT_AVAILABLE", "METADATA_ONLY"}, "integrity_status": {"VALIDATED", "QUARANTINED", "UNVERIFIED"}}
-    if not sources or not parses or any(_verify_record(source, "SOURCE_RECORD_HASH_INVALID") or source.get("project_id") != project_id or not _require_hash(source.get("content_sha256"), "SOURCE_HASH_INVALID") or any(field in source and source.get(field) not in values for field, values in source_enums.items()) for source in sources.values()):
+    required_source = {"project_id", "source_id", "source_version", "content_sha256", "document_role", "usage_role", "governance_status", "availability_status", "integrity_status", "active_parse_artifact_id", "relative_path"}
+    if not sources or not parses or any(_verify_record(source, "SOURCE_RECORD_HASH_INVALID") or not required_source <= set(source) or source.get("project_id") != project_id or not isinstance(source.get("source_version"), str) or not source["source_version"] or not _require_hash(source.get("content_sha256"), "SOURCE_HASH_INVALID") or not isinstance(source.get("relative_path"), str) or any(source.get(field) not in values for field, values in source_enums.items()) or (source.get("availability_status") == "PARSED" and not isinstance(source.get("active_parse_artifact_id"), str)) for source in sources.values()):
         _fail("SOURCE_RECORD_INVALID", "source record binding missing")
     for parse in parses.values():
         _verify_record(parse, "PARSE_RECORD_HASH_INVALID")

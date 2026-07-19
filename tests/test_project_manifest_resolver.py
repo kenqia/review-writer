@@ -169,6 +169,18 @@ class ProjectManifestResolverTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
+            snapshot_payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            def unseal(value):
+                if isinstance(value, dict):
+                    value.pop("record_sha256", None)
+                    for nested in value.values(): unseal(nested)
+                elif isinstance(value, list):
+                    for nested in value: unseal(nested)
+            unseal(snapshot_payload["snapshot_package"])
+            fixture_source = snapshot_payload["snapshot_package"]["sources"][0]
+            fixture_source.update({"document_role": "MAIN", "relative_path": "fixture.txt"})
+            snapshot_payload["snapshot_package"] = __import__("review_writer.project.contract", fromlist=["seal_snapshot_package"]).seal_snapshot_package({key: value for key, value in snapshot_payload["snapshot_package"].items() if key != "record_sha256"})
+            snapshot_path.write_text(json.dumps(snapshot_payload), encoding="utf-8")
             equivalent = copy.deepcopy(base)
             equivalent["initial_user_intent"]["goal"] = "  Cafe\u0301 goal\ncontinued\u2003"
             equivalent_path.write_text(json.dumps(equivalent, ensure_ascii=False), encoding="utf-8")
