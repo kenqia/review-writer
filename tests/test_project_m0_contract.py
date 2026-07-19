@@ -111,6 +111,48 @@ class M0ContractTests(unittest.TestCase):
         with self.assertRaises(ContractError) as error: validate_snapshot_package(seal_snapshot_package(broken))
         self.assertEqual(error.exception.code, "PARSE_ARTIFACT_INVALID")
 
+    def test_source_parse_strict_negative_matrix(self) -> None:
+        _manifest, raw, _package = self.adapter_package(); adapted = resolve_adapter(FROZEN_ADAPTER_ID)(raw)
+        for field in ("status_reason_code", "validation_report_ref", "supersedes_source_version"):
+            for value in (None, ""):
+                broken = copy.deepcopy(adapted)
+                if value is None: broken["sources"][0].pop(field)
+                else: broken["sources"][0][field] = value
+                with self.assertRaises(ContractError) as error: validate_snapshot_package(seal_snapshot_package(broken))
+                self.assertEqual(error.exception.code, "SOURCE_RECORD_INVALID")
+        for mutate in (lambda p: p["sources"][0].update({"active_parse_artifact_id": "missing"}), lambda p: p["sources"][0].update({"active_parse_artifact_id": "parse-wrong"}), lambda p: p["parses"][0].update({"source_content_sha256": "0" * 64}), lambda p: p["parses"][0].update({"validation_status": "FAILED"})):
+            broken = copy.deepcopy(adapted); mutate(broken)
+            with self.assertRaises(ContractError) as error: validate_snapshot_package(seal_snapshot_package(broken))
+            self.assertEqual(error.exception.code, "PARSE_ARTIFACT_INVALID")
+
+    def test_manifest_adapter_binding_negative_matrix(self) -> None:
+        manifest, raw, package = self.adapter_package(); self.assertTrue(validate_snapshot_package(package)["closed"])
+        cases = [
+            ("adapter", lambda m, r: m.pop("adapter_ref"), "ADAPTER_REF_REQUIRED"),
+            ("unknown", lambda m, r: m.update({"adapter_ref": "unknown-adapter"}), "ADAPTER_REF_INVALID"),
+            ("project", lambda m, r: r.update({"project_id": "other"}), "ADAPTER_PACKAGE_BINDING_INVALID"),
+            ("config", lambda m, r: r.update({"resolved_config_sha256": "0" * 64}), "ADAPTER_PACKAGE_BINDING_INVALID"),
+            ("hash", lambda m, r: r["sources"][0].update({"content_sha256": "0" * 64}), "ADAPTER_PACKAGE_BINDING_INVALID"),
+            ("path", lambda m, r: r["sources"][0].update({"relative_path": "other.txt"}), "ADAPTER_PACKAGE_BINDING_INVALID"),
+            ("role", lambda m, r: r["sources"][0].update({"source_role": "SI"}), "ADAPTER_PACKAGE_BINDING_INVALID"),
+            ("usage", lambda m, r: r["sources"][0].update({"usage_role": "BACKGROUND"}), "ADAPTER_PACKAGE_BINDING_INVALID"),
+        ]
+        for _name, mutate, code in cases:
+            m, r = copy.deepcopy(manifest), copy.deepcopy(raw); mutate(m, r)
+            with self.assertRaises(ContractError) as error: adapt_manifest_package(m, FIXTURE.parent / "case01-adapter", r)
+            self.assertEqual(error.exception.code, code)
+
+    def test_conflict_fail_closed_matrix(self) -> None:
+        def check(c): return conflict_compatibility_matrix(c)
+        allowed = [
+            ("COMPARABLE", "SOURCE_INTERNAL_CONFLICT", "OPEN", treatment) for treatment in ("BLOCKED", "EXCLUDED", "ATTRIBUTED_POSITIONS")
+        ] + [("COMPARABLE", "CROSS_SOURCE_DISAGREEMENT", "OPEN", "ATTRIBUTED_POSITIONS")] + [("COMPARABLE", "ACADEMIC_CONTROVERSY", "ACCEPTED_UNRESOLVED", treatment) for treatment in ("UNRESOLVED_CONTROVERSY", "ATTRIBUTED_POSITIONS")] + [("COMPARABLE", "ACADEMIC_CONTROVERSY", "OPEN", "BLOCKED")] + [("COMPARABLE", "ACADEMIC_CONTROVERSY", "RESOLVED", treatment) for treatment in ("EXCLUDED", "RESOLVED_SYNTHESIS")] + [("COMPARABLE", "CROSS_SOURCE_DISAGREEMENT", "DISMISSED_AS_ARTIFACT", "EXCLUDED"), ("NONCOMPARABLE", "SOURCE_INTERNAL_CONFLICT", "RESOLVED", "EXCLUDED")]
+        for comp, cls, status, treatment in allowed: check({"comparability_status": comp, "classification": cls, "status": status, "manuscript_treatment": treatment})
+        rejected = [{}, {"comparability_status": "UNKNOWN", "classification": "SOURCE_INTERNAL_CONFLICT", "status": "OPEN", "manuscript_treatment": "BLOCKED"}, {"comparability_status": "PARTIALLY_COMPARABLE", "classification": "ACADEMIC_CONTROVERSY", "status": "OPEN", "manuscript_treatment": "BLOCKED"}, {"comparability_status": "NONCOMPARABLE", "classification": "ACADEMIC_CONTROVERSY", "status": "RESOLVED", "manuscript_treatment": "EXCLUDED"}, {"comparability_status": "COMPARABLE", "classification": "SOURCE_INTERNAL_CONFLICT", "status": "OPEN", "manuscript_treatment": "UNRESOLVED_CONTROVERSY"}, {"comparability_status": "COMPARABLE", "classification": "CROSS_SOURCE_DISAGREEMENT", "status": "OPEN", "manuscript_treatment": "RESOLVED_SYNTHESIS"}, {"comparability_status": "COMPARABLE", "classification": "ACADEMIC_CONTROVERSY", "status": "OPEN", "manuscript_treatment": "ATTRIBUTED_POSITIONS"}, {"comparability_status": "COMPARABLE", "classification": "CROSS_SOURCE_DISAGREEMENT", "status": "DISMISSED_AS_ARTIFACT", "manuscript_treatment": "BLOCKED"}, {"comparability_status": "COMPARABLE", "classification": "ACADEMIC_CONTROVERSY", "status": "RESOLVED", "manuscript_treatment": "BLOCKED"}]
+        for item in rejected:
+            with self.assertRaises(ContractError) as error: check(item)
+            self.assertEqual(error.exception.code, "CONFLICT_COMBINATION_INVALID")
+
     def test_source_consumption_rechecks_pinned_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); source = root / "paper.txt"; source.write_text("pinned", encoding="utf-8")
