@@ -20,7 +20,7 @@ from review_writer.project.manifest import (  # noqa: E402
     ManifestResolutionError,
     load_resolved_project_manifest,
 )
-from review_writer.project.contract import snapshot_view, validate_manifest_inputs  # noqa: E402
+from review_writer.project.contract import ContractError, snapshot_view, validate_manifest_inputs, validate_snapshot_package  # noqa: E402
 
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -77,6 +77,11 @@ def _status_report(manifest_path: Path, snapshot_path: Path) -> dict[str, Any]:
         closure = payload.get("closure")
         if isinstance(closure, dict):
             report["closure"] = snapshot_view(closure["artifact"], closure["checkpoint"], closure["run"], closure["release"])
+        package = payload.get("snapshot_package")
+        if isinstance(package, dict):
+            package_view = validate_snapshot_package(package)
+            report["snapshot_summary"] = package_view["summary"]
+            report["closure"] = {"closed": package_view["closed"]}
     except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
         raise ManifestResolutionError("CONFIG_SNAPSHOT_CLOSURE_INVALID", str(exc)) from exc
     report["source_hashes"] = validate["source_hashes"]
@@ -103,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
             report = _validate_report(args.manifest)
         else:
             report = _status_report(args.manifest, args.snapshot)
-    except ManifestResolutionError as exc:
+    except (ManifestResolutionError, ContractError) as exc:
         print(json.dumps({"status": "INVALID", "error_code": exc.code, "message": str(exc)}), file=sys.stderr)
         return 2
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))

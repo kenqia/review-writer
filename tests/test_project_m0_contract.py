@@ -26,6 +26,8 @@ from review_writer.project.contract import (
     verify_closure,
     adapt_legacy_case_sources,
     project_id_is_locked,
+    adapt_legacy_case_package,
+    validate_snapshot_package,
 )
 
 
@@ -117,6 +119,55 @@ class M0ContractTests(unittest.TestCase):
         self.assertEqual(adapted[1]["document_role"], "SI")
         self.assertTrue(project_id_is_locked([{"record_type": "RunManifest"}]))
         self.assertFalse(project_id_is_locked([]))
+
+    def test_snapshot_package_validates_bound_records_and_detects_each_tamper(self) -> None:
+        package = json.loads((FIXTURE.parent / "case01-adapter/fixture.json").read_text(encoding="utf-8"))
+        view = validate_snapshot_package(package)
+        self.assertTrue(view["closed"])
+        self.assertEqual(view["summary"], {"project": "CLOSED", "corpus": "CLOSED", "claims": "CLOSED", "checkpoint": "CLOSED", "run": "CLOSED", "release": "CLOSED"})
+        for path in (("run", "resolved_config_sha256"), ("release", "artifact_ref", "content_sha256"), ("checkpoint", "approved_artifact_sha256"), ("decisions", 0, "event_type")):
+            broken = json.loads(json.dumps(package))
+            target = broken
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = "BAD" if path[-1] != "event_type" else "UNKNOWN"
+            with self.assertRaises(ContractError):
+                validate_snapshot_package(broken)
+
+    def test_claim_validation_rejects_zero_evidence_ai_inference_and_stale_dependencies(self) -> None:
+        package = json.loads((FIXTURE.parent / "case01-adapter/fixture.json").read_text(encoding="utf-8"))
+        zero = json.loads(json.dumps(package))
+        zero["claims"][0]["evidence_refs"] = []
+        with self.assertRaisesRegex(ContractError, "CLAIM_EVIDENCE_REQUIRED"):
+            validate_snapshot_package(zero)
+        ai = json.loads(json.dumps(package))
+        ai["decisions"][1]["event_type"] = "AI_INFERENCE"
+        with self.assertRaisesRegex(ContractError, "AI_INFERENCE"):
+            validate_snapshot_package(ai)
+        stale = json.loads(json.dumps(package))
+        stale["claims"].append({"project_id": stale["project_id"], "claim_id": "synthesis", "claim_version": 1, "claim_version_id": "synthesis@1", "claim_text": "Synthesis", "claim_text_sha256": hashlib.sha256(b"Synthesis").hexdigest(), "epistemic_class": "REVIEWER_SYNTHESIS", "evidence_refs": [], "supporting_claim_refs": ["missing@1"], "conflict_refs": []})
+        stale["decisions"].extend([{"event_id": "d3", "claim_version_id": "synthesis@1", "event_type": "EVIDENCE_SUPPORT", "evidence_support_status": "SUPPORTED"}, {"event_id": "d4", "claim_version_id": "synthesis@1", "event_type": "REGISTER"}])
+        with self.assertRaisesRegex(ContractError, "SUPPORTING_CLAIM"):
+            validate_snapshot_package(stale)
+
+    def test_broad_portability_failure_is_exactly_the_preexisting_orch_blocker(self) -> None:
+        run = subprocess.run(["make", "portability-check"], cwd=ROOT, text=True, capture_output=True, check=False)
+        report = json.loads(Path("/tmp/portability_report.json").read_text(encoding="utf-8"))
+        self.assertNotEqual(run.returncode, 0)
+        self.assertEqual(report["errors"], [{"path": "docs/agent-tasks/ORCH-001/owner_replacement_2.json", "line": 9, "pattern": "kenqia_home", "severity": "error", "context": "\"/home/kenqia/templates/kenqia-ai-project-template orchestration paths\""}])
+
+    def test_source_path_rejects_internal_and_external_symlink_and_hash_tamper(self) -> None:
+        from review_writer.project.contract import validate_source_path
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "root"; root.mkdir(); good = root / "good.txt"; good.write_text("one")
+            self.assertEqual(validate_source_path(root, "good.txt").read_text(), "one")
+            good.write_text("two")
+            self.assertNotEqual(hashlib.sha256(b"one").hexdigest(), hashlib.sha256(validate_source_path(root, "good.txt").read_bytes()).hexdigest())
+            (root / "internal.txt").symlink_to(good)
+            with self.assertRaises(ContractError): validate_source_path(root, "internal.txt")
+            outside = Path(tmp) / "outside.txt"; outside.write_text("outside")
+            (root / "external.txt").symlink_to(outside)
+            with self.assertRaises(ContractError): validate_source_path(root, "external.txt")
 
 
 if __name__ == "__main__":

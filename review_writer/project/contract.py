@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .manifest import ManifestResolutionError, resolve_project_manifest
+from .path_safety import PathSafetyError, validate_relative_path, validate_source_file
 
 
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -30,14 +31,8 @@ def _fail(code: str, message: str) -> None:
 
 
 def _portable_path(value: str) -> str:
-    if not isinstance(value, str) or not value or "\\" in value or value.startswith("/"):
-        _fail("SOURCE_PATH_NONCANONICAL", "paths must be non-empty relative POSIX paths")
-    if re.match(r"^[A-Za-z]:", value) or value.startswith("//") or value.startswith("\\\\"):
-        _fail("SOURCE_PATH_ABSOLUTE", "drive and UNC paths are forbidden")
-    pieces = value.split("/")
-    if any(piece in {"", ".", ".."} for piece in pieces):
-        _fail("SOURCE_PATH_NONCANONICAL", "dot, traversal, and repeated separators are forbidden")
-    return "/".join(pieces)
+    try: return validate_relative_path(value)
+    except PathSafetyError as exc: _fail("SOURCE_PATH_NONCANONICAL", str(exc))
 
 
 def _within(root: Path, target: Path) -> bool:
@@ -46,6 +41,12 @@ def _within(root: Path, target: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def validate_source_path(root: Path, relative: str) -> Path:
+    """Standard-library-only path boundary used by both local and Windows smoke."""
+    try: return validate_source_file(root, relative)
+    except PathSafetyError as exc: _fail("SOURCE_PATH_REPARSE", str(exc))
 
 
 def validate_manifest_inputs(manifest: dict[str, Any], manifest_directory: Path) -> dict[str, Any]:
@@ -77,15 +78,7 @@ def validate_manifest_inputs(manifest: dict[str, Any], manifest_directory: Path)
         if collision_key in normalized_paths:
             _fail("NORMALIZED_SOURCE_PATH_DUPLICATE", "source paths collide across Windows/POSIX")
         normalized_paths.add(collision_key)
-        candidate = root.joinpath(*relative.split("/"))
-        try:
-            actual = candidate.resolve(strict=True)
-        except OSError as exc:
-            _fail("SOURCE_PATH_UNREADABLE", str(exc))
-        if not _within(root, actual):
-            _fail("SOURCE_PATH_ESCAPE", "symlink or reparse target escapes seed root")
-        if not actual.is_file():
-            _fail("SOURCE_PATH_NOT_ORDINARY_FILE", "source input must be an ordinary file")
+        actual = validate_source_path(root, relative)
         hashes[source_id] = hashlib.sha256(actual.read_bytes()).hexdigest()
         papers.setdefault(item["paper_id"], []).append(item)
     for paper_id, items in papers.items():
@@ -204,3 +197,76 @@ def adapt_legacy_case_sources(legacy_sources: list[dict[str, Any]]) -> list[dict
 def project_id_is_locked(immutable_records: list[dict[str, Any]]) -> bool:
     """A caller supplies only immutable project/run record presence; no history is mutated."""
     return any(record.get("record_type") in {"ProjectRecord", "RunManifest"} for record in immutable_records)
+
+
+def _require_hash(value: Any, code: str) -> str:
+    if not isinstance(value, str) or not SHA256.fullmatch(value):
+        _fail(code, "expected lowercase SHA-256")
+    return value
+
+
+def _validate_claim(claim: dict[str, Any], sources: dict[str, dict[str, Any]], parses: dict[str, dict[str, Any]]) -> None:
+    required = {"project_id", "claim_id", "claim_version", "claim_version_id", "claim_text", "claim_text_sha256", "epistemic_class", "evidence_refs", "supporting_claim_refs", "conflict_refs"}
+    if not required <= set(claim) or claim["epistemic_class"] not in {"SOURCE_OBSERVATION", "AUTHOR_INTERPRETATION", "PROPOSED_MECHANISM", "REVIEWER_SYNTHESIS"}:
+        _fail("CLAIM_RECORD_INVALID", "minimum claim fields or class missing")
+    if hashlib.sha256(claim["claim_text"].encode("utf-8")).hexdigest() != claim["claim_text_sha256"]:
+        _fail("CLAIM_TEXT_HASH_INVALID", "claim text hash mismatch")
+    if claim["epistemic_class"] != "REVIEWER_SYNTHESIS" and not claim["evidence_refs"]:
+        _fail("CLAIM_EVIDENCE_REQUIRED", "non-synthesis claim requires evidence")
+    for ref in claim["evidence_refs"]:
+        source = sources.get(ref.get("source_id")); parse = parses.get(ref.get("parse_artifact_id"))
+        if not source or not parse or not source_is_claim_eligible(source, ref) or parse.get("source_content_sha256") != ref.get("source_content_sha256") or parse.get("validation_status") != "VALIDATED":
+            _fail("CLAIM_EVIDENCE_INVALID", "source/parse evidence reference is not current and eligible")
+
+
+def validate_snapshot_package(package: dict[str, Any]) -> dict[str, Any]:
+    """Validate one explicit immutable package; this is a view, not a replay service."""
+    project_id = package.get("project_id"); config = _require_hash(package.get("resolved_config_sha256"), "CONFIG_HASH_INVALID")
+    artifact = package.get("artifact", {}); ref = artifact.get("artifact_ref", {})
+    digest = _require_hash(ref.get("content_sha256"), "ARTIFACT_HASH_INVALID")
+    if artifact.get("artifact_id") != ref.get("artifact_id"):
+        _fail("ARTIFACT_REF_INVALID", "artifact identity mismatch")
+    sources = {source.get("source_id"): source for source in package.get("sources", [])}
+    parses = {parse.get("parse_artifact_id"): parse for parse in package.get("parses", [])}
+    if not sources or not parses or any(source.get("project_id") != project_id or not _require_hash(source.get("content_sha256"), "SOURCE_HASH_INVALID") for source in sources.values()):
+        _fail("SOURCE_RECORD_INVALID", "source record binding missing")
+    for parse in parses.values():
+        if parse.get("project_id") != project_id or parse.get("source_id") not in sources or parse.get("source_content_sha256") != sources[parse["source_id"]].get("content_sha256"):
+            _fail("PARSE_ARTIFACT_INVALID", "parse must bind current source hash")
+    claims = {claim.get("claim_version_id"): claim for claim in package.get("claims", [])}
+    if not claims: _fail("CLAIM_RECORD_INVALID", "claims required")
+    for claim in claims.values(): _validate_claim(claim, sources, parses)
+    decisions = package.get("decisions", [])
+    allowed_events = {"EVIDENCE_SUPPORT", "REGISTER", "REJECT", "WITHDRAW", "SUPERSEDE", "CHECKPOINT_APPROVE"}
+    states = {key: {"support": "NOT_EVALUATED", "registered": False} for key in claims}
+    for event in decisions:
+        if event.get("event_type") == "AI_INFERENCE": _fail("AI_INFERENCE_FORBIDDEN", "AI inference cannot register facts")
+        if event.get("event_type") not in allowed_events or event.get("claim_version_id") not in states:
+            _fail("CLAIM_DECISION_INVALID", "unknown or malformed decision")
+        state = states[event["claim_version_id"]]
+        if event["event_type"] == "EVIDENCE_SUPPORT":
+            if event.get("evidence_support_status") not in {"SUPPORTED", "PARTIALLY_SUPPORTED", "UNSUPPORTED", "CONTRADICTED"}: _fail("CLAIM_DECISION_INVALID", "support status invalid")
+            state["support"] = event["evidence_support_status"]
+        elif event["event_type"] == "REGISTER": state["registered"] = True
+    view = claim_registry_view(list(claims.values()), decisions, list(sources.values()), active_scope_claim_ids={item["claim_id"] for item in claims.values()})
+    for conflict in package.get("conflicts", []): conflict_compatibility_matrix(conflict)
+    for claim_id, claim in claims.items():
+        if claim["epistemic_class"] == "REVIEWER_SYNTHESIS":
+            deps = claim["supporting_claim_refs"]
+            if len(deps) < 2 or any(dep not in view or not view[dep]["writing_eligible"] or claims[dep]["epistemic_class"] == "REVIEWER_SYNTHESIS" for dep in deps): _fail("SUPPORTING_CLAIM_INVALID", "synthesis requires two current eligible material claims")
+        if states[claim_id]["registered"] and states[claim_id]["support"] != "SUPPORTED": _fail("CLAIM_REGISTRATION_INVALID", "only supported claim may register")
+    for key in ("checkpoint", "run", "release"):
+        record = package.get(key, {})
+        if record.get("project_id") != project_id or record.get("resolved_config_sha256") != config: _fail("SNAPSHOT_CONFIG_DRIFT", "downstream record config binding mismatch")
+    if package["checkpoint"].get("approved_artifact_sha256") != digest or package["run"].get("snapshot_artifact_sha256") != digest or package["release"].get("artifact_ref", {}).get("content_sha256") != digest:
+        _fail("SNAPSHOT_CLOSURE_INVALID", "checkpoint/run/release artifact binding mismatch")
+    return {"closed": True, "summary": {name: "CLOSED" for name in ("project", "corpus", "claims", "checkpoint", "run", "release")}, "claims": view}
+
+
+def adapt_legacy_case_package(legacy: dict[str, Any]) -> dict[str, Any]:
+    """Copy and map only legacy roles; no frozen input is modified."""
+    adapted = copy.deepcopy(legacy)
+    adapted["sources"] = adapt_legacy_case_sources(adapted.get("sources", []))
+    for conflict in adapted.get("conflicts", []):
+        conflict.update({"comparability": "EXPLICITLY_INCOMPARABLE", "classification": "SOURCE_INTERNAL_CONFLICT", "status": "EXCLUDED"})
+    return adapted
