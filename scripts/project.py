@@ -20,6 +20,7 @@ from review_writer.project.manifest import (  # noqa: E402
     ManifestResolutionError,
     load_resolved_project_manifest,
 )
+from review_writer.project.contract import snapshot_view, validate_manifest_inputs  # noqa: E402
 
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -42,20 +43,28 @@ def _read_snapshot_hash(path: Path) -> str:
 
 
 def _validate_report(manifest_path: Path) -> dict[str, Any]:
-    resolved, config_hash = load_resolved_project_manifest(manifest_path)
+    try:
+        editable = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ManifestResolutionError("PROJECT_MANIFEST_UNREADABLE", str(exc)) from exc
+    resolved = validate_manifest_inputs(editable, manifest_path.parent)
+    from review_writer.project.manifest import resolved_config_sha256
+    config_hash = resolved_config_sha256({key: value for key, value in resolved.items() if key != "source_hashes"})
     return {
         "status": "VALID",
         "validation_scope": "PROJECT_MANIFEST_AND_RESOLVED_CONFIG",
         "project_id": resolved["project_id"],
         "resolved_config_sha256": config_hash,
+        "source_hashes": resolved["source_hashes"],
     }
 
 
 def _status_report(manifest_path: Path, snapshot_path: Path) -> dict[str, Any]:
+    validate = _validate_report(manifest_path)
     resolved, config_hash = load_resolved_project_manifest(manifest_path)
     snapshot_hash = _read_snapshot_hash(snapshot_path)
     changed = config_hash != snapshot_hash
-    return {
+    report = {
         "status": "CONFIG_CHANGED" if changed else "CONFIG_CURRENT",
         "status_scope": "RESOLVED_CONFIG_ONLY",
         "project_id": resolved["project_id"],
@@ -63,6 +72,15 @@ def _status_report(manifest_path: Path, snapshot_path: Path) -> dict[str, Any]:
         "snapshot_config_sha256": snapshot_hash,
         "affected_stages": list(CONFIG_AFFECTED_STAGES) if changed else [],
     }
+    try:
+        payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        closure = payload.get("closure")
+        if isinstance(closure, dict):
+            report["closure"] = snapshot_view(closure["artifact"], closure["checkpoint"], closure["run"], closure["release"])
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise ManifestResolutionError("CONFIG_SNAPSHOT_CLOSURE_INVALID", str(exc)) from exc
+    report["source_hashes"] = validate["source_hashes"]
+    return report
 
 
 def build_parser() -> argparse.ArgumentParser:

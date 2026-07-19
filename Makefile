@@ -1,5 +1,7 @@
 .PHONY: smoke quality-check qoderwork-check provider-check qwen-hello-dry-run judge-check tiny-e2e-check real-lite-preflight real-lite-e2e-check dashboard-real-lite-check eval-baseline-check portability-check reality-audit-check clean-3paper-recommend-check clean-3paper-approval-check clean-3paper-pdf-verify-check clean-3paper-biblio-check clean-3paper-biblio-web-check clean-3paper-claims-check clean-3paper-e2e-check clean-3paper-eval-check dashboard-clean-3paper-check bailian-rag-preflight-check rag-local-retrieval-check bailian-small-kb-payload-check bailian-payload-parse-readiness-check bailian-small-kb-pilot-dry-run bailian-small-kb-official-sdk-dry-run bailian-official-pilot-fix-check bailian-sdk-e2e-closure-check bailian-small-kb-official-sdk-real-command bailian-lease-probe-dry-run bailian-lease-probe-real-command bailian-endpoint-diagnostics-check bailian-minimal-lease-repro-dry-run bailian-minimal-lease-repro-real-command bailian-sdk-transport-introspection bailian-retrieval-contract-check bailian-retrieval-qa-dry-run bailian-phase6-final-check retrieval-generation-check grounded-section-check phase7-pilot-dry-run phase7-real-preflight phase8-preflight phase8-source-inventory-check phase8-extraction-check phase8-review-package-check phase8-dashboard-check phase8-decision-writer-check phase8-ai-adjudication-check phase8-v2-semantic-input-check phase8-v3-source-first-check phase8-v3-1-source-first-check phase8-v3-1-1-source-first-check phase8-v3-1-1-layer-b-check phase8-v3-1-1-reconciliation-check phase8-v3-1-1-closure-check phase8b-grounded-vertical-slice-check phase8b-grounded-vertical-slice-v2-check phase8b-salvage-check finished-review-delivery-check bailian-transport-matrix-dry-run bailian-transport-matrix-real-command bailian-category-introspection bailian-category-discovery-dry-run bailian-category-discovery-real-command bailian-category-lease-reprobe-real-command bailian-category-type-matrix-dry-run bailian-category-type-matrix-real-command bailian-sdk-env-check bailian-sdk-env-strict-check offline-ci-workflow-check release-readiness-check
 
+.PHONY: m0-portability-check
+
 PYTHON ?= python3
 BAILIAN_SDK_PYTHON ?= conda run -n review-writer-bailian python
 PHASE8_PYTHON ?= conda run -n review-writer-phase8 python
@@ -22,6 +24,13 @@ quality-check:
 		--draft tests/fixtures/quality/good_minimal_review.md \
 		--output-json /tmp/review_writer_quality_check.json \
 		--output-md /tmp/review_writer_quality_check.md
+
+m0-portability-check:
+	$(PYTHON) tests/test_project_manifest_schema.py
+	$(PYTHON) tests/test_project_manifest_resolver.py
+	$(PYTHON) tests/test_project_m0_contract.py
+	@test -f tests/fixtures/m0/synthetic/project.manifest.json
+	@! rg -n 'P403|F3I|F47A|44/37/7|allene' review_writer/project schemas/project scripts/project.py
 
 finished-review-delivery-check:
 	/usr/bin/python3 tests/test_fresh_source_syntax.py

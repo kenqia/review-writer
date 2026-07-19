@@ -115,14 +115,10 @@
       "const": "CLOSED_CORPUS"
     },
     "output_language": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 35
+      "const": "en"
     },
     "citation_style": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 80
+      "const": "BRACKETED_NUMERIC"
     },
     "paths": {
       "type": "object",

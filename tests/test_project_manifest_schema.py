@@ -23,7 +23,7 @@ def valid_manifest() -> dict:
         },
         "discovery_policy": "CLOSED_CORPUS",
         "output_language": "en",
-        "citation_style": "bracketed-numeric",
+        "citation_style": "BRACKETED_NUMERIC",
         "paths": {
             "seed_source_root": "inputs/papers",
             "project_data_root": "outputs/project-state",
@@ -92,6 +92,11 @@ class ProjectManifestSchemaTests(unittest.TestCase):
         ):
             manifest = valid_manifest()
             manifest["initial_source_inputs"][0][field] = value
+            self.assert_invalid(manifest)
+
+        for field, value in (("output_language", "zh"), ("citation_style", "bracketed-numeric")):
+            manifest = valid_manifest()
+            manifest[field] = value
             self.assert_invalid(manifest)
 
     def test_rejects_noncanonical_and_escaping_paths_at_schema_boundary(self) -> None:

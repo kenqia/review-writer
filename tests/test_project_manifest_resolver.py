@@ -29,7 +29,7 @@ def manifest() -> dict:
         },
         "discovery_policy": "CLOSED_CORPUS",
         "output_language": "en",
-        "citation_style": "bracketed-numeric",
+        "citation_style": "BRACKETED_NUMERIC",
         "paths": {
             "seed_source_root": "inputs/papers",
             "project_data_root": "outputs/project-state",
@@ -146,6 +146,9 @@ class ProjectManifestResolverTests(unittest.TestCase):
 
             base = manifest()
             base["initial_user_intent"]["goal"] = "Café goal\r\ncontinued"
+            source_path = root / "inputs/papers/syn001/main.pdf"
+            source_path.parent.mkdir(parents=True)
+            source_path.write_bytes(b"synthetic existing resolver input")
             manifest_path.write_text(json.dumps(base, ensure_ascii=False), encoding="utf-8")
             original_bytes = manifest_path.read_bytes()
 

@@ -7,6 +7,7 @@ from .manifest import (
     resolve_project_manifest,
     resolved_config_sha256,
 )
+from .contract import ContractError
 
 __all__ = [
     "CONFIG_AFFECTED_STAGES",
@@ -14,4 +15,5 @@ __all__ = [
     "load_resolved_project_manifest",
     "resolve_project_manifest",
     "resolved_config_sha256",
+    "ContractError",
 ]
