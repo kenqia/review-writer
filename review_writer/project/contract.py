@@ -11,11 +11,10 @@ from pathlib import Path
 from typing import Any
 
 from .manifest import ManifestResolutionError, resolve_project_manifest
-from .path_safety import PathSafetyError, validate_relative_path, validate_source_file
+from .path_safety import PathSafetyError, validate_relative_path, validate_source_file, validate_source_inputs
 
 
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
-ADAPTER_REFS = frozenset({"case-01-frozen-v1"})
 
 
 class ContractError(ValueError):
@@ -49,7 +48,7 @@ def validate_source_path(root: Path, relative: str) -> Path:
     except PathSafetyError as exc: _fail("SOURCE_PATH_REPARSE", str(exc))
 
 
-def validate_manifest_inputs(manifest: dict[str, Any], manifest_directory: Path) -> dict[str, Any]:
+def validate_manifest_inputs(manifest: dict[str, Any], manifest_directory: Path, *, allowed_adapter_refs: frozenset[str] = frozenset()) -> dict[str, Any]:
     """Resolve manifest and read only ordinary, contained source inputs to hash them."""
     try:
         resolved = resolve_project_manifest(manifest)
@@ -58,14 +57,13 @@ def validate_manifest_inputs(manifest: dict[str, Any], manifest_directory: Path)
     if resolved["output_language"] != "en" or resolved["citation_style"] != "BRACKETED_NUMERIC":
         _fail("PROJECT_CONSTANT_INVALID", "output_language=en and citation_style=BRACKETED_NUMERIC are required")
     adapter = resolved.get("adapter_ref")
-    if adapter is not None and adapter not in ADAPTER_REFS:
+    if adapter is not None and adapter not in allowed_adapter_refs:
         _fail("ADAPTER_REF_INVALID", "adapter_ref is not a product-maintained closed ID")
     root_value = _portable_path(resolved["paths"]["seed_source_root"])
     root = (Path(manifest_directory) / root_value).resolve(strict=True)
     if not root.is_dir():
         _fail("SEED_SOURCE_ROOT_INVALID", "seed source root is not a directory")
     source_ids: set[str] = set()
-    normalized_paths: set[str] = set()
     papers: dict[str, list[dict[str, Any]]] = {}
     hashes: dict[str, str] = {}
     for item in resolved["initial_source_inputs"]:
@@ -74,11 +72,8 @@ def validate_manifest_inputs(manifest: dict[str, Any], manifest_directory: Path)
             _fail("SOURCE_ID_DUPLICATE", "source_id must be unique")
         source_ids.add(source_id)
         relative = _portable_path(item["relative_path"])
-        collision_key = relative.casefold()
-        if collision_key in normalized_paths:
-            _fail("NORMALIZED_SOURCE_PATH_DUPLICATE", "source paths collide across Windows/POSIX")
-        normalized_paths.add(collision_key)
-        actual = validate_source_path(root, relative)
+        try: actual = validate_source_inputs(root, [entry["relative_path"] for entry in resolved["initial_source_inputs"][:len(source_ids)]])[-1]
+        except PathSafetyError as exc: _fail("NORMALIZED_SOURCE_PATH_DUPLICATE", str(exc))
         hashes[source_id] = hashlib.sha256(actual.read_bytes()).hexdigest()
         papers.setdefault(item["paper_id"], []).append(item)
     for paper_id, items in papers.items():
@@ -151,6 +146,29 @@ def conflict_compatibility_matrix(conflict: dict[str, Any]) -> dict[str, Any]:
 def _canonical_bytes(value: Any) -> bytes:
     return json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
+def seal_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Return a canonical immutable record seal; callers never mutate old bytes."""
+    sealed = copy.deepcopy(record); sealed["record_sha256"] = ""
+    sealed["record_sha256"] = hashlib.sha256(_canonical_bytes(sealed)).hexdigest()
+    return sealed
+
+def _verify_record(record: dict[str, Any], code: str) -> None:
+    expected = _require_hash(record.get("record_sha256"), code)
+    copy_record = copy.deepcopy(record); copy_record["record_sha256"] = ""
+    if hashlib.sha256(_canonical_bytes(copy_record)).hexdigest() != expected: _fail(code, "canonical record hash mismatch")
+
+def seal_snapshot_package(package: dict[str, Any]) -> dict[str, Any]:
+    sealed = copy.deepcopy(package)
+    artifact = sealed["artifact"]; artifact["artifact_ref"]["content_sha256"] = hashlib.sha256(_canonical_bytes(artifact["content"])).hexdigest()
+    digest = artifact["artifact_ref"]["content_sha256"]
+    for key, ref_key in (("checkpoint", "approved_artifact_sha256"), ("run", "snapshot_artifact_sha256")):
+        sealed[key][ref_key] = digest
+    sealed["release"]["artifact_ref"]["content_sha256"] = digest
+    for key in ("artifact", "sources", "parses", "claims", "decisions", "conflicts", "checkpoint", "run", "release"):
+        if isinstance(sealed[key], list): sealed[key] = [seal_record(item) for item in sealed[key]]
+        else: sealed[key] = seal_record(sealed[key])
+    return seal_record(sealed)
+
 
 def create_immutable_json(path: Path, record: dict[str, Any]) -> Path:
     if path.exists():
@@ -221,25 +239,29 @@ def _validate_claim(claim: dict[str, Any], sources: dict[str, dict[str, Any]], p
 
 def validate_snapshot_package(package: dict[str, Any]) -> dict[str, Any]:
     """Validate one explicit immutable package; this is a view, not a replay service."""
+    _verify_record(package, "PACKAGE_HASH_INVALID")
     project_id = package.get("project_id"); config = _require_hash(package.get("resolved_config_sha256"), "CONFIG_HASH_INVALID")
     artifact = package.get("artifact", {}); ref = artifact.get("artifact_ref", {})
+    _verify_record(artifact, "ARTIFACT_RECORD_HASH_INVALID")
     digest = _require_hash(ref.get("content_sha256"), "ARTIFACT_HASH_INVALID")
-    if artifact.get("artifact_id") != ref.get("artifact_id"):
+    if artifact.get("artifact_id") != ref.get("artifact_id") or digest != hashlib.sha256(_canonical_bytes(artifact.get("content"))).hexdigest():
         _fail("ARTIFACT_REF_INVALID", "artifact identity mismatch")
     sources = {source.get("source_id"): source for source in package.get("sources", [])}
     parses = {parse.get("parse_artifact_id"): parse for parse in package.get("parses", [])}
-    if not sources or not parses or any(source.get("project_id") != project_id or not _require_hash(source.get("content_sha256"), "SOURCE_HASH_INVALID") for source in sources.values()):
+    if not sources or not parses or any(_verify_record(source, "SOURCE_RECORD_HASH_INVALID") or source.get("project_id") != project_id or not _require_hash(source.get("content_sha256"), "SOURCE_HASH_INVALID") for source in sources.values()):
         _fail("SOURCE_RECORD_INVALID", "source record binding missing")
     for parse in parses.values():
+        _verify_record(parse, "PARSE_RECORD_HASH_INVALID")
         if parse.get("project_id") != project_id or parse.get("source_id") not in sources or parse.get("source_content_sha256") != sources[parse["source_id"]].get("content_sha256"):
             _fail("PARSE_ARTIFACT_INVALID", "parse must bind current source hash")
     claims = {claim.get("claim_version_id"): claim for claim in package.get("claims", [])}
     if not claims: _fail("CLAIM_RECORD_INVALID", "claims required")
-    for claim in claims.values(): _validate_claim(claim, sources, parses)
+    for claim in claims.values(): _verify_record(claim, "CLAIM_RECORD_HASH_INVALID"); _validate_claim(claim, sources, parses)
     decisions = package.get("decisions", [])
     allowed_events = {"EVIDENCE_SUPPORT", "REGISTER", "REJECT", "WITHDRAW", "SUPERSEDE", "CHECKPOINT_APPROVE"}
     states = {key: {"support": "NOT_EVALUATED", "registered": False} for key in claims}
     for event in decisions:
+        _verify_record(event, "DECISION_RECORD_HASH_INVALID")
         if event.get("event_type") == "AI_INFERENCE": _fail("AI_INFERENCE_FORBIDDEN", "AI inference cannot register facts")
         if event.get("event_type") not in allowed_events or event.get("claim_version_id") not in states:
             _fail("CLAIM_DECISION_INVALID", "unknown or malformed decision")
@@ -249,7 +271,7 @@ def validate_snapshot_package(package: dict[str, Any]) -> dict[str, Any]:
             state["support"] = event["evidence_support_status"]
         elif event["event_type"] == "REGISTER": state["registered"] = True
     view = claim_registry_view(list(claims.values()), decisions, list(sources.values()), active_scope_claim_ids={item["claim_id"] for item in claims.values()})
-    for conflict in package.get("conflicts", []): conflict_compatibility_matrix(conflict)
+    for conflict in package.get("conflicts", []): _verify_record(conflict, "CONFLICT_RECORD_HASH_INVALID"); conflict_compatibility_matrix(conflict)
     for claim_id, claim in claims.items():
         if claim["epistemic_class"] == "REVIEWER_SYNTHESIS":
             deps = claim["supporting_claim_refs"]
@@ -257,6 +279,7 @@ def validate_snapshot_package(package: dict[str, Any]) -> dict[str, Any]:
         if states[claim_id]["registered"] and states[claim_id]["support"] != "SUPPORTED": _fail("CLAIM_REGISTRATION_INVALID", "only supported claim may register")
     for key in ("checkpoint", "run", "release"):
         record = package.get(key, {})
+        _verify_record(record, f"{key.upper()}_RECORD_HASH_INVALID")
         if record.get("project_id") != project_id or record.get("resolved_config_sha256") != config: _fail("SNAPSHOT_CONFIG_DRIFT", "downstream record config binding mismatch")
     if package["checkpoint"].get("approved_artifact_sha256") != digest or package["run"].get("snapshot_artifact_sha256") != digest or package["release"].get("artifact_ref", {}).get("content_sha256") != digest:
         _fail("SNAPSHOT_CLOSURE_INVALID", "checkpoint/run/release artifact binding mismatch")

@@ -13,13 +13,14 @@ $code = @'
 import sys, subprocess
 from pathlib import Path
 root=Path(__file__).parent; sys.path.insert(0,str(root/'review_writer'/'project'))
-from path_safety import PathSafetyError, validate_relative_path, validate_source_file
+from path_safety import PathSafetyError, validate_relative_path, validate_source_file, validate_source_inputs
 seed=root/'data'; (seed/'a').mkdir(parents=True,exist_ok=True); (seed/'a'/'x.txt').write_text('synthetic')
 assert validate_source_file(seed,'a/x.txt').is_file()
 for bad in ('C:/x','\\server\\share\\x','a\\x','a/../x'):
   try: validate_relative_path(bad); raise AssertionError(bad)
   except PathSafetyError: pass
-assert 'a/x.txt'.casefold() == 'a/X.txt'.casefold()
+try: validate_source_inputs(seed,['a/x.txt','a/X.txt']); raise AssertionError('case collision')
+except PathSafetyError: pass
 outside=root/'outside'; outside.mkdir(exist_ok=True); (outside/'x.txt').write_text('synthetic')
 junction=seed/'j'; subprocess.run(['cmd','/c','mklink','/J',str(junction),str(outside)],check=True,capture_output=True)
 try: validate_source_file(seed,'j/x.txt'); raise AssertionError('escape')

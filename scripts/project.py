@@ -74,14 +74,12 @@ def _status_report(manifest_path: Path, snapshot_path: Path) -> dict[str, Any]:
     }
     try:
         payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
-        closure = payload.get("closure")
-        if isinstance(closure, dict):
-            report["closure"] = snapshot_view(closure["artifact"], closure["checkpoint"], closure["run"], closure["release"])
         package = payload.get("snapshot_package")
-        if isinstance(package, dict):
-            package_view = validate_snapshot_package(package)
-            report["snapshot_summary"] = package_view["summary"]
-            report["closure"] = {"closed": package_view["closed"]}
+        if not isinstance(package, dict):
+            raise ManifestResolutionError("CONFIG_SNAPSHOT_PACKAGE_REQUIRED", "status requires one sealed snapshot_package")
+        package_view = validate_snapshot_package(package)
+        report["snapshot_summary"] = package_view["summary"]
+        report["closure"] = {"closed": package_view["closed"]}
     except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
         raise ManifestResolutionError("CONFIG_SNAPSHOT_CLOSURE_INVALID", str(exc)) from exc
     report["source_hashes"] = validate["source_hashes"]

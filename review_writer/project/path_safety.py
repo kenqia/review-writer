@@ -21,3 +21,12 @@ def validate_source_file(root: Path, relative: str) -> Path:
     except ValueError as exc: raise PathSafetyError("reparse escape") from exc
     if not actual.is_file(): raise PathSafetyError("not ordinary file")
     return actual
+
+def validate_source_inputs(root: Path, relatives: list[str]) -> list[Path]:
+    """Validate the exact multi-input collision rule used by ProjectManifest."""
+    seen: set[str] = set(); files: list[Path] = []
+    for relative in relatives:
+        canonical = validate_relative_path(relative); key = canonical.casefold()
+        if key in seen: raise PathSafetyError("cross-platform path collision")
+        seen.add(key); files.append(validate_source_file(root, canonical))
+    return files
