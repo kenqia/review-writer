@@ -10,7 +10,7 @@ def adapt_frozen_legacy_package(raw: dict) -> dict:
         if role not in {"MAIN", "SI"}: raise ValueError("legacy source_role required")
         source["document_role"] = role
     for conflict in value.get("conflicts", []):
-        if conflict.get("legacy_kind", "SOURCE_INTERNAL") != "SOURCE_INTERNAL": raise ValueError("legacy conflict kind required")
+        if conflict.get("legacy_kind") != "SOURCE_INTERNAL": raise ValueError("legacy conflict kind required")
         conflict.update({"comparability": "EXPLICITLY_INCOMPARABLE", "classification": "SOURCE_INTERNAL_CONFLICT", "status": "EXCLUDED"})
     return value
 

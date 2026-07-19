@@ -178,7 +178,12 @@ class ProjectManifestResolverTests(unittest.TestCase):
                     for nested in value: unseal(nested)
             unseal(snapshot_payload["snapshot_package"])
             fixture_source = snapshot_payload["snapshot_package"]["sources"][0]
-            fixture_source.update({"document_role": "MAIN", "relative_path": "fixture.txt"})
+            fixture_source.update({"project_id": base["project_id"], "source_id": "SYN001_MAIN", "document_role": "MAIN", "relative_path": "syn001/main.pdf", "content_sha256": __import__("hashlib").sha256(source_path.read_bytes()).hexdigest()})
+            snapshot_payload["snapshot_package"]["project_id"] = base["project_id"]
+            snapshot_payload["snapshot_package"]["parses"][0].update({"project_id": base["project_id"], "source_id": "SYN001_MAIN", "source_content_sha256": fixture_source["content_sha256"]})
+            snapshot_payload["snapshot_package"]["claims"][0]["project_id"] = base["project_id"]
+            snapshot_payload["snapshot_package"]["claims"][0]["evidence_refs"][0].update({"source_id": "SYN001_MAIN", "source_content_sha256": fixture_source["content_sha256"]})
+            for key in ("checkpoint", "run", "release"): snapshot_payload["snapshot_package"][key]["project_id"] = base["project_id"]
             snapshot_payload["snapshot_package"] = __import__("review_writer.project.contract", fromlist=["seal_snapshot_package"]).seal_snapshot_package({key: value for key, value in snapshot_payload["snapshot_package"].items() if key != "record_sha256"})
             snapshot_path.write_text(json.dumps(snapshot_payload), encoding="utf-8")
             equivalent = copy.deepcopy(base)

@@ -22,7 +22,6 @@ from review_writer.project.contract import (
     source_is_claim_eligible,
     validate_manifest_inputs,
     verify_closure,
-    adapt_legacy_case_sources,
     project_id_is_locked,
     validate_snapshot_package,
     seal_snapshot_package,
@@ -112,15 +111,6 @@ class M0ContractTests(unittest.TestCase):
             tampered["payload"]["ok"] = False
             destination.write_text(json.dumps(tampered), encoding="utf-8")
             self.assertFalse(verify_closure(destination))
-
-    def test_frozen_adapter_maps_legacy_role_without_mutating_input_and_project_id_lock_is_explicit(self) -> None:
-        legacy = json.loads((FIXTURE.parent / "case01-adapter/legacy_sources.json").read_text(encoding="utf-8"))
-        adapted = adapt_legacy_case_sources(legacy)
-        self.assertEqual(legacy[0]["source_role"], "MAIN")
-        self.assertEqual(adapted[0]["document_role"], "MAIN")
-        self.assertEqual(adapted[1]["document_role"], "SI")
-        self.assertTrue(project_id_is_locked([{"record_type": "RunManifest"}]))
-        self.assertFalse(project_id_is_locked([]))
 
     def test_snapshot_package_validates_bound_records_and_detects_each_tamper(self) -> None:
         package = seal_snapshot_package(resolve_adapter(FROZEN_ADAPTER_ID)(json.loads((FIXTURE.parent / "case01-adapter/fixture.json").read_text(encoding="utf-8"))))

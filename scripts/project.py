@@ -80,6 +80,11 @@ def _status_report(manifest_path: Path, snapshot_path: Path) -> dict[str, Any]:
         package_view = validate_snapshot_package(package)
         if package.get("resolved_config_sha256") != snapshot_hash:
             raise ManifestResolutionError("CONFIG_SNAPSHOT_PACKAGE_DRIFT", "sealed package config hash differs from outer snapshot")
+        if package.get("project_id") != validate["project_id"]:
+            raise ManifestResolutionError("CONFIG_SNAPSHOT_PROJECT_DRIFT", "sealed package project differs from manifest")
+        package_sources = {source.get("source_id"): source.get("content_sha256") for source in package.get("sources", [])}
+        if package_sources != validate["source_hashes"]:
+            raise ManifestResolutionError("CONFIG_SNAPSHOT_CORPUS_DRIFT", "sealed package sources differ from closed corpus")
         report["snapshot_summary"] = package_view["summary"]
         report["closure"] = {"closed": package_view["closed"]}
     except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
