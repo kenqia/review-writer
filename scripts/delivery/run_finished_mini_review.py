@@ -18,8 +18,10 @@ if str(REPO_ROOT) not in sys.path:
 from review_writer.delivery.finished_review import (  # noqa: E402
     EXPECTED_CLOSURE_MANIFEST_SHA256,
     EXPECTED_FINAL_CLAIMS_SHA256,
+    authorize_finished_review_model,
     build_finished_review_plan,
     generate_finished_review_with_bounded_repair,
+    load_hash_bound_bibliography,
     render_final_review,
     verify_frozen_inputs,
     write_failed_generation_diagnostic,
@@ -31,39 +33,6 @@ from review_writer.providers import OpenAICompatibleProvider, TextGenerationRequ
 
 
 CLOSURE_RUN_ID = "phase8a_closure_v3_1_1_20260714T120245Z"
-MODEL_PRIORITY = ("qwen3.7-max", "qwen3.7-plus")
-BIBLIOGRAPHY = {
-    "F3I": {
-        "authors": ["Shichao Yu", "Shengming Ma"],
-        "title": "Allenes in Catalytic Asymmetric Synthesis and Natural Product Syntheses",
-        "journal": "Angewandte Chemie International Edition",
-        "year": 2012,
-        "volume": "51",
-        "issue": "13",
-        "pages": "3074-3112",
-        "doi": "10.1002/anie.201101460",
-    },
-    "F47A": {
-        "authors": ["Masamichi Ogasawara", "Hisashi Ikeda", "Takashi Nagano", "Tamio Hayashi"],
-        "title": "Palladium-Catalyzed Asymmetric Synthesis of Axially Chiral Allenes: A Synergistic Effect of Dibenzalacetone on High Enantioselectivity",
-        "journal": "Journal of the American Chemical Society",
-        "year": 2001,
-        "volume": "123",
-        "issue": "9",
-        "pages": "2089-2090",
-        "doi": "10.1021/ja005921o",
-    },
-    "P403": {
-        "authors": ["Yujie Dong", "Nianci Zhang", "Fazhou Yang", "Jinbao Wang", "Bo Wang", "Jun Liu", "Bing Zheng", "Cheng Zhang", "Leijie Zhou", "Hongchao Guo"],
-        "title": "Pd-Catalyzed Asymmetric Allenylation of Secondary Phosphine Oxides with Enyne-Type Propargylic Carbamates for the Construction of Chiral Allenyl Phosphine Oxides",
-        "journal": "ACS Catalysis",
-        "year": 2025,
-        "volume": "15",
-        "issue": "20",
-        "pages": "17215-17224",
-        "doi": "10.1021/acscatal.5c05571",
-    },
-}
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -77,7 +46,7 @@ def _git(repo_root: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def _select_model() -> tuple[str, dict[str, Any]]:
+def _select_model(requested_model: str) -> tuple[str, dict[str, Any]]:
     probe = OpenAICompatibleProvider.from_env(allow_network=True)
     env = probe._safe_env()
     endpoint = probe._resolve_endpoint(env)
@@ -90,17 +59,13 @@ def _select_model() -> tuple[str, dict[str, Any]]:
         raise ValueError("DASHSCOPE_API_KEY is missing")
     models = OpenAI(api_key=api_key, base_url=endpoint["base_url"], timeout=20.0).models.list()
     available = {item.id for item in models.data}
-    configured = os.environ.get("BAILIAN_MODEL") or ""
-    fallback = sorted((item for item in available if item.startswith("qwen") and "text" not in item), reverse=True)
-    selected = next((item for item in (*MODEL_PRIORITY, configured, *fallback) if item and item in available), None)
-    if selected is None:
-        raise ValueError("no allowed Qwen text model is available")
-    return selected, {
+    authorization = authorize_finished_review_model(requested_model, available)
+    return requested_model, {
         "status": "PASS",
         "query_count": 1,
         "method": "OpenAI-compatible models.list",
-        "selected_model": selected,
-        "priority": list(MODEL_PRIORITY),
+        "selected_model": requested_model,
+        "authorization": authorization,
         "region": endpoint["region"],
         "endpoint_class": "Alibaba Cloud OpenAI-compatible dedicated workspace endpoint",
         "base_url": "redacted",
@@ -204,6 +169,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use-qwen", action="store_true")
     parser.add_argument("--allow-network", action="store_true")
     parser.add_argument("--mock-response", type=Path)
+    parser.add_argument("--bibliography", type=Path, required=True, help="External bibliography JSON with schema finished-review-bibliography-1.0.")
+    parser.add_argument("--bibliography-sha256", required=True, help="Exact SHA-256 of --bibliography.")
+    parser.add_argument("--model", default="qwen3.7-max", help="Exact authorized model identity; no fallback is available.")
     parser.add_argument("--temperature", type=float, default=0.15)
     parser.add_argument("--max-output-tokens", type=int, default=16000)
     parser.add_argument("--connect-timeout-seconds", type=float, default=20.0)
@@ -232,6 +200,8 @@ def main() -> int:
             EXPECTED_FINAL_CLAIMS_SHA256,
             EXPECTED_CLOSURE_MANIFEST_SHA256,
         )
+        bibliography = load_hash_bound_bibliography(args.bibliography, args.bibliography_sha256)
+        input_hashes["bibliography_sha256"] = args.bibliography_sha256
         final_rows = _read_jsonl(claims_path)
         evidence_plan = build_finished_review_plan(final_rows)
         run_id = args.run_id or time.strftime("case-01-allene-mini-review-%Y%m%dT%H%M%SZ", time.gmtime())
@@ -243,17 +213,24 @@ def main() -> int:
             selected_model = "offline-mock"
             capability = {"status": "NOT_USED_OFFLINE_MOCK", "query_count": 0, "region": "offline"}
             provider: Any = FileJsonProvider(args.mock_response)
+            model_authorization = {"model": selected_model, "authorization_id": "offline-fixture", "provider_identity": "offline"}
         else:
-            selected_model, capability = _select_model()
+            selected_model, capability = _select_model(args.model)
             provider = QwenJsonProvider(selected_model, args)
-        generation = generate_finished_review_with_bounded_repair(provider, final_rows, evidence_plan, BIBLIOGRAPHY)
+            model_authorization = capability["authorization"]
+        generation = generate_finished_review_with_bounded_repair(
+            provider, final_rows, evidence_plan, bibliography,
+            failure_package_root=output_root.with_name(f"{output_root.name}-generation-failure"),
+            model_authorization=model_authorization,
+            input_hashes=input_hashes,
+        )
         if generation["validation"]["blockers"]:
             diagnostic_root = output_root.with_name(f"{output_root.name}-failed")
             write_failed_generation_diagnostic(
                 output_root=diagnostic_root,
                 payload=generation["payload"],
                 final_rows=final_rows,
-                bibliography_metadata=BIBLIOGRAPHY,
+                bibliography_metadata=bibliography,
                 validation=generation["validation"],
                 generation_manifest={
                     "actual_model": selected_model,
@@ -266,7 +243,7 @@ def main() -> int:
                 },
             )
             raise ValueError(f"Qwen output retained blockers after bounded repair: {generation['validation']['blockers']}")
-        markdown, _citations = render_final_review(generation["payload"], final_rows, BIBLIOGRAPHY)
+        markdown, _citations = render_final_review(generation["payload"], final_rows, bibliography)
         docx_path, docx_integrity, temporary = _export_docx(markdown, args.docx_python.resolve(), repo_root)
         try:
             generation_manifest = {
@@ -295,7 +272,7 @@ def main() -> int:
                 output_root=output_root,
                 payload=generation["payload"],
                 final_rows=final_rows,
-                bibliography_metadata=BIBLIOGRAPHY,
+                bibliography_metadata=bibliography,
                 evidence_plan=evidence_plan,
                 generation_manifest=generation_manifest,
                 qoderwork_status="MANUAL_QODERWORK_EXECUTION_REQUIRED",

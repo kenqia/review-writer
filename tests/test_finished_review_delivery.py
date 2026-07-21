@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
 import tempfile
 import unittest
@@ -20,6 +21,9 @@ from review_writer.delivery.finished_review import (
     build_finished_review_plan,
     delivery_stops_at_checkpoint,
     generate_finished_review_with_bounded_repair,
+    load_hash_bound_bibliography,
+    authorize_finished_review_model,
+    write_generation_failure_package,
     validate_finished_review_payload,
     verify_frozen_inputs,
     write_failed_generation_diagnostic,
@@ -60,6 +64,7 @@ def _row(
             "short_evidence": evidence,
             "epistemic_class": "REVIEW_ARTICLE_SUMMARY" if paper_id == "F3I" else "DIRECT_REPORTED_RESULT",
             "pathway_status": "NOT_APPLICABLE",
+            "locator_refs": [f"{claim_id}:LOC-1"],
             "source_conflict_detected": disposition == "SOURCE_CONFLICT_RETAINED",
             "source_conflict": (
                 {"conflict_type": "SOURCE_INTERNAL_LABEL_CONFLICT", "alternatives": [{"reported_value": "A"}, {"reported_value": "B"}]}
@@ -156,20 +161,22 @@ def final_rows() -> list[dict]:
 
 def bibliography() -> dict:
     return {
-        "F3I": {"authors": ["S. Yu", "S. Ma"], "title": "Review", "journal": "Angew. Chem. Int. Ed.", "year": 2012, "volume": "51", "issue": "13", "pages": "3074-3112", "doi": "10.1002/anie.201101460"},
-        "F47A": {"authors": ["M. Ogasawara", "H. Ikeda"], "title": "Study A", "journal": "J. Am. Chem. Soc.", "year": 2001, "volume": "123", "issue": "9", "pages": "2089-2090", "doi": "10.1021/ja005921o"},
-        "P403": {"authors": ["Y. Dong", "N. Zhang"], "title": "Study B", "journal": "ACS Catal.", "year": 2025, "volume": "15", "issue": "20", "pages": "17215-17224", "doi": "10.1021/acscatal.5c05571"},
+        "F3I": {"authors": ["Synthetic Author A"], "title": "Synthetic Review", "journal": "Synthetic Journal", "year": 2000, "volume": "1", "issue": "1", "pages": "1-2", "doi": "10.0000/synthetic-f3i"},
+        "F47A": {"authors": ["Synthetic Author B"], "title": "Synthetic Study A", "journal": "Synthetic Journal", "year": 2001, "volume": "2", "issue": "1", "pages": "3-4", "doi": "10.0000/synthetic-f47a"},
+        "P403": {"authors": ["Synthetic Author C"], "title": "Synthetic Study B", "journal": "Synthetic Journal", "year": 2002, "volume": "3", "issue": "1", "pages": "5-6", "doi": "10.0000/synthetic-p403"},
     }
 
 
 def valid_payload() -> dict:
+    text = "A review-level synthesis places representative catalytic allene strategies in a bounded context."
     fact = {
         "sentence_id": "S1",
         "sentence_role": "fact",
-        "text": "A review-level synthesis places representative catalytic allene strategies in a bounded context.",
+        "text": text,
         "supporting_claim_ids": ["F3I-CONTEXT"],
         "source_paper_ids": ["F3I"],
         "evidence_role": "REVIEW_LEVEL_SUMMARY_EVIDENCE",
+        "factual_span_bindings": [{"binding_id": "S1-B1", "span_class": "material_factual", "start": 0, "end": len(text), "text": text, "claim_id": "F3I-CONTEXT", "locator_ref": "F3I-CONTEXT:LOC-1"}],
     }
     sections = []
     for index, heading in enumerate(
@@ -185,9 +192,9 @@ def valid_payload() -> dict:
         ],
         start=1,
     ):
-        sentence = dict(fact, sentence_id=f"S{index}")
+        sentence = dict(fact, sentence_id=f"S{index}", factual_span_bindings=[dict(fact["factual_span_bindings"][0], binding_id=f"S{index}-B1")])
         sections.append({"heading": heading, "paragraphs": [{"paragraph_id": f"P{index}", "purpose": "bounded synthesis", "sentences": [sentence]}]})
-    abstract_sentence = dict(fact, sentence_id="A1")
+    abstract_sentence = dict(fact, sentence_id="A1", factual_span_bindings=[dict(fact["factual_span_bindings"][0], binding_id="A1-B1")])
     return {
         "title": "Representative Strategies in Asymmetric Allene Chemistry: Catalysis, Reactivity, and Mechanistic Evidence",
         "abstract_sentences": [abstract_sentence],
@@ -281,6 +288,100 @@ class FinishedReviewDeliveryTests(unittest.TestCase):
         self.assertIn("SOURCE_CONFLICT_LEAKAGE", codes)
         self.assertIn("UNSUPPORTED_NUMERIC_CLAIM", codes)
         self.assertIn("UNSUPPORTED_DBA_BINDING", codes)
+
+    def test_rejects_unbound_nonnumeric_scientific_conclusion(self) -> None:
+        payload = valid_payload()
+        payload["abstract_sentences"][0]["text"] = "A review-level synthesis establishes a universal catalytic mechanism."
+        report = validate_finished_review_payload(payload, final_rows(), bibliography(), min_words=1)
+        self.assertIn("UNBOUND_FACTUAL_SPAN", {item["code"] for item in report["blockers"]})
+
+    def test_factual_span_bindings_reject_partial_stale_and_invalid_locator_references(self) -> None:
+        cases = {
+            "partial": ("UNBOUND_FACTUAL_SPAN", lambda binding: binding.update({"end": binding["end"] - 1, "text": binding["text"][:-1]})),
+            "stale": ("INVALID_FACTUAL_SPAN_CLAIM", lambda binding: binding.update({"claim_id": "STALE-CLAIM"})),
+            "locator": ("INVALID_FACTUAL_SPAN_LOCATOR", lambda binding: binding.update({"locator_ref": "unknown:locator"})),
+        }
+        for _name, (expected, mutate) in cases.items():
+            payload = valid_payload()
+            binding = payload["abstract_sentences"][0]["factual_span_bindings"][0]
+            mutate(binding)
+            report = validate_finished_review_payload(payload, final_rows(), bibliography(), min_words=1)
+            self.assertIn(expected, {item["code"] for item in report["blockers"]})
+
+    def test_failure_packages_are_sanitized_hash_closed_and_immutable(self) -> None:
+        cases = {
+            "PROVIDER_EXCEPTION": RuntimeError("credential=secret prompt must not persist"),
+            "EMPTY_RESPONSE": {"status": "ok", "content": "", "metadata": {"model": "qwen3.7-max"}},
+            "MALFORMED_JSON": {"status": "ok", "content": "{not-json", "metadata": {"model": "qwen3.7-max"}},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            for category, failure in cases.items():
+                output_root = Path(temporary) / category.lower()
+                package = write_generation_failure_package(
+                    output_root=output_root,
+                    attempt_metadata={"attempt": 1, "model": "qwen3.7-max"},
+                    failure_category=category,
+                    failed_stage="generation_response",
+                    model_authorization={"model": "qwen3.7-max", "authorization_id": "finished-review-qwen-v1"},
+                    input_hashes={"request_sha256": "a" * 64, "bibliography_sha256": "b" * 64},
+                    diagnostic=str(failure),
+                )
+                manifest = (package / "failure_package.json").read_text(encoding="utf-8")
+                self.assertTrue((package / "HASH_MANIFEST.sha256").is_file())
+                self.assertNotIn("secret", manifest)
+                self.assertNotIn("prompt", manifest)
+                with self.assertRaises(ValueError):
+                    write_generation_failure_package(
+                        output_root=output_root,
+                        attempt_metadata={}, failure_category=category, failed_stage="generation_response",
+                        model_authorization={}, input_hashes={}, diagnostic="overwrite",
+                    )
+
+    def test_generator_persists_failure_packages_for_exception_empty_and_malformed_response(self) -> None:
+        cases = {
+            "PROVIDER_EXCEPTION": lambda: (_ for _ in ()).throw(RuntimeError("provider unavailable")),
+            "EMPTY_RESPONSE": lambda: {"status": "ok", "content": "", "metadata": {"model": "qwen3.7-max"}},
+            "MALFORMED_JSON": lambda: {"status": "ok", "content": "{broken", "metadata": {"model": "qwen3.7-max"}},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            for category, produce in cases.items():
+                class Provider:
+                    def generate(self, _request: dict) -> dict:
+                        return produce()
+
+                root = Path(temporary) / category.lower()
+                with self.assertRaises(RuntimeError):
+                    generate_finished_review_with_bounded_repair(
+                        Provider(), final_rows(), build_finished_review_plan(final_rows()), bibliography(),
+                        failure_package_root=root,
+                        model_authorization={"model": "qwen3.7-max", "authorization_id": "finished-review-qwen-v1"},
+                        input_hashes={"request_sha256": "a" * 64},
+                    )
+                self.assertEqual(json.loads((root / "failure_package.json").read_text(encoding="utf-8"))["failure_category"], category)
+
+    def test_bibliography_input_is_external_hash_bound_and_fails_closed(self) -> None:
+        document = {"schema_version": "finished-review-bibliography-1.0", "entries": bibliography()}
+        encoded = json.dumps(document, sort_keys=True).encode("utf-8")
+        expected = hashlib.sha256(encoded).hexdigest()
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "bibliography.synthetic.json"
+            path.write_bytes(encoded)
+            self.assertEqual(load_hash_bound_bibliography(path, expected), bibliography())
+            with self.assertRaises(ValueError):
+                load_hash_bound_bibliography(path, "0" * 64)
+            with self.assertRaises(ValueError):
+                load_hash_bound_bibliography(Path(temporary) / "missing.json", expected)
+            path.write_text("[]", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                load_hash_bound_bibliography(path, hashlib.sha256(b"[]").hexdigest())
+
+    def test_model_authorization_rejects_arbitrary_qwen_names(self) -> None:
+        receipt = authorize_finished_review_model("qwen3.7-max", {"qwen3.7-max"})
+        self.assertEqual(receipt["model"], "qwen3.7-max")
+        self.assertEqual(receipt["authorization_id"], "finished-review-qwen-v1")
+        for model in ("qwen-anything", "qwen3.7-max-preview", "qwen3.7-plus"):
+            with self.assertRaises(ValueError):
+                authorize_finished_review_model(model, {model})
 
     def test_valid_payload_supports_transition_sentences_without_claims(self) -> None:
         payload = valid_payload()
