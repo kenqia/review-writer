@@ -120,7 +120,7 @@ class FileJsonProvider:
         return {
             "status": "ok",
             "content": self.content,
-            "metadata": {"model": "offline-mock", "region": "offline", "usage": {"total_tokens": 0}},
+            "metadata": {"model": self.model, "region": "offline", "usage": {"total_tokens": 0}},
             "warnings": [],
         }
 

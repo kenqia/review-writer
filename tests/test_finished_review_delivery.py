@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import json
 import hashlib
+import importlib.util
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+DELIVERY_SCRIPT = REPO_ROOT / "scripts/delivery/run_finished_mini_review.py"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -90,6 +92,14 @@ def failure_input_hashes(materials: dict[str, bytes]) -> dict[str, str]:
         "final_claims_sha256": hashlib.sha256(materials["final_claims"]).hexdigest(),
         "closure_manifest_sha256": hashlib.sha256(materials["closure_manifest"]).hexdigest(),
     }
+
+
+def load_delivery_script_module():
+    spec = importlib.util.spec_from_file_location("run_finished_mini_review", DELIVERY_SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def final_rows() -> list[dict]:
@@ -235,6 +245,25 @@ def valid_payload() -> dict:
 
 
 class FinishedReviewDeliveryTests(unittest.TestCase):
+    def test_offline_mock_provider_preserves_authorized_model_in_result_and_attempt(self) -> None:
+        authorized_model = "qwen3.7-max"
+        with tempfile.TemporaryDirectory() as temporary:
+            response_path = Path(temporary) / "response.json"
+            response_path.write_text(json.dumps(valid_payload()), encoding="utf-8")
+            provider = load_delivery_script_module().FileJsonProvider(response_path, authorized_model)
+
+            self.assertEqual(provider.generate({})["metadata"]["model"], authorized_model)
+            result = generate_finished_review_with_bounded_repair(
+                provider,
+                final_rows(),
+                build_finished_review_plan(final_rows()),
+                bibliography(),
+                min_words=1,
+                model_authorization=authorize_finished_review_model(authorized_model, {authorized_model}),
+            )
+
+        self.assertEqual(result["attempts"][0]["model"], authorized_model)
+
     def test_continuous_delivery_is_explicit_opt_in(self) -> None:
         self.assertTrue(delivery_stops_at_checkpoint(DEFAULT_MODE, blockers=[]))
         self.assertFalse(delivery_stops_at_checkpoint(CONTINUOUS_MODE, blockers=[]))
