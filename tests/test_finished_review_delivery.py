@@ -252,7 +252,6 @@ class FinishedReviewDeliveryTests(unittest.TestCase):
             response_path.write_text(json.dumps(valid_payload()), encoding="utf-8")
             provider = load_delivery_script_module().FileJsonProvider(response_path, authorized_model)
 
-            self.assertEqual(provider.generate({})["metadata"]["model"], authorized_model)
             result = generate_finished_review_with_bounded_repair(
                 provider,
                 final_rows(),
@@ -263,6 +262,62 @@ class FinishedReviewDeliveryTests(unittest.TestCase):
             )
 
         self.assertEqual(result["attempts"][0]["model"], authorized_model)
+        self.assertEqual(result["request_count"], 1)
+
+    def test_generator_fails_closed_on_unverified_response_model_identity_and_writes_sanitized_receipt(self) -> None:
+        authorized_model = "qwen3.7-max"
+        materials = failure_source_materials()
+        cases = {
+            "different": {"model": "qwen-untrusted"},
+            "missing": {},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            for name, metadata in cases.items():
+                raw_content = f"raw-candidate-{name}-must-not-persist"
+
+                class Provider:
+                    model = authorized_model
+
+                    def __init__(self) -> None:
+                        self.calls = 0
+
+                    def generate(self, _request: dict) -> dict:
+                        self.calls += 1
+                        return {
+                            "status": "ok",
+                            "content": raw_content,
+                            "metadata": metadata,
+                            "warnings": ["raw-provider-payload-must-not-persist"],
+                        }
+
+                provider = Provider()
+                root = Path(temporary) / name
+                with self.assertRaisesRegex(RuntimeError, "response model identity"):
+                    generate_finished_review_with_bounded_repair(
+                        provider,
+                        final_rows(),
+                        build_finished_review_plan(final_rows()),
+                        bibliography(),
+                        min_words=1,
+                        failure_package_root=root,
+                        model_authorization=authorize_finished_review_model(authorized_model, {authorized_model}),
+                        input_hashes=failure_input_hashes(materials),
+                        failure_source_materials=materials,
+                    )
+                self.assertEqual(provider.calls, 1)
+                receipt = json.loads((root / "failure_package.json").read_text(encoding="utf-8"))
+                self.assertEqual(receipt["failure_category"], "PROVIDER_ERROR")
+                self.assertEqual(receipt["failed_stage"], "generation_response")
+                self.assertEqual(receipt["attempt"]["model"], authorized_model)
+                self.assertEqual(receipt["model_authorization"]["model"], authorized_model)
+                self.assertNotIn("qwen-untrusted", json.dumps(receipt))
+                self.assertNotIn(raw_content, json.dumps(receipt))
+                self.assertNotIn("raw-provider-payload-must-not-persist", json.dumps(receipt))
+                receipt_bytes = (root / "failure_package.json").read_bytes()
+                self.assertEqual(
+                    (root / "HASH_MANIFEST.sha256").read_text(encoding="utf-8"),
+                    f"{hashlib.sha256(receipt_bytes).hexdigest()}  failure_package.json\n",
+                )
 
     def test_continuous_delivery_is_explicit_opt_in(self) -> None:
         self.assertTrue(delivery_stops_at_checkpoint(DEFAULT_MODE, blockers=[]))
@@ -297,6 +352,8 @@ class FinishedReviewDeliveryTests(unittest.TestCase):
         broken["sections"][0]["paragraphs"][0]["sentences"][0]["text"] = "An unsupported result gave 55% ee."
 
         class Provider:
+            model = "qwen3.7-max"
+
             def __init__(self) -> None:
                 self.responses = [broken, valid_payload(), valid_payload()]
                 self.calls = 0
@@ -307,7 +364,7 @@ class FinishedReviewDeliveryTests(unittest.TestCase):
                 return {
                     "status": "ok",
                     "content": json.dumps(response),
-                    "metadata": {"model": "offline-test", "stream_telemetry": {"total_tokens": 10, "finish_reason": "stop"}},
+                    "metadata": {"model": self.model, "stream_telemetry": {"total_tokens": 10, "finish_reason": "stop"}},
                     "warnings": [],
                 }
 
@@ -318,6 +375,7 @@ class FinishedReviewDeliveryTests(unittest.TestCase):
             build_finished_review_plan(final_rows()),
             bibliography(),
             min_words=1,
+            model_authorization=authorize_finished_review_model(provider.model, {provider.model}),
         )
         self.assertEqual(result["request_count"], 2)
         self.assertEqual(provider.calls, 2)

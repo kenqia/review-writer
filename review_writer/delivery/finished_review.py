@@ -369,11 +369,12 @@ def generate_finished_review_with_bounded_repair(
             }
         expected_source_hashes = input_hashes or {}
         attempt_model = getattr(provider, "model", None)
+        authorized_model = authorization.get("model") if isinstance(authorization, dict) else None
+        if not isinstance(attempt_model, str) or not attempt_model or attempt_model != authorized_model:
+            raise ValueError("finished-review generation requires the exact authorized provider model")
         if failure_package_root is not None:
             verified_input_hashes = _verified_failure_input_hashes(current_request, expected_source_hashes, failure_source_materials)
             failure_request_payload = current_request
-            if not isinstance(attempt_model, str) or not attempt_model or attempt_model != authorization.get("model"):
-                raise ValueError("finished-review failure receipt requires the exact actual attempt model")
         attempt_metadata = {"attempt": attempt_number, "model": attempt_model}
         try:
             response = provider.generate(current_request)
@@ -391,7 +392,23 @@ def generate_finished_review_with_bounded_repair(
                     diagnostic=exc,
                 )
             raise RuntimeError("finished-review generation provider exception") from None
-        if not isinstance(response, dict) or response.get("status") != "ok":
+        metadata = response.get("metadata") if isinstance(response, dict) else None
+        response_model = metadata.get("model") if isinstance(metadata, dict) else None
+        if not isinstance(response_model, str) or response_model != attempt_model:
+            if failure_package_root is not None:
+                write_generation_failure_package(
+                    output_root=failure_package_root,
+                    attempt_metadata={**attempt_metadata, "status": response.get("status") if isinstance(response, dict) else None},
+                    failure_category="PROVIDER_ERROR",
+                    failed_stage="generation_response",
+                    model_authorization=authorization,
+                    input_hashes=expected_source_hashes,
+                    source_materials=failure_source_materials or {},
+                    request_payload=current_request,
+                    diagnostic="response model identity is missing, malformed, or mismatched",
+                )
+            raise RuntimeError("finished-review generation response model identity mismatch")
+        if response.get("status") != "ok":
             if failure_package_root is not None:
                 write_generation_failure_package(
                     output_root=failure_package_root,
@@ -419,12 +436,11 @@ def generate_finished_review_with_bounded_repair(
                     diagnostic=response,
                 )
             raise RuntimeError("finished-review generation returned empty content")
-        metadata = response.get("metadata") or {}
         attempts.append(
             {
                 "attempt": attempt_number,
                 "status": response.get("status"),
-                "model": attempt_model,
+                "model": response_model,
                 "region": metadata.get("region"),
                 "usage": metadata.get("stream_telemetry") or metadata.get("usage") or {},
                 "warnings": response.get("warnings") or [],
