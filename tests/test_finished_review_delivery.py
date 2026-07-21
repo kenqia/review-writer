@@ -317,6 +317,7 @@ class FinishedReviewDeliveryTests(unittest.TestCase):
     def test_failure_packages_are_sanitized_hash_closed_and_immutable(self) -> None:
         cases = {
             "PROVIDER_EXCEPTION": RuntimeError("credential=secret prompt must not persist"),
+            "PROVIDER_ERROR": {"status": "error", "content": "provider detail must not persist", "metadata": {"model": "qwen3.7-max"}},
             "EMPTY_RESPONSE": {"status": "ok", "content": "", "metadata": {"model": "qwen3.7-max"}},
             "MALFORMED_JSON": {"status": "ok", "content": "{not-json", "metadata": {"model": "qwen3.7-max"}},
         }
@@ -346,6 +347,7 @@ class FinishedReviewDeliveryTests(unittest.TestCase):
     def test_generator_persists_failure_packages_for_exception_empty_and_malformed_response(self) -> None:
         cases = {
             "PROVIDER_EXCEPTION": lambda: (_ for _ in ()).throw(RuntimeError("provider unavailable")),
+            "PROVIDER_ERROR": lambda: {"status": "error", "content": "provider detail", "metadata": {"model": "qwen3.7-max"}},
             "EMPTY_RESPONSE": lambda: {"status": "ok", "content": "", "metadata": {"model": "qwen3.7-max"}},
             "MALFORMED_JSON": lambda: {"status": "ok", "content": "{broken", "metadata": {"model": "qwen3.7-max"}},
         }
