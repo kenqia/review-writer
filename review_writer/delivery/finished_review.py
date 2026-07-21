@@ -81,6 +81,7 @@ MODEL_CLAIM_FIELDS = (
     "metric_type",
     "value_as_reported",
     "unit_as_reported",
+    "evidence_locator",
     "short_evidence",
     "epistemic_class",
     "pathway_status",
@@ -456,6 +457,12 @@ def _word_count(payload: dict[str, Any]) -> int:
     return len(re.findall(r"\b[A-Za-z][A-Za-z'’-]*\b", text))
 
 
+def _locator_ref(locator: object) -> str:
+    if not isinstance(locator, dict) or not locator:
+        return ""
+    return hashlib.sha256(json.dumps(locator, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
 def _validate_factual_span_bindings(sentence: dict[str, Any], support_ids: list[str], by_id: dict[str, dict[str, Any]], block: Any) -> None:
     """Fail closed on material factual text without an exact claim-and-locator binding.
 
@@ -485,8 +492,8 @@ def _validate_factual_span_bindings(sentence: dict[str, Any], support_ids: list[
         if claim_id not in support_ids or claim_id not in by_id:
             block("INVALID_FACTUAL_SPAN_CLAIM", "binding claim must be an identity-valid sentence support", sentence_id)
             continue
-        locator_refs = set(by_id[claim_id]["final_claim"].get("locator_refs") or [])
-        if not locator_ref or locator_ref not in locator_refs:
+        expected_locator_ref = _locator_ref(by_id[claim_id]["final_claim"].get("evidence_locator"))
+        if not locator_ref or locator_ref != expected_locator_ref:
             block("INVALID_FACTUAL_SPAN_LOCATOR", "binding locator does not resolve to claim locator data", sentence_id)
             continue
         covered.append((start, end))

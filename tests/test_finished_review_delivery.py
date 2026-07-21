@@ -64,7 +64,7 @@ def _row(
             "short_evidence": evidence,
             "epistemic_class": "REVIEW_ARTICLE_SUMMARY" if paper_id == "F3I" else "DIRECT_REPORTED_RESULT",
             "pathway_status": "NOT_APPLICABLE",
-            "locator_refs": [f"{claim_id}:LOC-1"],
+            "evidence_locator": {"source_document_id": f"{paper_id}_MAIN", "page": 1, "entry_id": f"{claim_id}-E1"},
             "source_conflict_detected": disposition == "SOURCE_CONFLICT_RETAINED",
             "source_conflict": (
                 {"conflict_type": "SOURCE_INTERNAL_LABEL_CONFLICT", "alternatives": [{"reported_value": "A"}, {"reported_value": "B"}]}
@@ -73,6 +73,11 @@ def _row(
             ),
         },
     }
+
+
+def locator_ref(claim_id: str) -> str:
+    row = next(row for row in final_rows() if row["claim_id"] == claim_id)
+    return hashlib.sha256(json.dumps(row["final_claim"]["evidence_locator"], sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def final_rows() -> list[dict]:
@@ -176,7 +181,7 @@ def valid_payload() -> dict:
         "supporting_claim_ids": ["F3I-CONTEXT"],
         "source_paper_ids": ["F3I"],
         "evidence_role": "REVIEW_LEVEL_SUMMARY_EVIDENCE",
-        "factual_span_bindings": [{"binding_id": "S1-B1", "span_class": "material_factual", "start": 0, "end": len(text), "text": text, "claim_id": "F3I-CONTEXT", "locator_ref": "F3I-CONTEXT:LOC-1"}],
+        "factual_span_bindings": [{"binding_id": "S1-B1", "span_class": "material_factual", "start": 0, "end": len(text), "text": text, "claim_id": "F3I-CONTEXT", "locator_ref": locator_ref("F3I-CONTEXT")}],
     }
     sections = []
     for index, heading in enumerate(
@@ -240,6 +245,7 @@ class FinishedReviewDeliveryTests(unittest.TestCase):
         self.assertEqual(request["delivery_mode"], CONTINUOUS_MODE)
         self.assertNotIn("F47A-76", {row["claim_id"] for row in request["claims"]})
         self.assertFalse(any(row["claim_id"].startswith("CONFLICT-") for row in request["claims"]))
+        self.assertTrue(all("evidence_locator" in row for row in request["claims"]))
         self.assertFalse(any("final_disposition" in row for row in request["claims"]))
         self.assertNotIn("CONFLICT-", json.dumps(request))
         self.assertNotIn("claim_accounting", request["evidence_plan"])
