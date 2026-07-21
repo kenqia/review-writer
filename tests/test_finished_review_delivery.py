@@ -614,6 +614,9 @@ class FinishedReviewDeliveryTests(unittest.TestCase):
         payload = valid_payload()
         payload["sections"][0]["paragraphs"][0]["sentences"][0]["text"] = "An unsupported result gave 55% ee."
         validation = validate_finished_review_payload(payload, final_rows(), bibliography(), min_words=1)
+        materials = failure_source_materials()
+        hashes = {"request_sha256": "", **failure_input_hashes(materials)}
+        hashes["request_sha256"] = hashlib.sha256(json.dumps({"request": "validation"}, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "failed-candidate"
             package = write_failed_generation_diagnostic(
@@ -622,7 +625,7 @@ class FinishedReviewDeliveryTests(unittest.TestCase):
                 validation=validation,
                 attempt_metadata={"attempt": 2, "model": "qwen3.7-max", "status": "ok"},
                 model_authorization={"model": "qwen3.7-max", "authorization_id": "finished-review-qwen-v1", "provider_identity": "alibaba_openai_compatible"},
-                verified_input_hashes={"request_sha256": "a" * 64, "bibliography_sha256": "b" * 64, "final_claims_sha256": "c" * 64, "closure_manifest_sha256": "d" * 64},
+                verified_input_hashes=hashes, source_materials=materials, request_payload={"request": "validation"},
             )
             self.assertEqual(package, root)
             contents = (root / "failure_package.json").read_text(encoding="utf-8")
@@ -636,8 +639,24 @@ class FinishedReviewDeliveryTests(unittest.TestCase):
                     output_root=root, payload=payload, validation=validation,
                     attempt_metadata={"attempt": 2, "model": "qwen3.7-max"},
                     model_authorization={"model": "qwen3.7-max", "authorization_id": "finished-review-qwen-v1", "provider_identity": "alibaba_openai_compatible"},
-                    verified_input_hashes={"request_sha256": "a" * 64, "bibliography_sha256": "b" * 64, "final_claims_sha256": "c" * 64, "closure_manifest_sha256": "d" * 64},
+                    verified_input_hashes=hashes, source_materials=materials, request_payload={"request": "validation"},
                 )
+
+    def test_validation_blocker_diagnostic_rejects_forged_hashes_before_output_creation(self) -> None:
+        payload = valid_payload()
+        validation = validate_finished_review_payload(payload, final_rows(), bibliography(), min_words=1)
+        materials = failure_source_materials()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "forged"
+            with self.assertRaises(ValueError):
+                write_failed_generation_diagnostic(
+                    output_root=root, payload=payload, validation=validation,
+                    attempt_metadata={"attempt": 1, "model": "qwen3.7-max"},
+                    model_authorization={"model": "qwen3.7-max", "authorization_id": "finished-review-qwen-v1", "provider_identity": "alibaba_openai_compatible"},
+                    verified_input_hashes={"request_sha256": "0" * 64, "bibliography_sha256": "0" * 64, "final_claims_sha256": "0" * 64, "closure_manifest_sha256": "0" * 64},
+                    source_materials=materials, request_payload={"request": "validation"},
+                )
+            self.assertFalse(root.exists())
 
 
 if __name__ == "__main__":

@@ -112,8 +112,9 @@ class QwenJsonProvider:
 
 
 class FileJsonProvider:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, model: str) -> None:
         self.content = path.read_text(encoding="utf-8")
+        self.model = model
 
     def generate(self, _request: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -215,10 +216,10 @@ def main() -> int:
         output_root = args.output_parent.resolve() / run_id
 
         if args.mock_response:
-            selected_model = "offline-mock"
+            selected_model = args.model
+            model_authorization = authorize_finished_review_model(selected_model, {selected_model})
             capability = {"status": "NOT_USED_OFFLINE_MOCK", "query_count": 0, "region": "offline"}
-            provider: Any = FileJsonProvider(args.mock_response)
-            model_authorization = {"model": selected_model, "authorization_id": "offline-fixture", "provider_identity": "offline"}
+            provider: Any = FileJsonProvider(args.mock_response, selected_model)
         else:
             selected_model, capability = _select_model(args.model)
             provider = QwenJsonProvider(selected_model, args)
@@ -239,6 +240,8 @@ def main() -> int:
                 attempt_metadata=generation["attempts"][-1],
                 model_authorization=model_authorization,
                 verified_input_hashes=generation["verified_input_hashes"],
+                source_materials=failure_source_materials,
+                request_payload=generation["failure_request_payload"],
             )
             raise ValueError(f"Qwen output retained blockers after bounded repair: {generation['validation']['blockers']}")
         markdown, _citations = render_final_review(generation["payload"], final_rows, bibliography)
@@ -285,6 +288,7 @@ def main() -> int:
             EXPECTED_FINAL_CLAIMS_SHA256,
             EXPECTED_CLOSURE_MANIFEST_SHA256,
         )
+        current["bibliography_sha256"] = sha256_file(args.bibliography)
         if current != input_hashes:
             raise RuntimeError("a frozen input changed during finished-review delivery")
         print(

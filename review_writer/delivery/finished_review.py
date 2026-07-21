@@ -355,6 +355,7 @@ def generate_finished_review_with_bounded_repair(
     payload: dict[str, Any] | None = None
     validation: dict[str, Any] | None = None
     verified_input_hashes: dict[str, str] | None = None
+    failure_request_payload: dict[str, Any] | None = None
     for attempt_number in (1, 2):
         current_request = request
         if attempt_number == 2:
@@ -370,6 +371,7 @@ def generate_finished_review_with_bounded_repair(
         attempt_model = getattr(provider, "model", None)
         if failure_package_root is not None:
             verified_input_hashes = _verified_failure_input_hashes(current_request, expected_source_hashes, failure_source_materials)
+            failure_request_payload = current_request
             if not isinstance(attempt_model, str) or not attempt_model or attempt_model != authorization.get("model"):
                 raise ValueError("finished-review failure receipt requires the exact actual attempt model")
         attempt_metadata = {"attempt": attempt_number, "model": attempt_model}
@@ -462,6 +464,7 @@ def generate_finished_review_with_bounded_repair(
         "repair_used": len(attempts) == 2,
         "attempts": attempts,
         "verified_input_hashes": verified_input_hashes,
+        "failure_request_payload": failure_request_payload,
     }
 
 
@@ -856,6 +859,8 @@ def write_failed_generation_diagnostic(
     attempt_metadata: dict[str, Any],
     model_authorization: dict[str, Any],
     verified_input_hashes: dict[str, str],
+    source_materials: dict[str, bytes],
+    request_payload: dict[str, Any],
 ) -> Path:
     """Persist a sanitized validation-blocker receipt, never candidate content."""
     output_root = Path(output_root).resolve()
@@ -867,6 +872,9 @@ def write_failed_generation_diagnostic(
     authorize_finished_review_model(str(model or ""), {str(model or "")})
     if not isinstance(verified_input_hashes, dict) or set(verified_input_hashes) != REQUIRED_FAILURE_INPUT_HASHES or any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value) for value in verified_input_hashes.values()):
         raise ValueError("validation failure verified input hashes are invalid")
+    expected_source_hashes = {key: verified_input_hashes[key] for key in REQUIRED_FAILURE_SOURCE_HASHES}
+    if _verified_failure_input_hashes(request_payload, expected_source_hashes, source_materials) != verified_input_hashes:
+        raise ValueError("validation failure source hash binding mismatch")
     if output_root.exists():
         raise ValueError(f"failed generation diagnostic already exists: {output_root}")
     output_root.mkdir(parents=True)
