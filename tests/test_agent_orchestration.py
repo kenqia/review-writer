@@ -526,6 +526,17 @@ class AgentOrchestrationTests(unittest.TestCase):
         self.assertEqual(0, assignments.returncode, assignments.stderr)
         self.assertIn("VALID assignments", assignments.stdout)
 
+    def test_sanitized_report_omits_runtime_locations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary) / "fixture"
+            (fixture / ".runtime").mkdir(parents=True)
+            with mock.patch.object(run_dry_run, "FIXTURE", fixture):
+                run_dry_run.sanitized_report(fixture_path="private-location", cleanup_command="private-command", status="PARTIAL")
+            payload = json.loads((fixture / ".runtime" / "sanitized-report.json").read_text(encoding="utf-8"))
+            self.assertNotIn("fixture_path", payload)
+            self.assertNotIn("cleanup_command", payload)
+        self.assertTrue(run_dry_run.FIXED_FIXTURE.name.startswith("agent-orchestration-runtime"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

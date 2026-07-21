@@ -16,7 +16,7 @@ from typing import Any, Iterable
 from orchestration_lib import REPO_ROOT
 
 
-FIXED_FIXTURE = Path("/tmp/kenqia-agent-orchestration-dry-run")
+FIXED_FIXTURE = Path("/tmp/agent-orchestration-runtime")
 FIXTURE = FIXED_FIXTURE
 MODEL = "gpt-5.6-terra"
 REASONING_EFFORT = "medium"
@@ -48,8 +48,8 @@ def validate_live_fixture(value: Path) -> Path:
         raise ValueError("new live modes cannot use the legacy fixed fixture")
     if tmp_root not in resolved.parents:
         raise ValueError("fixture must remain under /tmp")
-    if not resolved.name.startswith("kenqia-agent-orchestration-dry-run-"):
-        raise ValueError("fixture basename must use the kenqia-agent-orchestration-dry-run- prefix")
+    if not (resolved.name.startswith("agent-orchestration-runtime-") or resolved.name.startswith("kenqia-agent-orchestration-dry-run-")):
+        raise ValueError("fixture basename must use the agent-orchestration-runtime- prefix")
     if resolved.exists():
         raise ValueError("fixture must not exist before a live mode begins")
     return resolved
@@ -214,7 +214,7 @@ def warning_flags(*streams: str) -> list[str]:
 
 
 def sanitized_report(**report: Any) -> None:
-    private = {"thread_id", "turn_id", "session", "session_id", "session_id_reference", "thread_reference", "thread_ref", "session_reference", "session_ref", "turn_reference", "turn_ref", "prompt", "reply", "replies", "response", "responses", "last_message", "stdout", "stderr", "events", "raw_log", "full_output", "output", "auth", "authorization", "token", "cookie"}
+    private = {"thread_id", "turn_id", "session", "session_id", "session_id_reference", "thread_reference", "thread_ref", "session_reference", "session_ref", "turn_reference", "turn_ref", "prompt", "reply", "replies", "response", "responses", "last_message", "stdout", "stderr", "events", "raw_log", "full_output", "output", "auth", "authorization", "token", "cookie", "fixture_path", "fixture", "cleanup_command", "cleanup_commands"}
     def clean(value: Any, key: str = "") -> Any:
         if key.lower() in private:
             return None
@@ -240,7 +240,6 @@ def report(status: str, args: argparse.Namespace, *, mode: str = "legacy", task_
         static_result=getattr(args, "static_result", "not-run"), warning_flags=flags,
         warning_count=len(flags), final_status=status,
         limitations=(limitations or []) + ["Provider evidence is not available when Codex CLI does not expose it."],
-        fixture_path=str(FIXTURE), cleanup_command=cleanup_command(FIXTURE),
     )
 
 
