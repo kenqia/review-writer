@@ -314,6 +314,28 @@ class FinishedReviewDeliveryTests(unittest.TestCase):
             report = validate_finished_review_payload(payload, final_rows(), bibliography(), min_words=1)
             self.assertIn(expected, {item["code"] for item in report["blockers"]})
 
+    def test_factual_span_bindings_reject_a_middle_coverage_gap(self) -> None:
+        payload = valid_payload()
+        binding = payload["abstract_sentences"][0]["factual_span_bindings"][0]
+        text = binding["text"]
+        binding.update({"end": 12, "text": text[:12]})
+        payload["abstract_sentences"][0]["factual_span_bindings"].append(
+            {**binding, "binding_id": "A1-B2", "start": 24, "end": len(text), "text": text[24:]}
+        )
+        report = validate_finished_review_payload(payload, final_rows(), bibliography(), min_words=1)
+        self.assertIn("UNBOUND_FACTUAL_SPAN", {item["code"] for item in report["blockers"]})
+
+    def test_factual_span_bindings_reject_overlap_ambiguity(self) -> None:
+        payload = valid_payload()
+        binding = payload["abstract_sentences"][0]["factual_span_bindings"][0]
+        text = binding["text"]
+        binding.update({"end": 30, "text": text[:30]})
+        payload["abstract_sentences"][0]["factual_span_bindings"].append(
+            {**binding, "binding_id": "A1-B2", "start": 20, "end": len(text), "text": text[20:]}
+        )
+        report = validate_finished_review_payload(payload, final_rows(), bibliography(), min_words=1)
+        self.assertIn("INVALID_FACTUAL_SPAN_BINDING", {item["code"] for item in report["blockers"]})
+
     def test_failure_packages_are_sanitized_hash_closed_and_immutable(self) -> None:
         cases = {
             "PROVIDER_EXCEPTION": RuntimeError("credential=secret prompt must not persist"),
@@ -329,8 +351,8 @@ class FinishedReviewDeliveryTests(unittest.TestCase):
                     attempt_metadata={"attempt": 1, "model": "qwen3.7-max"},
                     failure_category=category,
                     failed_stage="generation_response",
-                    model_authorization={"model": "qwen3.7-max", "authorization_id": "finished-review-qwen-v1"},
-                    input_hashes={"request_sha256": "a" * 64, "bibliography_sha256": "b" * 64},
+                    model_authorization={"model": "qwen3.7-max", "authorization_id": "finished-review-qwen-v1", "provider_identity": "alibaba_openai_compatible"},
+                    input_hashes={"request_sha256": "a" * 64, "bibliography_sha256": "b" * 64, "final_claims_sha256": "c" * 64, "closure_manifest_sha256": "d" * 64},
                     diagnostic=str(failure),
                 )
                 manifest = (package / "failure_package.json").read_text(encoding="utf-8")
@@ -343,6 +365,51 @@ class FinishedReviewDeliveryTests(unittest.TestCase):
                         attempt_metadata={}, failure_category=category, failed_stage="generation_response",
                         model_authorization={}, input_hashes={}, diagnostic="overwrite",
                     )
+
+    def test_failure_package_refuses_missing_bibliography_hash_before_output_creation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output_root = Path(temporary) / "missing-bibliography"
+            with self.assertRaises(ValueError):
+                write_generation_failure_package(
+                    output_root=output_root,
+                    attempt_metadata={"attempt": 1},
+                    failure_category="PROVIDER_EXCEPTION",
+                    failed_stage="generation_response",
+                    model_authorization={"model": "qwen3.7-max", "authorization_id": "finished-review-qwen-v1", "provider_identity": "alibaba_openai_compatible"},
+                    input_hashes={"request_sha256": "a" * 64, "final_claims_sha256": "c" * 64, "closure_manifest_sha256": "d" * 64},
+                    diagnostic=RuntimeError("offline failure"),
+                )
+            self.assertFalse(output_root.exists())
+
+    def test_failure_package_refuses_untrusted_stage_authorization_and_hash_bindings(self) -> None:
+        valid_authorization = {"model": "qwen3.7-max", "authorization_id": "finished-review-qwen-v1", "provider_identity": "alibaba_openai_compatible"}
+        valid_hashes = {"request_sha256": "a" * 64, "bibliography_sha256": "b" * 64, "final_claims_sha256": "c" * 64, "closure_manifest_sha256": "d" * 64}
+        cases = [
+            ("illegal-stage", {"failed_stage": "untrusted_stage"}),
+            ("unauthorized-model", {"model_authorization": {**valid_authorization, "model": "qwen-anything"}}),
+            ("missing-authorization", {"model_authorization": {"model": "qwen3.7-max", "provider_identity": "alibaba_openai_compatible"}}),
+            ("missing-provider", {"model_authorization": {"model": "qwen3.7-max", "authorization_id": "finished-review-qwen-v1"}}),
+            ("nonhex-hash", {"input_hashes": {**valid_hashes, "request_sha256": "not-a-hash"}}),
+            ("empty-hash", {"input_hashes": {**valid_hashes, "bibliography_sha256": ""}}),
+            ("missing-frozen", {"input_hashes": {key: value for key, value in valid_hashes.items() if key != "closure_manifest_sha256"}}),
+            ("forged-extra", {"input_hashes": {**valid_hashes, "forged_sha256": "e" * 64}}),
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            for name, override in cases:
+                output_root = Path(temporary) / name
+                kwargs = {
+                    "output_root": output_root,
+                    "attempt_metadata": {"attempt": 1},
+                    "failure_category": "PROVIDER_EXCEPTION",
+                    "failed_stage": "generation_response",
+                    "model_authorization": valid_authorization,
+                    "input_hashes": valid_hashes,
+                    "diagnostic": RuntimeError("offline failure"),
+                }
+                kwargs.update(override)
+                with self.assertRaises(ValueError):
+                    write_generation_failure_package(**kwargs)
+                self.assertFalse(output_root.exists(), name)
 
     def test_generator_persists_failure_packages_for_exception_empty_and_malformed_response(self) -> None:
         cases = {
@@ -362,10 +429,44 @@ class FinishedReviewDeliveryTests(unittest.TestCase):
                     generate_finished_review_with_bounded_repair(
                         Provider(), final_rows(), build_finished_review_plan(final_rows()), bibliography(),
                         failure_package_root=root,
-                        model_authorization={"model": "qwen3.7-max", "authorization_id": "finished-review-qwen-v1"},
-                        input_hashes={"request_sha256": "a" * 64},
+                        model_authorization={"model": "qwen3.7-max", "authorization_id": "finished-review-qwen-v1", "provider_identity": "alibaba_openai_compatible"},
+                        input_hashes={"request_sha256": "a" * 64, "bibliography_sha256": "b" * 64, "final_claims_sha256": "c" * 64, "closure_manifest_sha256": "d" * 64},
                     )
                 self.assertEqual(json.loads((root / "failure_package.json").read_text(encoding="utf-8"))["failure_category"], category)
+
+    def test_generator_adds_its_own_request_hash_to_failure_closure(self) -> None:
+        class Provider:
+            def generate(self, _request: dict) -> dict:
+                raise RuntimeError("provider unavailable")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "failure"
+            with self.assertRaises(RuntimeError):
+                generate_finished_review_with_bounded_repair(
+                    Provider(), final_rows(), build_finished_review_plan(final_rows()), bibliography(),
+                    failure_package_root=root,
+                    model_authorization={"model": "qwen3.7-max", "authorization_id": "finished-review-qwen-v1", "provider_identity": "alibaba_openai_compatible"},
+                    input_hashes={"bibliography_sha256": "b" * 64, "final_claims_sha256": "c" * 64, "closure_manifest_sha256": "d" * 64},
+                )
+            package = json.loads((root / "failure_package.json").read_text(encoding="utf-8"))
+            self.assertRegex(package["input_hashes"]["request_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_generator_does_not_trust_a_caller_supplied_request_hash(self) -> None:
+        class Provider:
+            def generate(self, _request: dict) -> dict:
+                raise RuntimeError("provider unavailable")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "failure"
+            with self.assertRaises(RuntimeError):
+                generate_finished_review_with_bounded_repair(
+                    Provider(), final_rows(), build_finished_review_plan(final_rows()), bibliography(),
+                    failure_package_root=root,
+                    model_authorization={"model": "qwen3.7-max", "authorization_id": "finished-review-qwen-v1", "provider_identity": "alibaba_openai_compatible"},
+                    input_hashes={"request_sha256": "a" * 64, "bibliography_sha256": "b" * 64, "final_claims_sha256": "c" * 64, "closure_manifest_sha256": "d" * 64},
+                )
+            package = json.loads((root / "failure_package.json").read_text(encoding="utf-8"))
+            self.assertNotEqual(package["input_hashes"]["request_sha256"], "a" * 64)
 
     def test_bibliography_input_is_external_hash_bound_and_fails_closed(self) -> None:
         document = {"schema_version": "finished-review-bibliography-1.0", "entries": bibliography()}

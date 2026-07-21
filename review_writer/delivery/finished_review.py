@@ -18,6 +18,8 @@ from review_writer.phase8.phase8b_grounded_revision_v2 import _chemical_tokens, 
 CONTINUOUS_MODE = "continuous_finished_review"
 AUTHORIZED_FINISHED_REVIEW_MODELS = frozenset({"qwen3.7-max"})
 FINISHED_REVIEW_MODEL_AUTHORIZATION_ID = "finished-review-qwen-v1"
+FAILURE_PACKAGE_STAGES = frozenset({"generation_response", "payload_parse"})
+REQUIRED_FAILURE_INPUT_HASHES = frozenset({"request_sha256", "bibliography_sha256", "final_claims_sha256", "closure_manifest_sha256"})
 DEFAULT_MODE = "checkpointed"
 METHOD_LABEL = "HUMAN_SPOT_CHECKED_EVIDENCE_GROUNDED_WORKING_DRAFT"
 STAGE_READY = "FIRST_FINISHED_QODERWORK_REVIEW_READY_FOR_HUMAN_QUALITY_REVIEW"
@@ -345,7 +347,7 @@ def generate_finished_review_with_bounded_repair(
     input_hashes: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     request = build_qwen_generation_request(final_rows, evidence_plan, bibliography_metadata)
-    package_inputs = input_hashes or {"request_sha256": _canonical_sha256(request)}
+    package_inputs = {**(input_hashes or {}), "request_sha256": _canonical_sha256(request)}
     authorization = model_authorization or {}
     attempts: list[dict[str, Any]] = []
     payload: dict[str, Any] | None = None
@@ -497,7 +499,19 @@ def _validate_factual_span_bindings(sentence: dict[str, Any], support_ids: list[
             block("INVALID_FACTUAL_SPAN_LOCATOR", "binding locator does not resolve to claim locator data", sentence_id)
             continue
         covered.append((start, end))
-    if not covered or min(start for start, _end in covered) != 0 or max(end for _start, end in covered) != len(text):
+    if not covered:
+        block("UNBOUND_FACTUAL_SPAN", "material factual text is not fully covered by valid bindings", sentence_id)
+        return
+    cursor = 0
+    for start, end in sorted(covered):
+        if start < cursor:
+            block("INVALID_FACTUAL_SPAN_BINDING", "overlapping factual spans are not permitted", sentence_id)
+            return
+        if start > cursor:
+            block("UNBOUND_FACTUAL_SPAN", "material factual text has a gap between valid bindings", sentence_id)
+            return
+        cursor = end
+    if cursor != len(text):
         block("UNBOUND_FACTUAL_SPAN", "material factual text is not fully covered by valid bindings", sentence_id)
 
 
@@ -762,6 +776,18 @@ def write_generation_failure_package(
 ) -> Path:
     """Write a closed, non-overwritable diagnostic package without raw model data."""
     output_root = Path(output_root).resolve()
+    if failed_stage not in FAILURE_PACKAGE_STAGES:
+        raise ValueError("unsupported generation failure stage")
+    model = model_authorization.get("model") if isinstance(model_authorization, dict) else None
+    authorization_id = model_authorization.get("authorization_id") if isinstance(model_authorization, dict) else None
+    provider_identity = model_authorization.get("provider_identity") if isinstance(model_authorization, dict) else None
+    if authorization_id != FINISHED_REVIEW_MODEL_AUTHORIZATION_ID or provider_identity != "alibaba_openai_compatible":
+        raise ValueError("failure package model authorization is invalid")
+    authorize_finished_review_model(str(model or ""), {str(model or "")})
+    if not isinstance(input_hashes, dict) or set(input_hashes) != REQUIRED_FAILURE_INPUT_HASHES:
+        raise ValueError("failure package input hash bindings are incomplete")
+    if any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value) for value in input_hashes.values()):
+        raise ValueError("failure package input hash bindings are invalid")
     if output_root.exists():
         raise ValueError(f"generation failure package already exists: {output_root}")
     if failure_category not in {"PROVIDER_EXCEPTION", "PROVIDER_ERROR", "EMPTY_RESPONSE", "MALFORMED_JSON"}:
