@@ -20,6 +20,8 @@ AUTHORIZED_FINISHED_REVIEW_MODELS = frozenset({"qwen3.7-max"})
 FINISHED_REVIEW_MODEL_AUTHORIZATION_ID = "finished-review-qwen-v1"
 FAILURE_PACKAGE_STAGES = frozenset({"generation_response", "payload_parse"})
 REQUIRED_FAILURE_INPUT_HASHES = frozenset({"request_sha256", "bibliography_sha256", "final_claims_sha256", "closure_manifest_sha256"})
+REQUIRED_FAILURE_SOURCE_HASHES = frozenset({"bibliography_sha256", "final_claims_sha256", "closure_manifest_sha256"})
+FAILURE_SOURCE_MATERIALS = {"bibliography": "bibliography_sha256", "final_claims": "final_claims_sha256", "closure_manifest": "closure_manifest_sha256"}
 DEFAULT_MODE = "checkpointed"
 METHOD_LABEL = "HUMAN_SPOT_CHECKED_EVIDENCE_GROUNDED_WORKING_DRAFT"
 STAGE_READY = "FIRST_FINISHED_QODERWORK_REVIEW_READY_FOR_HUMAN_QUALITY_REVIEW"
@@ -345,9 +347,9 @@ def generate_finished_review_with_bounded_repair(
     failure_package_root: Path | None = None,
     model_authorization: dict[str, Any] | None = None,
     input_hashes: dict[str, str] | None = None,
+    failure_source_materials: dict[str, bytes] | None = None,
 ) -> dict[str, Any]:
     request = build_qwen_generation_request(final_rows, evidence_plan, bibliography_metadata)
-    package_inputs = {**(input_hashes or {}), "request_sha256": _canonical_sha256(request)}
     authorization = model_authorization or {}
     attempts: list[dict[str, Any]] = []
     payload: dict[str, Any] | None = None
@@ -363,17 +365,26 @@ def generate_finished_review_with_bounded_repair(
                 "validator_blockers": validation["blockers"] if validation else [],
                 "instruction": "Return the complete corrected JSON object. Preserve supported content and do not add claims.",
             }
+        expected_source_hashes = input_hashes or {}
+        attempt_model = getattr(provider, "model", None)
+        if failure_package_root is not None:
+            _verified_failure_input_hashes(current_request, expected_source_hashes, failure_source_materials)
+            if not isinstance(attempt_model, str) or not attempt_model or attempt_model != authorization.get("model"):
+                raise ValueError("finished-review failure receipt requires the exact actual attempt model")
+        attempt_metadata = {"attempt": attempt_number, "model": attempt_model}
         try:
             response = provider.generate(current_request)
         except Exception as exc:  # noqa: BLE001
             if failure_package_root is not None:
                 write_generation_failure_package(
                     output_root=failure_package_root,
-                    attempt_metadata={"attempt": attempt_number},
+                    attempt_metadata=attempt_metadata,
                     failure_category="PROVIDER_EXCEPTION",
                     failed_stage="generation_response",
                     model_authorization=authorization,
-                    input_hashes=package_inputs,
+                    input_hashes=expected_source_hashes,
+                    source_materials=failure_source_materials or {},
+                    request_payload=current_request,
                     diagnostic=exc,
                 )
             raise RuntimeError("finished-review generation provider exception") from None
@@ -381,11 +392,13 @@ def generate_finished_review_with_bounded_repair(
             if failure_package_root is not None:
                 write_generation_failure_package(
                     output_root=failure_package_root,
-                    attempt_metadata={"attempt": attempt_number, "status": response.get("status") if isinstance(response, dict) else None},
+                    attempt_metadata={**attempt_metadata, "status": response.get("status") if isinstance(response, dict) else None},
                     failure_category="PROVIDER_ERROR",
                     failed_stage="generation_response",
                     model_authorization=authorization,
-                    input_hashes=package_inputs,
+                    input_hashes=expected_source_hashes,
+                    source_materials=failure_source_materials or {},
+                    request_payload=current_request,
                     diagnostic=response,
                 )
             raise RuntimeError("finished-review generation provider error")
@@ -393,11 +406,13 @@ def generate_finished_review_with_bounded_repair(
             if failure_package_root is not None:
                 write_generation_failure_package(
                     output_root=failure_package_root,
-                    attempt_metadata={"attempt": attempt_number, "status": "ok"},
+                    attempt_metadata={**attempt_metadata, "status": "ok"},
                     failure_category="EMPTY_RESPONSE",
                     failed_stage="generation_response",
                     model_authorization=authorization,
-                    input_hashes=package_inputs,
+                    input_hashes=expected_source_hashes,
+                    source_materials=failure_source_materials or {},
+                    request_payload=current_request,
                     diagnostic=response,
                 )
             raise RuntimeError("finished-review generation returned empty content")
@@ -418,11 +433,13 @@ def generate_finished_review_with_bounded_repair(
             if failure_package_root is not None:
                 write_generation_failure_package(
                     output_root=failure_package_root,
-                    attempt_metadata=attempts[-1],
+                    attempt_metadata={**attempts[-1], "model": attempt_model},
                     failure_category="MALFORMED_JSON",
                     failed_stage="payload_parse",
                     model_authorization=authorization,
-                    input_hashes=package_inputs,
+                    input_hashes=expected_source_hashes,
+                    source_materials=failure_source_materials or {},
+                    request_payload=current_request,
                     diagnostic=exc,
                 )
             raise RuntimeError("finished-review generation returned malformed JSON") from None
@@ -764,6 +781,22 @@ def _canonical_sha256(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
+def _verified_failure_input_hashes(request_payload: dict[str, Any], expected_hashes: dict[str, str], source_materials: dict[str, bytes] | None) -> dict[str, str]:
+    if not isinstance(expected_hashes, dict) or set(expected_hashes) != REQUIRED_FAILURE_SOURCE_HASHES:
+        raise ValueError("failure package expected source hash bindings are incomplete")
+    if not isinstance(source_materials, dict) or set(source_materials) != set(FAILURE_SOURCE_MATERIALS):
+        raise ValueError("failure package source materials are incomplete")
+    actual = {"request_sha256": _canonical_sha256(request_payload)}
+    for material_name, hash_name in FAILURE_SOURCE_MATERIALS.items():
+        material = source_materials[material_name]
+        if not isinstance(material, bytes):
+            raise ValueError("failure package source material is invalid")
+        actual[hash_name] = hashlib.sha256(material).hexdigest()
+    if expected_hashes != {key: actual[key] for key in REQUIRED_FAILURE_SOURCE_HASHES}:
+        raise ValueError("failure package source hash binding mismatch")
+    return actual
+
+
 def write_generation_failure_package(
     *,
     output_root: Path,
@@ -772,6 +805,8 @@ def write_generation_failure_package(
     failed_stage: str,
     model_authorization: dict[str, Any],
     input_hashes: dict[str, str],
+    source_materials: dict[str, bytes],
+    request_payload: dict[str, Any],
     diagnostic: object,
 ) -> Path:
     """Write a closed, non-overwritable diagnostic package without raw model data."""
@@ -784,12 +819,9 @@ def write_generation_failure_package(
     if authorization_id != FINISHED_REVIEW_MODEL_AUTHORIZATION_ID or provider_identity != "alibaba_openai_compatible":
         raise ValueError("failure package model authorization is invalid")
     authorize_finished_review_model(str(model or ""), {str(model or "")})
-    if attempt_metadata.get("model") not in (None, model):
+    if not isinstance(attempt_metadata, dict) or attempt_metadata.get("model") != model:
         raise ValueError("failure package attempt model does not match authorization")
-    if not isinstance(input_hashes, dict) or set(input_hashes) != REQUIRED_FAILURE_INPUT_HASHES:
-        raise ValueError("failure package input hash bindings are incomplete")
-    if any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value) for value in input_hashes.values()):
-        raise ValueError("failure package input hash bindings are invalid")
+    verified_hashes = _verified_failure_input_hashes(request_payload, input_hashes, source_materials)
     if output_root.exists():
         raise ValueError(f"generation failure package already exists: {output_root}")
     if failure_category not in {"PROVIDER_EXCEPTION", "PROVIDER_ERROR", "EMPTY_RESPONSE", "MALFORMED_JSON"}:
@@ -805,8 +837,8 @@ def write_generation_failure_package(
         "failed_stage": failed_stage,
         "attempt": {key: value for key, value in attempt_metadata.items() if key in {"attempt", "model", "region", "status"}},
         "model_authorization": {key: value for key, value in model_authorization.items() if key in {"model", "authorization_id", "provider_identity"}},
-        "input_hashes": dict(input_hashes),
-        "input_package_sha256": _canonical_sha256(input_hashes),
+        "input_hashes": verified_hashes,
+        "input_package_sha256": _canonical_sha256(verified_hashes),
         "safe_diagnostic": safe_diagnostic,
     }
     atomic_write_json(output_root / "failure_package.json", package)

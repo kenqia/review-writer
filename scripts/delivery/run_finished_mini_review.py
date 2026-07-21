@@ -202,6 +202,11 @@ def main() -> int:
         )
         bibliography = load_hash_bound_bibliography(args.bibliography, args.bibliography_sha256)
         input_hashes["bibliography_sha256"] = args.bibliography_sha256
+        failure_source_materials = {
+            "bibliography": args.bibliography.read_bytes(),
+            "final_claims": claims_path.read_bytes(),
+            "closure_manifest": manifest_path.read_bytes(),
+        }
         final_rows = _read_jsonl(claims_path)
         evidence_plan = build_finished_review_plan(final_rows)
         run_id = args.run_id or time.strftime("case-01-allene-mini-review-%Y%m%dT%H%M%SZ", time.gmtime())
@@ -223,6 +228,7 @@ def main() -> int:
             failure_package_root=output_root.with_name(f"{output_root.name}-generation-failure"),
             model_authorization=model_authorization,
             input_hashes=input_hashes,
+            failure_source_materials=failure_source_materials,
         )
         if generation["validation"]["blockers"]:
             diagnostic_root = output_root.with_name(f"{output_root.name}-failed")
