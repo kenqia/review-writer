@@ -48,7 +48,7 @@ def validate_live_fixture(value: Path) -> Path:
         raise ValueError("new live modes cannot use the legacy fixed fixture")
     if tmp_root not in resolved.parents:
         raise ValueError("fixture must remain under /tmp")
-    if not (resolved.name.startswith("agent-orchestration-runtime-") or resolved.name.startswith("kenqia-agent-orchestration-dry-run-")):
+    if not resolved.name.startswith("agent-orchestration-runtime-"):
         raise ValueError("fixture basename must use the agent-orchestration-runtime- prefix")
     if resolved.exists():
         raise ValueError("fixture must not exist before a live mode begins")

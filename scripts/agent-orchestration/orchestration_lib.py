@@ -451,7 +451,7 @@ def merge_findings(reports: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def sanitize_summary(payload: dict[str, Any]) -> dict[str, Any]:
-    blocked = {"session_id", "session", "session_id_reference", "thread_id", "turn_id", "thread_reference", "thread_ref", "session_reference", "session_ref", "turn_reference", "turn_ref", "raw_log", "stderr", "stdout", "events", "full_output", "last_message", "prompt", "reply", "replies", "response", "responses", "output", "auth", "token", "authorization", "cookie"}
+    blocked = {"session_id", "session", "session_id_reference", "thread_id", "turn_id", "thread_reference", "thread_ref", "session_reference", "session_ref", "turn_reference", "turn_ref", "raw_log", "stderr", "stdout", "events", "full_output", "last_message", "prompt", "reply", "replies", "response", "responses", "output", "auth", "token", "authorization", "cookie", "fixture_path", "fixture", "cleanup_command", "cleanup_commands"}
     def clean(value: Any, key: str = "") -> Any:
         if key.lower() in blocked:
             return None
