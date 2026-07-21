@@ -784,6 +784,8 @@ def write_generation_failure_package(
     if authorization_id != FINISHED_REVIEW_MODEL_AUTHORIZATION_ID or provider_identity != "alibaba_openai_compatible":
         raise ValueError("failure package model authorization is invalid")
     authorize_finished_review_model(str(model or ""), {str(model or "")})
+    if attempt_metadata.get("model") not in (None, model):
+        raise ValueError("failure package attempt model does not match authorization")
     if not isinstance(input_hashes, dict) or set(input_hashes) != REQUIRED_FAILURE_INPUT_HASHES:
         raise ValueError("failure package input hash bindings are incomplete")
     if any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value) for value in input_hashes.values()):

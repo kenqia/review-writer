@@ -387,6 +387,7 @@ class FinishedReviewDeliveryTests(unittest.TestCase):
         cases = [
             ("illegal-stage", {"failed_stage": "untrusted_stage"}),
             ("unauthorized-model", {"model_authorization": {**valid_authorization, "model": "qwen-anything"}}),
+            ("attempt-model-mismatch", {"attempt_metadata": {"attempt": 1, "model": "qwen-anything"}}),
             ("missing-authorization", {"model_authorization": {"model": "qwen3.7-max", "provider_identity": "alibaba_openai_compatible"}}),
             ("missing-provider", {"model_authorization": {"model": "qwen3.7-max", "authorization_id": "finished-review-qwen-v1"}}),
             ("nonhex-hash", {"input_hashes": {**valid_hashes, "request_sha256": "not-a-hash"}}),
