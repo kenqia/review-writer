@@ -18,7 +18,7 @@ from review_writer.phase8.phase8b_grounded_revision_v2 import _chemical_tokens, 
 CONTINUOUS_MODE = "continuous_finished_review"
 AUTHORIZED_FINISHED_REVIEW_MODELS = frozenset({"qwen3.7-max"})
 FINISHED_REVIEW_MODEL_AUTHORIZATION_ID = "finished-review-qwen-v1"
-FAILURE_PACKAGE_STAGES = frozenset({"generation_response", "payload_parse"})
+FAILURE_PACKAGE_STAGES = frozenset({"generation_response", "payload_parse", "validation_blockers"})
 REQUIRED_FAILURE_INPUT_HASHES = frozenset({"request_sha256", "bibliography_sha256", "final_claims_sha256", "closure_manifest_sha256"})
 REQUIRED_FAILURE_SOURCE_HASHES = frozenset({"bibliography_sha256", "final_claims_sha256", "closure_manifest_sha256"})
 FAILURE_SOURCE_MATERIALS = {"bibliography": "bibliography_sha256", "final_claims": "final_claims_sha256", "closure_manifest": "closure_manifest_sha256"}
@@ -354,6 +354,7 @@ def generate_finished_review_with_bounded_repair(
     attempts: list[dict[str, Any]] = []
     payload: dict[str, Any] | None = None
     validation: dict[str, Any] | None = None
+    verified_input_hashes: dict[str, str] | None = None
     for attempt_number in (1, 2):
         current_request = request
         if attempt_number == 2:
@@ -368,7 +369,7 @@ def generate_finished_review_with_bounded_repair(
         expected_source_hashes = input_hashes or {}
         attempt_model = getattr(provider, "model", None)
         if failure_package_root is not None:
-            _verified_failure_input_hashes(current_request, expected_source_hashes, failure_source_materials)
+            verified_input_hashes = _verified_failure_input_hashes(current_request, expected_source_hashes, failure_source_materials)
             if not isinstance(attempt_model, str) or not attempt_model or attempt_model != authorization.get("model"):
                 raise ValueError("finished-review failure receipt requires the exact actual attempt model")
         attempt_metadata = {"attempt": attempt_number, "model": attempt_model}
@@ -421,7 +422,7 @@ def generate_finished_review_with_bounded_repair(
             {
                 "attempt": attempt_number,
                 "status": response.get("status"),
-                "model": metadata.get("model"),
+                "model": attempt_model,
                 "region": metadata.get("region"),
                 "usage": metadata.get("stream_telemetry") or metadata.get("usage") or {},
                 "warnings": response.get("warnings") or [],
@@ -460,6 +461,7 @@ def generate_finished_review_with_bounded_repair(
         "request_count": len(attempts),
         "repair_used": len(attempts) == 2,
         "attempts": attempts,
+        "verified_input_hashes": verified_input_hashes,
     }
 
 
@@ -850,27 +852,44 @@ def write_failed_generation_diagnostic(
     *,
     output_root: Path,
     payload: dict[str, Any],
-    final_rows: list[dict[str, Any]],
-    bibliography_metadata: dict[str, dict[str, Any]],
     validation: dict[str, Any],
-    generation_manifest: dict[str, Any],
+    attempt_metadata: dict[str, Any],
+    model_authorization: dict[str, Any],
+    verified_input_hashes: dict[str, str],
 ) -> Path:
-    """Persist a complete failed candidate before the bounded generator exits."""
+    """Persist a sanitized validation-blocker receipt, never candidate content."""
     output_root = Path(output_root).resolve()
+    model = model_authorization.get("model") if isinstance(model_authorization, dict) else None
+    if not isinstance(attempt_metadata, dict) or attempt_metadata.get("model") != model:
+        raise ValueError("validation failure attempt model does not match authorization")
+    if not isinstance(model_authorization, dict) or model_authorization.get("authorization_id") != FINISHED_REVIEW_MODEL_AUTHORIZATION_ID or model_authorization.get("provider_identity") != "alibaba_openai_compatible":
+        raise ValueError("validation failure authorization is invalid")
+    authorize_finished_review_model(str(model or ""), {str(model or "")})
+    if not isinstance(verified_input_hashes, dict) or set(verified_input_hashes) != REQUIRED_FAILURE_INPUT_HASHES or any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value) for value in verified_input_hashes.values()):
+        raise ValueError("validation failure verified input hashes are invalid")
     if output_root.exists():
         raise ValueError(f"failed generation diagnostic already exists: {output_root}")
     output_root.mkdir(parents=True)
-    markdown, _citations = render_final_review(payload, final_rows, bibliography_metadata)
-    atomic_write_text(output_root / "candidate_review.md", markdown)
-    atomic_write_json(output_root / "model_payload.json", payload)
-    atomic_write_json(output_root / "validation.json", validation)
-    atomic_write_json(output_root / "generation_manifest.json", generation_manifest)
-    manifest_lines = [
-        f"{sha256_file(path)}  {path.name}"
-        for path in sorted(output_root.iterdir())
-        if path.is_file() and path.name != "HASH_MANIFEST.sha256"
-    ]
-    atomic_write_text(output_root / "HASH_MANIFEST.sha256", "\n".join(manifest_lines) + "\n")
+    safe_validation = {
+        "status": validation.get("status"),
+        "blocker_count": validation.get("blocker_count"),
+        "warning_count": validation.get("warning_count"),
+        "blockers": [{key: item[key] for key in ("code", "sentence_id") if key in item} for item in validation.get("blockers") or []],
+        "warnings": [{key: item[key] for key in ("code", "sentence_id") if key in item} for item in validation.get("warnings") or []],
+    }
+    package = {
+        "schema_version": "finished-review-failure-1.0",
+        "failure_category": "VALIDATION_BLOCKERS",
+        "failed_stage": "validation_blockers",
+        "attempt": {key: value for key, value in attempt_metadata.items() if key in {"attempt", "model", "region", "status"}},
+        "model_authorization": {key: value for key, value in model_authorization.items() if key in {"model", "authorization_id", "provider_identity"}},
+        "input_hashes": verified_input_hashes,
+        "input_package_sha256": _canonical_sha256(verified_input_hashes),
+        "candidate_sha256": _canonical_sha256(payload),
+        "validation": safe_validation,
+    }
+    atomic_write_json(output_root / "failure_package.json", package)
+    atomic_write_text(output_root / "HASH_MANIFEST.sha256", f"{sha256_file(output_root / 'failure_package.json')}  failure_package.json\n")
     return output_root
 
 

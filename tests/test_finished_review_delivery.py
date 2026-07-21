@@ -610,24 +610,34 @@ class FinishedReviewDeliveryTests(unittest.TestCase):
             self.assertIn(QODERWORK_PROMPT, (root / "qoderwork_run_record.md").read_text(encoding="utf-8"))
             self.assertEqual(json.loads((root / "quality_report.json").read_text())["docx_integrity"]["status"], "PASS")
 
-    def test_failed_bounded_generation_persists_candidate_before_exit(self) -> None:
+    def test_validation_blocker_diagnostic_is_sanitized_hash_closed_and_content_free(self) -> None:
         payload = valid_payload()
         payload["sections"][0]["paragraphs"][0]["sentences"][0]["text"] = "An unsupported result gave 55% ee."
         validation = validate_finished_review_payload(payload, final_rows(), bibliography(), min_words=1)
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "failed-candidate"
-            write_failed_generation_diagnostic(
+            package = write_failed_generation_diagnostic(
                 output_root=root,
                 payload=payload,
-                final_rows=final_rows(),
-                bibliography_metadata=bibliography(),
                 validation=validation,
-                generation_manifest={"request_count": 2},
+                attempt_metadata={"attempt": 2, "model": "qwen3.7-max", "status": "ok"},
+                model_authorization={"model": "qwen3.7-max", "authorization_id": "finished-review-qwen-v1", "provider_identity": "alibaba_openai_compatible"},
+                verified_input_hashes={"request_sha256": "a" * 64, "bibliography_sha256": "b" * 64, "final_claims_sha256": "c" * 64, "closure_manifest_sha256": "d" * 64},
             )
-            self.assertTrue((root / "candidate_review.md").is_file())
-            self.assertTrue((root / "model_payload.json").is_file())
-            self.assertTrue((root / "validation.json").is_file())
+            self.assertEqual(package, root)
+            contents = (root / "failure_package.json").read_text(encoding="utf-8")
             self.assertTrue((root / "HASH_MANIFEST.sha256").is_file())
+            self.assertFalse((root / "candidate_review.md").exists())
+            self.assertFalse((root / "model_payload.json").exists())
+            self.assertNotIn("An unsupported result gave 55% ee.", contents)
+            self.assertIn("UNSUPPORTED_NUMERIC_CLAIM", contents)
+            with self.assertRaises(ValueError):
+                write_failed_generation_diagnostic(
+                    output_root=root, payload=payload, validation=validation,
+                    attempt_metadata={"attempt": 2, "model": "qwen3.7-max"},
+                    model_authorization={"model": "qwen3.7-max", "authorization_id": "finished-review-qwen-v1", "provider_identity": "alibaba_openai_compatible"},
+                    verified_input_hashes={"request_sha256": "a" * 64, "bibliography_sha256": "b" * 64, "final_claims_sha256": "c" * 64, "closure_manifest_sha256": "d" * 64},
+                )
 
 
 if __name__ == "__main__":

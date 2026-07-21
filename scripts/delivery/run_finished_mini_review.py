@@ -235,18 +235,10 @@ def main() -> int:
             write_failed_generation_diagnostic(
                 output_root=diagnostic_root,
                 payload=generation["payload"],
-                final_rows=final_rows,
-                bibliography_metadata=bibliography,
                 validation=generation["validation"],
-                generation_manifest={
-                    "actual_model": selected_model,
-                    "request_count": generation["request_count"],
-                    "repair_used": generation["repair_used"],
-                    "attempts": generation["attempts"],
-                    "capability_check": capability,
-                    "repo_head": repo_head,
-                    "input_hashes": input_hashes,
-                },
+                attempt_metadata=generation["attempts"][-1],
+                model_authorization=model_authorization,
+                verified_input_hashes=generation["verified_input_hashes"],
             )
             raise ValueError(f"Qwen output retained blockers after bounded repair: {generation['validation']['blockers']}")
         markdown, _citations = render_final_review(generation["payload"], final_rows, bibliography)
