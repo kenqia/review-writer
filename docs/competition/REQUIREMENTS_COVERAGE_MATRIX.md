@@ -41,15 +41,14 @@ exists.
 | Technical report materials | `PARTIAL` | Architecture/status/PR notes and new audit documents | No <=20-page competition proposal assembled |
 | Demo video materials | `MISSING` | No competition demo script/storyboard/video artifact | Produce after UI and Case 02 stabilize |
 | Privacy/secret handling | `COMPLETE_AND_DEMONSTRATED` | `.gitignore:40`; `config/providers.example.yaml:1`; provider manifest says `api_key_recorded=false`; provider/safety tests pass | Add explicit per-project privacy profile and screenshot redaction checklist |
-| Failure recovery | `COMPLETE_AND_DEMONSTRATED` | Bounded provider error classification, Phase 8 resumability, deterministic Attempt 2 salvage | Product UI does not expose recovery state |
+| Failure recovery | `IMPLEMENTED_NOT_DEMONSTRATED` | Finished-review delivery writes immutable, sanitized, hash-closed packages for provider exceptions, provider errors, empty content, and malformed JSON; offline regression tests cover the contract | No external provider-failure run package or product UI recovery state has been demonstrated |
 | Accounts/payments/multi-tenancy | `NOT_NEEDED_FOR_MVP` | No official requirement found | Do not build for the competition MVP |
 | Large knowledge graph | `NOT_NEEDED_FOR_MVP` | Direction 1A does not require it | Do not substitute graph scope for the evidence integration product |
 
 ## Overall Assessment
 
 The strongest coverage is provenance, exact evidence binding, conflict
-preservation, human correction, provider safety, and failure recovery. The
+preservation, human correction, provider safety, and failure-recovery contract. The
 weakest coverage is product entry, second-case proof, integrated interaction,
 and comparative evaluation. Those four areas, not additional scientific
 validators, determine MVP readiness.
-

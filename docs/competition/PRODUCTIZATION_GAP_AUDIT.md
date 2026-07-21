@@ -117,4 +117,3 @@ requires exactly 44 claims and seven conflicts
 11. **What stops now?** Additional Case 01 science/validators/full-review work.
 12. **Only next PR?** PR A: Case 01 packaging plus a generic project/case manifest
     and removal of hardcodes that prevent Case 02.
-

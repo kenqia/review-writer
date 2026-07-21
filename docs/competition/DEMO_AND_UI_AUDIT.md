@@ -92,4 +92,3 @@ The productization task is data-contract integration, not visual reinvention.
 
 Do not depend on a long live model call, a new knowledge-base upload, or private
 source access during the presentation.
-
