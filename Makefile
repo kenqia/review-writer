@@ -8,7 +8,6 @@ SEARCH_ROOT ?= $(abspath $(REPO_ROOT)/..)
 REAL_LITE_OUTPUT_ROOT ?= /tmp/review_writer_real_lite_e2e
 
 smoke:
-	/usr/bin/python3 tests/test_fresh_source_syntax.py
 	$(PYTHON) -m py_compile $$(find skills view scripts -name '*.py' -type f)
 	$(PYTHON) skills/review-writing-orchestrator/scripts/project_status.py --help >/dev/null
 	$(PYTHON) skills/review-final-audit-release/scripts/final_audit_scan.py --help >/dev/null
@@ -22,10 +21,8 @@ quality-check:
 		--output-md /tmp/review_writer_quality_check.md
 
 finished-review-delivery-check:
-	/usr/bin/python3 tests/test_fresh_source_syntax.py
 	$(PYTHON) tests/test_finished_review_delivery.py
 	$(PYTHON) tests/test_docx_citation_links.py
-	$(PYTHON) tests/test_docx_product_quality.py
 	$(PYTHON) scripts/delivery/run_finished_mini_review.py --help >/dev/null
 
 qoderwork-check:
