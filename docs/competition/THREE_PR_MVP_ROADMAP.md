@@ -230,4 +230,3 @@ final submission approval.
 
 The only recommended next implementation action is **PR A**. Do not begin Case
 02 acquisition, Qwen runs, or UI work until the generic boundary is accepted.
-

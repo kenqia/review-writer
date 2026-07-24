@@ -1,5 +1,12 @@
 # Review-Writer Current Handoff
 
+## Authority and Historical-Record Notice
+
+The branch/merge narrative below is historical repository context only. It is
+not M1 authority, human acceptance, merge authorization, or permission for
+scientific continuation. PR #4 historical merge remains prohibited. The active
+worktree owner and current acceptance decision must be established separately.
+
 ## Repository
 
 - GitHub: `kenqia/review-writer`
@@ -120,7 +127,7 @@ PHASE8A_COMPLETE_PR3_READY_FOR_REVIEW
 
 ## Phase 8B
 
-Phase 8B started on its own feature branch after PR #3 was merged. The first
+Historical record: Phase 8B started on its own feature branch after PR #3 was merged. The first
 bounded vertical slice is complete:
 
 ```text

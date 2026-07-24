@@ -68,4 +68,3 @@ The repository demonstrates an evidence-grounded scientific review loop in one
 chemistry case. It does not yet demonstrate domain-independent scientific data
 integration, autonomous scientific discovery, publication-grade validation, or
 an experimental research loop.
-
