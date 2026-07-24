@@ -1,0 +1,262 @@
+{
+  "schema_version": "1.0",
+  "audit_scope": "tracked production code, CLI, schemas, templates, UI, Makefile, tests, demo fixtures, and public status docs",
+  "summary": {
+    "blocks_second_case": 12,
+    "security_or_portability_risks": 0,
+    "tracked_absolute_user_paths": 0,
+    "interpretation": "Case fixtures and audit hashes are acceptable when isolated. The blockers are values embedded in active discovery, generation, synthesis, and entrypoint contracts."
+  },
+  "items": [
+    {
+      "id": "HC-001",
+      "match": "ALLOWED_PAPER_IDS = {F3I, F47A, P403}",
+      "path": "review_writer/pipeline/retrieval_generation.py",
+      "line": 12,
+      "symbol": "ALLOWED_PAPER_IDS",
+      "classifications": ["GENERIC_CORE_HARDCODING", "BLOCKS_SECOND_CASE"],
+      "why": "The reusable retrieval-generation module silently discards every other paper ID.",
+      "minimum_action": "Accept allowed source IDs from a case/project manifest."
+    },
+    {
+      "id": "HC-002",
+      "match": "fixed asymmetric-allene section title",
+      "path": "review_writer/pipeline/retrieval_generation.py",
+      "line": 14,
+      "symbol": "DEFAULT_SECTION_TITLE",
+      "classifications": ["GENERIC_CORE_HARDCODING", "BLOCKS_SECOND_CASE"],
+      "why": "The active generation default defines the Case 01 topic.",
+      "minimum_action": "Require or derive the title from project scope."
+    },
+    {
+      "id": "HC-003",
+      "match": "citations limited to F3I/F47A/P403",
+      "path": "review_writer/pipeline/retrieval_generation.py",
+      "line": 295,
+      "symbol": "build_generation_messages",
+      "classifications": ["GENERIC_CORE_HARDCODING", "BLOCKS_SECOND_CASE"],
+      "why": "The generation prompt rejects citations from a clean-room source set.",
+      "minimum_action": "Render allowed citation/source IDs from the evidence pack."
+    },
+    {
+      "id": "HC-004",
+      "match": "offline prose branches by F3I/F47A/P403",
+      "path": "review_writer/pipeline/retrieval_generation.py",
+      "line": 251,
+      "symbol": "offline_section",
+      "classifications": ["CASE_FIXTURE_ALLOWED"],
+      "why": "Useful deterministic Case 01 fixture, but unsuitable as a generic fallback.",
+      "minimum_action": "Keep as Case 01 fixture; add a manifest-driven generic fallback."
+    },
+    {
+      "id": "HC-005",
+      "match": "allene-specific classification rules",
+      "path": "allene_classification_rules.py",
+      "line": 2,
+      "symbol": "rules",
+      "classifications": ["CASE_FIXTURE_ALLOWED"],
+      "why": "The taxonomy is a legitimate chemistry case asset and should not be generalized into the core schema.",
+      "minimum_action": "Select it explicitly from the Case 01 manifest."
+    },
+    {
+      "id": "HC-006",
+      "match": "discovery always loads allene_classification_rules.py",
+      "path": "skills/review-topic-paper-discovery/scripts/discover.py",
+      "line": 93,
+      "symbol": "load_tags",
+      "classifications": ["GENERIC_CORE_HARDCODING", "BLOCKS_SECOND_CASE"],
+      "why": "A new domain cannot supply its own lightweight vocabulary without editing code.",
+      "minimum_action": "Resolve an optional classification profile from the project manifest."
+    },
+    {
+      "id": "HC-007",
+      "match": "allene discovery description and required rules file",
+      "path": "skills/review-topic-paper-discovery/SKILL.md",
+      "line": 3,
+      "symbol": "skill description/core rule",
+      "classifications": ["GENERIC_CORE_HARDCODING", "BLOCKS_SECOND_CASE"],
+      "why": "The primary discovery skill advertises and requires the allene taxonomy.",
+      "minimum_action": "Make domain vocabulary an optional project resource."
+    },
+    {
+      "id": "HC-008",
+      "match": "allenation is the default rule pack",
+      "path": "skills/review-section-blueprint/references/rule_packs.json",
+      "line": 2,
+      "symbol": "default_rule_pack",
+      "classifications": ["GENERIC_CORE_HARDCODING", "BLOCKS_SECOND_CASE"],
+      "why": "A non-allene project inherits allene writing logic unless code/config is changed.",
+      "minimum_action": "Use a neutral default and require explicit Case 01 selection."
+    },
+    {
+      "id": "HC-009",
+      "match": "fallback returns allenation",
+      "path": "skills/review-section-blueprint/scripts/init_section_blueprint.py",
+      "line": 147,
+      "symbol": "resolve_rule_pack",
+      "classifications": ["GENERIC_CORE_HARDCODING", "BLOCKS_SECOND_CASE"],
+      "why": "The implementation reinforces the case-specific manifest default.",
+      "minimum_action": "Fail clearly or select a neutral pack when the project does not specify one."
+    },
+    {
+      "id": "HC-010",
+      "match": "V3 source groups fixed to three Case 01 papers",
+      "path": "review_writer/phase8/v3_source_first.py",
+      "line": 43,
+      "symbol": "SOURCE_GROUPS",
+      "classifications": ["CASE_FIXTURE_ALLOWED", "AUDIT_RECORD_ALLOWED"],
+      "why": "This is frozen Phase 8A method history. Reusing it for Case 02 would be wrong.",
+      "minimum_action": "Leave frozen; exclude from the generic product path."
+    },
+    {
+      "id": "HC-011",
+      "match": "V3.1 source IDs and page counts",
+      "path": "review_writer/phase8/v3_1_source_first.py",
+      "line": 25,
+      "symbol": "REQUIRED_SOURCE_IDS/EXPECTED_PAGE_COUNTS",
+      "classifications": ["CASE_FIXTURE_ALLOWED", "AUDIT_RECORD_ALLOWED"],
+      "why": "Exact source/page expectations are appropriate regression fixtures for the frozen case.",
+      "minimum_action": "Do not migrate these constants into a generic schema."
+    },
+    {
+      "id": "HC-012",
+      "match": "V3 source schema enumerates Case 01 paper/source IDs",
+      "path": "schemas/phase8_source_first_v3/source_unit.schema.json",
+      "line": 9,
+      "symbol": "paper_id/source_document_ids",
+      "classifications": ["CASE_FIXTURE_ALLOWED", "AUDIT_RECORD_ALLOWED"],
+      "why": "The schema documents the frozen V3 case contract, not a product-wide contract.",
+      "minimum_action": "Keep versioned; create a separate case-neutral product schema."
+    },
+    {
+      "id": "HC-013",
+      "match": "44/37/7 final-claim expectations",
+      "path": "review_writer/phase8/phase8b_grounded_revision_v2.py",
+      "line": 18,
+      "symbol": "EXPECTED_FINAL_COUNT/EXPECTED_NON_CONFLICT_COUNT/EXPECTED_CONFLICT_COUNT",
+      "classifications": ["GENERIC_CORE_HARDCODING", "BLOCKS_SECOND_CASE"],
+      "why": "The current active synthesis validator cannot accept a different case size.",
+      "minimum_action": "Read expected accounting from the selected case manifest."
+    },
+    {
+      "id": "HC-014",
+      "match": "fixed three-paper citation map and 44/7 validation",
+      "path": "review_writer/phase8/phase8b_salvage.py",
+      "line": 24,
+      "symbol": "CITATION_BY_PAPER/_validate_final_rows",
+      "classifications": ["CASE_FIXTURE_ALLOWED", "BLOCKS_SECOND_CASE"],
+      "why": "Correct for the frozen salvage operation, but it cannot serve as the next-case synthesis engine.",
+      "minimum_action": "Keep salvage frozen and add a manifest-driven product renderer."
+    },
+    {
+      "id": "HC-015",
+      "match": "fixed closure/V1 run IDs and hashes",
+      "path": "scripts/phase8/prepare_phase8b_grounded_vertical_slice_v2.py",
+      "line": 34,
+      "symbol": "CLOSURE_RUN_ID/V1_RUN_ID/*_SHA256",
+      "classifications": ["AUDIT_RECORD_ALLOWED", "BLOCKS_SECOND_CASE"],
+      "why": "Strong provenance for Case 01; the entrypoint itself is not reusable for a new project.",
+      "minimum_action": "Keep as a Case 01 command and introduce a case-manifest entrypoint."
+    },
+    {
+      "id": "HC-016",
+      "match": "fixed salvage source runs and hashes",
+      "path": "scripts/phase8/salvage_phase8b_grounded_vertical_slice_v2.py",
+      "line": 28,
+      "symbol": "SOURCE_RUN_ID/CLOSURE_RUN_ID/V1_RUN_ID/EXPECTED_HASHES",
+      "classifications": ["AUDIT_RECORD_ALLOWED"],
+      "why": "The command intentionally rescues one frozen response and should not become a generic entrypoint.",
+      "minimum_action": "Archive under Case 01 documentation; do not generalize."
+    },
+    {
+      "id": "HC-017",
+      "match": "clean three-paper Top 3 IDs",
+      "path": "scripts/demo/run_clean_3paper_e2e.py",
+      "line": 15,
+      "symbol": "TOP3",
+      "classifications": ["CASE_FIXTURE_ALLOWED", "DEMO_MANIFEST_ALLOWED"],
+      "why": "Expected fixture identity is appropriate in a named Case 01 demo.",
+      "minimum_action": "Retain and rename/present as Case Study 01."
+    },
+    {
+      "id": "HC-018",
+      "match": "Make targets point to allene demo roots",
+      "path": "Makefile",
+      "line": 60,
+      "symbol": "tiny/real-lite/clean-3paper targets",
+      "classifications": ["CASE_FIXTURE_ALLOWED", "DEMO_MANIFEST_ALLOWED"],
+      "why": "Regression targets may bind fixtures, but they cannot be the only product command.",
+      "minimum_action": "Keep regression targets; add a case-neutral product target."
+    },
+    {
+      "id": "HC-019",
+      "match": "P403 warning required by Bailian preflight",
+      "path": "scripts/rag/bailian_preflight.py",
+      "line": 114,
+      "symbol": "validate_manifest",
+      "classifications": ["CASE_FIXTURE_ALLOWED", "BLOCKS_SECOND_CASE"],
+      "why": "A generic preflight rejects a sanitized corpus without the Case 01 warning record.",
+      "minimum_action": "Move warning expectations into the Case 01 fixture manifest."
+    },
+    {
+      "id": "HC-020",
+      "match": "paper-specific comparison hints",
+      "path": "scripts/rag/build_bailian_small_kb_payload.py",
+      "line": 186,
+      "symbol": "comparison_hint",
+      "classifications": ["CASE_FIXTURE_ALLOWED", "DEMO_MANIFEST_ALLOWED"],
+      "why": "Useful expected retrieval text for Case 01, not a general retrieval rule.",
+      "minimum_action": "Source hints from each case fixture."
+    },
+    {
+      "id": "HC-021",
+      "match": "human spot-check limit 10",
+      "path": "scripts/phase8/build_phase8_review_package.py",
+      "line": 834,
+      "symbol": "human_spot_check_limit",
+      "classifications": ["AUDIT_RECORD_ALLOWED"],
+      "why": "The limit is a frozen methodological budget, not a universal product policy.",
+      "minimum_action": "Preserve for Case 01; use `human_review_policy` for future projects."
+    },
+    {
+      "id": "HC-022",
+      "match": "PR number fixed to 3 in Phase 8 resume",
+      "path": "scripts/review/record_phase8_decision.py",
+      "line": 246,
+      "symbol": "write_state_reports",
+      "classifications": ["AUDIT_RECORD_ALLOWED"],
+      "why": "Historical coordination metadata, not a product field.",
+      "minimum_action": "Leave frozen or remove from future generic reports."
+    },
+    {
+      "id": "HC-023",
+      "match": "Phase 8B has not started",
+      "path": "README.md",
+      "line": 69,
+      "symbol": "Phase 8A status paragraph",
+      "classifications": ["STALE_STATUS_OR_MISLEADING_DOC"],
+      "why": "The statement is now false unless explicitly scoped to the moment Phase 8A closed.",
+      "minimum_action": "Clarify that it was the Phase 8A closure state."
+    },
+    {
+      "id": "HC-024",
+      "match": "feature branch described as unmerged after squash merge",
+      "path": "docs/handoff/CURRENT.md",
+      "line": 15,
+      "symbol": "Current Branches",
+      "classifications": ["STALE_STATUS_OR_MISLEADING_DOC"],
+      "why": "The same document later records PR #3 as squash merged.",
+      "minimum_action": "Remove the contradictory branch status in a later documentation update."
+    },
+    {
+      "id": "HC-025",
+      "match": "fixed /tmp Phase 7 section default",
+      "path": "scripts/phase8/build_phase8_review_package.py",
+      "line": 159,
+      "symbol": "--phase7-section default",
+      "classifications": ["DEMO_MANIFEST_ALLOWED", "BLOCKS_SECOND_CASE"],
+      "why": "Portable as a Unix temp path but points to one historical run rather than a project artifact.",
+      "minimum_action": "Require the input through a case manifest or explicit CLI argument."
+    }
+  ]
+}

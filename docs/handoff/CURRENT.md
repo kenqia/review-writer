@@ -1,5 +1,12 @@
 # Review-Writer Current Handoff
 
+## Authority and Historical-Record Notice
+
+The branch/merge narrative below is historical repository context only. It is
+not M1 authority, human acceptance, merge authorization, or permission for
+scientific continuation. PR #4 historical merge remains prohibited. The active
+worktree owner and current acceptance decision must be established separately.
+
 ## Repository
 
 - GitHub: `kenqia/review-writer`
@@ -8,7 +15,8 @@
 
 ## Current Branches
 
-- `main`: `908239d` (`origin/main`)
+- `main`: `baa9d16` (`origin/main`), including the squash merge of PR #3.
+- `feat/phase8b-grounded-review-integration`: active Phase 8B vertical-slice branch.
 - `feat/chem-review-quality-gates`: merged by PR #1.
 - `feat/orchestrator-rag-generation-pilot`: merged by PR #2.
 - `feat/human-verified-evidence-evaluation`: Phase 8A complete; PR #3 is prepared for formal review and remains unmerged.
@@ -27,6 +35,11 @@
   - Status: merged
   - Merge commit: `908239d733837352d66e15dd189c7d9f7990b6df`
   - Final audit: `docs/pr/pr2_final_merge_audit.md`
+- PR #3: <https://github.com/kenqia/review-writer/pull/3>
+  - Base: `main`
+  - Head: `feat/human-verified-evidence-evaluation`
+  - Status: squash merged
+  - Merge commit: `baa9d1616ed7fac44aad4330261c27f22f2006ee`
 
 ## Completed Phases
 
@@ -41,7 +54,7 @@
 
 ## Phase 8A
 
-Current phase status:
+Final phase status:
 
 ```text
 Phase 8A: complete
@@ -59,7 +72,7 @@ only; it does not establish publication-level scientific validation or
 complete human review.
 ```
 
-Current local package target:
+Local package target:
 
 ```text
 local/phase8_evidence/
@@ -112,7 +125,21 @@ PHASE8A_COMPLETE_PR3_READY_FOR_REVIEW
 - Human spot checks are capped at 10 unique core items.
 - The isolation is procedural, not an operating-system sandbox or statistical independence between model weights.
 
+## Phase 8B
+
+Historical record: Phase 8B started on its own feature branch after PR #3 was merged. The first
+bounded vertical slice is complete:
+
+```text
+PHASE8B_GROUNDED_REVISION_VERTICAL_SLICE_COMPLETE
+```
+
+It reconstructs and assesses the 10 preserved Phase 7 sentences, accounts for
+all 44 Phase 8A final claims, uses 12 non-conflict claims in one representative
+section, and keeps all 7 source-internal conflicts outside revised prose. It
+does not revise the full review. See `docs/phase8/phase8b_vertical_slice.md`.
+
 ## Next User Action
 
-Review PR #3. Do not merge it as part of the Phase 8A closure workflow. Do not
-start Phase 8B without a new explicit instruction.
+Review the one-section revision and its claim-to-sentence mapping before
+expanding Phase 8B beyond this vertical slice.
