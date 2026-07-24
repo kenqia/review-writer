@@ -1,10 +1,11 @@
 # Review-Writer Current Handoff
 
 > **Historical Phase 8 handoff — superseded for current product direction.**
-> This file preserves the state recorded on 2026-07-14. Branch, PR, phase, and
-> next-action statements below must not be used as current instructions. Use
-> [Product Leader Current Handoff](PRODUCT_LEADER_CURRENT.md) and the
-> [Product Roadmap](../product/PRODUCT_ROADMAP.md).
+> The branch, PR, phase, and next-action narrative below is historical context
+> only. It is not M1 authority, human acceptance, merge authorization, or
+> permission for scientific continuation. Use [Product Leader Current
+> Handoff](PRODUCT_LEADER_CURRENT.md) and the [Product
+> Roadmap](../product/PRODUCT_ROADMAP.md) for current direction.
 
 ## Repository
 
@@ -126,7 +127,7 @@ PHASE8A_COMPLETE_PR3_READY_FOR_REVIEW
 
 ## Phase 8B
 
-Phase 8B started on its own feature branch after PR #3 was merged. The first
+Historical record: Phase 8B started on its own feature branch after PR #3 was merged. The first
 bounded vertical slice is complete:
 
 ```text

@@ -76,4 +76,3 @@ screenshot or organizer-accepted credential artifact.
   accounts, billing, or multi-tenancy is required.
 - Whether a redacted call manifest alone satisfies "invocation credentials or
   screenshot" must be confirmed against the final submission portal.
-

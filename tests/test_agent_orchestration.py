@@ -171,7 +171,7 @@ class AgentOrchestrationTests(unittest.TestCase):
                 self.assertFalse(fixture.exists())
 
     def test_dynamic_preview_and_fixture_validation_are_offline(self) -> None:
-        fixture = Path(tempfile.gettempdir()) / f"kenqia-agent-orchestration-dry-run-preview-{uuid.uuid4().hex}"
+        fixture = Path(tempfile.gettempdir()) / f"agent-orchestration-runtime-preview-{uuid.uuid4().hex}"
         with mock.patch.object(run_dry_run.subprocess, "run") as run:
             self.assertEqual(0, run_dry_run.main(["--fixture", str(fixture), "--task-id", "DRYRUN-002"]))
             run.assert_not_called()
@@ -192,7 +192,7 @@ class AgentOrchestrationTests(unittest.TestCase):
             fixture.rmdir()
 
     def test_mocked_health_and_full_modes_validate_fresh_task_fixture(self) -> None:
-        fixture = Path(tempfile.gettempdir()) / f"kenqia-agent-orchestration-dry-run-health-{uuid.uuid4().hex}"
+        fixture = Path(tempfile.gettempdir()) / f"agent-orchestration-runtime-health-{uuid.uuid4().hex}"
         task_id = "DRYRUN-002"
         result = {
             "task_id": task_id,
@@ -225,7 +225,7 @@ class AgentOrchestrationTests(unittest.TestCase):
         finally:
             shutil.rmtree(fixture, ignore_errors=True)
 
-        fixture = Path(tempfile.gettempdir()) / f"kenqia-agent-orchestration-dry-run-full-{uuid.uuid4().hex}"
+        fixture = Path(tempfile.gettempdir()) / f"agent-orchestration-runtime-full-{uuid.uuid4().hex}"
         try:
             with mock.patch.object(run_dry_run.subprocess, "run", side_effect=[completed, completed]) as run:
                 self.assertEqual(0, run_dry_run.main(["--execute", "--fixture", str(fixture), "--task-id", task_id]))
@@ -245,7 +245,7 @@ class AgentOrchestrationTests(unittest.TestCase):
             shutil.rmtree(fixture, ignore_errors=True)
 
     def test_mocked_health_transient_failure_is_partial_without_resume(self) -> None:
-        fixture = Path(tempfile.gettempdir()) / f"kenqia-agent-orchestration-dry-run-transient-{uuid.uuid4().hex}"
+        fixture = Path(tempfile.gettempdir()) / f"agent-orchestration-runtime-transient-{uuid.uuid4().hex}"
         events = json.dumps({"type": "error", "error": {"message": "upstream provider returned 503"}})
         completed = type("Completed", (), {"returncode": 1, "stdout": events, "stderr": "provider unavailable"})()
         try:
@@ -525,6 +525,26 @@ class AgentOrchestrationTests(unittest.TestCase):
         )
         self.assertEqual(0, assignments.returncode, assignments.stderr)
         self.assertIn("VALID assignments", assignments.stdout)
+
+    def test_sanitized_report_omits_runtime_locations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary) / "fixture"
+            (fixture / ".runtime").mkdir(parents=True)
+            with mock.patch.object(run_dry_run, "FIXTURE", fixture):
+                run_dry_run.sanitized_report(fixture_path="private-location", cleanup_command="private-command", status="PARTIAL")
+            payload = json.loads((fixture / ".runtime" / "sanitized-report.json").read_text(encoding="utf-8"))
+            self.assertNotIn("fixture_path", payload)
+            self.assertNotIn("cleanup_command", payload)
+        self.assertTrue(run_dry_run.FIXED_FIXTURE.name.startswith("agent-orchestration-runtime"))
+
+    def test_live_fixture_rejects_legacy_prefix_and_generic_sanitizer_hides_locations(self) -> None:
+        legacy = Path(tempfile.gettempdir()) / f"kenqia-agent-orchestration-dry-run-live-{uuid.uuid4().hex}"
+        with self.assertRaises(ValueError):
+            run_dry_run.validate_live_fixture(legacy)
+        summary = orchestration_lib.sanitize_summary({"nested": [{"fixture_path": "private", "cleanup_commands": ["private"], "safe": "ok"}]})
+        rendered = json.dumps(summary)
+        self.assertNotIn("private", rendered)
+        self.assertIn("ok", rendered)
 
 
 if __name__ == "__main__":

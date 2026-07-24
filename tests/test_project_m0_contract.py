@@ -226,13 +226,13 @@ class M0ContractTests(unittest.TestCase):
         with self.assertRaises(ContractError):
             validate_snapshot_package(stale)
 
-    def test_broad_portability_failure_is_exactly_the_preexisting_orch_blocker(self) -> None:
+    def test_broad_portability_check_passes_after_orch_portability_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "portability.json"
             run = subprocess.run(["python3", "scripts/check_portability.py", "--output-json", str(output), "--output-md", str(Path(tmp) / "portability.md"), "--strict"], cwd=ROOT, text=True, capture_output=True, check=False, env={**__import__("os").environ, "TMPDIR": tmp})
             report = json.loads(output.read_text(encoding="utf-8"))
-            self.assertNotEqual(run.returncode, 0)
-            self.assertEqual(report["errors"], [{"path": "docs/agent-tasks/ORCH-001/owner_replacement_2.json", "line": 9, "pattern": "kenqia_home", "severity": "error", "context": "\"/home/kenqia/templates/kenqia-ai-project-template orchestration paths\""}])
+            self.assertEqual(run.returncode, 0)
+            self.assertEqual(report["errors"], [])
 
     def test_source_path_rejects_internal_and_external_symlink_and_hash_tamper(self) -> None:
         from review_writer.project.contract import validate_source_path

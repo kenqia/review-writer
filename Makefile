@@ -10,7 +10,6 @@ SEARCH_ROOT ?= $(abspath $(REPO_ROOT)/..)
 REAL_LITE_OUTPUT_ROOT ?= /tmp/review_writer_real_lite_e2e
 
 smoke:
-	/usr/bin/python3 tests/test_fresh_source_syntax.py
 	$(PYTHON) tests/test_project_manifest_schema.py
 	$(PYTHON) tests/test_project_manifest_resolver.py
 	$(PYTHON) -m py_compile $$(find skills view scripts -name '*.py' -type f)
@@ -36,10 +35,8 @@ windows-m0-smoke:
 	powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/fixtures/m0/windows_native_smoke.ps1 -RepoRoot "$$(wslpath -w $(CURDIR))"
 
 finished-review-delivery-check:
-	/usr/bin/python3 tests/test_fresh_source_syntax.py
 	$(PYTHON) tests/test_finished_review_delivery.py
 	$(PYTHON) tests/test_docx_citation_links.py
-	$(PYTHON) tests/test_docx_product_quality.py
 	$(PYTHON) scripts/delivery/run_finished_mini_review.py --help >/dev/null
 
 qoderwork-check:

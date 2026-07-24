@@ -116,4 +116,3 @@ Before PR B begins, the chosen case must pass all of the following:
   artificially planted;
 - the run can finish without changing generic production code after PR A;
 - private or licensed full text remains external and uncommitted.
-

@@ -7,9 +7,11 @@ tables, and figures, but a fluent model can silently mix reaction stages, bind a
 number to the wrong condition, or erase a source conflict. Review Writer turns a
 bounded scientific question and source set into a traceable evidence ledger,
 uses an independent verification pass and deterministic rules to preserve
-errors/conflicts, then asks Qwen to write only from accepted evidence. Every
-sentence can be traced back to a claim and locator, and human feedback produces
-an auditable version diff.
+errors/conflicts, then asks Qwen to write only from accepted evidence. The
+finished-review contract rejects each factual sentence unless its material text
+is fully bound to an allowed claim and locator; deterministic checks establish
+only identity/text/locator consistency, while semantic sufficiency remains a
+human/reviewer gate. Human feedback produces an auditable version diff.
 
 ## One-Sentence Innovation
 
@@ -66,7 +68,8 @@ publication-grade scientific validation.
 5. The system highlights one missing or incompatible field and one retained
    conflict/non-comparability condition.
 6. A three-arm panel compares Direct Qwen, RAG, and the full system.
-7. The grounded synthesis view links each factual sentence to claims/sources.
+7. The grounded synthesis view links each factual span to its allowed claim and
+   locator; human review remains required for semantic support.
 8. One bounded feedback action produces a visible diff and updated manifest.
 9. A redacted call manifest/screenshot proves Qwen/Bailian usage without exposing
    credentials.
@@ -101,4 +104,3 @@ universal scientific agent.
 
 Those details remain available in an appendix or reproducibility package when a
 judge asks how the engineering evidence was produced.
-

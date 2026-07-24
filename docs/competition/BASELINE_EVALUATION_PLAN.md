@@ -86,4 +86,3 @@ The Case 02 comparison is complete when it has:
 - a concise finding that states what the full system improved and what remains
   unresolved;
 - no claim of statistical generalization from the single case.
-
