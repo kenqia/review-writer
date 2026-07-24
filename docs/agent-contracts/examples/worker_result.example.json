@@ -1,0 +1,12 @@
+{
+  "task_id": "ORCH-001",
+  "role": "implementation-owner",
+  "session_id_reference": "captured-by-orchestrator",
+  "status": "PASS",
+  "changed_files": ["docs/agent-contracts/examples/worker_result.example.json"],
+  "created_artifacts": [],
+  "checks": [{"requirement_id": "ORCH-001-A02", "command": "python3 tests/test_agent_orchestration.py", "status": "passed", "evidence": "Example offline evidence."}],
+  "unresolved_findings": [],
+  "risk_notes": ["Sanitized example only."],
+  "recommended_next_action": "Return control to the Leader."
+}

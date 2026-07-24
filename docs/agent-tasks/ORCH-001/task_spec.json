@@ -1,0 +1,74 @@
+{
+  "task_id": "ORCH-001",
+  "objective": "Implement a reusable, safe, verifiable Owner-Review agent orchestration layer in review-writer.",
+  "background": "Replace ad hoc agent dispatch with one writable persistent Implementation Owner plus fresh read-only reviewers and verifier.",
+  "frozen_decisions": [
+    "One workspace-write Implementation Owner per work package and worktree",
+    "Repairs resume the original Owner session unless replacement criteria are documented",
+    "Reviewers and Final Verifier are fresh and read-only",
+    "Default commands are offline preview or static validation",
+    "No model fallback"
+  ],
+  "allowed_paths": [
+    "AGENTS.md",
+    ".gitignore",
+    "Makefile",
+    ".codex/agents/",
+    "docs/agent-orchestration/",
+    "docs/agent-roles/",
+    "docs/agent-contracts/",
+    "docs/agent-tasks/",
+    "scripts/agent-orchestration/",
+    "tests/test_agent_orchestration.py",
+    ".agent-orchestration-runs/"
+  ],
+  "forbidden_paths": [
+    "review_writer/",
+    "scripts/delivery/",
+    "skills/review-export-docx/",
+    "review-projects/",
+    "docs/handoff/",
+    "Phase 8A inputs",
+    "user Codex or authentication configuration",
+    "remote repositories"
+  ],
+  "inputs": [
+    "docs/agent-orchestration/BASELINE.md",
+    "docs/agent-orchestration/IMPLEMENTATION_PLAN.md",
+    "the attached frozen requirements supplied by the Leader"
+  ],
+  "required_outputs": [
+    "platform-independent role documents",
+    "project-local Codex agent TOML files",
+    "standard-library validated task and result contracts",
+    "safe preview-first orchestration scripts",
+    "offline Makefile validation gate",
+    "isolated explicit dynamic dry-run",
+    "sanitized tracked run summary",
+    "focused orchestration tests"
+  ],
+  "acceptance_criteria": [
+    "All entries in acceptance_matrix.json pass",
+    "RED evidence is retained before implementation",
+    "No forbidden path is modified",
+    "No external dependency is added"
+  ],
+  "verification_commands": [
+    "python3 tests/test_agent_orchestration.py",
+    "make agent-orchestration-check",
+    "git diff --check"
+  ],
+  "safety_boundaries": [
+    "Do not read credentials, tokens, cookies, sessions, private logs, PDFs, or Case 01 outputs",
+    "Do not commit, push, switch branches, reset, clean, install, publish, or deploy",
+    "Use subprocess argument arrays and validated paths; never shell-eval untrusted input"
+  ],
+  "network_policy": "Offline except the separately explicit /tmp codex dry-run authorized by --execute.",
+  "model_policy": "Implementation Owner uses gpt-5.6-terra with medium reasoning; no fallback. Template remains configurable.",
+  "stop_conditions": [
+    "A forbidden path would need modification",
+    "The requested model is unavailable",
+    "The single-writer invariant cannot be maintained"
+  ],
+  "human_checkpoint": "Report final PASS, PARTIAL, or FAIL; do not start Case 01 revision."
+}

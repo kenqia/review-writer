@@ -1,0 +1,1 @@
+{"task_id":"GENERIC-001","items":[{"id":"GENERIC-001-A01","requirement":"Generic package validates.","evidence_required":"offline output","verification_command":"validate_task_package.py","expected_result":"exit 0","owner":"Implementation Owner","severity":"blocker","status":"pending"}]}

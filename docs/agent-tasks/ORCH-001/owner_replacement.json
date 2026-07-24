@@ -1,0 +1,12 @@
+{
+  "task_id": "ORCH-001",
+  "recorded_at": "2026-07-16T01:42:00+08:00",
+  "original_owner_status": "stopped",
+  "replacement_criterion": "The original Owner failed to repair the same blocker in two consecutive rounds.",
+  "reason": "The original workspace-write session was denied writes under the authorized project-local .codex/agents directory in both the initial exec and its resume.",
+  "replacement_scope": [
+    ".codex/agents/*.toml"
+  ],
+  "concurrency": "Sequential replacement; the original Owner was no longer running before replacement launch.",
+  "approval_basis": "ORCH-001 frozen Owner replacement criteria and the user's special authorization for orchestration infrastructure."
+}

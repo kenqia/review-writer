@@ -1,0 +1,10 @@
+{
+  "task_id": "ORCH-001",
+  "report_status": "historical_superseded",
+  "historical_final_status": "PARTIAL",
+  "historical_environment": "ENVIRONMENT_UNDETERMINED",
+  "provenance": "codex-cli-0.142.4 transient upstream attempts",
+  "current_evidence_report": "docs/agent-orchestration/PROVIDER_QUALIFICATION_REPORT.json",
+  "interpretation": "Historical PARTIAL is neither current failure evidence nor current Grade-4 proof.",
+  "runtime_details": "ignored; omitted from tracked summary"
+}
