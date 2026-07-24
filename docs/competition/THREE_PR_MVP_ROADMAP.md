@@ -1,5 +1,13 @@
 # Three-PR Competition MVP Roadmap
 
+Status: `HISTORICAL_SUPERSEDED`
+
+> **Historical roadmap — sequencing superseded 2026-07-19.** This document is
+> retained as decision history. Its PR labels, UI deferral, Case 02 size, and
+> next-step authorization are not current instructions. Use
+> [Product Roadmap](../product/PRODUCT_ROADMAP.md) and
+> [Product Leader Current Handoff](../handoff/PRODUCT_LEADER_CURRENT.md).
+
 Only the next PR is authorized by this roadmap. Later PRs depend on the prior
 acceptance evidence and should not start early.
 

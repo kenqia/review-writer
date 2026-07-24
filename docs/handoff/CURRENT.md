@@ -1,11 +1,11 @@
 # Review-Writer Current Handoff
 
-## Authority and Historical-Record Notice
-
-The branch/merge narrative below is historical repository context only. It is
-not M1 authority, human acceptance, merge authorization, or permission for
-scientific continuation. PR #4 historical merge remains prohibited. The active
-worktree owner and current acceptance decision must be established separately.
+> **Historical Phase 8 handoff — superseded for current product direction.**
+> The branch, PR, phase, and next-action narrative below is historical context
+> only. It is not M1 authority, human acceptance, merge authorization, or
+> permission for scientific continuation. Use [Product Leader Current
+> Handoff](PRODUCT_LEADER_CURRENT.md) and the [Product
+> Roadmap](../product/PRODUCT_ROADMAP.md) for current direction.
 
 ## Repository
 

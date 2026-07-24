@@ -1,0 +1,15 @@
+{
+  "manifest_schema_version": "project-manifest-1.0",
+  "project_id": "synthetic-nickel-review",
+  "project_title": "Synthetic Nickel Coupling Review",
+  "initial_user_intent": {"goal": "Compare supplied evidence.", "scope": "Use the bounded synthetic corpus."},
+  "discovery_policy": "CLOSED_CORPUS",
+  "output_language": "en",
+  "citation_style": "BRACKETED_NUMERIC",
+  "paths": {"seed_source_root": "inputs/papers", "project_data_root": "state", "export_root": "exports"},
+  "initial_source_inputs": [
+    {"source_id": "SYN100_MAIN", "paper_id": "SYN100", "relative_path": "syn100/main.txt", "document_role": "MAIN", "usage_role": "EVIDENCE"},
+    {"source_id": "SYN100_SI", "paper_id": "SYN100", "relative_path": "syn100/si.txt", "document_role": "SI", "usage_role": "EVIDENCE"}
+  ],
+  "network_policy": "OFFLINE_ONLY"
+}

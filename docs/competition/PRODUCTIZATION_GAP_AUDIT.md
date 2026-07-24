@@ -1,5 +1,12 @@
 # Competition Productization Gap Audit
 
+> **Historical audit — recommendations superseded 2026-07-19.** The observed
+> gaps and repository evidence remain useful, but statements that stop Case 01
+> v5 work, defer the checkpoint UI, prescribe a three-PR sequence, or require a
+> small Case 02 are no longer current decisions. Use
+> [Product North Star](../product/PRODUCT_NORTH_STAR.md) and
+> [Product Roadmap](../product/PRODUCT_ROADMAP.md).
+
 ## Executive Verdict
 
 The project has a credible technical core and a strong deep case, but it is not
