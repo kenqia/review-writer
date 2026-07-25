@@ -13,6 +13,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -131,10 +132,12 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             status, _, body = self._request(dashboard, review_root, request)
             self.assertEqual(200, status)
             self.assertTrue(json.loads(body)["ok"])
-            status, _, body = self._request(dashboard, review_root, b"POST /api/project/synthetic-review/export-docx HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n")
+            export_result = {"ok": True, "path": "05_final_audit/final_draft.docx", "size": 1}
+            with patch.object(dashboard, "export_project_docx", return_value=export_result) as export:
+                status, _, body = self._request(dashboard, review_root, b"POST /api/project/synthetic-review/export-docx HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n")
             self.assertEqual(200, status)
-            self.assertTrue(json.loads(body)["ok"])
-            self.assertTrue((review_root / "review-projects" / "synthetic-review" / "05_final_audit" / "final_draft.docx").exists())
+            self.assertEqual(export_result, json.loads(body))
+            export.assert_called_once_with(review_root, "synthetic-review")
             self.assertIn('self.send_header("Location", "/review")', SERVER.read_text(encoding="utf-8"))
             self.assertIn('fetch(`/api/project/${encodeURIComponent(projectId)}/review-state`)', (ROOT / "view" / "assets" / "dashboard" / "review.html").read_text(encoding="utf-8"))
 
