@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>科研综述专家 · Review Writer</title>
+  <link rel="stylesheet" href="/assets/dashboard/review-ui.css">
+  <style>
+    body{margin:0;background:#f2ecdf;color:#21312d;font-family:Georgia,"Noto Serif SC",serif}.shell{max-width:1180px;margin:auto;padding:28px}.mast{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;border-bottom:2px solid #315f54;padding-bottom:18px}.eyebrow{letter-spacing:.14em;font-size:12px;color:#6d7168}.mast h1{margin:6px 0 0;font-size:32px}.mast select{min-width:260px;padding:10px;border:1px solid #9cb0a4;background:#fffdf7}.grid{display:grid;grid-template-columns:1.4fr 1fr;gap:16px;margin-top:18px}.panel{background:#fffdf7;border:1px solid #d8cdb8;border-radius:14px;padding:20px;box-shadow:0 12px 30px rgba(56,45,28,.08)}.stage{font-size:24px;color:#1e6a58;margin:8px 0}.counts{display:flex;gap:10px;flex-wrap:wrap}.count{border-left:3px solid #c46f33;padding:4px 12px;background:#f7eedf}.label{font-size:12px;color:#6d7168;letter-spacing:.06em}.blockers{margin:12px 0;padding-left:20px}.actions{display:flex;gap:9px;flex-wrap:wrap}.actions a,.actions button{border:1px solid #315f54;background:#315f54;color:white;padding:9px 13px;text-decoration:none;cursor:pointer}.actions a.alt{background:#fffdf7;color:#315f54}@media(max-width:760px){.mast,.grid{display:block}.mast select{margin-top:14px;width:100%}.grid{margin-top:14px}}
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="mast"><div><div class="eyebrow">QODERWORK · 动态项目伴侣</div><h1>科研综述专家</h1></div><select id="project"></select></header>
+    <section class="grid"><article class="panel"><div class="label">综述简报</div><h2 id="topic">正在读取项目…</h2><p id="brief"></p><div class="label">当前阶段</div><div id="stage" class="stage">—</div><div id="status"></div><div class="counts" id="counts"></div></article><aside class="panel"><div class="label">人工与发布状态</div><h2>阻塞项</h2><ul id="blockers" class="blockers"></ul><div id="draft"></div><div class="actions"><a href="/draft">查看/编辑草稿</a><a class="alt" href="/final">终稿审查</a><button id="export">导出 DOCX</button></div><p id="message"></p></aside></section>
+  </main>
+  <script>
+    const $=id=>document.getElementById(id); let projectId='';
+    const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
+    async function loadState(){const state=await (await fetch(`/api/project/${encodeURIComponent(projectId)}/review-state`)).json();const brief=state.brief||{};$('topic').textContent=brief.topic||'未填写主题';$('brief').textContent=[brief.audience&&`读者：${brief.audience}`,brief.scope&&`范围：${brief.scope}`].filter(Boolean).join('　');$('stage').textContent=state.current_stage||'not_started';$('status').textContent=`状态：${state.status||'not_started'}`;$('counts').innerHTML=Object.entries(state.counts||{}).map(([k,v])=>`<div class="count"><div class="label">${esc(k)}</div><strong>${esc(v)}</strong></div>`).join('');const blockers=state.blockers||[];$('blockers').innerHTML=blockers.length?blockers.map(x=>`<li>${esc(x)}</li>`).join(''):'<li>当前没有记录的阻塞项。</li>';$('draft').textContent=`草稿：${state.draft?.first_draft_exists?'可用':'未生成'}；终稿：${state.draft?.final_draft_exists?'可用':'未生成'}；DOCX：${state.draft?.docx_exists?'已存在':'未导出'}`;}
+    async function loadProjects(){const projects=await (await fetch('/api/projects')).json();$('project').innerHTML=projects.map(p=>`<option value="${esc(p.project_id)}">${esc(p.project_id)}</option>`).join('');projectId=projects[0]?.project_id||'';if(projectId)loadState();}
+    $('project').addEventListener('change',e=>{projectId=e.target.value;loadState()});$('export').addEventListener('click',async()=>{const response=await fetch(`/api/project/${encodeURIComponent(projectId)}/export-docx`,{method:'POST'});const result=await response.json();$('message').textContent=result.ok?'DOCX 已导出到项目终稿目录。':(result.error||'导出失败');if(result.ok)loadState()});loadProjects();
+  </script>
+</body>
+</html>

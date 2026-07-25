@@ -64,6 +64,7 @@
 /mineru-outputs/
 /review-projects/
 /review-library/
+/build/
 *.pdf
 /template/*.pdf
 /local/phase8_evidence/**

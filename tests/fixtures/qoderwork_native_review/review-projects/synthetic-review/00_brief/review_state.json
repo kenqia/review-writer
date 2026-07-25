@@ -1,0 +1,13 @@
+{
+  "project_id": "synthetic-review",
+  "brief": {
+    "topic": "可验证的合成综述主题",
+    "audience": "研究人员",
+    "scope": "用于本地产品验证的合成范围"
+  },
+  "current_stage": "evidence_review",
+  "status": "needs_human_review",
+  "blockers": ["需要人工确认一条高风险解释。"],
+  "counts": {"sources": 1, "evidence": 2, "claims": 1},
+  "updated_at": "2026-07-25T00:00:00Z"
+}

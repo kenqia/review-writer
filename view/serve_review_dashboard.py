@@ -24,6 +24,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     figures_app_path: Path
     draft_app_path: Path
     final_app_path: Path
+    review_app_path: Path
 
     def log_message(self, fmt: str, *args: object) -> None:
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
@@ -40,8 +41,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/":
             self.send_response(HTTPStatus.FOUND)
-            self.send_header("Location", "/library")
+            self.send_header("Location", "/review")
             self.end_headers()
+        elif parsed.path == "/review":
+            self.send_file(self.review_app_path, "text/html; charset=utf-8")
         elif parsed.path == "/library":
             self.send_file(self.library_app_path, "text/html; charset=utf-8")
         elif parsed.path == "/discovery":
@@ -68,8 +71,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.handle_discovery_projects()
         elif parsed.path == "/api/checkpoints":
             self.send_json(checkpoint_payload(self.review_root))
+        elif parsed.path.startswith("/api/project/") and parsed.path.endswith("/review-state"):
+            project_id = project_id_from_route(parsed.path, "review-state")
+            if project_id is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                return
+            self.handle_project_review_state_get(project_id)
         elif parsed.path.startswith("/api/project/") and parsed.path.endswith("/draft"):
-            project_id = unquote(parsed.path.split("/")[3])
+            project_id = project_id_from_route(parsed.path, "draft")
+            if project_id is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                return
             self.handle_project_draft_get(project_id)
         elif parsed.path.startswith("/api/project/"):
             parts = parsed.path.strip("/").split("/")
@@ -109,8 +121,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.handle_metadata_put(paper_id)
             return
         if parsed.path.startswith("/api/project/") and parsed.path.endswith("/draft"):
-            project_id = unquote(parsed.path.split("/")[3])
+            project_id = project_id_from_route(parsed.path, "draft")
+            if project_id is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                return
             self.handle_project_draft_put(project_id)
+            return
+        if parsed.path.startswith("/api/project/") and parsed.path.endswith("/review-state"):
+            project_id = project_id_from_route(parsed.path, "review-state")
+            if project_id is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                return
+            self.handle_project_review_state_put(project_id)
             return
         if parsed.path.startswith("/api/discovery/"):
             project_id = unquote(parsed.path.rsplit("/", 1)[-1])
@@ -122,46 +144,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path.startswith("/api/project/") and parsed.path.endswith("/export-docx"):
-            project_id = unquote(parsed.path.split("/")[3])
+            project_id = project_id_from_route(parsed.path, "export-docx")
+            if project_id is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                return
             self.handle_project_export_docx(project_id)
             return
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
     def handle_project_export_docx(self, project_id: str) -> None:
-        project = self.review_root / "review-projects" / project_id
-        stage = project / "05_final_audit"
-        md_path = stage / "final_draft.md"
-        if not md_path.exists():
-            self.send_error(HTTPStatus.BAD_REQUEST, "final_draft.md not found")
-            return
-        docx_path = stage / "final_draft.docx"
-        script = self.review_root / "skills" / "review-export-docx" / "scripts" / "md2docx.py"
-        if not script.exists():
-            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "md2docx.py not found")
-            return
         try:
-            result = subprocess.run(
-                [sys.executable, str(script), "--input", str(md_path), "--output", str(docx_path)],
-                capture_output=True,
-                text=True,
-                timeout=180,
-            )
-        except subprocess.TimeoutExpired:
-            self.send_error(HTTPStatus.GATEWAY_TIMEOUT, "docx export timeout")
+            result = export_project_docx(self.review_root, project_id)
+        except ValueError as exc:
+            self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
             return
-        if result.returncode != 0 or not docx_path.exists():
-            tail = (result.stderr or result.stdout or "").strip().splitlines()[-20:]
-            self.send_json({
-                "ok": False,
-                "returncode": result.returncode,
-                "error": "\n".join(tail) or "md2docx.py failed",
-            })
+        if result.get("http_status"):
+            self.send_error(HTTPStatus(result.pop("http_status")), str(result.pop("error")))
             return
-        self.send_json({
-            "ok": True,
-            "path": str(docx_path),
-            "size": docx_path.stat().st_size,
-        })
+        self.send_json(result)
 
     def handle_projects(self) -> None:
         self.send_json(list_review_projects(self.review_root))
@@ -195,14 +195,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_json([p for p in list_review_projects(self.review_root) if p.get("has_discovery")])
 
     def handle_discovery_get(self, project_id: str) -> None:
-        path = self.discovery_path(project_id)
+        try:
+            path = self.discovery_path(project_id)
+        except ValueError as exc:
+            self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
+            return
         if not path.exists():
             self.send_error(HTTPStatus.NOT_FOUND, "discovery data not found")
             return
         self.send_file(path, "application/json; charset=utf-8")
 
     def handle_discovery_put(self, project_id: str, confirm: bool = False) -> None:
-        path = self.discovery_path(project_id)
+        try:
+            path = self.discovery_path(project_id)
+        except ValueError as exc:
+            self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
+            return
         length = int(self.headers.get("Content-Length") or 0)
         try:
             data = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -235,14 +243,51 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_json({"ok": True, "confirmed": confirm})
 
     def handle_project_draft_get(self, project_id: str) -> None:
-        project = project_dir(self.review_root, project_id)
+        try:
+            project = project_dir(self.review_root, project_id)
+        except ValueError as exc:
+            self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
+            return
         if not project.exists():
             self.send_error(HTTPStatus.NOT_FOUND, "project not found")
             return
         self.send_json(project_draft_payload(self.review_root, project_id))
 
+    def handle_project_review_state_get(self, project_id: str) -> None:
+        try:
+            project = project_dir(self.review_root, project_id)
+        except ValueError as exc:
+            self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+        if not project.exists():
+            self.send_error(HTTPStatus.NOT_FOUND, "project not found")
+            return
+        self.send_json(project_review_state_payload(self.review_root, project_id))
+
+    def handle_project_review_state_put(self, project_id: str) -> None:
+        try:
+            project = project_dir(self.review_root, project_id)
+        except ValueError as exc:
+            self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+        if not project.exists():
+            self.send_error(HTTPStatus.NOT_FOUND, "project not found")
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
+            state = write_project_review_state(self.review_root, project_id, data)
+        except (ValueError, json.JSONDecodeError) as exc:
+            self.send_error(HTTPStatus.BAD_REQUEST, f"invalid review state: {exc}")
+            return
+        self.send_json({"ok": True, "project_id": project_id, "current_stage": state["current_stage"]})
+
     def handle_project_stage_get(self, project_id: str, stage: str) -> None:
-        project = project_dir(self.review_root, project_id)
+        try:
+            project = project_dir(self.review_root, project_id)
+        except ValueError as exc:
+            self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
+            return
         if not project.exists():
             self.send_error(HTTPStatus.NOT_FOUND, "project not found")
             return
@@ -275,7 +320,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_file(candidate, mime)
 
     def handle_project_draft_put(self, project_id: str) -> None:
-        project = self.review_root / "review-projects" / project_id
+        try:
+            project = project_dir(self.review_root, project_id)
+        except ValueError as exc:
+            self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
+            return
         if not project.exists():
             self.send_error(HTTPStatus.NOT_FOUND, "project not found")
             return
@@ -298,7 +347,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_json({"ok": True, "project_id": project_id})
 
     def discovery_path(self, project_id: str) -> Path:
-        return self.review_root / "review-projects" / project_id / "00_discovery" / "combined_results_by_keyword.json"
+        return project_dir(self.review_root, project_id) / "00_discovery" / "combined_results_by_keyword.json"
 
     def handle_metadata_get(self, paper_id: str) -> None:
         path = self.metadata_dir / f"{paper_id}.metadata.json"
@@ -420,6 +469,13 @@ def safe_abs_path(raw: str) -> Path | None:
     # Keep spaces and unicode; only normalize separators.
     raw = posixpath.normpath(raw)
     return Path(raw).expanduser().resolve() if raw.startswith("/") else Path(raw)
+
+
+def project_id_from_route(path: str, action: str) -> str | None:
+    parts = path.strip("/").split("/")
+    if len(parts) != 4 or parts[:2] != ["api", "project"] or parts[3] != action:
+        return None
+    return unquote(parts[2])
 
 
 def is_relative_to(path: Path, root: Path) -> bool:
@@ -550,12 +606,26 @@ def direct_project_id(review_root: Path) -> str:
     return review_root.name
 
 
+def normalized_project_id(project_id: str) -> str:
+    if not isinstance(project_id, str):
+        raise ValueError("invalid project_id")
+    decoded = unquote(project_id)
+    if not decoded or decoded in {".", ".."} or "\x00" in decoded or "/" in decoded or "\\" in decoded:
+        raise ValueError("invalid project_id")
+    return decoded
+
+
 def project_dir(review_root: Path, project_id: str) -> Path:
-    nested = review_root / "review-projects" / project_id
+    normalized_id = normalized_project_id(project_id)
+    root = review_root.resolve()
+    nested_root = (root / "review-projects").resolve()
+    nested = (nested_root / normalized_id).resolve()
+    if not is_relative_to(nested, nested_root):
+        raise ValueError("invalid project_id")
     if nested.exists():
         return nested
-    if is_direct_output_root(review_root) and project_id == direct_project_id(review_root):
-        return review_root
+    if is_direct_output_root(root) and normalized_id == normalized_project_id(direct_project_id(root)):
+        return root
     return nested
 
 
@@ -602,6 +672,77 @@ def list_review_projects(review_root: Path) -> list[dict[str, Any]]:
 
 def project_summary(review_root: Path, project_id: str) -> dict[str, Any] | None:
     return next((p for p in list_review_projects(review_root) if p["project_id"] == project_id), None)
+
+
+def review_state_path(review_root: Path, project_id: str) -> Path:
+    return project_dir(review_root, project_id) / "00_brief" / "review_state.json"
+
+
+def project_review_state_payload(review_root: Path, project_id: str) -> dict[str, Any]:
+    project = project_dir(review_root, project_id)
+    state = read_json_if_exists(review_state_path(review_root, project_id)) or {}
+    if not isinstance(state, dict):
+        state = {}
+    final_stage = project / "05_final_audit"
+    first_draft = project / "04_first_draft" / "first_draft.md"
+    final_draft = final_stage / "final_draft.md"
+    counts = state.get("counts") if isinstance(state.get("counts"), dict) else {}
+    return {
+        "project_id": project_id,
+        "brief": state.get("brief") if isinstance(state.get("brief"), dict) else {"topic": infer_project_topic(project)},
+        "current_stage": state.get("current_stage") or "not_started",
+        "status": state.get("status") or "not_started",
+        "blockers": state.get("blockers") if isinstance(state.get("blockers"), list) else [],
+        "counts": {key: int(counts.get(key) or 0) for key in ("sources", "evidence", "claims")},
+        "updated_at": state.get("updated_at"),
+        "draft": {"first_draft_exists": first_draft.exists(), "final_draft_exists": final_draft.exists(), "docx_exists": (final_stage / "final_draft.docx").exists()},
+        "summary": project_summary(review_root, project_id),
+    }
+
+
+def write_project_review_state(review_root: Path, project_id: str, data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict) or data.get("project_id") != project_id:
+        raise ValueError("project_id mismatch")
+    required = ("brief", "current_stage", "status", "blockers", "counts")
+    if any(key not in data for key in required) or not isinstance(data["brief"], dict) or not isinstance(data["blockers"], list) or not isinstance(data["counts"], dict):
+        raise ValueError("state requires brief, current_stage, status, blockers, and counts")
+    if not all(isinstance(data.get(key), str) and data[key].strip() for key in ("current_stage", "status")):
+        raise ValueError("current_stage and status must be nonempty strings")
+    counts = data["counts"]
+    state = {
+        "project_id": project_id,
+        "brief": data["brief"],
+        "current_stage": data["current_stage"],
+        "status": data["status"],
+        "blockers": [str(item) for item in data["blockers"]],
+        "counts": {key: int(counts.get(key) or 0) for key in ("sources", "evidence", "claims")},
+        "updated_at": now_utc(),
+    }
+    path = review_state_path(review_root, project_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+    return state
+
+
+def export_project_docx(review_root: Path, project_id: str) -> dict[str, Any]:
+    project = project_dir(review_root, project_id)
+    stage = project / "05_final_audit"
+    md_path, docx_path = stage / "final_draft.md", stage / "final_draft.docx"
+    if not md_path.exists():
+        return {"http_status": int(HTTPStatus.BAD_REQUEST), "error": "final_draft.md not found"}
+    script = Path(__file__).resolve().parents[1] / "skills" / "review-export-docx" / "scripts" / "md2docx.py"
+    if not script.exists():
+        return {"http_status": int(HTTPStatus.INTERNAL_SERVER_ERROR), "error": "md2docx.py not found"}
+    try:
+        result = subprocess.run([sys.executable, str(script), "--input", str(md_path), "--output", str(docx_path)], capture_output=True, text=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        return {"http_status": int(HTTPStatus.GATEWAY_TIMEOUT), "error": "docx export timeout"}
+    if result.returncode != 0 or not docx_path.exists():
+        tail = (result.stderr or result.stdout or "").strip().splitlines()[-20:]
+        return {"ok": False, "returncode": result.returncode, "error": "\n".join(tail) or "md2docx.py failed"}
+    return {"ok": True, "path": str(docx_path), "size": docx_path.stat().st_size}
 
 
 def project_matrix_payload(review_root: Path, project_id: str) -> dict[str, Any]:
@@ -767,7 +908,8 @@ def dashboard_assets(view_root: Path) -> tuple[Path, ...]:
     figures_path = dashboard / "figures.html"
     draft_path = dashboard / "draft.html"
     final_path = dashboard / "final.html"
-    paths = [library_path, discovery_path, matrix_path, blueprint_path, sections_path, figures_path, draft_path, final_path]
+    review_path = dashboard / "review.html"
+    paths = [library_path, discovery_path, matrix_path, blueprint_path, sections_path, figures_path, draft_path, final_path, review_path]
     if any(not path.exists() for path in paths):
         raise FileNotFoundError(f"dashboard assets not found under {view_root / 'assets' / 'dashboard'}")
     return tuple(paths)
@@ -785,6 +927,7 @@ def run(args: argparse.Namespace) -> int:
         figures_app_path,
         draft_app_path,
         final_app_path,
+        review_app_path,
     ) = dashboard_assets(view_root)
     if not (review_root / "review-library" / "metadata" / "papers").exists() and not is_direct_output_root(review_root):
         print("ERROR: metadata files not found. Run prepare_metadata.py first.", file=sys.stderr)
@@ -798,6 +941,7 @@ def run(args: argparse.Namespace) -> int:
     DashboardHandler.figures_app_path = figures_app_path
     DashboardHandler.draft_app_path = draft_app_path
     DashboardHandler.final_app_path = final_app_path
+    DashboardHandler.review_app_path = review_app_path
     server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
     print(f"Serving dashboard at http://{args.host}:{args.port}")
     print("Press Ctrl+C to stop.")

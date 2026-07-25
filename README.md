@@ -43,9 +43,10 @@ The intended Windows-native QoderWork CN flow is:
 5. approve, revise, request evidence, or exclude material, then resume;
 6. receive one clean DOCX after scientific, consistency, and visual checks.
 
-This single-prompt product entry is the accepted target and is **not yet a
-complete supported command in the current repository**. Do not treat the
-internal phase scripts as the future user interface.
+The QoderWork CN v0 entry is the `research-review-writer` expert plugin in the
+built-in Writing Workbench, with the existing localhost dashboard as its
+dynamic companion. It does not require or imitate a custom Workbench SDK.
+See the [Chinese quick start](docs/qoderwork/research_review_writer_quickstart.md).
 
 ## Execution and evidence boundary
 
@@ -78,6 +79,7 @@ Run deterministic local checks before any model or API step:
 ```bash
 make smoke
 make quality-check
+make qoderwork-check
 ```
 
 More specialized historical Phase 6-8 and provider dry-run targets remain in
