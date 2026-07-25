@@ -21,7 +21,43 @@ from review_writer.acquisition import public_corpus
 from review_writer.acquisition.public_corpus import ManifestError, acquire_manifest
 
 
-PDF_BYTES = b"%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF\n"
+def make_minimal_pdf() -> bytes:
+    parts = [b"%PDF-1.4\n"]
+    offsets = []
+    for body in [
+        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+        b"2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n",
+    ]:
+        offsets.append(sum(len(part) for part in parts))
+        parts.append(body)
+    xref_offset = sum(len(part) for part in parts)
+    parts.append(
+        b"xref\n0 3\n0000000000 65535 f \n"
+        + f"{offsets[0]:010d} 00000 n \n{offsets[1]:010d} 00000 n \n".encode("ascii")
+        + b"trailer\n<< /Size 3 /Root 1 0 R >>\nstartxref\n"
+        + str(xref_offset).encode("ascii")
+        + b"\n%%EOF\n"
+    )
+    return b"".join(parts)
+
+
+def make_xref_stream_sanity_pdf() -> bytes:
+    prefix = b"%PDF-1.5\n1 0 obj\n<< /Type /Catalog >>\nendobj\n"
+    xref_offset = len(prefix)
+    return (
+        prefix
+        + b"3 0 obj\n<< /Type /XRef /Size 4 /Length 0 >>\nstream\n\nendstream\nendobj\nstartxref\n"
+        + str(xref_offset).encode("ascii")
+        + b"\n%%EOF\n"
+    )
+
+
+PDF_BYTES = make_minimal_pdf()
+FAKE_PDF_BYTES = PDF_BYTES.rsplit(b"startxref\n", 1)[0] + b"startxref\nnot-an-offset\n%%EOF\n"
+BAD_STARTXREF_PDF_BYTES = PDF_BYTES.rsplit(b"startxref\n", 1)[0] + b"startxref\n0\n%%EOF\n"
+OUT_OF_RANGE_STARTXREF_PDF_BYTES = PDF_BYTES.rsplit(b"startxref\n", 1)[0] + b"startxref\n999999\n%%EOF\n"
+TRUNCATED_PDF_BYTES = PDF_BYTES.rsplit(b"%%EOF", 1)[0]
+INCREMENTAL_TAIL_PDF_BYTES = PDF_BYTES + b"3 0 obj\n<< /Type /FakeUpdate >>\nendobj\n"
 
 
 def make_ooxml_with_content_types(main_part: str, content_types_xml: str) -> bytes:
@@ -80,7 +116,23 @@ class FixtureHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/pdf")
         elif self.path == "/truncated.pdf":
-            body = b"%PDF-1.4\n"
+            body = TRUNCATED_PDF_BYTES
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+        elif self.path == "/fake.pdf":
+            body = FAKE_PDF_BYTES
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+        elif self.path == "/bad-startxref.pdf":
+            body = BAD_STARTXREF_PDF_BYTES
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+        elif self.path == "/out-of-range-startxref.pdf":
+            body = OUT_OF_RANGE_STARTXREF_PDF_BYTES
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+        elif self.path == "/incremental-tail.pdf":
+            body = INCREMENTAL_TAIL_PDF_BYTES
             self.send_response(200)
             self.send_header("Content-Type", "application/pdf")
         elif self.path == "/too-short.pdf":
@@ -279,9 +331,16 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
             self.assertTrue((root / "acquired/manual_acquisition.tsv").is_file())
             self.assertTrue((root / "acquired/manual_acquisition.html").is_file())
 
-    def test_truncated_downloaded_and_existing_pdfs_are_rejected(self):
-        download_cases = ["/truncated.pdf", "/too-short.pdf"]
-        for index, route in enumerate(download_cases):
+    def test_structurally_invalid_downloaded_and_existing_pdfs_are_rejected(self):
+        invalid_pdfs = [
+            ("/fake.pdf", FAKE_PDF_BYTES),
+            ("/bad-startxref.pdf", BAD_STARTXREF_PDF_BYTES),
+            ("/out-of-range-startxref.pdf", OUT_OF_RANGE_STARTXREF_PDF_BYTES),
+            ("/truncated.pdf", TRUNCATED_PDF_BYTES),
+            ("/incremental-tail.pdf", INCREMENTAL_TAIL_PDF_BYTES),
+            ("/too-short.pdf", b"%PDF-%%EOF"),
+        ]
+        for index, (route, _) in enumerate(invalid_pdfs):
             with self.subTest(route=route), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 target_path = f"sources/PDF_TRUNCATED_{index}/MAIN.pdf"
@@ -295,7 +354,7 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
                 self.assertEqual(receipt["results"][0]["reason"], "RESPONSE_NOT_PDF")
                 self.assertFalse((root / "acquired" / target_path).exists())
 
-        for index, body in enumerate([b"%PDF-1.4\n", b"%PDF-%%EOF"]):
+        for index, (_, body) in enumerate(invalid_pdfs):
             with self.subTest(existing_index=index), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 output_root = root / "acquired"
@@ -312,6 +371,13 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
 
                 self.assertEqual(receipt["results"][0]["reason"], "EXISTING_FILE_NOT_PDF")
                 self.assertEqual(target.read_bytes(), body)
+
+    def test_pdf_sanity_accepts_xref_stream_object_header(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "xref-stream.pdf"
+            path.write_bytes(make_xref_stream_sanity_pdf())
+
+            self.assertTrue(public_corpus._matches_format(path, "PDF"))
 
     def test_content_length_is_optional_but_single_valid_value_must_match(self):
         for index, route in enumerate(["/no-content-length.pdf", "/chunked.pdf"]):
@@ -828,6 +894,32 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
                 for name, content in previous.items():
                     self.assertEqual((output_root / name).read_bytes(), content)
 
+    def test_metadata_destination_link_fails_preflight_before_download_effects(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_root = root / "acquired"
+            output_root.mkdir()
+            victim = root / "metadata-victim.html"
+            victim.write_bytes(b"metadata-sentinel")
+            unsafe_destination = output_root / "manual_acquisition.html"
+            unsafe_destination.symlink_to(victim)
+            target = output_root / "sources/METADATA_LINK/MAIN.pdf"
+            manifest = self.write_manifest(
+                root,
+                [{"download_id": "METADATA_LINK", "study_id": "METADATA_LINK", "document_role": "MAIN", "url": self.base_url + "/paper.pdf", "target_path": "sources/METADATA_LINK/MAIN.pdf", "source_class": "PUBLIC_DIRECT"}],
+            )
+            FixtureHandler.pdf_requests = 0
+
+            with self.assertRaises(ManifestError):
+                acquire_manifest(manifest, output_root)
+
+            self.assertEqual(FixtureHandler.pdf_requests, 0)
+            self.assertFalse(target.exists())
+            self.assertEqual(victim.read_bytes(), b"metadata-sentinel")
+            self.assertTrue(unsafe_destination.is_symlink())
+            self.assertFalse((output_root / "manual_acquisition.tsv").exists())
+            self.assertFalse((output_root / "acquisition_receipt.json").exists())
+
     def test_metadata_replace_failure_rolls_back_previous_files(self):
         previous = {
             "manual_acquisition.tsv": b"previous-tsv\n",
@@ -967,6 +1059,84 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
             other_server.shutdown()
             other_server.server_close()
             other_thread.join(timeout=2)
+
+    def test_robots_response_integrity_failures_never_allow_download(self):
+        class RobotsIntegrityHandler(BaseHTTPRequestHandler):
+            mode = "invalid"
+            pdf_requests = 0
+
+            def do_GET(self):  # noqa: N802 - stdlib handler contract
+                if self.path == "/robots.txt":
+                    body = b"User-agent: *\nAllow: /\n"
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/plain")
+                    if type(self).mode == "oversized_header":
+                        self.send_header("X-Oversized", "x" * 70000)
+                        self.send_header("Content-Length", str(len(body)))
+                    elif type(self).mode == "invalid":
+                        self.send_header("Content-Length", "robots-length-secret")
+                    elif type(self).mode == "duplicate":
+                        self.send_header("Content-Length", str(len(body)))
+                        self.send_header("Content-Length", str(len(body)))
+                    elif type(self).mode == "conflicting":
+                        self.send_header("Content-Length", str(len(body)))
+                        self.send_header("Content-Length", str(len(body) + 1))
+                    elif type(self).mode == "overdeclared":
+                        self.send_header("Content-Length", str(len(body) + 10))
+                    elif type(self).mode == "over_limit":
+                        self.send_header("Content-Length", str(1024 * 1024 + 1))
+                    else:
+                        self.send_header("Transfer-Encoding", "chunked")
+                    self.end_headers()
+                    if type(self).mode == "incomplete_chunked":
+                        self.wfile.write(b"A\r\nshort\r\n")
+                    elif type(self).mode == "malformed_chunked":
+                        self.wfile.write(b"ZZ\r\nbad\r\n0\r\n\r\n")
+                    else:
+                        self.wfile.write(body)
+                    self.close_connection = True
+                elif self.path == "/paper.pdf":
+                    type(self).pdf_requests += 1
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/pdf")
+                    self.send_header("Content-Length", str(len(PDF_BYTES)))
+                    self.end_headers()
+                    self.wfile.write(PDF_BYTES)
+                else:
+                    self.send_response(404)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+
+            def log_message(self, _format, *_args):
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), RobotsIntegrityHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base_url = f"http://127.0.0.1:{server.server_port}"
+            modes = ["oversized_header", "invalid", "duplicate", "conflicting", "overdeclared", "over_limit", "incomplete_chunked", "malformed_chunked"]
+            for index, mode in enumerate(modes):
+                with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    target_path = f"sources/ROBOTS_{index}/MAIN.pdf"
+                    manifest = self.write_manifest(
+                        root,
+                        [{"download_id": f"ROBOTS_{index}", "study_id": f"ROBOTS_{index}", "document_role": "MAIN", "url": base_url + "/paper.pdf", "target_path": target_path, "source_class": "PUBLIC_DIRECT"}],
+                    )
+                    RobotsIntegrityHandler.mode = mode
+                    RobotsIntegrityHandler.pdf_requests = 0
+
+                    receipt = acquire_manifest(manifest, root / "acquired")
+
+                    self.assertEqual(receipt["results"][0]["reason"], "ROBOTS_CHECK_FAILED")
+                    self.assertEqual(RobotsIntegrityHandler.pdf_requests, 0)
+                    self.assertFalse((root / "acquired" / target_path).exists())
+                    self.assertNotIn("robots-length-secret", json.dumps(receipt))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
 
     def test_preflight_rejects_malformed_expected_sha256_without_side_effects(self):
         for expected_sha256 in ["", "a" * 63, "z" * 64, 123]:
@@ -1462,6 +1632,33 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
             for secret in secrets:
                 self.assertNotIn(secret, rendered_outputs)
                 self.assertNotIn(f"landing-{secret}", rendered_outputs)
+
+    def test_query_semicolon_ambiguity_is_rejected_and_fully_redacted(self):
+        ambiguous_queries = [
+            "download=1;token=literal-semicolon-secret",
+            "download=1%3Btoken=encoded-semicolon-secret",
+        ]
+        for index, query in enumerate(ambiguous_queries):
+            with self.subTest(query_kind=index), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                manifest = self.write_manifest(
+                    root,
+                    [{"download_id": f"SEMICOLON_{index}", "study_id": f"SEMICOLON_{index}", "document_role": "MAIN", "url": self.base_url + "/paper.pdf?" + query, "target_path": f"sources/SEMICOLON_{index}/MAIN.pdf", "source_class": "PUBLIC_DIRECT"}],
+                )
+                FixtureHandler.query_pdf_requests = 0
+
+                receipt = acquire_manifest(manifest, root / "acquired")
+
+                result = receipt["results"][0]
+                self.assertEqual(result["reason"], "SENSITIVE_URL_PARAMETER_FORBIDDEN")
+                self.assertEqual(result["source_url"], self.base_url + "/paper.pdf?[REDACTED]")
+                self.assertEqual(FixtureHandler.query_pdf_requests, 0)
+                rendered_outputs = "\n".join([
+                    json.dumps(receipt),
+                    (root / "acquired/manual_acquisition.tsv").read_text(),
+                    (root / "acquired/manual_acquisition.html").read_text(),
+                ])
+                self.assertNotIn("semicolon-secret", rendered_outputs)
 
     def test_extended_credential_key_on_redirect_is_rejected_and_redacted(self):
         with tempfile.TemporaryDirectory() as tmp:

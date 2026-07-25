@@ -44,8 +44,10 @@ OOXML_REQUIREMENTS = {
 }
 MAX_OOXML_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
 MAX_CONTENT_TYPES_BYTES = 1024 * 1024
+MAX_ROBOTS_BYTES = 1024 * 1024
 MIN_PDF_BYTES = 16
 PDF_TAIL_BYTES = 4096
+PDF_MARKER_BYTES = 128
 WINDOWS_RESERVED_NAMES = frozenset(
     {"con", "prn", "aux", "nul", "conin$", "conout$"}
     | {f"com{number}" for number in range(1, 10)}
@@ -161,6 +163,24 @@ def _validate_existing_target_boundary(output_root: Path, target: Path) -> None:
         raise ManifestError("existing target symlinks are forbidden")
 
 
+def _preflight_metadata_destinations(output_root: Path) -> None:
+    lexical_root = Path(os.path.abspath(output_root))
+    try:
+        if _is_link_or_reparse(lexical_root):
+            raise ManifestError("metadata output root must not be a link or reparse point")
+    except FileNotFoundError:
+        pass
+    if lexical_root.exists() and not lexical_root.is_dir():
+        raise OSError("metadata output root must be a directory")
+    root = lexical_root.resolve()
+    for filename in METADATA_FILENAMES:
+        destination = root.joinpath(*_portable_target_components(filename))
+        _reject_existing_link_components(root, destination)
+        _validate_target_parent(root, destination)
+        if destination.exists() and not destination.is_file():
+            raise ManifestError("metadata destination must be a regular file")
+
+
 def _preflight_manifest(manifest: dict[str, Any], output_root: Path) -> list[dict[str, Any]]:
     if not isinstance(manifest, dict):
         raise ManifestError("manifest must be a JSON object")
@@ -232,9 +252,10 @@ def _safe_url(url: str) -> tuple[bool, str | None, str]:
         raise ValueError("URL has an invalid host or port") from exc
     if not hostname or not _valid_hostname(hostname):
         raise ValueError("URL requires a valid hostname")
-    query_pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    has_ambiguous_separator = ";" in parsed.query or re.search(r"%3b", parsed.query, re.IGNORECASE) is not None
+    query_pairs = [] if has_ambiguous_separator else urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
     has_forbidden_query = bool(parsed.query) and (
-        not query_pairs or any(not _is_allowed_query_key(key) for key, _ in query_pairs)
+        has_ambiguous_separator or not query_pairs or any(not _is_allowed_query_key(key) for key, _ in query_pairs)
     )
     safe_netloc = parsed.netloc.rsplit("@", 1)[-1]
     safe_query = "[REDACTED]" if has_forbidden_query else parsed.query
@@ -260,7 +281,7 @@ def _open_without_redirect(request: urllib.request.Request, timeout_seconds: flo
         return opener.open(request, timeout=timeout_seconds)  # noqa: S310 - callers apply explicit URL safety checks.
     except urllib.error.HTTPError:
         raise
-    except (OSError, urllib.error.URLError) as exc:
+    except (OSError, urllib.error.URLError, http.client.HTTPException) as exc:
         raise _NetworkFailure from exc
 
 
@@ -269,7 +290,7 @@ def _read_network_chunk(response: Any, size: int) -> bytes:
         return response.read(size)
     except http.client.IncompleteRead as exc:
         raise _ContentLengthMismatch from exc
-    except (OSError, urllib.error.URLError) as exc:
+    except (OSError, urllib.error.URLError, http.client.HTTPException) as exc:
         raise _NetworkFailure from exc
 
 
@@ -289,6 +310,23 @@ def _content_length(headers: Any, max_bytes: int) -> tuple[int | None, str | Non
     return int(normalized), None
 
 
+def _read_bounded_response(response: Any, max_bytes: int) -> bytes:
+    declared_length, length_reason = _content_length(response.headers, max_bytes)
+    if length_reason is not None:
+        raise _ContentLengthMismatch
+    body = bytearray()
+    while True:
+        chunk = _read_network_chunk(response, min(64 * 1024, max_bytes + 1 - len(body)))
+        if not chunk:
+            break
+        body.extend(chunk)
+        if len(body) > max_bytes:
+            raise _DownloadLimitExceeded
+    if declared_length is not None and len(body) != declared_length:
+        raise _ContentLengthMismatch
+    return bytes(body)
+
+
 def _robots_allowed(url: str, timeout_seconds: float, cache: dict[str, urllib.robotparser.RobotFileParser | str]) -> tuple[bool, str | None]:
     parsed = urllib.parse.urlsplit(url)
     robots_url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "/robots.txt", "", ""))
@@ -301,7 +339,8 @@ def _robots_allowed(url: str, timeout_seconds: float, cache: dict[str, urllib.ro
         try:
             request = urllib.request.Request(robots_url, headers={"User-Agent": USER_AGENT, "Accept": "text/plain"})
             with _open_without_redirect(request, timeout_seconds) as response:
-                parser.parse(response.read(1024 * 1024).decode("utf-8", errors="replace").splitlines())
+                body = _read_bounded_response(response, MAX_ROBOTS_BYTES)
+                parser.parse(body.decode("utf-8", errors="replace").splitlines())
         except urllib.error.HTTPError as exc:
             if exc.code in {401, 403}:
                 parser.disallow_all = True
@@ -310,7 +349,7 @@ def _robots_allowed(url: str, timeout_seconds: float, cache: dict[str, urllib.ro
             else:
                 cache[origin] = "ROBOTS_CHECK_FAILED"
                 return False, "ROBOTS_CHECK_FAILED"
-        except (OSError, urllib.error.URLError, _NetworkFailure):
+        except (OSError, urllib.error.URLError, _NetworkFailure, _ContentLengthMismatch, _DownloadLimitExceeded):
             cache[origin] = "ROBOTS_CHECK_FAILED"
             return False, "ROBOTS_CHECK_FAILED"
         cache[origin] = parser
@@ -328,7 +367,18 @@ def _matches_format(path: Path, expected_format: str) -> bool:
             if size < MIN_PDF_BYTES:
                 return False
             handle.seek(max(0, size - PDF_TAIL_BYTES))
-            return b"%%EOF" in handle.read(PDF_TAIL_BYTES)
+            tail = handle.read(PDF_TAIL_BYTES).rstrip(b"\x00\t\n\f\r ")
+            final_reference = re.search(rb"startxref\s+([0-9]+)\s+%%EOF$", tail)
+            if final_reference is None:
+                return False
+            xref_offset = int(final_reference.group(1))
+            if xref_offset >= size:
+                return False
+            handle.seek(xref_offset)
+            marker = handle.read(PDF_MARKER_BYTES)
+            if re.match(rb"xref(?:\s|$)", marker):
+                return True
+            return re.match(rb"[1-9][0-9]*\s+[0-9]+\s+obj(?:\s|$)", marker) is not None
     required_part, required_content_type = OOXML_REQUIREMENTS[expected_format]
     try:
         with zipfile.ZipFile(path) as archive:
@@ -552,6 +602,7 @@ def acquire_manifest(manifest_path: Path | str, output_root: Path | str, *, allo
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ManifestError("manifest is not valid JSON") from exc
     prepared = _preflight_manifest(manifest, output_root)
+    _preflight_metadata_destinations(output_root)
     output_root.mkdir(parents=True, exist_ok=True)
     results = []
     robots_cache: dict[str, urllib.robotparser.RobotFileParser | str] = {}
