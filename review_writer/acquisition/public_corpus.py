@@ -87,8 +87,10 @@ def _safe_target(output_root: Path, relative: str) -> tuple[Path, Path]:
     resolved_target = target.resolve()
     if resolved_target == root or root not in resolved_target.parents:
         raise ManifestError(f"target_path escapes output root: {relative}")
-    normalized = resolved_target.relative_to(root).as_posix().casefold()
-    if normalized in METADATA_FILENAMES:
+    lexical_relative = target.relative_to(root)
+    canonical_relative = resolved_target.relative_to(root)
+    top_level_components = {lexical_relative.parts[0].casefold(), canonical_relative.parts[0].casefold()}
+    if top_level_components & METADATA_FILENAMES:
         raise ManifestError("target_path collides with acquisition metadata")
     return target, resolved_target
 
@@ -142,6 +144,8 @@ def _preflight_manifest(manifest: dict[str, Any], output_root: Path) -> list[dic
                 raise ManifestError("expected_sha256 must be exactly 64 hexadecimal characters")
             expected_sha256 = expected_sha256.lower()
         target, canonical_target = _safe_target(output_root, row["target_path"])
+        if target.is_symlink():
+            raise ManifestError("target_path must not be a pre-existing symlink")
         normalized_target = canonical_target.as_posix().casefold()
         if normalized_target in seen_targets:
             raise ManifestError("normalized target_path values must be unique")

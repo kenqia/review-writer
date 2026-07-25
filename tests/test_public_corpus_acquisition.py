@@ -302,6 +302,28 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
 
                 self.assertFalse(output_root.exists())
 
+    def test_reserved_metadata_prefixes_fail_preflight_before_earlier_download(self):
+        for index, reserved_name in enumerate(["acquisition_receipt.json", "manual_acquisition.tsv", "manual_acquisition.html"]):
+            with self.subTest(reserved_name=reserved_name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                output_root = root / "acquired"
+                earlier_target = output_root / f"sources/PREFIX_{index}/MAIN.pdf"
+                manifest = self.write_manifest(
+                    root,
+                    [
+                        {"download_id": f"PREFIX_{index}_EARLY", "study_id": f"PREFIX_{index}", "document_role": "MAIN", "url": self.base_url + "/paper.pdf", "target_path": f"sources/PREFIX_{index}/MAIN.pdf", "source_class": "PUBLIC_DIRECT"},
+                        {"download_id": f"PREFIX_{index}_BAD", "study_id": f"PREFIX_{index}", "document_role": "SI", "url": self.base_url + "/paper.pdf", "target_path": f"{reserved_name}/child.pdf", "source_class": "PUBLIC_DIRECT"},
+                    ],
+                )
+                FixtureHandler.pdf_requests = 0
+
+                with self.assertRaises(ManifestError):
+                    acquire_manifest(manifest, output_root)
+
+                self.assertEqual(FixtureHandler.pdf_requests, 0)
+                self.assertFalse(earlier_target.exists())
+                self.assertFalse(output_root.exists())
+
     def test_preflight_rejects_invalid_ids_and_normalized_target_collisions_before_download(self):
         cases = [
             [
@@ -333,17 +355,17 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             output_root = root / "acquired"
-            target_dir = output_root / "sources/S_ALIAS"
-            target_dir.mkdir(parents=True)
-            canonical_target = target_dir / "canonical.pdf"
-            canonical_target.write_bytes(PDF_BYTES)
-            alias_target = target_dir / "alias.pdf"
-            alias_target.symlink_to(canonical_target)
+            target_root = output_root / "sources/S_ALIAS"
+            canonical_dir = target_root / "canonical"
+            canonical_dir.mkdir(parents=True)
+            alias_dir = target_root / "alias"
+            alias_dir.symlink_to(canonical_dir, target_is_directory=True)
+            canonical_target = canonical_dir / "MAIN.pdf"
             manifest = self.write_manifest(
                 root,
                 [
-                    {"download_id": "ALIAS_ONE", "study_id": "S_ALIAS", "document_role": "MAIN", "url": self.base_url + "/paper.pdf", "target_path": "sources/S_ALIAS/alias.pdf", "source_class": "PUBLIC_DIRECT"},
-                    {"download_id": "ALIAS_TWO", "study_id": "S_ALIAS", "document_role": "SI", "url": self.base_url + "/paper.pdf", "target_path": "sources/S_ALIAS/canonical.pdf", "source_class": "PUBLIC_DIRECT"},
+                    {"download_id": "ALIAS_ONE", "study_id": "S_ALIAS", "document_role": "MAIN", "url": self.base_url + "/paper.pdf", "target_path": "sources/S_ALIAS/alias/MAIN.pdf", "source_class": "PUBLIC_DIRECT"},
+                    {"download_id": "ALIAS_TWO", "study_id": "S_ALIAS", "document_role": "SI", "url": self.base_url + "/paper.pdf", "target_path": "sources/S_ALIAS/canonical/MAIN.pdf", "source_class": "PUBLIC_DIRECT"},
                 ],
             )
 
@@ -351,8 +373,39 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
                 with self.assertRaises(ManifestError):
                     acquire_manifest(manifest, output_root, allow_network=False)
 
-            self.assertTrue(alias_target.is_symlink())
-            self.assertEqual(canonical_target.read_bytes(), PDF_BYTES)
+            self.assertTrue(alias_dir.is_symlink())
+            self.assertFalse(canonical_target.exists())
+            self.assertFalse((output_root / "acquisition_receipt.json").exists())
+
+    def test_later_preexisting_target_symlink_fails_preflight_before_earlier_download(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_root = root / "acquired"
+            symlink_target = output_root / "sources/S042/MAIN.pdf"
+            symlink_target.parent.mkdir(parents=True)
+            victim = symlink_target.parent / "victim.pdf"
+            victim.write_bytes(PDF_BYTES)
+            symlink_target.symlink_to(victim)
+            before = {path.relative_to(output_root).as_posix() for path in output_root.rglob("*")}
+            earlier_target = output_root / "sources/S041/MAIN.pdf"
+            manifest = self.write_manifest(
+                root,
+                [
+                    {"download_id": "S041_MAIN", "study_id": "S041", "document_role": "MAIN", "url": self.base_url + "/paper.pdf", "target_path": "sources/S041/MAIN.pdf", "source_class": "PUBLIC_DIRECT"},
+                    {"download_id": "S042_MAIN", "study_id": "S042", "document_role": "MAIN", "url": self.base_url + "/paper.pdf", "target_path": "sources/S042/MAIN.pdf", "source_class": "PUBLIC_DIRECT"},
+                ],
+            )
+            FixtureHandler.pdf_requests = 0
+
+            with self.assertRaises(ManifestError):
+                acquire_manifest(manifest, output_root)
+
+            after = {path.relative_to(output_root).as_posix() for path in output_root.rglob("*")}
+            self.assertEqual(FixtureHandler.pdf_requests, 0)
+            self.assertFalse(earlier_target.exists())
+            self.assertEqual(after, before)
+            self.assertTrue(symlink_target.is_symlink())
+            self.assertEqual(victim.read_bytes(), PDF_BYTES)
             self.assertFalse((output_root / "acquisition_receipt.json").exists())
 
     def test_preflight_rejects_empty_and_nonstring_study_ids(self):
@@ -817,14 +870,20 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
             target.parent.mkdir(parents=True)
             victim = target.parent / "victim.pdf"
             victim.write_bytes(PDF_BYTES)
-            target.symlink_to(victim)
             manifest = self.write_manifest(
                 root,
                 [{"download_id": "S038_MAIN", "study_id": "S038", "document_role": "MAIN", "url": self.base_url + "/paper.pdf", "target_path": "sources/S038/MAIN.pdf", "source_class": "PUBLIC_DIRECT"}],
             )
+            original_preflight = public_corpus._preflight_manifest
 
-            with self.assertRaises(ManifestError):
-                acquire_manifest(manifest, output_root, allow_network=False)
+            def insert_symlink_after_preflight(manifest_data, acquisition_root):
+                prepared = original_preflight(manifest_data, acquisition_root)
+                target.symlink_to(victim)
+                return prepared
+
+            with mock.patch.object(public_corpus, "_preflight_manifest", side_effect=insert_symlink_after_preflight):
+                with self.assertRaises(ManifestError):
+                    acquire_manifest(manifest, output_root, allow_network=False)
 
             self.assertTrue(target.is_symlink())
             self.assertEqual(victim.read_bytes(), PDF_BYTES)
