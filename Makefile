@@ -16,6 +16,13 @@ public-corpus-acquisition-check:
 	PYTHONPATH=$(CURDIR) PYTHONDONTWRITEBYTECODE=1 $(PYTHON) tests/test_public_corpus_acquisition.py
 	PYTHONPATH=$(CURDIR) PYTHONDONTWRITEBYTECODE=1 $(PYTHON) tests/test_supplement_identity.py
 
+.PHONY: evidence-grounding-check
+
+evidence-grounding-check:
+	$(PYTHON) tests/test_evidence_grounding_v2.py
+	$(PYTHON) tests/test_evidence_atom_vertical_slice.py
+	$(PYTHON) -m pytest tests/test_page_atom_catalog.py
+
 .PHONY: scholarly-discovery-check
 
 scholarly-discovery-check:

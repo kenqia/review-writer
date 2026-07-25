@@ -1,0 +1,42 @@
+{
+  "schema_version": "evidence-atom-selection.v1",
+  "atoms": [
+    {
+      "atom_id": "ATOM-WHITESPACE",
+      "source_id": "SYNTH_MAIN",
+      "page": 1,
+      "evidence_mode": "TEXT_QUOTE",
+      "raw_source_span": "The catalyst\nafforded product 2a in 91% yield."
+    },
+    {
+      "atom_id": "ATOM-UNICODE",
+      "source_id": "SYNTH_MAIN",
+      "page": 1,
+      "evidence_mode": "TEXT_QUOTE",
+      "raw_source_span": "The ﬁrst “Cu−O” complex was CuSO4•5H2O.",
+      "r3_floor_categories": ["MECHANISM_CAUSALITY", "NEGATIVE_GENERALIZATION"]
+    },
+    {
+      "atom_id": "ATOM-SOFT-HYPHEN",
+      "source_id": "SYNTH_MAIN",
+      "page": 1,
+      "evidence_mode": "TEXT_QUOTE",
+      "raw_source_span": "The transformation was stereo­selective and retained alpha-beta."
+    },
+    {
+      "atom_id": "ATOM-PROSE-BULLET",
+      "source_id": "SYNTH_MAIN",
+      "page": 1,
+      "evidence_mode": "TEXT_QUOTE",
+      "raw_source_span": "A • bullet remains a prose bullet."
+    },
+    {
+      "atom_id": "ATOM-VISUAL",
+      "source_id": "SYNTH_MAIN",
+      "page": 1,
+      "evidence_mode": "FIGURE_TABLE_IMAGE",
+      "crop_manifest_path": "input/crops/SYNTH_MAIN.page-1.crop-manifest.json",
+      "depiction_locator": "Figure 1, complete synthetic crop"
+    }
+  ]
+}
