@@ -568,3 +568,7 @@ provider-qualification-check:
 	$(PYTHON) tests/test_provider_qualification.py
 	$(PYTHON) -m compileall -q scripts/provider-qualification
 	$(PYTHON) scripts/provider-qualification/qualification.py --help >/dev/null
+
+.PHONY: vertical-review-projection-check
+vertical-review-projection-check:
+	$(PYTHON) -m pytest tests/test_vertical_review_projection.py -q
