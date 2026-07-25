@@ -4,12 +4,20 @@ import copy
 import json
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
+from unittest import mock
 from urllib.parse import parse_qs, unquote, urlsplit
 
 import pytest
 
-from review_writer.discovery.scholarly import build_candidate_pool, validate_search_plan
+from review_writer.discovery import scholarly as scholarly_module
+from review_writer.discovery.scholarly import (
+    UrllibScholarlyTransport,
+    build_candidate_pool,
+    validate_search_plan,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -78,7 +86,11 @@ def _crossref_work(
 ) -> dict:
     return {
         "title": [title],
-        "published": {"date-parts": [[year, 6, 1]]},
+        "published-print": {"date-parts": [[year, 6, 1]]},
+        "published-online": {"date-parts": [[year - 1, 5, 1]]},
+        "published": {"date-parts": [[year - 2, 4, 1]]},
+        "issued": {"date-parts": [[year - 3, 3, 1]]},
+        "created": {"date-parts": [[year - 20, 2, 1]]},
         "DOI": doi,
         "author": [
             {"given": "Ada", "family": "Example"},
@@ -88,6 +100,53 @@ def _crossref_work(
         "URL": f"https://doi.org/{doi}" if doi else "https://example.org/title-only",
         "abstract": abstract,
     }
+
+
+def _crossref_lifecycle_only_work() -> dict:
+    item = _crossref_work(
+        "Lifecycle Dates Are Not Publication Dates",
+        2022,
+        doi="10.1000/lifecycle-only",
+    )
+    for field in ("published-print", "published-online", "published", "issued"):
+        item.pop(field)
+    item.update(
+        {
+            "created": {"date-parts": [[2018, 1, 1]]},
+            "deposited": {"date-parts": [[2024, 1, 1]]},
+            "indexed": {"date-parts": [[2025, 1, 1]]},
+        }
+    )
+    return item
+
+
+class _RedirectingOpener:
+    """Emulates urllib redirect handling without opening a socket."""
+
+    def __init__(self, handlers: tuple[object, ...], redirect_target: str) -> None:
+        self.redirect_target = redirect_target
+        self.requested_urls: list[str] = []
+        self.redirect_handler = next(
+            handler
+            for handler in handlers
+            if isinstance(handler, urllib.request.HTTPRedirectHandler)
+        )
+
+    def open(self, request: urllib.request.Request, timeout: float):
+        assert timeout == 3.0
+        self.requested_urls.append(request.full_url)
+        redirected_request = self.redirect_handler.redirect_request(
+            request,
+            None,
+            302,
+            "Found",
+            {},
+            self.redirect_target,
+        )
+        if redirected_request is None:
+            raise urllib.error.HTTPError(request.full_url, 302, "Found", {}, None)
+        self.requested_urls.append(redirected_request.full_url)
+        raise AssertionError("redirect target must never be requested")
 
 
 class FakeTransport:
@@ -185,6 +244,7 @@ class FakeTransport:
                                 "</jats:p>"
                             ),
                         ),
+                        _crossref_lifecycle_only_work(),
                         _crossref_work("NORMALIZED TITLE FALLBACK", 2020),
                         _crossref_work("Outside Upper Year Bound", 2026, doi="10.1000/future"),
                     ]
@@ -236,6 +296,16 @@ def test_doi_dedup_retains_all_query_provenance() -> None:
     assert pool["counts"]["unique_candidates"] == len(pool["candidates"])
 
 
+def test_provenance_uses_operation_with_bounded_context() -> None:
+    pool = build_candidate_pool(search_plan(), transport=FakeTransport())
+
+    for candidate in pool["candidates"]:
+        for provenance in candidate["provenance"]:
+            assert "kind" not in provenance
+            assert {"provider", "operation", "bounded_pass"} <= set(provenance)
+            assert ("query" in provenance) != ("seed_doi" in provenance)
+
+
 @pytest.mark.parametrize(
     "bad_plan",
     [
@@ -278,6 +348,65 @@ def test_validation_normalizes_seed_dois_and_rejects_bool_years() -> None:
     invalid_doi["seed_dois"] = ["not-a-doi"]
     with pytest.raises(ValueError, match="search plan"):
         validate_search_plan(invalid_doi)
+
+
+def test_search_plan_requires_explicit_seed_dois_list() -> None:
+    missing_seed_dois = search_plan()
+    missing_seed_dois.pop("seed_dois")
+
+    with pytest.raises(ValueError, match="search plan"):
+        validate_search_plan(missing_seed_dois)
+
+    empty_seed_dois = search_plan()
+    empty_seed_dois["seed_dois"] = []
+    assert validate_search_plan(empty_seed_dois)["seed_dois"] == []
+
+
+@pytest.mark.parametrize(
+    "redirect_target",
+    [
+        "https://api.openalex.org/works?page=2",
+        "https://example.net/foreign-destination",
+    ],
+    ids=["same-host", "foreign-host"],
+)
+def test_urllib_transport_fails_closed_without_requesting_redirect_target(
+    redirect_target: str,
+) -> None:
+    initial_url = "https://api.openalex.org/works?search=fixture&per_page=100"
+    created_opener: _RedirectingOpener | None = None
+
+    def fake_build_opener(*handlers: object) -> _RedirectingOpener:
+        nonlocal created_opener
+        created_opener = _RedirectingOpener(handlers, redirect_target)
+        return created_opener
+
+    with mock.patch.object(urllib.request, "build_opener", side_effect=fake_build_opener), mock.patch.object(
+        urllib.request,
+        "urlopen",
+        side_effect=AssertionError("ambient urlopen must not handle provider redirects"),
+    ) as ambient_urlopen:
+        with pytest.raises(urllib.error.HTTPError):
+            UrllibScholarlyTransport().get_json(initial_url, timeout_seconds=3.0)
+
+    assert created_opener is not None
+    assert created_opener.requested_urls == [initial_url]
+    ambient_urlopen.assert_not_called()
+
+
+def test_reference_note_records_crossref_larger_limit_and_combined_cap() -> None:
+    reference_note = " ".join((scholarly_module.__doc__ or "").split())
+
+    assert "Crossref supports ``rows`` up to 1,000" in reference_note
+    assert "200 combined" in reference_note
+
+
+def test_crossref_year_uses_publication_priority_not_lifecycle_dates() -> None:
+    pool = build_candidate_pool(search_plan(), transport=FakeTransport())
+    by_doi = {row["doi"]: row for row in pool["candidates"] if row["doi"]}
+
+    assert by_doi["10.1000/crossref"]["year"] == 2022
+    assert by_doi["10.1000/lifecycle-only"]["year"] is None
 
 
 def test_network_is_opt_in_at_cli_boundary(tmp_path: Path) -> None:
@@ -361,10 +490,10 @@ def test_bounded_routes_normalization_failure_isolation_and_determinism() -> Non
     ]
     assert "10.1000/forward" in by_doi
     assert "10.1000/backward" in by_doi
-    assert {item["kind"] for item in by_doi["10.1000/backward"]["provenance"]} == {
+    assert {item["operation"] for item in by_doi["10.1000/backward"]["provenance"]} == {
         "backward_reference"
     }
-    assert {item["kind"] for item in by_doi["10.1000/forward"]["provenance"]} == {
+    assert {item["operation"] for item in by_doi["10.1000/forward"]["provenance"]} == {
         "forward_citation"
     }
 

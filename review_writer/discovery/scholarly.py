@@ -9,12 +9,14 @@ Protocol references consulted 2026-07-25:
 * https://www.crossref.org/documentation/retrieve-metadata/rest-api/
 * https://www.crossref.org/documentation/retrieve-metadata/rest-api/tips-for-using-the-crossref-rest-api/
 
-Adopted: OpenAlex's current ``per_page=100`` maximum and Crossref's
-``rows=100`` query bound. OpenAlex no-key access is suitable only for this
-trial-scale path. Although both APIs document pagination (and Crossref
-cursors), this product deliberately makes one request per route, without
-retries or deep cursor traversal, so candidate provenance remains bounded and
-reproducible.
+Adopted: OpenAlex's current maximum is ``per_page=100``. Crossref supports
+``rows`` up to 1,000, but this client deliberately caps Crossref at
+``rows=100``; paired with OpenAlex ``per_page=100``, that permits at most 200
+combined raw search hits per query. OpenAlex no-key access is suitable only
+for this trial-scale path. Although both APIs document pagination (and
+Crossref cursors), this product deliberately makes one request per route,
+without retries or deep cursor traversal, so candidate provenance remains
+bounded and reproducible.
 """
 
 from __future__ import annotations
@@ -52,6 +54,21 @@ class _MarkupTextExtractor(HTMLParser):
             self.parts.append(data)
 
 
+class _RejectRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Fail closed before urllib can request any redirect destination."""
+
+    def redirect_request(
+        self,
+        _request,
+        _file_pointer,
+        _code,
+        _message,
+        _headers,
+        _new_url,
+    ):
+        return None
+
+
 class UrllibScholarlyTransport:
     """Minimal JSON transport restricted to the two public metadata hosts."""
 
@@ -66,7 +83,8 @@ class UrllibScholarlyTransport:
         ):
             raise ValueError("scholarly transport URL is not an allowed fixed endpoint")
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310 - hosts are fixed above.
+        opener = urllib.request.build_opener(_RejectRedirectHandler())
+        with opener.open(request, timeout=timeout_seconds) as response:  # noqa: S310 - fixed hosts and redirects fail closed.
             payload = json.loads(response.read().decode("utf-8"))
         if not isinstance(payload, dict):
             raise TypeError("scholarly provider response must be a JSON object")
@@ -124,7 +142,7 @@ def validate_search_plan(plan: dict) -> dict:
         or start > end
     ):
         raise ValueError("search plan year range is invalid")
-    seed_dois = plan.get("seed_dois", [])
+    seed_dois = plan.get("seed_dois")
     if not isinstance(seed_dois, list) or not all(_valid_doi(doi) for doi in seed_dois):
         raise ValueError("search plan seed_dois are invalid")
     normalized_queries = list(dict.fromkeys(query.strip() for query in queries))
@@ -221,7 +239,7 @@ def _year(value: Any) -> int | None:
 
 
 def _crossref_year(item: dict[str, Any]) -> int | None:
-    for key in ("published-print", "published-online", "published", "issued", "created"):
+    for key in ("published-print", "published-online", "published", "issued"):
         date = item.get(key)
         if not isinstance(date, dict):
             continue
@@ -411,7 +429,7 @@ def _dedup_key(candidate: dict[str, Any]) -> str:
 def _provenance_sort_key(item: dict[str, Any]) -> tuple[str, str, str, str, str, int]:
     return (
         str(item.get("provider", "")),
-        str(item.get("kind", "")),
+        str(item.get("operation", "")),
         str(item.get("query", "")),
         str(item.get("seed_doi", "")),
         str(item.get("route", "")),
@@ -492,17 +510,17 @@ def _search_provenance(provider: str, query: str) -> dict[str, Any]:
     return {
         "provider": provider,
         "route": "/works",
-        "kind": "query_search",
+        "operation": "query_search",
         "query": query,
         "bounded_pass": 1,
     }
 
 
-def _seed_provenance(kind: str, seed_doi: str, route: str) -> dict[str, Any]:
+def _seed_provenance(operation: str, seed_doi: str, route: str) -> dict[str, Any]:
     return {
         "provider": "openalex",
         "route": route,
-        "kind": kind,
+        "operation": operation,
         "seed_doi": seed_doi,
         "bounded_pass": 1,
     }
