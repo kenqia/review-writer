@@ -10,6 +10,12 @@ SEARCH_ROOT ?= $(abspath $(REPO_ROOT)/..)
 REAL_LITE_OUTPUT_ROOT ?= /tmp/review_writer_real_lite_e2e
 OUTPUT_ZIP ?= build/research-review-writer.qoder-plugin.zip
 
+.PHONY: public-corpus-acquisition-check
+
+public-corpus-acquisition-check:
+	PYTHONPATH=$(CURDIR) PYTHONDONTWRITEBYTECODE=1 $(PYTHON) tests/test_public_corpus_acquisition.py
+	PYTHONPATH=$(CURDIR) PYTHONDONTWRITEBYTECODE=1 $(PYTHON) tests/test_supplement_identity.py
+
 smoke:
 	$(PYTHON) tests/test_project_manifest_schema.py
 	$(PYTHON) tests/test_project_manifest_resolver.py
