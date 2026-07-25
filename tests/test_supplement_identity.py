@@ -65,6 +65,37 @@ class SupplementIdentityTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     audit_supplement_reports(pool, manifest)
 
+    def test_audit_rejects_malformed_publisher_confirmation_from_all_sources(self):
+        valid_download = {
+            "download_id": "D1",
+            "study_id": "C1",
+            "doi": "10.1000/a.s1",
+            "document_role": "SI",
+            "url": "https://example.com/supplement.pdf",
+            "target_path": "sources/C1/SI/supplement.pdf",
+            "source_class": "PUBLIC_DIRECT",
+        }
+        cases = [
+            (
+                {"candidate_id": "C1", "doi": "10.1000/a.s1", "publisher_confirmed_parent_doi": "malformed-confirmation"},
+                [],
+            ),
+            (
+                {"candidate_id": "C1", "doi": "10.1000/a.s1"},
+                [{**valid_download, "publisher_confirmed_parent_doi": "malformed-confirmation"}],
+            ),
+        ]
+        for candidate, downloads in cases:
+            with self.subTest(source="candidate" if not downloads else "acquisition"), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                pool = root / "pool.jsonl"
+                manifest = root / "manifest.json"
+                pool.write_text(json.dumps(candidate) + "\n")
+                manifest.write_text(json.dumps({"schema_version": "public-corpus-acquisition.v1", "downloads": downloads}))
+
+                with self.assertRaises(ValueError):
+                    audit_supplement_reports(pool, manifest)
+
     def test_audit_rejects_invalid_manifest_schema_download_list_and_stable_ids(self):
         invalid_manifests = [
             {},

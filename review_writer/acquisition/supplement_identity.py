@@ -75,6 +75,8 @@ def _validated_identity_record(record: Any, *, id_field: str, source: str) -> di
         raise SupplementAuditError(f"{source} records contain an invalid publisher confirmation")
     validated = dict(record)
     validated[id_field] = stable_id.strip()
+    if isinstance(confirmation, str):
+        validated["publisher_confirmed_parent_doi"] = normalize_doi(confirmation)
     return validated
 
 

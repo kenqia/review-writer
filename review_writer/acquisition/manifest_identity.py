@@ -70,9 +70,10 @@ def validate_acquisition_row(record: Any) -> dict[str, Any]:
     if not isinstance(expected_format, str) or expected_format not in EXPECTED_FORMATS:
         raise ManifestIdentityError("expected_format must be PDF, DOCX, or XLSX")
     normalized["expected_format"] = expected_format
-    if "doi" in record and record["doi"] is not None:
-        doi = normalize_doi(record["doi"])
-        if doi is None:
-            raise ManifestIdentityError("doi must be a valid DOI string or null")
-        normalized["doi"] = doi
+    for field in ("doi", "publisher_confirmed_parent_doi"):
+        if field in record and record[field] is not None:
+            doi = normalize_doi(record[field])
+            if doi is None:
+                raise ManifestIdentityError(f"{field} must be a valid DOI string or null")
+            normalized[field] = doi
     return normalized

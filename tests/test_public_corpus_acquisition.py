@@ -1415,7 +1415,7 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
         allowed_query = (
             "download=1&FORMAT=pdf&type=full&file=paper.pdf&filename=paper.pdf&"
             "article=A1&doi=10.1000%2Fpublic&id=42&lang=en&locale=en-US&pdf=1&"
-            "view=full&inline=true&sequence=1&isAllowed=y&utm_source=index"
+            "view=full&inline=true&sequence=1&isAllowed=y"
         )
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1428,9 +1428,10 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
             receipt = acquire_manifest(manifest, root / "acquired")
 
             self.assertEqual(receipt["results"][0]["status"], "DOWNLOADED")
+            self.assertEqual(receipt["results"][0]["source_url"], self.base_url + "/paper.pdf?" + allowed_query)
             self.assertEqual(FixtureHandler.query_pdf_requests, 1)
 
-        unknown_keys = ["code", "ticket", "jwt", "SAMLResponse", "AWSAccessKeyId"]
+        unknown_keys = ["code", "ticket", "jwt", "SAMLResponse", "AWSAccessKeyId", "utm_source"]
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             secrets = [f"unknown-query-secret-{index}" for index in range(len(unknown_keys))]

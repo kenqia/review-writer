@@ -251,8 +251,7 @@ def _safe_url(url: str) -> tuple[bool, str | None, str]:
 
 
 def _is_allowed_query_key(key: str) -> bool:
-    normalized = key.casefold()
-    return normalized in PUBLIC_QUERY_KEYS or (normalized.startswith("utm_") and len(normalized) > 4)
+    return key.casefold() in PUBLIC_QUERY_KEYS
 
 
 def _open_without_redirect(request: urllib.request.Request, timeout_seconds: float):
