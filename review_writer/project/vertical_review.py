@@ -717,8 +717,8 @@ def apply_risk_decisions(project: Path, decisions: dict) -> list[dict]:
         "schema_version": "vertical-review-risk-decisions.v1",
     }
     _invalidate_writer_packet(project_path)
-    _write_json(project_path / "03_review" / "risk_decisions.json", decision_payload)
     _write_jsonl(project_path / "02_claims" / "claim_projection.jsonl", projected)
+    _write_json(project_path / "03_review" / "risk_decisions.json", decision_payload)
     return projected
 
 

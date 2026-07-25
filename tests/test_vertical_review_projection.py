@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import review_writer.project.vertical_review as vertical_review
 from review_writer.project.vertical_review import (
     VerticalReviewError,
     apply_risk_decisions,
@@ -715,6 +716,54 @@ def test_apply_risk_decision_persists_current_review_target_digest(tmp_path: Pat
 
     stored = json.loads((project / "03_review" / "risk_decisions.json").read_text())
     assert stored["decisions"][0]["review_target_digest"] == digest
+
+
+def test_risk_decision_commit_failure_stages_projection_and_retry_recovers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _initialize(tmp_path)
+    register_study(
+        project,
+        _candidate("STUDY-COMMIT-FAILURE", [_claim("CLAIM-COMMIT-FAILURE", risk_level="R3")]),
+        _r0("STUDY-COMMIT-FAILURE"),
+        _reviewer("STUDY-COMMIT-FAILURE"),
+    )
+    decision = _bound_decision(project, "CLAIM-COMMIT-FAILURE", "APPROVE")
+    writer_path = project / "02_claims" / "writer_packet.json"
+    projection_path = project / "02_claims" / "claim_projection.jsonl"
+    decisions_path = project / "03_review" / "risk_decisions.json"
+    build_writer_packet(project)
+    projection_before = projection_path.read_bytes()
+    decisions_before = decisions_path.read_bytes()
+    original_write_json = vertical_review._write_json
+
+    def fail_commit_record(path: Path, value: object) -> None:
+        if path == decisions_path:
+            raise OSError("synthetic risk decision commit failure")
+        original_write_json(path, value)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(vertical_review, "_write_json", fail_commit_record)
+        with pytest.raises(OSError):
+            apply_risk_decisions(project, {"decisions": [decision]})
+
+    assert decisions_path.read_bytes() == decisions_before
+    assert projection_path.read_bytes() != projection_before
+    staged = json.loads(projection_path.read_text().splitlines()[0])
+    assert staged["decision"] == "APPROVED"
+    assert not writer_path.exists()
+    for consumer in (build_writer_packet, build_risk_packet, benchmark_metrics):
+        with pytest.raises(VerticalReviewError) as error:
+            consumer(project)
+        assert error.value.code == "PROJECTION_INVALID"
+
+    recovered = apply_risk_decisions(project, {"decisions": [decision]})
+
+    assert recovered[0]["decision"] == "APPROVED"
+    stored = json.loads(decisions_path.read_text())
+    assert stored["decisions"] == [decision]
+    assert build_writer_packet(project)["approved_claim_count"] == 1
 
 
 def test_old_risk_approval_is_ignored_after_claim_target_changes(tmp_path: Path) -> None:
