@@ -755,6 +755,7 @@ def project_evidence_payload(review_root: Path, project_id: str) -> dict[str, An
 
 def project_risk_payload(review_root: Path, project_id: str) -> dict[str, Any]:
     project = project_dir(review_root, project_id)
+    benchmark_metrics(project)
     packet = read_json_if_exists(project / "03_review" / "risk_packet.json") or {}
     decision_payload = read_json_if_exists(project / "03_review" / "risk_decisions.json") or {}
     raw_targets = packet.get("targets") if isinstance(packet, dict) else []

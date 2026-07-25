@@ -489,6 +489,66 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
                     )
                 self.assertEqual(before, self._project_file_bytes(review_root))
 
+    def test_risk_get_fails_closed_during_staged_decision_commit_and_recovers(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        import review_writer.project.vertical_review as vertical_review
+        from view import serve_review_dashboard as dashboard
+
+        for new_decision in ("exclude", "unresolved"):
+            with self.subTest(decision=new_decision), tempfile.TemporaryDirectory() as temp_dir:
+                review_root = self._copy_fixture(Path(temp_dir))
+                project = review_root / "review-projects" / "synthetic-review"
+                decisions_path = project / "03_review" / "risk_decisions.json"
+                token = dashboard.project_risk_payload(review_root, "synthetic-review")["targets"][0]["decision_token"]
+                dashboard.write_project_risk_decisions(
+                    review_root,
+                    "synthetic-review",
+                    {"decisions": [{"target_id": "claim-neutral-01", "decision": "approve", "decision_token": token}]},
+                )
+                self.assertEqual(
+                    "approve",
+                    dashboard.project_risk_payload(review_root, "synthetic-review")["targets"][0]["existing_decision"],
+                )
+                decisions_before = decisions_path.read_bytes()
+
+                with patch.object(
+                    vertical_review,
+                    "_write_json",
+                    side_effect=OSError("synthetic final decision commit failure"),
+                ):
+                    with self.assertRaises(OSError):
+                        dashboard.write_project_risk_decisions(
+                            review_root,
+                            "synthetic-review",
+                            {"decisions": [{"target_id": "claim-neutral-01", "decision": new_decision, "decision_token": token}]},
+                        )
+
+                self.assertEqual(decisions_before, decisions_path.read_bytes())
+                with self.assertRaises(dashboard.VerticalReviewError) as error:
+                    dashboard.project_risk_payload(review_root, "synthetic-review")
+                self.assertEqual("PROJECTION_INVALID", error.exception.code)
+                status, _, _ = self._request(
+                    dashboard,
+                    review_root,
+                    b"GET /api/project/synthetic-review/risk-packet HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                )
+                self.assertEqual(400, status)
+
+                dashboard.write_project_risk_decisions(
+                    review_root,
+                    "synthetic-review",
+                    {"decisions": [{"target_id": "claim-neutral-01", "decision": new_decision, "decision_token": token}]},
+                )
+                recovered = dashboard.project_risk_payload(review_root, "synthetic-review")
+                self.assertEqual(new_decision, recovered["targets"][0]["existing_decision"])
+                status, _, body = self._request(
+                    dashboard,
+                    review_root,
+                    b"GET /api/project/synthetic-review/risk-packet HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                )
+                self.assertEqual(200, status)
+                self.assertEqual(new_decision, json.loads(body)["targets"][0]["existing_decision"])
+
     def test_evidence_risk_and_decision_routes_return_expected_statuses(self) -> None:
         sys.path.insert(0, str(ROOT))
         from view import serve_review_dashboard as dashboard
