@@ -192,14 +192,18 @@ def initialize_review(review_root: Path, project_id: str, brief: dict) -> Path:
         "project_id": project_id,
         "schema_version": "vertical-review-state.v1",
     }
+    if project.is_symlink():
+        _fail("PROJECT_ALREADY_EXISTS", "project path must not be a symlink")
     if project.exists() and not project.is_dir():
         _fail("PROJECT_ALREADY_EXISTS", "project path is not a directory")
     if project.exists():
         for path in project.rglob("*"):
+            if path.is_symlink():
+                _fail("PROJECT_ALREADY_EXISTS", "project contains a symlink")
             if path.is_dir():
                 continue
             relative = path.relative_to(project)
-            if path.is_symlink() or relative not in _INITIALIZATION_PATHS:
+            if relative not in _INITIALIZATION_PATHS:
                 _fail("PROJECT_ALREADY_EXISTS", "project contains an unknown object")
 
     if state_path.exists() and _read_json(state_path, "PROJECT_STATE_INVALID") != state:

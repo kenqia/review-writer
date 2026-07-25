@@ -90,6 +90,14 @@ def _initialization_files(project: Path) -> set[str]:
     }
 
 
+def _file_bytes(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
 def test_initialize_repairs_state_only_project(tmp_path: Path) -> None:
     project = _initialize(tmp_path)
     state_path = project / "00_brief" / "review_state.json"
@@ -130,6 +138,41 @@ def test_initialize_completes_valid_pre_state_partial_project(tmp_path: Path) ->
     assert json.loads((project / "01_evidence" / "exception_queue.json").read_text()) == {
         "exceptions": []
     }
+
+
+def test_initialize_rejects_project_root_symlink_without_touching_target(
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "outside-root"
+    queue_path = outside / "01_evidence" / "exception_queue.json"
+    queue_path.parent.mkdir(parents=True)
+    queue_path.write_text('{"exceptions": []}\n')
+    before = _file_bytes(outside)
+    (tmp_path / "synthetic-review").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(VerticalReviewError):
+        _initialize(tmp_path)
+
+    assert _file_bytes(outside) == before
+
+
+def test_initialize_rejects_descendant_directory_symlink_without_touching_target(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "synthetic-review"
+    project.mkdir()
+    outside = tmp_path / "outside-evidence"
+    queue_path = outside / "exception_queue.json"
+    outside.mkdir()
+    queue_path.write_text('{"exceptions": []}\n')
+    before = _file_bytes(outside)
+    (project / "01_evidence").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(VerticalReviewError):
+        _initialize(tmp_path)
+
+    assert _file_bytes(outside) == before
+    assert not (project / "00_brief" / "review_state.json").exists()
 
 
 @pytest.mark.parametrize("invalid_kind", ["nonempty_object", "unknown_file"])
