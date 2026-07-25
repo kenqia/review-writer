@@ -142,6 +142,49 @@ def test_writer_packet_is_an_approved_only_whitelist(tmp_path: Path) -> None:
     }
 
 
+@pytest.mark.parametrize(
+    "consumer",
+    [build_writer_packet, build_risk_packet, benchmark_metrics],
+    ids=["writer", "risk", "metrics"],
+)
+@pytest.mark.parametrize("tamper", ["forged", "text", "lineage"])
+def test_projection_consumers_reject_any_non_authoritative_projection(
+    tmp_path: Path,
+    consumer,
+    tamper: str,
+) -> None:
+    project = _initialize(tmp_path)
+    result = register_study(
+        project,
+        _candidate("STUDY-TAMPER", [_claim("CLAIM-TAMPER")]),
+        {"status": "R0_PASS"},
+        {"verdict": "SUPPORT"},
+    )
+    if tamper == "forged":
+        rows = [{"claim_id": "CLAIM-TAMPER", "decision": "APPROVED"}]
+    else:
+        rows = copy.deepcopy(result["claim_projection"])
+        if tamper == "text":
+            rows[0]["text"] = "Forged consumer wording."
+        else:
+            rows[0]["lineage"]["study_id"] = "FORGED-STUDY"
+    projection_path = project / "02_claims" / "claim_projection.jsonl"
+    projection_path.write_text(
+        "".join(
+            json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+            for row in rows
+        ),
+        encoding="utf-8",
+    )
+    tampered_bytes = projection_path.read_bytes()
+
+    with pytest.raises(VerticalReviewError) as error:
+        consumer(project)
+
+    assert error.value.code == "PROJECTION_INVALID"
+    assert projection_path.read_bytes() == tampered_bytes
+
+
 def test_failed_third_study_is_queued_without_deleting_passing_cards(tmp_path: Path) -> None:
     project = _initialize(tmp_path)
     for index in (1, 2):
@@ -169,6 +212,63 @@ def test_failed_third_study_is_queued_without_deleting_passing_cards(tmp_path: P
     queue = json.loads((project / "01_evidence" / "exception_queue.json").read_text())
     assert [entry["study_id"] for entry in queue["exceptions"]] == ["STUDY-BAD"]
     assert queue["exceptions"][0]["error_code"] == "R0_REJECTED"
+
+
+def test_repeated_failure_upserts_one_exception_per_study(tmp_path: Path) -> None:
+    project = _initialize(tmp_path)
+    for _ in range(2):
+        with pytest.raises(VerticalReviewError):
+            register_study(
+                project,
+                _candidate("STUDY-RETRY", [_claim("CLAIM-RETRY")]),
+                {"status": "R0_FAIL_GROUNDING_CONTRACT"},
+                {"verdict": "SUPPORT"},
+            )
+
+    queue = json.loads((project / "01_evidence" / "exception_queue.json").read_text())
+    assert queue["exceptions"] == [
+        {
+            "error_code": "R0_REJECTED",
+            "r0_status": "R0_FAIL_GROUNDING_CONTRACT",
+            "reviewer_verdict": "SUPPORT",
+            "study_id": "STUDY-RETRY",
+        }
+    ]
+    with pytest.raises(VerticalReviewError):
+        register_study(
+            project,
+            _candidate("STUDY-ALPHA", [_claim("CLAIM-ALPHA")]),
+            {"status": "R0_FAIL_GROUNDING_CONTRACT"},
+            {"verdict": "SUPPORT"},
+        )
+    queue = json.loads((project / "01_evidence" / "exception_queue.json").read_text())
+    assert [entry["study_id"] for entry in queue["exceptions"]] == [
+        "STUDY-ALPHA",
+        "STUDY-RETRY",
+    ]
+
+
+def test_successful_retry_clears_study_exception_and_metrics(tmp_path: Path) -> None:
+    project = _initialize(tmp_path)
+    candidate = _candidate("STUDY-RECOVERED", [_claim("CLAIM-RECOVERED")])
+    with pytest.raises(VerticalReviewError):
+        register_study(
+            project,
+            candidate,
+            {"status": "R0_FAIL_GROUNDING_CONTRACT"},
+            {"verdict": "SUPPORT"},
+        )
+
+    register_study(
+        project,
+        candidate,
+        {"status": "R0_PASS"},
+        {"verdict": "SUPPORT"},
+    )
+
+    queue = json.loads((project / "01_evidence" / "exception_queue.json").read_text())
+    assert queue["exceptions"] == []
+    assert benchmark_metrics(project)["exception_count"] == 0
 
 
 def test_risk_decisions_reduce_to_consumer_text_and_status_only(tmp_path: Path) -> None:

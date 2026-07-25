@@ -344,6 +344,38 @@ def _project_cards(
     return _apply_risk_records(projection, risk_decisions)
 
 
+def _validate_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    study_ids: list[str] = []
+    for card in cards:
+        candidate = _validate_candidate(card.get("candidate"))
+        study_id = card.get("study_id")
+        r0_report = card.get("r0_report")
+        reviewer = card.get("reviewer")
+        if study_id != candidate["study_id"]:
+            _fail("EVIDENCE_CARD_INVALID", "evidence card study binding is invalid")
+        if not isinstance(r0_report, dict) or r0_report.get("status") != "R0_PASS":
+            _fail("EVIDENCE_CARD_INVALID", "evidence card R0 binding is invalid")
+        if (
+            not isinstance(reviewer, dict)
+            or not isinstance(reviewer.get("verdict"), str)
+            or not reviewer["verdict"]
+        ):
+            _fail("EVIDENCE_CARD_INVALID", "evidence card reviewer binding is invalid")
+        study_ids.append(study_id)
+    if len(study_ids) != len(set(study_ids)):
+        _fail("EVIDENCE_CARDS_INVALID", "stored study identities must be unique")
+    return sorted(cards, key=lambda card: card["study_id"])
+
+
+def _load_validated_cards(project: Path) -> list[dict[str, Any]]:
+    return _validate_cards(
+        _read_jsonl(
+            project / "01_evidence" / "evidence_cards.jsonl",
+            "EVIDENCE_CARDS_INVALID",
+        )
+    )
+
+
 def _append_exception(
     project: Path,
     *,
@@ -356,15 +388,43 @@ def _append_exception(
     queue = _read_json(path, "EXCEPTION_QUEUE_INVALID")
     if not isinstance(queue, dict) or not isinstance(queue.get("exceptions"), list):
         _fail("EXCEPTION_QUEUE_INVALID", "exception queue must contain an exceptions list")
-    queue["exceptions"].append(
-        {
-            "error_code": error_code,
-            "r0_status": r0_status,
-            "reviewer_verdict": reviewer_verdict,
-            "study_id": study_id or "UNKNOWN_STUDY",
-        }
-    )
+    by_study: dict[str, dict[str, Any]] = {}
+    for entry in queue["exceptions"]:
+        if (
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("study_id"), str)
+            or not entry["study_id"]
+        ):
+            _fail("EXCEPTION_QUEUE_INVALID", "exception entries require study_id")
+        by_study[entry["study_id"]] = entry
+    failed_study_id = study_id or "UNKNOWN_STUDY"
+    by_study[failed_study_id] = {
+        "error_code": error_code,
+        "r0_status": r0_status,
+        "reviewer_verdict": reviewer_verdict,
+        "study_id": failed_study_id,
+    }
+    queue["exceptions"] = [by_study[key] for key in sorted(by_study)]
     _write_json(path, queue)
+
+
+def _clear_exception(project: Path, study_id: str) -> None:
+    path = project / "01_evidence" / "exception_queue.json"
+    queue = _read_json(path, "EXCEPTION_QUEUE_INVALID")
+    if not isinstance(queue, dict) or not isinstance(queue.get("exceptions"), list):
+        _fail("EXCEPTION_QUEUE_INVALID", "exception queue must contain an exceptions list")
+    by_study: dict[str, dict[str, Any]] = {}
+    for entry in queue["exceptions"]:
+        if (
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("study_id"), str)
+            or not entry["study_id"]
+        ):
+            _fail("EXCEPTION_QUEUE_INVALID", "exception entries require study_id")
+        by_study[entry["study_id"]] = entry
+    if by_study.pop(study_id, None) is not None:
+        queue["exceptions"] = [by_study[key] for key in sorted(by_study)]
+        _write_json(path, queue)
 
 
 def register_study(
@@ -399,16 +459,10 @@ def register_study(
             "study_id": candidate_copy["study_id"],
         }
         cards_path = project_path / "01_evidence" / "evidence_cards.jsonl"
-        cards = _read_jsonl(cards_path, "EVIDENCE_CARDS_INVALID")
-        study_ids = [row.get("study_id") for row in cards]
-        if (
-            any(not isinstance(study_id, str) or not study_id for study_id in study_ids)
-            or len(study_ids) != len(set(study_ids))
-        ):
-            _fail("EVIDENCE_CARDS_INVALID", "stored study identities are invalid")
+        cards = _validate_cards(_read_jsonl(cards_path, "EVIDENCE_CARDS_INVALID"))
         by_study = {row["study_id"]: row for row in cards}
         by_study[card["study_id"]] = card
-        ordered_cards = [by_study[key] for key in sorted(by_study)]
+        ordered_cards = _validate_cards(list(by_study.values()))
         projection = _project_cards(ordered_cards, _read_risk_decisions(project_path))
     except VerticalReviewError as exc:
         _append_exception(
@@ -422,6 +476,7 @@ def register_study(
 
     _write_jsonl(cards_path, ordered_cards)
     _write_jsonl(project_path / "02_claims" / "claim_projection.jsonl", projection)
+    _clear_exception(project_path, card["study_id"])
     return {"claim_projection": projection, "study_id": card["study_id"]}
 
 
@@ -429,37 +484,26 @@ def rebuild_projection(project: Path) -> list[dict]:
     """Rebuild the consumer projection from evidence cards and recorded decisions."""
     project_path = Path(project)
     _project_state(project_path)
-    cards = _read_jsonl(
-        project_path / "01_evidence" / "evidence_cards.jsonl",
-        "EVIDENCE_CARDS_INVALID",
+    projection = _project_cards(
+        _load_validated_cards(project_path),
+        _read_risk_decisions(project_path),
     )
-    study_ids: list[str] = []
-    for card in cards:
-        candidate = _validate_candidate(card.get("candidate"))
-        study_id = card.get("study_id")
-        if study_id != candidate["study_id"] or not isinstance(card.get("r0_report"), dict):
-            _fail("EVIDENCE_CARD_INVALID", "evidence card study or R0 binding is invalid")
-        reviewer = card.get("reviewer")
-        if not isinstance(reviewer, dict) or not isinstance(reviewer.get("verdict"), str):
-            _fail("EVIDENCE_CARD_INVALID", "evidence card reviewer binding is invalid")
-        study_ids.append(study_id)
-    if len(study_ids) != len(set(study_ids)):
-        _fail("EVIDENCE_CARDS_INVALID", "stored study identities must be unique")
-    ordered_cards = sorted(cards, key=lambda card: card["study_id"])
-    projection = _project_cards(ordered_cards, _read_risk_decisions(project_path))
     _write_jsonl(project_path / "02_claims" / "claim_projection.jsonl", projection)
     return projection
 
 
 def _load_projection(project: Path) -> list[dict[str, Any]]:
+    expected = _project_cards(
+        _load_validated_cards(project),
+        _read_risk_decisions(project),
+    )
     rows = _read_jsonl(project / "02_claims" / "claim_projection.jsonl", "PROJECTION_INVALID")
-    claim_ids = [row.get("claim_id") for row in rows]
-    if (
-        any(not isinstance(claim_id, str) or not claim_id for claim_id in claim_ids)
-        or len(claim_ids) != len(set(claim_ids))
-        or any(row.get("decision") not in {"APPROVED", "BLOCKED", "HUMAN_REQUIRED"} for row in rows)
-    ):
-        _fail("PROJECTION_INVALID", "projection identities or decisions are invalid")
+    try:
+        matches = _json_bytes(rows) == _json_bytes(expected)
+    except VerticalReviewError:
+        matches = False
+    if not matches:
+        _fail("PROJECTION_INVALID", "stored projection differs from authoritative state")
     return rows
 
 
@@ -527,11 +571,7 @@ def apply_risk_decisions(project: Path, decisions: dict) -> list[dict]:
     normalized.sort(key=lambda row: str(row.get("claim_id", "")))
 
     # Rebuild from cards so a prior human decision never becomes the new scientific baseline.
-    cards = _read_jsonl(
-        project_path / "01_evidence" / "evidence_cards.jsonl",
-        "EVIDENCE_CARDS_INVALID",
-    )
-    base = _project_cards(sorted(cards, key=lambda card: card["study_id"]), [])
+    base = _project_cards(_load_validated_cards(project_path), [])
     projected = _apply_risk_records(base, normalized)
     decision_payload = {
         "decisions": normalized,
