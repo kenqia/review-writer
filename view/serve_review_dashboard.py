@@ -599,6 +599,13 @@ def is_direct_output_root(review_root: Path) -> bool:
     return (review_root / "checkpoint_log.json").exists() and (review_root / "05_final_audit").exists()
 
 
+def has_dashboard_data(review_root: Path) -> bool:
+    if (review_root / "review-library" / "metadata" / "papers").exists() or is_direct_output_root(review_root):
+        return True
+    projects = review_root / "review-projects"
+    return projects.is_dir() and any((project / "00_brief" / "review_state.json").is_file() for project in projects.iterdir() if project.is_dir())
+
+
 def direct_project_id(review_root: Path) -> str:
     summary = read_json_if_exists(review_root / "run_summary.json")
     if isinstance(summary, dict) and summary.get("project_id"):
@@ -929,8 +936,8 @@ def run(args: argparse.Namespace) -> int:
         final_app_path,
         review_app_path,
     ) = dashboard_assets(view_root)
-    if not (review_root / "review-library" / "metadata" / "papers").exists() and not is_direct_output_root(review_root):
-        print("ERROR: metadata files not found. Run prepare_metadata.py first.", file=sys.stderr)
+    if not has_dashboard_data(review_root):
+        print("ERROR: no review project state or review-library metadata found.", file=sys.stderr)
         return 2
     DashboardHandler.review_root = review_root
     DashboardHandler.library_app_path = library_app_path

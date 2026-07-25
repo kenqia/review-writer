@@ -20,6 +20,8 @@ description: 当用户要在 QoderWork 写作工作台中，用一个任务将�
 5. 只有可写证据足够时，调用 `SYNTHESIS_MANUSCRIPT_WRITER` 写入 `04_first_draft/first_draft.md`；不能支持的内容不写成事实。
 6. 由 `QUALITY_RELEASE_REVIEWER` 形成发布条件。随后运行已有确定性质量检查；仅在人工门通过后使用既有 DOCX 导出端点。
 
+BLOCKED 决定具有单调性：除非项目状态记录明确的人类 `APPROVE` 或 `REWORD` 决定，后续 Writer、Reviewer 或措辞弱化都不能重新放行。证据矩阵和正文只能消费来源明示字段及上游允许写作的主张；缺失字段保持缺失，不用标题联想或模型记忆补齐。
+
 ## 项目状态契约
 
 状态文件固定为 `<工作文件夹>/review-projects/<项目标识>/00_brief/review_state.json`，至少包含：`project_id`、`brief`、`current_stage`、`status`、`blockers`、`counts` 和 `updated_at`。`counts` 只记录 `sources`、`evidence`、`claims`。动态仪表盘读取这一文件及现有草稿/终稿目录；不要新建第二份稿件库或证据库。

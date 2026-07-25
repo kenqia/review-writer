@@ -55,6 +55,17 @@ class NativeReviewWriterPluginTests(unittest.TestCase):
         self.assertIn("写作工作台", content)
         self.assertIn("人工", content)
 
+    def test_agents_enforce_monotonic_claim_decisions(self) -> None:
+        skill = (PLUGIN / "skills" / "research-review-writer" / "SKILL.md").read_text(encoding="utf-8")
+        extractor = (PLUGIN / "agents" / "PER_STUDY_EVIDENCE_EXTRACTOR.md").read_text(encoding="utf-8")
+        writer = (PLUGIN / "agents" / "SYNTHESIS_MANUSCRIPT_WRITER.md").read_text(encoding="utf-8")
+        reviewer = (PLUGIN / "agents" / "QUALITY_RELEASE_REVIEWER.md").read_text(encoding="utf-8")
+
+        self.assertIn("BLOCKED 决定具有单调性", skill)
+        self.assertIn("矩阵字段只能复制来源明示值或已批准主张", extractor)
+        self.assertIn("不得用 hedging、改写或模型复审重新放行", writer)
+        self.assertIn("不得覆盖或降级上游 BLOCKED 决定", reviewer)
+
     def test_plugin_zip_is_deterministic_and_exactly_safe(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             first, second = Path(temp_dir) / "first.zip", Path(temp_dir) / "second.zip"
@@ -139,7 +150,24 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             self.assertEqual(export_result, json.loads(body))
             export.assert_called_once_with(review_root, "synthetic-review")
             self.assertIn('self.send_header("Location", "/review")', SERVER.read_text(encoding="utf-8"))
-            self.assertIn('fetch(`/api/project/${encodeURIComponent(projectId)}/review-state`)', (ROOT / "view" / "assets" / "dashboard" / "review.html").read_text(encoding="utf-8"))
+            review_html = (ROOT / "view" / "assets" / "dashboard" / "review.html").read_text(encoding="utf-8")
+            self.assertIn('fetch(`/api/project/${encodeURIComponent(projectId)}/review-state`)', review_html)
+            self.assertIn('<link rel="icon" href="data:,">', review_html)
+
+    def test_dashboard_accepts_qoderwork_native_project_root_without_library_metadata(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir)
+            state = review_root / "review-projects" / "native-demo" / "00_brief" / "review_state.json"
+            state.parent.mkdir(parents=True)
+            state.write_text('{"project_id":"native-demo"}\n', encoding="utf-8")
+
+            self.assertTrue(dashboard.has_dashboard_data(review_root))
+            empty_root = Path(temp_dir) / "empty"
+            (empty_root / "review-projects" / "empty-project").mkdir(parents=True)
+            self.assertFalse(dashboard.has_dashboard_data(empty_root))
 
     def test_project_id_traversal_is_rejected_for_get_put_and_export(self) -> None:
         sys.path.insert(0, str(ROOT))
