@@ -47,7 +47,7 @@ MAX_CONTENT_TYPES_BYTES = 1024 * 1024
 MAX_ROBOTS_BYTES = 1024 * 1024
 MIN_PDF_BYTES = 16
 PDF_TAIL_BYTES = 4096
-PDF_MARKER_BYTES = 128
+PDF_TARGET_BYTES = 4096
 WINDOWS_RESERVED_NAMES = frozenset(
     {"con", "prn", "aux", "nul", "conin$", "conout$"}
     | {f"com{number}" for number in range(1, 10)}
@@ -311,6 +311,14 @@ def _content_length(headers: Any, max_bytes: int) -> tuple[int | None, str | Non
 
 
 def _read_bounded_response(response: Any, max_bytes: int) -> bytes:
+    transfer_codings = response.headers.get_all("Transfer-Encoding", [])
+    content_lengths = response.headers.get_all("Content-Length", [])
+    if transfer_codings and (
+        content_lengths
+        or len(transfer_codings) != 1
+        or transfer_codings[0].strip().casefold() != "chunked"
+    ):
+        raise _ContentLengthMismatch
     declared_length, length_reason = _content_length(response.headers, max_bytes)
     if length_reason is not None:
         raise _ContentLengthMismatch
@@ -375,10 +383,32 @@ def _matches_format(path: Path, expected_format: str) -> bool:
             if xref_offset >= size:
                 return False
             handle.seek(xref_offset)
-            marker = handle.read(PDF_MARKER_BYTES)
-            if re.match(rb"xref(?:\s|$)", marker):
-                return True
-            return re.match(rb"[1-9][0-9]*\s+[0-9]+\s+obj(?:\s|$)", marker) is not None
+            target = handle.read(PDF_TARGET_BYTES)
+            before_startxref = tail[:final_reference.start()]
+            tail_offset = max(0, size - PDF_TAIL_BYTES)
+            xref_table = re.match(
+                rb"xref[ \t]*(?:\r\n|\r|\n)"
+                rb"[ \t]*[0-9]+[ \t]+[1-9][0-9]*[ \t]*(?:\r\n|\r|\n)"
+                rb"[0-9]{10} [0-9]{5} [nf](?: \n|\r\n| \r)",
+                target,
+            )
+            if xref_table is not None:
+                return any(
+                    tail_offset + match.start() > xref_offset
+                    for match in re.finditer(rb"(?:^|[\r\n])trailer(?:\s|$)", before_startxref)
+                )
+            object_header = re.match(rb"[1-9][0-9]*\s+[0-9]+\s+obj(?=\s|<)", target)
+            xref_type = re.search(rb"/Type\s*/XRef(?=\s|/|<|>|\[|\]|\(|\))", target)
+            stream_start = re.search(rb"stream(?:\r\n|\r|\n)", target)
+            if object_header is None or xref_type is None or stream_start is None or xref_type.end() > stream_start.start():
+                return False
+            first_endobj = target.find(b"endobj", object_header.end(), stream_start.start())
+            stream_end = re.search(rb"endstream\s+endobj\s*$", before_startxref)
+            return (
+                first_endobj == -1
+                and stream_end is not None
+                and tail_offset + stream_end.start() > xref_offset + stream_start.start()
+            )
     required_part, required_content_type = OOXML_REQUIREMENTS[expected_format]
     try:
         with zipfile.ZipFile(path) as archive:

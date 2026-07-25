@@ -58,6 +58,30 @@ BAD_STARTXREF_PDF_BYTES = PDF_BYTES.rsplit(b"startxref\n", 1)[0] + b"startxref\n
 OUT_OF_RANGE_STARTXREF_PDF_BYTES = PDF_BYTES.rsplit(b"startxref\n", 1)[0] + b"startxref\n999999\n%%EOF\n"
 TRUNCATED_PDF_BYTES = PDF_BYTES.rsplit(b"%%EOF", 1)[0]
 INCREMENTAL_TAIL_PDF_BYTES = PDF_BYTES + b"3 0 obj\n<< /Type /FakeUpdate >>\nendobj\n"
+PDF_XREF_OFFSET = PDF_BYTES.index(b"xref\n")
+EMPTY_XREF_PDF_BYTES = (
+    PDF_BYTES[:PDF_XREF_OFFSET]
+    + b"xref\ntrailer\n<< /Size 3 /Root 1 0 R >>\nstartxref\n"
+    + str(PDF_XREF_OFFSET).encode("ascii")
+    + b"\n%%EOF\n"
+)
+CATALOG_STARTXREF_PDF_BYTES = (
+    PDF_BYTES.rsplit(b"startxref\n", 1)[0]
+    + b"startxref\n"
+    + str(PDF_BYTES.index(b"1 0 obj")).encode("ascii")
+    + b"\n%%EOF\n"
+)
+
+
+def make_truncated_xref_stream_pdf() -> bytes:
+    prefix = b"%PDF-1.5\n1 0 obj\n<< /Type /Catalog >>\nendobj\n"
+    xref_offset = len(prefix)
+    return (
+        prefix
+        + b"3 0 obj\n<< /Type /XRef /Size 4 /Length 3 >>\nstream\nabc\nstartxref\n"
+        + str(xref_offset).encode("ascii")
+        + b"\n%%EOF\n"
+    )
 
 
 def make_ooxml_with_content_types(main_part: str, content_types_xml: str) -> bytes:
@@ -378,6 +402,27 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
             path.write_bytes(make_xref_stream_sanity_pdf())
 
             self.assertTrue(public_corpus._matches_format(path, "PDF"))
+
+    def test_pdf_sanity_rejects_empty_xref_table(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "empty-xref.pdf"
+            path.write_bytes(EMPTY_XREF_PDF_BYTES)
+
+            self.assertFalse(public_corpus._matches_format(path, "PDF"))
+
+    def test_pdf_sanity_rejects_startxref_to_ordinary_catalog_object(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "catalog-startxref.pdf"
+            path.write_bytes(CATALOG_STARTXREF_PDF_BYTES)
+
+            self.assertFalse(public_corpus._matches_format(path, "PDF"))
+
+    def test_pdf_sanity_rejects_truncated_xref_stream_object(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "truncated-xref-stream.pdf"
+            path.write_bytes(make_truncated_xref_stream_pdf())
+
+            self.assertFalse(public_corpus._matches_format(path, "PDF"))
 
     def test_content_length_is_optional_but_single_valid_value_must_match(self):
         for index, route in enumerate(["/no-content-length.pdf", "/chunked.pdf"]):
@@ -1073,6 +1118,11 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
                     if type(self).mode == "oversized_header":
                         self.send_header("X-Oversized", "x" * 70000)
                         self.send_header("Content-Length", str(len(body)))
+                    elif type(self).mode == "transfer_and_length":
+                        self.send_header("Transfer-Encoding", "chunked")
+                        self.send_header("Content-Length", str(len(body)))
+                    elif type(self).mode == "unsupported_transfer":
+                        self.send_header("Transfer-Encoding", "gzip")
                     elif type(self).mode == "invalid":
                         self.send_header("Content-Length", "robots-length-secret")
                     elif type(self).mode == "duplicate":
@@ -1092,6 +1142,8 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
                         self.wfile.write(b"A\r\nshort\r\n")
                     elif type(self).mode == "malformed_chunked":
                         self.wfile.write(b"ZZ\r\nbad\r\n0\r\n\r\n")
+                    elif type(self).mode == "transfer_and_length":
+                        self.wfile.write(f"{len(body):X}\r\n".encode("ascii") + body + b"\r\n0\r\n\r\n")
                     else:
                         self.wfile.write(body)
                     self.close_connection = True
@@ -1115,7 +1167,7 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
         thread.start()
         try:
             base_url = f"http://127.0.0.1:{server.server_port}"
-            modes = ["oversized_header", "invalid", "duplicate", "conflicting", "overdeclared", "over_limit", "incomplete_chunked", "malformed_chunked"]
+            modes = ["oversized_header", "transfer_and_length", "unsupported_transfer", "invalid", "duplicate", "conflicting", "overdeclared", "over_limit", "incomplete_chunked", "malformed_chunked"]
             for index, mode in enumerate(modes):
                 with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
                     root = Path(tmp)
