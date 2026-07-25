@@ -15,6 +15,16 @@ from typing import Any
 
 PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 RISK_LEVELS = frozenset({"R0", "R1", "R2", "R3"})
+_REVIEW_STATE_PATH = Path("00_brief/review_state.json")
+_INITIALIZATION_OBJECTS = (
+    (Path("01_evidence/evidence_cards.jsonl"), "jsonl", []),
+    (Path("01_evidence/exception_queue.json"), "json", {"exceptions": []}),
+    (Path("02_claims/claim_projection.jsonl"), "jsonl", []),
+    (Path("03_review/risk_decisions.json"), "json", {"decisions": []}),
+)
+_INITIALIZATION_PATHS = frozenset(
+    {_REVIEW_STATE_PATH, *(relative for relative, _, _ in _INITIALIZATION_OBJECTS)}
+)
 HIGH_RISK_CATEGORIES = frozenset(
     {
         "CROSS_STUDY_COMPARISON",
@@ -69,6 +79,19 @@ def _json_bytes(value: Any) -> bytes:
                 sort_keys=True,
             )
             + "\n"
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise VerticalReviewError("JSON_INVALID", "value must be finite JSON data") from exc
+
+
+def _canonical_json_bytes(value: Any) -> bytes:
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
         ).encode("utf-8")
     except (TypeError, ValueError) as exc:
         raise VerticalReviewError("JSON_INVALID", "value must be finite JSON data") from exc
@@ -163,24 +186,44 @@ def initialize_review(review_root: Path, project_id: str, brief: dict) -> Path:
         _fail("BRIEF_INVALID", "brief must be a JSON object")
 
     project = root / project_id
-    state_path = project / "00_brief" / "review_state.json"
+    state_path = project / _REVIEW_STATE_PATH
     state = {
         "brief": brief_copy,
         "project_id": project_id,
         "schema_version": "vertical-review-state.v1",
     }
-    if state_path.exists():
-        if _read_json(state_path, "PROJECT_STATE_INVALID") != state:
-            _fail("PROJECT_ALREADY_EXISTS", "existing project state differs")
-        return project
-    if project.exists() and any(project.iterdir()):
-        _fail("PROJECT_ALREADY_EXISTS", "nonempty project directory has no review state")
+    if project.exists() and not project.is_dir():
+        _fail("PROJECT_ALREADY_EXISTS", "project path is not a directory")
+    if project.exists():
+        for path in project.rglob("*"):
+            if path.is_dir():
+                continue
+            relative = path.relative_to(project)
+            if path.is_symlink() or relative not in _INITIALIZATION_PATHS:
+                _fail("PROJECT_ALREADY_EXISTS", "project contains an unknown object")
 
+    if state_path.exists() and _read_json(state_path, "PROJECT_STATE_INVALID") != state:
+        _fail("PROJECT_ALREADY_EXISTS", "existing project state differs")
+    for relative, object_type, expected in _INITIALIZATION_OBJECTS:
+        path = project / relative
+        if not path.exists():
+            continue
+        if object_type == "jsonl":
+            actual = _read_jsonl(path, "PROJECT_INITIALIZATION_INVALID")
+        else:
+            actual = _read_json(path, "PROJECT_INITIALIZATION_INVALID")
+        if actual != expected:
+            _fail("PROJECT_ALREADY_EXISTS", "existing initialization object is not empty")
+
+    for relative, object_type, expected in _INITIALIZATION_OBJECTS:
+        path = project / relative
+        if path.exists():
+            continue
+        if object_type == "jsonl":
+            _write_jsonl(path, expected)
+        else:
+            _write_json(path, expected)
     _write_json(state_path, state)
-    _write_jsonl(project / "01_evidence" / "evidence_cards.jsonl", [])
-    _write_json(project / "01_evidence" / "exception_queue.json", {"exceptions": []})
-    _write_jsonl(project / "02_claims" / "claim_projection.jsonl", [])
-    _write_json(project / "03_review" / "risk_decisions.json", {"decisions": []})
     return project
 
 
@@ -189,13 +232,32 @@ def _source_locators(evidence_refs: list[dict[str, Any]]) -> list[dict[str, Any]
     return [{key: ref[key] for key in keys if key in ref} for ref in evidence_refs]
 
 
+def _review_target_digest(row: dict[str, Any]) -> str:
+    payload = {
+        key: row[key]
+        for key in (
+            "claim_id",
+            "study_id",
+            "original_text",
+            "evidence_refs",
+            "lineage",
+            "risk_level",
+            "risk_categories",
+        )
+    }
+    return hashlib.sha256(_canonical_json_bytes(payload)).hexdigest()
+
+
 def _validate_candidate(candidate: Any) -> dict[str, Any]:
     if not isinstance(candidate, dict):
         _fail("CANDIDATE_INVALID", "candidate must be a JSON object")
     study_id = candidate.get("study_id")
+    job_id = candidate.get("job_id")
     claims = candidate.get("claims")
     if not isinstance(study_id, str) or not study_id.strip():
         _fail("STUDY_ID_INVALID", "candidate requires a nonempty study_id")
+    if not isinstance(job_id, str) or not job_id.strip():
+        _fail("CANDIDATE_JOB_ID_INVALID", "candidate requires a nonempty job_id")
     if not isinstance(claims, list) or not claims:
         _fail("CLAIMS_INVALID", "candidate requires grounded claims")
     seen: set[str] = set()
@@ -245,6 +307,26 @@ def _validate_candidate(candidate: Any) -> dict[str, Any]:
     return candidate
 
 
+def _validate_identity_bindings(
+    candidate: dict[str, Any],
+    r0_report: Any,
+    reviewer: Any,
+) -> None:
+    job_id = candidate["job_id"]
+    if not isinstance(r0_report, dict) or r0_report.get("status") != "R0_PASS":
+        _fail("R0_REJECTED", "study did not pass the grounding contract")
+    if r0_report.get("job_id") != job_id or r0_report.get("candidate_job_id") != job_id:
+        _fail("R0_BINDING_INVALID", "R0 report does not bind the candidate job")
+    if (
+        not isinstance(reviewer, dict)
+        or not isinstance(reviewer.get("verdict"), str)
+        or not reviewer["verdict"]
+        or reviewer.get("job_id") != job_id
+        or reviewer.get("study_id") != candidate["study_id"]
+    ):
+        _fail("REVIEWER_BINDING_INVALID", "reviewer does not bind the candidate job and study")
+
+
 def _reduce_decision(card: dict[str, Any], claim: dict[str, Any]) -> tuple[str, str]:
     if card["r0_report"].get("status") != "R0_PASS":
         return "BLOCKED", "R0_NOT_PASS"
@@ -260,7 +342,7 @@ def _projection_for_card(card: dict[str, Any]) -> list[dict[str, Any]]:
     projected: list[dict[str, Any]] = []
     for claim in candidate["claims"]:
         decision, reason = _reduce_decision(card, claim)
-        projected.append({
+        row = {
             "claim_id": claim["claim_id"],
             "decision": decision,
             "decision_reason": reason,
@@ -275,7 +357,9 @@ def _projection_for_card(card: dict[str, Any]) -> list[dict[str, Any]]:
             "risk_level": claim.get("risk_level"),
             "study_id": card["study_id"],
             "text": claim["claim_text"],
-        })
+        }
+        row["review_target_digest"] = _review_target_digest(row)
+        projected.append(row)
     return projected
 
 
@@ -291,6 +375,8 @@ def _read_risk_decisions(project: Path) -> list[dict[str, Any]]:
 def _apply_risk_records(
     projection: list[dict[str, Any]],
     decisions: list[dict[str, Any]],
+    *,
+    strict_targets: bool = True,
 ) -> list[dict[str, Any]]:
     reduced = copy.deepcopy(projection)
     by_id = {row["claim_id"]: row for row in reduced}
@@ -303,9 +389,15 @@ def _apply_risk_records(
         targets.append(claim_id)
         row = by_id.get(claim_id)
         if row is None:
-            _fail("RISK_TARGET_UNKNOWN", "risk decision target is not in the projection")
+            if strict_targets:
+                _fail("RISK_TARGET_UNKNOWN", "risk decision target is not in the projection")
+            continue
+        if record.get("review_target_digest") != row["review_target_digest"]:
+            continue
         if row["decision"] == "BLOCKED":
-            _fail("RISK_TARGET_BLOCKED", "blocked claims cannot be approved by risk review")
+            if strict_targets:
+                _fail("RISK_TARGET_BLOCKED", "blocked claims cannot be approved by risk review")
+            continue
         if action == "APPROVE":
             row["decision"] = "APPROVED"
             row["decision_reason"] = "HUMAN_RISK_APPROVED"
@@ -341,7 +433,7 @@ def _project_cards(
     if len(claim_ids) != len(set(claim_ids)):
         _fail("CLAIM_ID_DUPLICATE", "claim_id values must be unique across studies")
     projection.sort(key=lambda row: row["claim_id"])
-    return _apply_risk_records(projection, risk_decisions)
+    return _apply_risk_records(projection, risk_decisions, strict_targets=False)
 
 
 def _validate_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -353,14 +445,7 @@ def _validate_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
         reviewer = card.get("reviewer")
         if study_id != candidate["study_id"]:
             _fail("EVIDENCE_CARD_INVALID", "evidence card study binding is invalid")
-        if not isinstance(r0_report, dict) or r0_report.get("status") != "R0_PASS":
-            _fail("EVIDENCE_CARD_INVALID", "evidence card R0 binding is invalid")
-        if (
-            not isinstance(reviewer, dict)
-            or not isinstance(reviewer.get("verdict"), str)
-            or not reviewer["verdict"]
-        ):
-            _fail("EVIDENCE_CARD_INVALID", "evidence card reviewer binding is invalid")
+        _validate_identity_bindings(candidate, r0_report, reviewer)
         study_ids.append(study_id)
     if len(study_ids) != len(set(study_ids)):
         _fail("EVIDENCE_CARDS_INVALID", "stored study identities must be unique")
@@ -427,6 +512,16 @@ def _clear_exception(project: Path, study_id: str) -> None:
         _write_json(path, queue)
 
 
+def _invalidate_writer_packet(project: Path) -> None:
+    try:
+        (project / "02_claims" / "writer_packet.json").unlink(missing_ok=True)
+    except OSError as exc:
+        raise VerticalReviewError(
+            "WRITER_PACKET_INVALIDATION_FAILED",
+            "writer packet could not be invalidated before upstream change",
+        ) from exc
+
+
 def register_study(
     project: Path,
     candidate: dict,
@@ -443,14 +538,7 @@ def register_study(
         candidate_copy = _validate_candidate(_json_copy(candidate, "CANDIDATE_INVALID"))
         r0_copy = _json_copy(r0_report, "R0_REPORT_INVALID")
         reviewer_copy = _json_copy(reviewer, "REVIEWER_INVALID")
-        if not isinstance(r0_copy, dict) or r0_copy.get("status") != "R0_PASS":
-            _fail("R0_REJECTED", "study did not pass the grounding contract")
-        if (
-            not isinstance(reviewer_copy, dict)
-            or not isinstance(reviewer_copy.get("verdict"), str)
-            or not reviewer_copy["verdict"]
-        ):
-            _fail("REVIEWER_INVALID", "reviewer verdict must be a nonempty string")
+        _validate_identity_bindings(candidate_copy, r0_copy, reviewer_copy)
 
         card = {
             "candidate": candidate_copy,
@@ -474,6 +562,7 @@ def register_study(
         )
         raise
 
+    _invalidate_writer_packet(project_path)
     _write_jsonl(cards_path, ordered_cards)
     _write_jsonl(project_path / "02_claims" / "claim_projection.jsonl", projection)
     _clear_exception(project_path, card["study_id"])
@@ -488,6 +577,7 @@ def rebuild_projection(project: Path) -> list[dict]:
         _load_validated_cards(project_path),
         _read_risk_decisions(project_path),
     )
+    _invalidate_writer_packet(project_path)
     _write_jsonl(project_path / "02_claims" / "claim_projection.jsonl", projection)
     return projection
 
@@ -567,17 +657,25 @@ def apply_risk_decisions(project: Path, decisions: dict) -> list[dict]:
         record = {"action": row.get("action"), "claim_id": row.get("claim_id")}
         if row.get("action") == "REWORD":
             record["approved_text"] = row.get("approved_text")
+        if "review_target_digest" in row:
+            record["review_target_digest"] = row.get("review_target_digest")
         normalized.append(record)
     normalized.sort(key=lambda row: str(row.get("claim_id", "")))
 
     # Rebuild from cards so a prior human decision never becomes the new scientific baseline.
     base = _project_cards(_load_validated_cards(project_path), [])
+    by_id = {row["claim_id"]: row for row in base}
+    for record in normalized:
+        row = by_id.get(record.get("claim_id"))
+        if row is not None:
+            record.setdefault("review_target_digest", row["review_target_digest"])
     projected = _apply_risk_records(base, normalized)
     decision_payload = {
         "decisions": normalized,
         "project_id": state["project_id"],
         "schema_version": "vertical-review-risk-decisions.v1",
     }
+    _invalidate_writer_packet(project_path)
     _write_json(project_path / "03_review" / "risk_decisions.json", decision_payload)
     _write_jsonl(project_path / "02_claims" / "claim_projection.jsonl", projected)
     return projected
@@ -608,6 +706,7 @@ def build_writer_packet(project: Path) -> dict:
         ),
         "known_exclusions": excluded,
         "project_id": state["project_id"],
+        "projection_sha256": hashlib.sha256(_canonical_json_bytes(projection)).hexdigest(),
         "schema_version": "vertical-review-writer-packet.v1",
     }
     _write_json(project_path / "02_claims" / "writer_packet.json", packet)

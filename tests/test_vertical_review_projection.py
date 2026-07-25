@@ -16,6 +16,7 @@ from review_writer.project.vertical_review import (
     build_risk_packet,
     build_writer_packet,
     initialize_review,
+    rebuild_projection,
     register_study,
 )
 
@@ -58,8 +59,100 @@ def _candidate(study_id: str, claims: list[dict]) -> dict:
     }
 
 
+def _r0(study_id: str, status: str = "R0_PASS", **extra) -> dict:
+    job_id = f"JOB-{study_id}"
+    return {
+        "candidate_job_id": job_id,
+        "job_id": job_id,
+        "status": status,
+        **extra,
+    }
+
+
+def _reviewer(study_id: str, verdict: str = "SUPPORT", **extra) -> dict:
+    return {
+        "job_id": f"JOB-{study_id}",
+        "study_id": study_id,
+        "verdict": verdict,
+        **extra,
+    }
+
+
 def _initialize(tmp_path: Path) -> Path:
     return initialize_review(tmp_path, "synthetic-review", {"topic": "Synthetic review"})
+
+
+def _initialization_files(project: Path) -> set[str]:
+    return {
+        path.relative_to(project).as_posix()
+        for path in project.rglob("*")
+        if path.is_file()
+    }
+
+
+def test_initialize_repairs_state_only_project(tmp_path: Path) -> None:
+    project = _initialize(tmp_path)
+    state_path = project / "00_brief" / "review_state.json"
+    state_bytes = state_path.read_bytes()
+    for path in project.rglob("*"):
+        if path.is_file() and path != state_path:
+            path.unlink()
+
+    repaired = _initialize(tmp_path)
+
+    assert repaired == project
+    assert state_path.read_bytes() == state_bytes
+    assert _initialization_files(project) == {
+        "00_brief/review_state.json",
+        "01_evidence/evidence_cards.jsonl",
+        "01_evidence/exception_queue.json",
+        "02_claims/claim_projection.jsonl",
+        "03_review/risk_decisions.json",
+    }
+
+
+def test_initialize_completes_valid_pre_state_partial_project(tmp_path: Path) -> None:
+    project = tmp_path / "synthetic-review"
+    evidence_path = project / "01_evidence" / "evidence_cards.jsonl"
+    evidence_path.parent.mkdir(parents=True)
+    evidence_path.write_bytes(b"")
+
+    initialized = _initialize(tmp_path)
+
+    assert initialized == project
+    assert _initialization_files(project) == {
+        "00_brief/review_state.json",
+        "01_evidence/evidence_cards.jsonl",
+        "01_evidence/exception_queue.json",
+        "02_claims/claim_projection.jsonl",
+        "03_review/risk_decisions.json",
+    }
+    assert json.loads((project / "01_evidence" / "exception_queue.json").read_text()) == {
+        "exceptions": []
+    }
+
+
+@pytest.mark.parametrize("invalid_kind", ["nonempty_object", "unknown_file"])
+def test_initialize_rejects_invalid_or_unknown_existing_objects_without_writes(
+    tmp_path: Path,
+    invalid_kind: str,
+) -> None:
+    project = tmp_path / "synthetic-review"
+    if invalid_kind == "nonempty_object":
+        existing = project / "01_evidence" / "evidence_cards.jsonl"
+        existing.parent.mkdir(parents=True)
+        existing.write_text('{"study_id":"EXISTING"}\n')
+    else:
+        existing = project / "notes.txt"
+        project.mkdir(parents=True)
+        existing.write_text("existing work")
+    before = existing.read_bytes()
+
+    with pytest.raises(VerticalReviewError):
+        _initialize(tmp_path)
+
+    assert existing.read_bytes() == before
+    assert _initialization_files(project) == {existing.relative_to(project).as_posix()}
 
 
 def test_r1_supported_grounded_claim_is_approved(tmp_path: Path) -> None:
@@ -68,8 +161,8 @@ def test_r1_supported_grounded_claim_is_approved(tmp_path: Path) -> None:
     card = register_study(
         project,
         _candidate("STUDY-1", [_claim("CLAIM-1")]),
-        {"status": "R0_PASS", "findings": []},
-        {"verdict": "SUPPORT", "review_id": "REVIEW-1"},
+        _r0("STUDY-1", findings=[]),
+        _reviewer("STUDY-1", review_id="REVIEW-1"),
     )
 
     assert card["study_id"] == "STUDY-1"
@@ -87,8 +180,8 @@ def test_r3_supported_claim_requires_human_review(tmp_path: Path) -> None:
     result = register_study(
         project,
         _candidate("STUDY-R3", [_claim("CLAIM-R3", risk_level="R3")]),
-        {"status": "R0_PASS"},
-        {"verdict": "SUPPORT"},
+        _r0("STUDY-R3"),
+        _reviewer("STUDY-R3"),
     )
 
     assert result["claim_projection"][0]["decision"] == "HUMAN_REQUIRED"
@@ -100,11 +193,54 @@ def test_ambiguous_reviewer_blocks_low_risk_claim(tmp_path: Path) -> None:
     result = register_study(
         project,
         _candidate("STUDY-AMBIGUOUS", [_claim("CLAIM-AMBIGUOUS")]),
-        {"status": "R0_PASS"},
-        {"verdict": "AMBIGUOUS"},
+        _r0("STUDY-AMBIGUOUS"),
+        _reviewer("STUDY-AMBIGUOUS", verdict="AMBIGUOUS"),
     )
 
     assert result["claim_projection"][0]["decision"] == "BLOCKED"
+
+
+@pytest.mark.parametrize(
+    ("tamper", "code"),
+    [
+        ("candidate_job", "CANDIDATE_JOB_ID_INVALID"),
+        ("r0_job", "R0_BINDING_INVALID"),
+        ("r0_candidate_job", "R0_BINDING_INVALID"),
+        ("reviewer_job", "REVIEWER_BINDING_INVALID"),
+        ("reviewer_study", "REVIEWER_BINDING_INVALID"),
+        ("reviewer_verdict", "REVIEWER_BINDING_INVALID"),
+    ],
+)
+def test_registration_rejects_identity_mismatch_into_exception_queue(
+    tmp_path: Path,
+    tamper: str,
+    code: str,
+) -> None:
+    project = _initialize(tmp_path)
+    candidate = _candidate("STUDY-BINDING", [_claim("CLAIM-BINDING")])
+    r0_report = _r0("STUDY-BINDING")
+    reviewer = _reviewer("STUDY-BINDING")
+    if tamper == "candidate_job":
+        candidate["job_id"] = ""
+    elif tamper == "r0_job":
+        r0_report["job_id"] = "JOB-OTHER"
+    elif tamper == "r0_candidate_job":
+        r0_report["candidate_job_id"] = "JOB-OTHER"
+    elif tamper == "reviewer_job":
+        reviewer["job_id"] = "JOB-OTHER"
+    elif tamper == "reviewer_study":
+        reviewer["study_id"] = "STUDY-OTHER"
+    else:
+        reviewer["verdict"] = ""
+
+    with pytest.raises(VerticalReviewError) as error:
+        register_study(project, candidate, r0_report, reviewer)
+
+    assert error.value.code == code
+    queue = json.loads((project / "01_evidence" / "exception_queue.json").read_text())
+    assert len(queue["exceptions"]) == 1
+    assert queue["exceptions"][0]["study_id"] == "STUDY-BINDING"
+    assert queue["exceptions"][0]["error_code"] == code
 
 
 def test_writer_packet_is_an_approved_only_whitelist(tmp_path: Path) -> None:
@@ -112,20 +248,20 @@ def test_writer_packet_is_an_approved_only_whitelist(tmp_path: Path) -> None:
     register_study(
         project,
         _candidate("STUDY-APPROVED", [_claim("CLAIM-APPROVED")]),
-        {"status": "R0_PASS"},
-        {"verdict": "SUPPORT"},
+        _r0("STUDY-APPROVED"),
+        _reviewer("STUDY-APPROVED"),
     )
     register_study(
         project,
         _candidate("STUDY-HUMAN", [_claim("CLAIM-HUMAN", risk_level="R3")]),
-        {"status": "R0_PASS"},
-        {"verdict": "SUPPORT"},
+        _r0("STUDY-HUMAN"),
+        _reviewer("STUDY-HUMAN"),
     )
     register_study(
         project,
         _candidate("STUDY-BLOCKED", [_claim("CLAIM-BLOCKED")]),
-        {"status": "R0_PASS"},
-        {"verdict": "AMBIGUOUS"},
+        _r0("STUDY-BLOCKED"),
+        _reviewer("STUDY-BLOCKED", verdict="AMBIGUOUS"),
     )
 
     packet = build_writer_packet(project)
@@ -140,6 +276,83 @@ def test_writer_packet_is_an_approved_only_whitelist(tmp_path: Path) -> None:
         "CLAIM-BLOCKED",
         "CLAIM-HUMAN",
     }
+
+
+def test_writer_packet_requires_explicit_rebuild_after_projection_or_decision_change(
+    tmp_path: Path,
+) -> None:
+    project = _initialize(tmp_path)
+    register_study(
+        project,
+        _candidate("STUDY-FRESHNESS", [_claim("CLAIM-FRESHNESS")]),
+        _r0("STUDY-FRESHNESS"),
+        _reviewer("STUDY-FRESHNESS"),
+    )
+    writer_path = project / "02_claims" / "writer_packet.json"
+    build_writer_packet(project)
+    assert writer_path.is_file()
+
+    rebuild_projection(project)
+    assert not writer_path.exists()
+
+    build_writer_packet(project)
+    apply_risk_decisions(
+        project,
+        {"decisions": [{"claim_id": "CLAIM-FRESHNESS", "action": "EXCLUDE"}]},
+    )
+    assert not writer_path.exists()
+    rebuilt = build_writer_packet(project)
+    assert rebuilt["claims"] == []
+
+
+def test_register_replacement_invalidates_writer_packet_until_explicit_rebuild(
+    tmp_path: Path,
+) -> None:
+    project = _initialize(tmp_path)
+    study_id = "STUDY-REGISTER-FRESHNESS"
+    claim_id = "CLAIM-REGISTER-FRESHNESS"
+    register_study(
+        project,
+        _candidate(study_id, [_claim(claim_id, text="Initial text.")]),
+        _r0(study_id),
+        _reviewer(study_id),
+    )
+    writer_path = project / "02_claims" / "writer_packet.json"
+    build_writer_packet(project)
+    assert writer_path.is_file()
+
+    register_study(
+        project,
+        _candidate(study_id, [_claim(claim_id, text="Replacement text.")]),
+        _r0(study_id),
+        _reviewer(study_id),
+    )
+
+    assert not writer_path.exists()
+    rebuilt = build_writer_packet(project)
+    assert rebuilt["claims"][0]["text"] == "Replacement text."
+
+
+def test_writer_packet_records_current_projection_digest(tmp_path: Path) -> None:
+    project = _initialize(tmp_path)
+    result = register_study(
+        project,
+        _candidate("STUDY-PACKET-DIGEST", [_claim("CLAIM-PACKET-DIGEST")]),
+        _r0("STUDY-PACKET-DIGEST"),
+        _reviewer("STUDY-PACKET-DIGEST"),
+    )
+    expected = hashlib.sha256(
+        json.dumps(
+            result["claim_projection"],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+    packet = build_writer_packet(project)
+
+    assert packet["projection_sha256"] == expected
 
 
 @pytest.mark.parametrize(
@@ -157,8 +370,8 @@ def test_projection_consumers_reject_any_non_authoritative_projection(
     result = register_study(
         project,
         _candidate("STUDY-TAMPER", [_claim("CLAIM-TAMPER")]),
-        {"status": "R0_PASS"},
-        {"verdict": "SUPPORT"},
+        _r0("STUDY-TAMPER"),
+        _reviewer("STUDY-TAMPER"),
     )
     if tamper == "forged":
         rows = [{"claim_id": "CLAIM-TAMPER", "decision": "APPROVED"}]
@@ -191,8 +404,8 @@ def test_failed_third_study_is_queued_without_deleting_passing_cards(tmp_path: P
         register_study(
             project,
             _candidate(f"STUDY-{index}", [_claim(f"CLAIM-{index}")]),
-            {"status": "R0_PASS"},
-            {"verdict": "SUPPORT"},
+            _r0(f"STUDY-{index}"),
+            _reviewer(f"STUDY-{index}"),
         )
     cards_path = project / "01_evidence" / "evidence_cards.jsonl"
     passing_bytes = cards_path.read_bytes()
@@ -201,8 +414,8 @@ def test_failed_third_study_is_queued_without_deleting_passing_cards(tmp_path: P
         register_study(
             project,
             _candidate("STUDY-BAD", [_claim("CLAIM-BAD")]),
-            {"status": "R0_FAIL_GROUNDING_CONTRACT"},
-            {"verdict": "SUPPORT"},
+            _r0("STUDY-BAD", status="R0_FAIL_GROUNDING_CONTRACT"),
+            _reviewer("STUDY-BAD"),
         )
 
     assert error.value.code == "R0_REJECTED"
@@ -221,8 +434,8 @@ def test_repeated_failure_upserts_one_exception_per_study(tmp_path: Path) -> Non
             register_study(
                 project,
                 _candidate("STUDY-RETRY", [_claim("CLAIM-RETRY")]),
-                {"status": "R0_FAIL_GROUNDING_CONTRACT"},
-                {"verdict": "SUPPORT"},
+                _r0("STUDY-RETRY", status="R0_FAIL_GROUNDING_CONTRACT"),
+                _reviewer("STUDY-RETRY"),
             )
 
     queue = json.loads((project / "01_evidence" / "exception_queue.json").read_text())
@@ -238,8 +451,8 @@ def test_repeated_failure_upserts_one_exception_per_study(tmp_path: Path) -> Non
         register_study(
             project,
             _candidate("STUDY-ALPHA", [_claim("CLAIM-ALPHA")]),
-            {"status": "R0_FAIL_GROUNDING_CONTRACT"},
-            {"verdict": "SUPPORT"},
+            _r0("STUDY-ALPHA", status="R0_FAIL_GROUNDING_CONTRACT"),
+            _reviewer("STUDY-ALPHA"),
         )
     queue = json.loads((project / "01_evidence" / "exception_queue.json").read_text())
     assert [entry["study_id"] for entry in queue["exceptions"]] == [
@@ -255,15 +468,15 @@ def test_successful_retry_clears_study_exception_and_metrics(tmp_path: Path) -> 
         register_study(
             project,
             candidate,
-            {"status": "R0_FAIL_GROUNDING_CONTRACT"},
-            {"verdict": "SUPPORT"},
+            _r0("STUDY-RECOVERED", status="R0_FAIL_GROUNDING_CONTRACT"),
+            _reviewer("STUDY-RECOVERED"),
         )
 
     register_study(
         project,
         candidate,
-        {"status": "R0_PASS"},
-        {"verdict": "SUPPORT"},
+        _r0("STUDY-RECOVERED"),
+        _reviewer("STUDY-RECOVERED"),
     )
 
     queue = json.loads((project / "01_evidence" / "exception_queue.json").read_text())
@@ -285,8 +498,8 @@ def test_risk_decisions_reduce_to_consumer_text_and_status_only(tmp_path: Path) 
                 _claim("CLAIM-UNRESOLVED", risk_level="R3"),
             ],
         ),
-        {"status": "R0_PASS"},
-        {"verdict": "SUPPORT"},
+        _r0("STUDY-RISK"),
+        _reviewer("STUDY-RISK"),
     )
     cards_path = project / "01_evidence" / "evidence_cards.jsonl"
     evidence_bytes = cards_path.read_bytes()
@@ -319,6 +532,97 @@ def test_risk_decisions_reduce_to_consumer_text_and_status_only(tmp_path: Path) 
     assert cards_path.read_bytes() == evidence_bytes
 
 
+def test_projection_and_risk_packet_bind_canonical_review_target_digest(
+    tmp_path: Path,
+) -> None:
+    project = _initialize(tmp_path)
+    result = register_study(
+        project,
+        _candidate("STUDY-DIGEST", [_claim("CLAIM-DIGEST", risk_level="R3")]),
+        _r0("STUDY-DIGEST"),
+        _reviewer("STUDY-DIGEST"),
+    )
+    row = result["claim_projection"][0]
+    digest_payload = {
+        key: row[key]
+        for key in (
+            "claim_id",
+            "study_id",
+            "original_text",
+            "evidence_refs",
+            "lineage",
+            "risk_level",
+            "risk_categories",
+        )
+    }
+    expected = hashlib.sha256(
+        json.dumps(
+            digest_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+    assert row["review_target_digest"] == expected
+    packet = build_risk_packet(project)
+    assert packet["targets"][0]["review_target_digest"] == expected
+
+
+def test_apply_risk_decision_persists_current_review_target_digest(tmp_path: Path) -> None:
+    project = _initialize(tmp_path)
+    result = register_study(
+        project,
+        _candidate("STUDY-DECISION-DIGEST", [_claim("CLAIM-DECISION-DIGEST", risk_level="R3")]),
+        _r0("STUDY-DECISION-DIGEST"),
+        _reviewer("STUDY-DECISION-DIGEST"),
+    )
+    digest = result["claim_projection"][0]["review_target_digest"]
+
+    apply_risk_decisions(
+        project,
+        {"decisions": [{"claim_id": "CLAIM-DECISION-DIGEST", "action": "APPROVE"}]},
+    )
+
+    stored = json.loads((project / "03_review" / "risk_decisions.json").read_text())
+    assert stored["decisions"][0]["review_target_digest"] == digest
+
+
+def test_old_risk_approval_is_ignored_after_claim_target_changes(tmp_path: Path) -> None:
+    project = _initialize(tmp_path)
+    study_id = "STUDY-STALE-RISK"
+    claim_id = "CLAIM-STALE-RISK"
+    first = register_study(
+        project,
+        _candidate(study_id, [_claim(claim_id, text="First wording.", risk_level="R3")]),
+        _r0(study_id),
+        _reviewer(study_id),
+    )
+    old_digest = first["claim_projection"][0]["review_target_digest"]
+    apply_risk_decisions(
+        project,
+        {"decisions": [{"claim_id": claim_id, "action": "APPROVE"}]},
+    )
+
+    changed_claim = _claim(claim_id, text="Changed wording.", risk_level="R3")
+    changed_claim["evidence_refs"][0].update({"source_id": "SOURCE-CHANGED", "page": 2})
+    changed_candidate = _candidate(study_id, [changed_claim])
+    changed_candidate["job_id"] = "JOB-CHANGED"
+    changed_r0 = _r0(study_id)
+    changed_r0.update({"job_id": "JOB-CHANGED", "candidate_job_id": "JOB-CHANGED"})
+    changed_reviewer = _reviewer(study_id)
+    changed_reviewer["job_id"] = "JOB-CHANGED"
+
+    result = register_study(project, changed_candidate, changed_r0, changed_reviewer)
+
+    row = result["claim_projection"][0]
+    assert row["review_target_digest"] != old_digest
+    assert row["decision"] == "HUMAN_REQUIRED"
+    packet = build_writer_packet(project)
+    assert packet["claims"] == []
+    assert packet["human_required_count"] == 1
+
+
 @pytest.mark.parametrize(
     ("decisions", "code"),
     [
@@ -346,8 +650,8 @@ def test_invalid_risk_decisions_fail_closed(tmp_path: Path, decisions: dict, cod
     register_study(
         project,
         _candidate("STUDY-RISK", [_claim("CLAIM-RISK", risk_level="R3")]),
-        {"status": "R0_PASS"},
-        {"verdict": "SUPPORT"},
+        _r0("STUDY-RISK"),
+        _reviewer("STUDY-RISK"),
     )
     projection_path = project / "02_claims" / "claim_projection.jsonl"
     projection_bytes = projection_path.read_bytes()
@@ -375,8 +679,8 @@ def test_risk_packet_sampling_is_sha256_stable_and_deduplicated(tmp_path: Path) 
                 ),
             ],
         ),
-        {"status": "R0_PASS"},
-        {"verdict": "SUPPORT"},
+        _r0("STUDY-SAMPLE"),
+        _reviewer("STUDY-SAMPLE"),
     )
 
     first = build_risk_packet(project, low_risk_sample_rate=0.10)
@@ -408,8 +712,11 @@ def test_register_and_risk_application_never_mutate_input_fixtures(tmp_path: Pat
             "STUDY-IMMUTABLE",
             [_claim("CLAIM-IMMUTABLE", risk_level="R3")],
         ),
-        "r0": {"status": "R0_PASS", "findings": []},
-        "reviewer": {"verdict": "SUPPORT", "review_id": "REVIEW-IMMUTABLE"},
+        "r0": _r0("STUDY-IMMUTABLE", findings=[]),
+        "reviewer": _reviewer(
+            "STUDY-IMMUTABLE",
+            review_id="REVIEW-IMMUTABLE",
+        ),
     }
     fixtures["candidate"]["provider_candidate"] = {
         "provider": "synthetic-provider",
@@ -448,15 +755,15 @@ def test_benchmark_metrics_report_authoritative_projection_counts(tmp_path: Path
                 _claim("CLAIM-METRICS-HUMAN", risk_level="R3"),
             ],
         ),
-        {"status": "R0_PASS"},
-        {"verdict": "SUPPORT"},
+        _r0("STUDY-METRICS"),
+        _reviewer("STUDY-METRICS"),
     )
     with pytest.raises(VerticalReviewError):
         register_study(
             project,
             _candidate("STUDY-METRICS-BAD", [_claim("CLAIM-METRICS-BAD")]),
-            {"status": "R0_FAIL_GROUNDING_CONTRACT"},
-            {"verdict": "SUPPORT"},
+            _r0("STUDY-METRICS-BAD", status="R0_FAIL_GROUNDING_CONTRACT"),
+            _reviewer("STUDY-METRICS-BAD"),
         )
 
     metrics = benchmark_metrics(project)
