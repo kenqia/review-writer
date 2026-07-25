@@ -30,6 +30,7 @@ METADATA_FILENAMES = frozenset({"acquisition_receipt.json", "manual_acquisition.
 REDIRECT_STATUS_CODES = frozenset({301, 302, 303, 307, 308})
 MAX_REDIRECTS = 5
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
+OOXML_CONTENT_TYPES_NAMESPACE = "http://schemas.openxmlformats.org/package/2006/content-types"
 OOXML_REQUIREMENTS = {
     "DOCX": ("word/document.xml", b"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"),
     "XLSX": ("xl/workbook.xml", b"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"),
@@ -79,11 +80,12 @@ def _safe_target(output_root: Path, relative: str) -> Path:
     raw = Path(relative)
     if raw.is_absolute():
         raise ManifestError(f"absolute target_path is forbidden: {relative}")
-    target = (output_root / raw).resolve()
     root = output_root.resolve()
-    if target == root or root not in target.parents:
+    target = Path(os.path.abspath(root / raw))
+    resolved_target = target.resolve()
+    if resolved_target == root or root not in resolved_target.parents:
         raise ManifestError(f"target_path escapes output root: {relative}")
-    normalized = target.relative_to(root).as_posix().casefold()
+    normalized = resolved_target.relative_to(root).as_posix().casefold()
     if normalized in METADATA_FILENAMES:
         raise ManifestError("target_path collides with acquisition metadata")
     return target
@@ -94,6 +96,12 @@ def _validate_target_parent(output_root: Path, target: Path) -> None:
     parent = target.parent.resolve()
     if parent != root and root not in parent.parents:
         raise ManifestError("target parent escapes output root")
+
+
+def _validate_existing_target_boundary(output_root: Path, target: Path) -> None:
+    _validate_target_parent(output_root, target)
+    if target.is_symlink():
+        raise ManifestError("existing target symlinks are forbidden")
 
 
 def _preflight_manifest(manifest: dict[str, Any], output_root: Path) -> list[dict[str, Any]]:
@@ -112,6 +120,8 @@ def _preflight_manifest(manifest: dict[str, Any], output_root: Path) -> list[dic
         download_id = row["download_id"]
         if not isinstance(download_id, str) or not download_id.strip():
             raise ManifestError("download_id must be nonempty")
+        if not isinstance(row["study_id"], str) or not row["study_id"].strip():
+            raise ManifestError("study_id must be a nonempty string")
         normalized_id = download_id.strip()
         if normalized_id in seen_ids:
             raise ManifestError("download_id values must be unique")
@@ -143,7 +153,14 @@ def _preflight_manifest(manifest: dict[str, Any], output_root: Path) -> list[dic
 
 
 def _safe_url(url: str) -> tuple[bool, str | None, str]:
-    parsed = urllib.parse.urlsplit(url)
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        hostname = parsed.hostname
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError("URL has an invalid host or port") from exc
+    if not hostname:
+        raise ValueError("URL requires a hostname")
     keys = {key.lower() for key, _ in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)}
     has_sensitive_query = any(_is_sensitive_query_key(key) for key in keys)
     safe_netloc = parsed.netloc.rsplit("@", 1)[-1]
@@ -151,7 +168,7 @@ def _safe_url(url: str) -> tuple[bool, str | None, str]:
     report_url = urllib.parse.urlunsplit((parsed.scheme, safe_netloc, parsed.path, safe_query, ""))
     if parsed.username or parsed.password:
         return False, "URL_USERINFO_FORBIDDEN", report_url
-    hostname = (parsed.hostname or "").lower()
+    hostname = hostname.lower()
     local_http = parsed.scheme == "http" and hostname in {"127.0.0.1", "localhost", "::1"}
     if parsed.scheme != "https" and not local_http:
         return False, "INSECURE_NONLOCAL_HTTP", report_url
@@ -243,16 +260,15 @@ def _matches_format(path: Path, expected_format: str) -> bool:
                 root = ET.fromstring(content_types)
             except ET.ParseError:
                 return False
-            if not isinstance(root.tag, str) or root.tag.rsplit("}", 1)[-1] != "Types":
+            if root.tag != f"{{{OOXML_CONTENT_TYPES_NAMESPACE}}}Types":
                 return False
             required_part_name = f"/{required_part}"
             required_content_type_text = required_content_type.decode("ascii")
             return any(
-                isinstance(element.tag, str)
-                and element.tag.rsplit("}", 1)[-1] == "Override"
+                element.tag == f"{{{OOXML_CONTENT_TYPES_NAMESPACE}}}Override"
                 and element.attrib.get("PartName") == required_part_name
                 and element.attrib.get("ContentType") == required_content_type_text
-                for element in root.iter()
+                for element in root
             )
     except (KeyError, RuntimeError, ValueError, zipfile.BadZipFile, zipfile.LargeZipFile):
         return False
@@ -454,15 +470,20 @@ def acquire_manifest(manifest_path: Path | str, output_root: Path | str, *, allo
         url_reason = item["url_reason"]
         report_url = item["report_url"]
         result = {"download_id": row["download_id"], "study_id": row["study_id"], "doi": row.get("doi"), "document_role": row["document_role"], "expected_format": expected_format, "target_path": row["target_path"], "source_url": report_url, "landing_page_url": item["landing_report_url"], "source_class": row["source_class"], "status": None, "reason": None, "sha256": None, "size_bytes": None, "http_status": None}
+        _validate_existing_target_boundary(output_root, target)
         if target.is_file():
+            _validate_existing_target_boundary(output_root, target)
             actual = _sha256_file(target)
             if expected_sha256 is not None and expected_sha256 != actual:
                 result.update(status=MANUAL_STATUS, reason="EXISTING_HASH_MISMATCH")
-            elif not _matches_format(target, expected_format):
-                reason = "EXISTING_FILE_NOT_PDF" if expected_format == "PDF" else "EXISTING_FILE_FORMAT_MISMATCH"
-                result.update(status=MANUAL_STATUS, reason=reason)
             else:
-                result.update(status="VERIFIED_EXISTING", sha256=actual, size_bytes=target.stat().st_size)
+                _validate_existing_target_boundary(output_root, target)
+                if not _matches_format(target, expected_format):
+                    reason = "EXISTING_FILE_NOT_PDF" if expected_format == "PDF" else "EXISTING_FILE_FORMAT_MISMATCH"
+                    result.update(status=MANUAL_STATUS, reason=reason)
+                else:
+                    _validate_existing_target_boundary(output_root, target)
+                    result.update(status="VERIFIED_EXISTING", sha256=actual, size_bytes=target.stat().st_size)
         elif row["source_class"] != "PUBLIC_DIRECT":
             result.update(status=MANUAL_STATUS, reason="NO_PUBLIC_DIRECT_PDF")
         elif not allow_network:
@@ -476,7 +497,9 @@ def acquire_manifest(manifest_path: Path | str, output_root: Path | str, *, allo
             else:
                 status, reason, digest, http_status, final_report_url = _download_source(str(row["url"]), target, output_root, robots_cache, expected_format=expected_format, expected_sha256=expected_sha256, timeout_seconds=timeout_seconds, max_bytes=max_bytes, retries=retries)
                 result.update(status=status, reason=reason, sha256=digest, http_status=http_status, source_url=final_report_url)
+                _validate_existing_target_boundary(output_root, target)
                 if target.is_file():
+                    _validate_existing_target_boundary(output_root, target)
                     result["size_bytes"] = target.stat().st_size
         results.append(result)
     manual = [row for row in results if row["status"] == MANUAL_STATUS]

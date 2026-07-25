@@ -50,6 +50,10 @@ WRONG_MAIN_TYPE_DOCX_BYTES = make_ooxml_with_content_types(
     "word/document.xml",
     f'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="{XLSX_MIME}"/><Override PartName="/other.xml" ContentType="{DOCX_MIME}"/></Types>',
 )
+FOREIGN_NAMESPACE_DOCX_BYTES = make_ooxml_with_content_types(
+    "word/document.xml",
+    f'<Types xmlns="https://example.com/not-openxml-content-types"><Override PartName="/word/document.xml" ContentType="{DOCX_MIME}"/></Types>',
+)
 
 
 class FixtureHandler(BaseHTTPRequestHandler):
@@ -122,6 +126,10 @@ class FixtureHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
         elif self.path == "/wrong-main-type.docx":
             body = WRONG_MAIN_TYPE_DOCX_BYTES
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        elif self.path == "/foreign-namespace.docx":
+            body = FOREIGN_NAMESPACE_DOCX_BYTES
             self.send_response(200)
             self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
         else:
@@ -319,6 +327,49 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
                     acquire_manifest(manifest, output_root)
 
                 self.assertEqual(FixtureHandler.pdf_requests, 0)
+                self.assertFalse(output_root.exists())
+
+    def test_preflight_rejects_empty_and_nonstring_study_ids(self):
+        for study_id in ["", "   ", None, 123, []]:
+            with self.subTest(study_id=study_id), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                manifest = self.write_manifest(
+                    root,
+                    [{"download_id": "STRICT_STUDY", "study_id": study_id, "document_role": "MAIN", "url": self.base_url + "/paper.pdf", "target_path": "sources/STRICT_STUDY/MAIN.pdf", "source_class": "PUBLIC_DIRECT"}],
+                )
+                output_root = root / "acquired"
+
+                with self.assertRaises(ManifestError):
+                    acquire_manifest(manifest, output_root, allow_network=False)
+
+                self.assertFalse(output_root.exists())
+
+    def test_url_preflight_rejects_missing_hosts_and_invalid_ports_before_opener(self):
+        cases = [
+            {"url": "https:///missing-host.pdf"},
+            {"url": "https://localhost:not-a-port/paper.pdf"},
+            {"url": "https://localhost:70000/paper.pdf"},
+            {"landing_page_url": "https://localhost:bad-landing-port/article"},
+        ]
+        for update in cases:
+            with self.subTest(update=update), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                row = {
+                    "download_id": "STRICT_URL",
+                    "study_id": "STRICT_URL",
+                    "document_role": "MAIN",
+                    "url": self.base_url + "/paper.pdf",
+                    "target_path": "sources/STRICT_URL/MAIN.pdf",
+                    "source_class": "PUBLIC_DIRECT",
+                    **update,
+                }
+                manifest = self.write_manifest(root, [row])
+                output_root = root / "acquired"
+
+                with mock.patch.object(public_corpus.urllib.request, "build_opener", side_effect=AssertionError("opener must not be invoked")):
+                    with self.assertRaises(ManifestError):
+                        acquire_manifest(manifest, output_root)
+
                 self.assertFalse(output_root.exists())
 
     def test_invalid_root_target_preserves_file_outside_output_root(self):
@@ -617,6 +668,57 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
 
             self.assertEqual(receipt["results"][0]["status"], "VERIFIED_EXISTING")
 
+    def test_existing_target_symlink_is_rejected_before_verification(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_root = root / "acquired"
+            target = output_root / "sources/S038/MAIN.pdf"
+            target.parent.mkdir(parents=True)
+            victim = target.parent / "victim.pdf"
+            victim.write_bytes(PDF_BYTES)
+            target.symlink_to(victim)
+            manifest = self.write_manifest(
+                root,
+                [{"download_id": "S038_MAIN", "study_id": "S038", "document_role": "MAIN", "url": self.base_url + "/paper.pdf", "target_path": "sources/S038/MAIN.pdf", "source_class": "PUBLIC_DIRECT"}],
+            )
+
+            with self.assertRaises(ManifestError):
+                acquire_manifest(manifest, output_root, allow_network=False)
+
+            self.assertTrue(target.is_symlink())
+            self.assertEqual(victim.read_bytes(), PDF_BYTES)
+            self.assertFalse((output_root / "acquisition_receipt.json").exists())
+
+    def test_existing_target_parent_symlink_escape_is_rejected_before_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_root = root / "acquired"
+            target_parent = output_root / "sources/S039"
+            target_parent.mkdir(parents=True)
+            outside = root / "outside"
+            outside.mkdir()
+            outside_target = outside / "MAIN.pdf"
+            outside_target.write_bytes(PDF_BYTES)
+            manifest = self.write_manifest(
+                root,
+                [{"download_id": "S039_MAIN", "study_id": "S039", "document_role": "MAIN", "url": self.base_url + "/paper.pdf", "target_path": "sources/S039/MAIN.pdf", "source_class": "PUBLIC_DIRECT"}],
+            )
+            original_preflight = public_corpus._preflight_manifest
+
+            def escape_parent_after_preflight(manifest_data, acquisition_root):
+                prepared = original_preflight(manifest_data, acquisition_root)
+                target_parent.rmdir()
+                target_parent.symlink_to(outside, target_is_directory=True)
+                return prepared
+
+            with mock.patch.object(public_corpus, "_preflight_manifest", side_effect=escape_parent_after_preflight):
+                with self.assertRaises(ManifestError):
+                    acquire_manifest(manifest, output_root, allow_network=False)
+
+            self.assertTrue(target_parent.is_symlink())
+            self.assertEqual(outside_target.read_bytes(), PDF_BYTES)
+            self.assertFalse((output_root / "acquisition_receipt.json").exists())
+
     def test_containment_revalidation_failure_aborts_without_replacing_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -776,6 +878,34 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
             self.assertEqual(completed.stderr, "error: invalid or unsafe acquisition manifest\n")
             self.assertNotIn("Traceback", completed.stderr)
 
+    def test_cli_rejects_malformed_url_authority_without_traceback_or_values(self):
+        cases = [
+            ("https:///missing-host-secret.pdf", "missing-host-secret"),
+            ("https://localhost:invalid-port-secret/paper.pdf", "invalid-port-secret"),
+            ("https://localhost:70000/out-of-range-secret.pdf", "out-of-range-secret"),
+        ]
+        for url, secret in cases:
+            with self.subTest(url_kind=secret), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                manifest = self.write_manifest(
+                    root,
+                    [{"download_id": "CLI_URL", "study_id": "CLI_URL", "document_role": "MAIN", "url": url, "target_path": "sources/CLI_URL/MAIN.pdf", "source_class": "PUBLIC_DIRECT"}],
+                )
+                output_root = root / "acquired"
+
+                completed = subprocess.run(
+                    [sys.executable, str(Path(__file__).resolve().parents[1] / "scripts/acquisition/acquire_public_corpus.py"), "--manifest", str(manifest), "--output-root", str(output_root)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+
+                self.assertEqual(completed.returncode, 2)
+                self.assertEqual(completed.stderr, "error: invalid or unsafe acquisition manifest\n")
+                self.assertNotIn(secret, completed.stdout + completed.stderr)
+                self.assertNotIn("Traceback", completed.stderr)
+                self.assertFalse(output_root.exists())
+
     def test_target_path_rejects_ascii_control_characters_before_output(self):
         for control in ["\x00", "\n", "\r", "\t", "\x1f", "\x7f"]:
             with self.subTest(codepoint=ord(control)), tempfile.TemporaryDirectory() as tmp:
@@ -863,6 +993,20 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
             self.assertFalse((root / "acquired/sources/S035/SI/malformed.docx").exists())
             self.assertFalse((root / "acquired/sources/S036/SI/fake.docx").exists())
             self.assertFalse((root / "acquired/sources/S037/SI/wrong.docx").exists())
+
+    def test_ooxml_content_types_rejects_foreign_namespace_lookalikes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.write_manifest(
+                root,
+                [{"download_id": "S040_FOREIGN", "study_id": "S040", "document_role": "SI", "url": self.base_url + "/foreign-namespace.docx", "target_path": "sources/S040/SI/foreign.docx", "source_class": "PUBLIC_DIRECT", "expected_format": "DOCX"}],
+            )
+
+            receipt = acquire_manifest(manifest, root / "acquired")
+
+            self.assertEqual(receipt["results"][0]["status"], "MANUAL_OR_AUTHORIZED_ACCESS_REQUIRED")
+            self.assertEqual(receipt["results"][0]["reason"], "RESPONSE_FORMAT_MISMATCH")
+            self.assertFalse((root / "acquired/sources/S040/SI/foreign.docx").exists())
 
     def test_cli_reports_local_oserror_without_traceback_or_input_details(self):
         with tempfile.TemporaryDirectory() as tmp:
