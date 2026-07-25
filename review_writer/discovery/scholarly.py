@@ -821,7 +821,6 @@ def build_candidate_pool(
             try:
                 payload = transport.get_json(_backward_url(reference_ids), timeout_seconds)
                 items = _results_list(payload, provider="openalex")
-                raw_backward_hits += len(items)
                 for item in items:
                     candidate = _openalex_candidate(
                         item,
@@ -831,6 +830,16 @@ def build_candidate_pool(
                             "/works?filter=openalex:{ids}",
                         ),
                     )
+                    if not _identity_keys(candidate):
+                        warnings.append(
+                            _warning(
+                                "openalex",
+                                "backward_reference_result",
+                                ValueError("normalized result has no usable identity"),
+                            )
+                        )
+                        continue
+                    raw_backward_hits += 1
                     if _in_year_range(candidate, start, end):
                         raw_candidates.append(candidate)
                     else:
@@ -842,7 +851,6 @@ def build_candidate_pool(
             try:
                 payload = transport.get_json(_forward_url(seed_openalex_id), timeout_seconds)
                 items = _results_list(payload, provider="openalex")
-                raw_forward_hits += len(items)
                 for item in items:
                     candidate = _openalex_candidate(
                         item,
@@ -852,6 +860,16 @@ def build_candidate_pool(
                             "/works?filter=cites:{openalex_id}",
                         ),
                     )
+                    if not _identity_keys(candidate):
+                        warnings.append(
+                            _warning(
+                                "openalex",
+                                "forward_citation_result",
+                                ValueError("normalized result has no usable identity"),
+                            )
+                        )
+                        continue
+                    raw_forward_hits += 1
                     if _in_year_range(candidate, start, end):
                         raw_candidates.append(candidate)
                     else:

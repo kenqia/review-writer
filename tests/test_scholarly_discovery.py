@@ -478,6 +478,69 @@ class IdentitylessResultTransport:
         raise AssertionError("identityless-result fixture received an unexpected route")
 
 
+class IdentitylessChainResultTransport:
+    def __init__(self, malformed_route: str) -> None:
+        self.malformed_route = malformed_route
+
+    def get_json(self, url: str, timeout_seconds: float) -> dict:
+        assert timeout_seconds == 20.0
+        parsed = urlsplit(url)
+        params = parse_qs(parsed.query)
+        if parsed.netloc == "api.crossref.org":
+            return {"message": {"items": []}}
+        if parsed.path.startswith("/works/https://doi.org/"):
+            return _openalex_work(
+                "W900",
+                "Resolved Chain Seed",
+                2020,
+                doi="10.1000/seed",
+                references=["https://openalex.org/W300"],
+            )
+        if "search" in params:
+            return {"results": []}
+
+        filter_value = params.get("filter", [""])[0]
+        if filter_value.startswith("openalex:"):
+            if self.malformed_route != "backward":
+                return {"results": []}
+            return {
+                "results": [
+                    {
+                        "id": "https://example.org/W998",
+                        "doi": "not-a-doi",
+                        "display_name": "   ",
+                        "private_marker": "BACKWARD_RESULT_MUST_NOT_LEAK",
+                    },
+                    _openalex_work(
+                        "W830",
+                        "Valid Backward Item",
+                        2020,
+                        doi="10.1000/valid-backward-item",
+                    ),
+                ]
+            }
+        if filter_value == "cites:W900":
+            if self.malformed_route != "forward":
+                return {"results": []}
+            return {
+                "results": [
+                    {
+                        "id": "https://example.org/W997",
+                        "doi": "not-a-doi",
+                        "display_name": "   ",
+                        "private_marker": "FORWARD_RESULT_MUST_NOT_LEAK",
+                    },
+                    _openalex_work(
+                        "W831",
+                        "Valid Forward Item",
+                        2020,
+                        doi="10.1000/valid-forward-item",
+                    ),
+                ]
+            }
+        raise AssertionError("identityless-chain fixture received an unexpected route")
+
+
 def _query_calls(transport: FakeTransport, host: str) -> list[str]:
     return [
         url
@@ -823,6 +886,52 @@ def test_identityless_query_item_warns_and_is_not_counted_as_valid_hit(
         {
             "provider": malformed_provider,
             "operation": "query_result",
+            "error_class": "ValueError",
+            "message": "provider request failed",
+        }
+    ]
+    assert "MUST_NOT_LEAK" not in json.dumps(pool["warnings"], sort_keys=True)
+
+
+def test_identityless_backward_item_warns_without_counting_or_erasing_valid_item() -> None:
+    pool = build_candidate_pool(
+        search_plan(),
+        transport=IdentitylessChainResultTransport("backward"),
+    )
+
+    assert pool["counts"]["raw_backward_hits"] == 1
+    assert pool["counts"]["raw_forward_hits"] == 0
+    assert {candidate["doi"] for candidate in pool["candidates"]} == {
+        "10.1000/seed",
+        "10.1000/valid-backward-item",
+    }
+    assert pool["warnings"] == [
+        {
+            "provider": "openalex",
+            "operation": "backward_reference_result",
+            "error_class": "ValueError",
+            "message": "provider request failed",
+        }
+    ]
+    assert "MUST_NOT_LEAK" not in json.dumps(pool["warnings"], sort_keys=True)
+
+
+def test_identityless_forward_item_warns_without_counting_or_erasing_valid_item() -> None:
+    pool = build_candidate_pool(
+        search_plan(),
+        transport=IdentitylessChainResultTransport("forward"),
+    )
+
+    assert pool["counts"]["raw_backward_hits"] == 0
+    assert pool["counts"]["raw_forward_hits"] == 1
+    assert {candidate["doi"] for candidate in pool["candidates"]} == {
+        "10.1000/seed",
+        "10.1000/valid-forward-item",
+    }
+    assert pool["warnings"] == [
+        {
+            "provider": "openalex",
+            "operation": "forward_citation_result",
             "error_class": "ValueError",
             "message": "provider request failed",
         }
