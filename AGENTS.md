@@ -59,3 +59,10 @@ make quality-check
 ```
 
 If a check cannot run because project data has not been created yet, report that explicitly rather than calling the workflow complete.
+
+## Owner-Review Orchestration
+
+- Each work package has exactly one writable persistent Implementation Owner; all reviewers and the Final Verifier are fresh, read-only sessions.
+- Repairs resume the recorded original Owner unless a documented replacement is approved.
+- Parallel writing requires approved worktrees and a dedicated Integration Owner.
+- Read `docs/agent-orchestration/AGENT_OPERATING_MODEL.md` before launching orchestration work.

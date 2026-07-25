@@ -1,0 +1,21 @@
+{
+  "task_id": "ORCH-001",
+  "reviewer_role": "leader",
+  "findings": [
+    {
+      "finding_id": "ORCH-001-DYN-01",
+      "reviewer_role": "leader",
+      "severity": "blocker",
+      "requirement_id": "ORCH-001-A05",
+      "evidence": "The formal dynamic runner only supports one fixed legacy fixture and task ID and has no health-check-only mode, so it cannot perform the required fresh DRYRUN-002 health gate before the one allowed full exec-resume run.",
+      "affected_paths": [
+        "scripts/agent-orchestration/run_dry_run.py",
+        "tests/test_agent_orchestration.py",
+        "docs/agent-orchestration/README.md"
+      ],
+      "required_fix": "Add validated fresh fixture and task ID parameters plus a formal health-check mode that uses the same command builder, model, sandbox, event capture, contract validation, write detection, sanitization, and no-fallback policy as full execution.",
+      "acceptance_test": "Offline tests prove preview creates no fixture or session, reject the fixed legacy path for new live modes, build health and full commands through the same helpers, validate DRYRUN-002 results, classify transient upstream errors, and preserve the legacy classify-existing path without reading or rewriting it.",
+      "status": "resolved"
+    }
+  ]
+}

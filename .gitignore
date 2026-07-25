@@ -1,5 +1,10 @@
 /*
 !/.gitignore
+!/.codex/
+/.codex/*
+!/.codex/agents/
+/.codex/agents/*
+!/.codex/agents/*.toml
 !/.github/
 !/.github/**
 !/.agents/
@@ -62,6 +67,7 @@
 *.pdf
 /template/*.pdf
 /local/phase8_evidence/**
+/.agent-orchestration-runs/
 *.si.pdf
 *.supp.pdf
 *.supplement.pdf

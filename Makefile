@@ -513,3 +513,16 @@ release-readiness-check:
 	$(MAKE) phase8b-grounded-vertical-slice-check
 	$(MAKE) phase8b-grounded-vertical-slice-v2-check
 	$(MAKE) phase8b-salvage-check
+
+.PHONY: agent-orchestration-check provider-qualification-check
+agent-orchestration-check:
+	$(PYTHON) tests/test_agent_orchestration.py
+	$(PYTHON) -m compileall -q scripts/agent-orchestration
+	$(PYTHON) scripts/agent-orchestration/validate_task_package.py docs/agent-tasks/ORCH-001
+	$(PYTHON) scripts/agent-orchestration/validate_policy.py
+	$(PYTHON) scripts/agent-orchestration/check_orchestration.py --task-directory docs/agent-tasks/ORCH-001
+
+provider-qualification-check:
+	$(PYTHON) tests/test_provider_qualification.py
+	$(PYTHON) -m compileall -q scripts/provider-qualification
+	$(PYTHON) scripts/provider-qualification/qualification.py --help >/dev/null

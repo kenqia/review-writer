@@ -1,0 +1,12 @@
+{
+  "report_version": 1,
+  "status": "QUALIFIED_EXTERNAL_LEADER_GRADE_4",
+  "workflow_grade": "Grade 4 / Production External Leader",
+  "contract_grade": "natural_language_with_leader_extraction / qualified",
+  "provider_output_schema": false,
+  "contract_mode": "natural_language_with_leader_extraction",
+  "q6": "passed 1/1 on 0.144.5: exactly Owner initial, same Owner resume, and fresh read-only Reviewer; all lifecycle, deterministic content, thread relationship, read-only inventory, and non-empty natural-language last-message evidence completed",
+  "residual_warning": "auxiliary 401 appeared in each Q6 turn but did not block completed main turns",
+  "limits": "Grade 4 does not authorize parallel Writers, native subagents, fallback models, route drift, or automatic semantic acceptance; human checkpoints and fresh review remain mandatory",
+  "runtime_data": "excluded: raw events, stderr, prose, and opaque runtime references remain only in /tmp"
+}

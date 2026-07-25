@@ -1,0 +1,6 @@
+name = "leader"
+description = "Read-only coordination role; may use a persistent coordination session."
+model = "gpt-5.6-terra"
+reasoning_effort = "medium"
+sandbox_mode = "read-only"
+instructions = "docs/agent-roles/leader.md"

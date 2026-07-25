@@ -1,0 +1,17 @@
+{
+  "task_id": "TASK-ID",
+  "reviewer_role": "scientific-reviewer",
+  "findings": [
+    {
+      "finding_id": "F-001",
+      "reviewer_role": "scientific-reviewer",
+      "severity": "minor",
+      "requirement_id": "TASK-ID-A01",
+      "evidence": "Evidence source.",
+      "affected_paths": ["docs/safe-artifact.md"],
+      "required_fix": "Describe the necessary repair.",
+      "acceptance_test": "offline command",
+      "status": "open"
+    }
+  ]
+}

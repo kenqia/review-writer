@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FINDINGS",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["task_id", "reviewer_role", "findings"],
+  "properties": {"task_id": {"type": "string", "minLength": 1}, "reviewer_role": {"enum": ["leader", "scientific-reviewer", "artifact-reviewer", "final-verifier", "explorer"]}, "findings": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["finding_id", "reviewer_role", "severity", "requirement_id", "evidence", "affected_paths", "required_fix", "acceptance_test", "status"], "properties": {"finding_id": {"type": "string", "minLength": 1}, "reviewer_role": {"enum": ["leader", "scientific-reviewer", "artifact-reviewer", "final-verifier", "explorer"]}, "severity": {"enum": ["blocker", "major", "minor"]}, "requirement_id": {"type": "string", "minLength": 1}, "evidence": {"type": "string", "minLength": 1}, "affected_paths": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._+@=:/ -]+$"}}, "required_fix": {"type": "string", "minLength": 1}, "acceptance_test": {"type": "string", "minLength": 1}, "status": {"enum": ["open", "resolved", "waived"]}}}}}
+}

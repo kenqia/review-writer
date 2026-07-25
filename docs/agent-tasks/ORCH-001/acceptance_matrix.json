@@ -1,0 +1,65 @@
+{
+  "task_id": "ORCH-001",
+  "items": [
+    {
+      "id": "ORCH-001-A01",
+      "requirement": "All required role documents and Codex agent descriptors exist and enforce sandbox/session policy.",
+      "evidence_required": "Offline orchestration test output",
+      "verification_command": "python3 tests/test_agent_orchestration.py",
+      "expected_result": "exit 0",
+      "owner": "Implementation Owner",
+      "severity": "blocker",
+      "status": "pass"
+    },
+    {
+      "id": "ORCH-001-A02",
+      "requirement": "Task, acceptance, findings, and worker-result contracts validate with the Python standard library.",
+      "evidence_required": "Contract validation output",
+      "verification_command": "python3 scripts/agent-orchestration/validate_task_package.py docs/agent-tasks/ORCH-001",
+      "expected_result": "exit 0",
+      "owner": "Implementation Owner",
+      "severity": "blocker",
+      "status": "pass"
+    },
+    {
+      "id": "ORCH-001-A03",
+      "requirement": "Preview is the default; execute and workspace-write each require explicit flags.",
+      "evidence_required": "Command-construction tests",
+      "verification_command": "make agent-orchestration-check",
+      "expected_result": "exit 0 with no model call",
+      "owner": "Implementation Owner",
+      "severity": "blocker",
+      "status": "pass"
+    },
+    {
+      "id": "ORCH-001-A04",
+      "requirement": "One writable Owner is enforced while reviewers and verifier are fresh read-only sessions.",
+      "evidence_required": "Single-writer and role-policy tests",
+      "verification_command": "make agent-orchestration-check",
+      "expected_result": "exit 0",
+      "owner": "Final Verifier",
+      "severity": "blocker",
+      "status": "pass"
+    },
+    {
+      "id": "ORCH-001-A05",
+      "requirement": "The isolated real exec and resume dry-run validates both WORKER_RESULT outputs without Agent writes or fallback.",
+      "evidence_required": "Sanitized Attempt 1 and Attempt 2 reports plus ignored raw runtime files",
+      "verification_command": "scripts/agent-orchestration/run_dry_run.sh --execute --fixture <fresh-/tmp-path> --task-id DRYRUN-002",
+      "expected_result": "PASS, or PARTIAL only for model/resume unavailability",
+      "owner": "Final Verifier",
+      "severity": "blocker",
+      "status": "partial"
+    },
+    {
+      "id": "ORCH-001-A06",
+      "requirement": "No forbidden business, Case 01, auth, remote, or dependency state is changed.",
+      "evidence_required": "Baseline comparison and final status",
+      "verification_command": "git status --short && git diff --check",
+      "expected_result": "Only allowed orchestration changes plus preserved pre-existing business changes",
+      "owner": "Leader",
+      "severity": "blocker",
+      "status": "pass"
+    }
+  ]
+}

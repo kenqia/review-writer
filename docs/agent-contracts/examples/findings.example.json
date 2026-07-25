@@ -1,0 +1,17 @@
+{
+  "task_id": "ORCH-001",
+  "reviewer_role": "scientific-reviewer",
+  "findings": [
+    {
+      "finding_id": "F-001",
+      "reviewer_role": "scientific-reviewer",
+      "severity": "minor",
+      "requirement_id": "ORCH-001-A02",
+      "evidence": "Offline review of the contract fixture.",
+      "affected_paths": ["docs/agent-contracts/examples/findings.example.json"],
+      "required_fix": "No repair is required for this example.",
+      "acceptance_test": "python3 tests/test_agent_orchestration.py",
+      "status": "resolved"
+    }
+  ]
+}

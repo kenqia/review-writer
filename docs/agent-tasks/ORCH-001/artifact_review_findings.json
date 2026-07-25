@@ -1,0 +1,105 @@
+{
+  "task_id": "ORCH-001",
+  "reviewer_role": "artifact-reviewer",
+  "findings": [
+    {
+      "finding_id": "ORCH-001-R01",
+      "reviewer_role": "artifact-reviewer",
+      "severity": "blocker",
+      "requirement_id": "ORCH-001-A03",
+      "evidence": "Generic owner resume still adds unsupported --sandbox, does not capture JSON events, final output, or thread ID, does not validate WORKER_RESULT, and overwrites initial runtime files.",
+      "affected_paths": ["scripts/agent-orchestration/orchestration_lib.py", "scripts/agent-orchestration/owner_launch.py", "scripts/agent-orchestration/resume_owner.py"],
+      "required_fix": "Build separate exec and resume commands for Codex 0.142.4, retain per-turn runtime records, capture a private session reference, and validate each final result.",
+      "acceptance_test": "Mock initial and resume JSONL, assert the same session and two valid results are retained separately, and assert resume contains no --sandbox option.",
+      "status": "resolved"
+    },
+    {
+      "finding_id": "ORCH-001-R02",
+      "reviewer_role": "artifact-reviewer",
+      "severity": "blocker",
+      "requirement_id": "ORCH-001-A03",
+      "evidence": "run_plan prints the full argv, exposing the Worker prompt and opaque resume reference in preview and execute output.",
+      "affected_paths": ["scripts/agent-orchestration/orchestration_lib.py", "tests/test_agent_orchestration.py"],
+      "required_fix": "Print only a structured safety summary and redacted command shape; never print prompt or session reference.",
+      "acceptance_test": "Unique prompt and session markers must be absent from captured stdout and stderr.",
+      "status": "resolved"
+    },
+    {
+      "finding_id": "ORCH-001-R03",
+      "reviewer_role": "artifact-reviewer",
+      "severity": "major",
+      "requirement_id": "ORCH-001-A02",
+      "evidence": "FINDINGS requires a non-empty list, and merge_findings emits an object that does not satisfy the FINDINGS contract.",
+      "affected_paths": ["docs/agent-contracts/schemas/findings.schema.json", "scripts/agent-orchestration/orchestration_lib.py", "scripts/agent-orchestration/merge_findings.py"],
+      "required_fix": "Allow a clean empty review and make merged output a valid standard FINDINGS object while preserving per-finding reviewer_role.",
+      "acceptance_test": "Empty, single-source, and multi-source merged FINDINGS all validate.",
+      "status": "resolved"
+    },
+    {
+      "finding_id": "ORCH-001-R04",
+      "reviewer_role": "artifact-reviewer",
+      "severity": "major",
+      "requirement_id": "ORCH-001-A04",
+      "evidence": "With parallel_worktrees false, two active Implementation Owners in different worktrees pass validation; task package creation and validation do not require assignments.",
+      "affected_paths": ["scripts/agent-orchestration/orchestration_lib.py", "scripts/agent-orchestration/create_task_package.py", "scripts/agent-orchestration/validate_task_package.py"],
+      "required_fix": "Require one global active writer for non-parallel work; require approval, isolated worktrees, and Integration Owner for parallel mode; validate assignments before launch.",
+      "acceptance_test": "No assignments, two Owners, unapproved parallel, duplicate worktrees, and missing Integration Owner fail; approved isolated parallel passes.",
+      "status": "resolved"
+    },
+    {
+      "finding_id": "ORCH-001-R05",
+      "reviewer_role": "artifact-reviewer",
+      "severity": "major",
+      "requirement_id": "ORCH-001-A06",
+      "evidence": "The leak gate scans only git ls-files, so new untracked orchestration files are skipped; sanitize_summary removes only top-level sensitive keys.",
+      "affected_paths": ["scripts/agent-orchestration/check_orchestration.py", "scripts/agent-orchestration/orchestration_lib.py", "scripts/agent-orchestration/sanitize_summary.py"],
+      "required_fix": "Scan tracked and eligible untracked orchestration files while excluding ignored runtime; recursively sanitize nested keys and opaque session/thread values.",
+      "acceptance_test": "An untracked report and nested session marker are detected or removed, while ignored runtime is excluded.",
+      "status": "resolved"
+    },
+    {
+      "finding_id": "ORCH-001-R06",
+      "reviewer_role": "artifact-reviewer",
+      "severity": "major",
+      "requirement_id": "ORCH-001-A05",
+      "evidence": "Any nonzero first turn without a result is classified MODEL_UNAVAILABLE, while resume no-result is evaluated as FAIL before the resume PARTIAL branch.",
+      "affected_paths": ["scripts/agent-orchestration/run_dry_run.py", "tests/test_agent_orchestration.py"],
+      "required_fix": "Return PARTIAL only for recognized model/provider unavailability; classify CLI/schema/argument errors as FAIL; order resume classification before result validation.",
+      "acceptance_test": "Synthetic unknown model, provider 5xx, CLI argument error, generic nonzero no-result, resume unavailable, and malformed resume result map to the intended states.",
+      "status": "resolved"
+    },
+    {
+      "finding_id": "ORCH-001-R07",
+      "reviewer_role": "artifact-reviewer",
+      "severity": "major",
+      "requirement_id": "ORCH-001-A05",
+      "evidence": "Scope containment uses string startswith, allowing a sibling path with the fixture prefix to pass.",
+      "affected_paths": ["scripts/agent-orchestration/run_dry_run.py", "tests/test_agent_orchestration.py"],
+      "required_fix": "Use resolved Path parent containment and reject sibling-prefix, traversal, and symlink escape.",
+      "acceptance_test": "A valid fixture path passes; sibling-prefix, traversal, and symlink escape fail.",
+      "status": "resolved"
+    },
+    {
+      "finding_id": "ORCH-001-R08",
+      "reviewer_role": "artifact-reviewer",
+      "severity": "major",
+      "requirement_id": "ORCH-001-A02",
+      "evidence": "Final Verifier PASS can validate with an unrelated task ID, no checks, and unresolved blockers.",
+      "affected_paths": ["docs/agent-contracts/schemas/worker_result.schema.json", "scripts/agent-orchestration/orchestration_lib.py", "tests/test_agent_orchestration.py"],
+      "required_fix": "Validate result against task ID and acceptance matrix; PASS requires complete passed evidence and no unresolved findings.",
+      "acceptance_test": "No-evidence or mismatched PASS fails; every acceptance item must have passed evidence for Final Verifier PASS.",
+      "status": "resolved"
+    },
+    {
+      "finding_id": "ORCH-001-R09",
+      "reviewer_role": "artifact-reviewer",
+      "severity": "major",
+      "requirement_id": "ORCH-001-A03",
+      "evidence": "Static scripts, Makefile, and tests hardcode ORCH-001, so a generic template without this project task cannot run the gate.",
+      "affected_paths": ["scripts/agent-orchestration/check_orchestration.py", "Makefile", "tests/test_agent_orchestration.py"],
+      "required_fix": "Parameterize task directory and provide a generic sample package independent of ORCH-001; project Makefile may select ORCH-001 explicitly.",
+      "acceptance_test": "The generic layer passes offline checks in a temporary tree that has no ORCH-001 directory.",
+      "status": "resolved"
+    }
+  ]
+}

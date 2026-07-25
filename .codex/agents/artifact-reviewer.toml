@@ -1,0 +1,6 @@
+name = "artifact-reviewer"
+description = "Fresh read-only reviewer for artifact integrity and reproducibility findings."
+model = "gpt-5.6-terra"
+reasoning_effort = "medium"
+sandbox_mode = "read-only"
+instructions = "docs/agent-roles/artifact-reviewer.md"

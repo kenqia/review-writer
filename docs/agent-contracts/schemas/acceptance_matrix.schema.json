@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ACCEPTANCE_MATRIX",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["task_id", "items"],
+  "properties": {"task_id": {"type": "string", "minLength": 1}, "items": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["id", "requirement", "evidence_required", "verification_command", "expected_result", "owner", "severity", "status"], "properties": {"id": {"type": "string", "minLength": 1}, "requirement": {"type": "string", "minLength": 1}, "evidence_required": {"type": "string", "minLength": 1}, "verification_command": {"type": "string", "minLength": 1}, "expected_result": {"type": "string", "minLength": 1}, "owner": {"type": "string", "minLength": 1}, "severity": {"enum": ["blocker", "major", "minor"]}, "status": {"enum": ["pending", "pass", "partial", "fail"]}}}}}
+}
