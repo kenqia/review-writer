@@ -30,6 +30,7 @@ generation_provider=offline
 section_id
 section_title
 max_evidence_items
+delivery_mode=checkpointed
 ```
 
 Use placeholders in portable instructions:
@@ -56,6 +57,7 @@ Use placeholders in portable instructions:
 10. If required paths are missing, ask the user or use a repo-relative demo.
 11. For retrieval-backed generation, default to `retrieval_mode=offline_fixture` and `generation_provider=offline`.
 12. Retrieval-backed generation must stop at the `Sections` checkpoint after one section is marked `ready_for_human_review`.
+13. Continuous finished-review delivery is opt-in only; the default remains checkpointed.
 
 Windows/WSL is only an optional runtime example:
 
@@ -81,6 +83,29 @@ python scripts/validators/validate_review_quality.py
 ```text
 Library -> Discovery -> Matrix -> Blueprint -> Sections -> Figures -> Draft -> Final -> Export
 ```
+
+## Continuous Finished Review Delivery
+
+Recognize the natural-language intent `Run Finished Mini Review`, or an explicit
+`delivery_mode=continuous_finished_review`. Only for that opt-in mode, call:
+
+```bash
+python scripts/delivery/run_finished_mini_review.py \
+  --use-qwen \
+  --allow-network \
+  --docx-python <PYTHON_WITH_PYTHON_DOCX>
+```
+
+This route uses the frozen Phase 8A final claim ledger and continues through
+evidence planning, complete bounded drafting, quality audit, and DOCX export.
+It stops only for a frozen-input mismatch, unsupported scientific fact,
+source-conflict leakage, wrong-paper citation, provider failure, missing output,
+or DOCX integrity failure. Style repetition, paragraph length, and unused
+available claims are warnings.
+
+Do not infer this mode from a generic review request. Do not change the default
+checkpoint behavior. The finished-review script requires explicit network flags
+for Qwen and does not send PDFs, private calibration, or raw human decisions.
 
 ## Retrieval-backed Section Pilot
 

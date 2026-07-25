@@ -32,6 +32,7 @@ def main() -> int:
         test_openai_stream_parser_handles_usage_reasoning_and_finish_reason,
         test_openai_stream_parser_rejects_length_finish,
         test_openai_request_contract_disables_thinking_and_search,
+        test_openai_request_contract_supports_strict_json_mode,
         test_first_byte_timeout_is_classified_without_prompt_leakage,
         test_stream_midway_failure_writes_safe_report,
         test_dedicated_endpoint_metadata_is_redacted,
@@ -139,6 +140,26 @@ def test_openai_request_contract_disables_thinking_and_search() -> None:
     assert "tools" not in kwargs
     assert result.metadata["transport_mode"] == "openai_sdk_default"
     assert isinstance(result.metadata["proxy_env_names_set"], list)
+
+
+def test_openai_request_contract_supports_strict_json_mode() -> None:
+    completions = CapturingCompletions([{"choices": [{"delta": {"content": "{}"}, "finish_reason": "stop"}]}])
+    provider = OpenAICompatibleProvider(
+        enabled=True,
+        allow_network=True,
+        api_key="sk-fake-secret-key-1234567890",
+        workspace_id="workspace-for-test",
+        client_factory=CapturingClientFactory(completions),
+        monotonic=FakeClock([0.0, 0.1, 0.2]),
+    )
+    result = provider.generate_text(
+        TextGenerationRequest(
+            messages=[{"role": "user", "content": "return JSON"}],
+            response_format="json_object",
+        )
+    )
+    assert result.status == "ok"
+    assert completions.kwargs["response_format"] == {"type": "json_object"}
 
 
 def test_first_byte_timeout_is_classified_without_prompt_leakage() -> None:

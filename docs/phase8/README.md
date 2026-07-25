@@ -115,4 +115,6 @@ make phase8-v3-1-1-closure-check
 make release-readiness-check
 ```
 
-Do not start Phase 8B without a new explicit instruction.
+Phase 8B began on a separate feature branch after explicit instruction and the
+merge of PR #3. Its first one-section vertical slice is recorded in
+`phase8b_vertical_slice.md`; the full review has not been revised.

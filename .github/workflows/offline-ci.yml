@@ -5,6 +5,8 @@ on:
     branches:
       - main
       - feat/chem-review-quality-gates
+      - feat/phase8b-grounded-review-integration
+      - feat/provider-qualification-noschema
   push:
     branches:
       - main
