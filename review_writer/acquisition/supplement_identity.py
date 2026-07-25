@@ -8,44 +8,15 @@ import json
 import re
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
+from .manifest_identity import DOI_RE as _DOI_RE
+from .manifest_identity import ManifestIdentityError, normalize_doi, validate_acquisition_row
 
-_DOI_RE = re.compile(r"^10\.\d{4,9}/[-._;()/:a-z0-9]+$", re.IGNORECASE)
 _SUPPLEMENT_RE = re.compile(r"^(?P<parent>.+)\.(?P<suffix>s\d+|supp\d*)$", re.IGNORECASE)
-_ACQUISITION_REQUIRED_FIELDS = frozenset({"download_id", "study_id", "document_role", "url", "target_path", "source_class"})
 
 
 class SupplementAuditError(ValueError):
     """The supplement audit inputs are structurally invalid."""
-
-
-def normalize_doi(value: str | None) -> str | None:
-    """Return a safe normalized DOI, rejecting URL decorations and malformed input."""
-
-    if not isinstance(value, str):
-        return None
-    raw = value.strip()
-    if not raw:
-        return None
-    if raw.lower().startswith("doi:"):
-        raw = raw[4:].strip()
-    elif "://" in raw:
-        parsed = urlsplit(raw)
-        if (
-            parsed.scheme not in {"http", "https"}
-            or parsed.hostname not in {"doi.org", "dx.doi.org"}
-            or parsed.username
-            or parsed.password
-            or parsed.query
-            or parsed.fragment
-        ):
-            return None
-        raw = parsed.path.lstrip("/")
-    elif any(marker in raw for marker in ("?", "#", "@")):
-        return None
-    raw = raw.lower().rstrip(".,; ")
-    return raw if _DOI_RE.fullmatch(raw) else None
 
 
 def supplement_parent_relation(
@@ -136,14 +107,10 @@ def _load_acquisition_manifest(path: Path) -> list[dict[str, Any]]:
     downloads: list[dict[str, Any]] = []
     seen: set[str] = set()
     for parsed in manifest["downloads"]:
-        if not isinstance(parsed, dict) or not _ACQUISITION_REQUIRED_FIELDS.issubset(parsed):
-            raise SupplementAuditError("acquisition rows require download_id, study_id, document_role, url, target_path, and source_class")
-        download = _validated_identity_record(parsed, id_field="download_id", source="acquisition manifest")
-        for field in ("study_id", "url", "target_path", "source_class"):
-            if not isinstance(download[field], str) or not download[field].strip():
-                raise SupplementAuditError(f"acquisition rows require a nonempty string {field}")
-        if not isinstance(download["document_role"], str) or download["document_role"] not in {"MAIN", "SI"}:
-            raise SupplementAuditError("acquisition rows require document_role MAIN or SI")
+        try:
+            download = validate_acquisition_row(parsed)
+        except ManifestIdentityError as exc:
+            raise SupplementAuditError("acquisition manifest contains an invalid row") from exc
         if download["download_id"] in seen:
             raise SupplementAuditError("download_id values must be unique")
         seen.add(download["download_id"])

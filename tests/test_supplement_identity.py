@@ -196,6 +196,56 @@ class SupplementIdentityTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     audit_supplement_reports(pool, manifest)
 
+    def test_acquisition_audit_normalizes_shared_manifest_identities(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pool = root / "pool.jsonl"
+            manifest = root / "manifest.json"
+            pool.write_text(json.dumps({"candidate_id": "C0"}) + "\n")
+            manifest.write_text(json.dumps({"schema_version": "public-corpus-acquisition.v1", "downloads": [{
+                "download_id": "  SHARED_MAIN  ",
+                "study_id": "  SHARED_STUDY  ",
+                "doi": "https://doi.org/10.1000/SHARED.S1.",
+                "document_role": "SI",
+                "url": "https://example.com/supplement.pdf",
+                "target_path": "sources/SHARED_STUDY/SI/supplement.pdf",
+                "source_class": "PUBLIC_DIRECT",
+            }]}))
+
+            audit = audit_supplement_reports(pool, manifest)
+
+            record = audit["records"][0]
+            self.assertEqual(record["stable_identity"], "SHARED_MAIN")
+            self.assertEqual(record["candidate_id"], "SHARED_STUDY")
+            self.assertEqual(record["doi"], "10.1000/shared.s1")
+
+    def test_acquisition_audit_rejects_invalid_shared_manifest_fields(self):
+        invalid_updates = [
+            {"expected_format": "TXT"},
+            {"expected_format": ["PDF"]},
+            {"doi": "https://doi.org/10.1000/shared.s1?credential=hidden"},
+            {"doi": 123},
+        ]
+        for update in invalid_updates:
+            with self.subTest(update=update), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                pool = root / "pool.jsonl"
+                manifest = root / "manifest.json"
+                pool.write_text(json.dumps({"candidate_id": "C0"}) + "\n")
+                row = {
+                    "download_id": "SHARED_INVALID",
+                    "study_id": "SHARED_INVALID",
+                    "document_role": "MAIN",
+                    "url": "https://example.com/paper.pdf",
+                    "target_path": "sources/SHARED_INVALID/MAIN.pdf",
+                    "source_class": "PUBLIC_DIRECT",
+                    **update,
+                }
+                manifest.write_text(json.dumps({"schema_version": "public-corpus-acquisition.v1", "downloads": [row]}))
+
+                with self.assertRaises(ValueError):
+                    audit_supplement_reports(pool, manifest)
+
 
 if __name__ == "__main__":
     unittest.main()

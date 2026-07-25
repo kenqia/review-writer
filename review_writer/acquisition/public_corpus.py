@@ -3,11 +3,13 @@ from __future__ import annotations
 import csv
 import hashlib
 import html
+import http.client
 import io
 import ipaddress
 import json
 import os
 import re
+import stat
 import tempfile
 import time
 import urllib.error
@@ -21,11 +23,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .manifest_identity import ManifestIdentityError, validate_acquisition_row
+
 
 USER_AGENT = "review-writer-public-acquisition/1.0"
-SENSITIVE_QUERY_KEYS = {"access_token", "api_key", "apikey", "auth", "authorization", "bearer", "cookie", "credential", "key", "pass", "passwd", "password", "pwd", "secret", "session", "sessionid", "sig", "signature", "token"}
-SENSITIVE_QUERY_MARKERS = ("auth", "cookie", "credential", "passwd", "password", "secret", "session", "signature", "token")
-SENSITIVE_QUERY_SEGMENTS = frozenset({"key", "pass", "pwd", "sig"})
+PUBLIC_QUERY_KEYS = frozenset({
+    "download", "format", "type", "file", "filename", "article", "doi", "id",
+    "lang", "locale", "pdf", "view", "inline", "sequence", "isallowed",
+})
 MANUAL_STATUS = "MANUAL_OR_AUTHORIZED_ACCESS_REQUIRED"
 METADATA_FILENAMES = frozenset({"acquisition_receipt.json", "manual_acquisition.tsv", "manual_acquisition.html"})
 REDIRECT_STATUS_CODES = frozenset({301, 302, 303, 307, 308})
@@ -39,6 +44,14 @@ OOXML_REQUIREMENTS = {
 }
 MAX_OOXML_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
 MAX_CONTENT_TYPES_BYTES = 1024 * 1024
+MIN_PDF_BYTES = 16
+PDF_TAIL_BYTES = 4096
+WINDOWS_RESERVED_NAMES = frozenset(
+    {"con", "prn", "aux", "nul", "conin$", "conout$"}
+    | {f"com{number}" for number in range(1, 10)}
+    | {f"lpt{number}" for number in range(1, 10)}
+)
+WINDOWS_FORBIDDEN_COMPONENT_CHARACTERS = frozenset('<>:"|?*')
 
 
 class ManifestError(ValueError):
@@ -50,6 +63,10 @@ class _DownloadLimitExceeded(Exception):
 
 
 class _NetworkFailure(Exception):
+    pass
+
+
+class _ContentLengthMismatch(Exception):
     pass
 
 
@@ -74,19 +91,55 @@ def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _safe_target(output_root: Path, relative: str) -> tuple[Path, Path]:
+def _portable_target_components(relative: str) -> tuple[str, ...]:
     if not isinstance(relative, str) or not relative.strip():
         raise ManifestError("target_path must be a nonempty relative path")
     if any(ord(character) <= 0x1F or ord(character) == 0x7F for character in relative):
         raise ManifestError("target_path contains an ASCII control character")
-    raw = Path(relative)
-    if raw.is_absolute():
-        raise ManifestError(f"absolute target_path is forbidden: {relative}")
+    if "\\" in relative or relative.startswith("/"):
+        raise ManifestError("target_path must use portable POSIX relative syntax")
+    components = tuple(relative.split("/"))
+    if any(component in {"", ".", ".."} for component in components):
+        raise ManifestError("target_path contains an empty or dot component")
+    for component in components:
+        if any(character in WINDOWS_FORBIDDEN_COMPONENT_CHARACTERS for character in component):
+            raise ManifestError("target_path contains a Windows-forbidden character")
+        if component.endswith((".", " ")):
+            raise ManifestError("target_path components must not end in dot or space")
+        device_stem = component.split(".", 1)[0].rstrip(" .").casefold()
+        if device_stem in WINDOWS_RESERVED_NAMES:
+            raise ManifestError("target_path contains a Windows reserved device name")
+    return components
+
+
+def _is_link_or_reparse(path: Path) -> bool:
+    metadata = os.lstat(path)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return stat.S_ISLNK(metadata.st_mode) or bool(getattr(metadata, "st_file_attributes", 0) & reparse_flag)
+
+
+def _reject_existing_link_components(output_root: Path, target: Path) -> None:
+    current = output_root
+    for component in target.relative_to(output_root).parts:
+        current /= component
+        try:
+            linked = _is_link_or_reparse(current)
+        except FileNotFoundError:
+            break
+        except NotADirectoryError as exc:
+            raise ManifestError("target_path has a non-directory parent component") from exc
+        if linked:
+            raise ManifestError("target_path contains an existing link or reparse point")
+
+
+def _safe_target(output_root: Path, relative: str) -> tuple[Path, Path]:
+    components = _portable_target_components(relative)
     root = output_root.resolve()
-    target = Path(os.path.abspath(root / raw))
+    target = root.joinpath(*components)
+    _reject_existing_link_components(root, target)
     resolved_target = target.resolve()
     if resolved_target == root or root not in resolved_target.parents:
-        raise ManifestError(f"target_path escapes output root: {relative}")
+        raise ManifestError("target_path escapes output root")
     lexical_relative = target.relative_to(root)
     canonical_relative = resolved_target.relative_to(root)
     top_level_components = {lexical_relative.parts[0].casefold(), canonical_relative.parts[0].casefold()}
@@ -117,27 +170,16 @@ def _preflight_manifest(manifest: dict[str, Any], output_root: Path) -> list[dic
     prepared: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     seen_targets: set[str] = set()
-    for row in downloads:
-        required = {"download_id", "study_id", "document_role", "url", "target_path", "source_class"}
-        if not isinstance(row, dict) or not required.issubset(row):
-            raise ManifestError("every download requires download_id, study_id, document_role, url, target_path, and source_class")
-        download_id = row["download_id"]
-        if not isinstance(download_id, str) or not download_id.strip():
-            raise ManifestError("download_id must be nonempty")
-        if not isinstance(row["study_id"], str) or not row["study_id"].strip():
-            raise ManifestError("study_id must be a nonempty string")
-        for field in ("url", "target_path", "source_class"):
-            if not isinstance(row[field], str) or not row[field].strip():
-                raise ManifestError(f"{field} must be a nonempty string")
-        normalized_id = download_id.strip()
+    for raw_row in downloads:
+        try:
+            row = validate_acquisition_row(raw_row)
+        except ManifestIdentityError as exc:
+            raise ManifestError("manifest contains an invalid acquisition row") from exc
+        normalized_id = row["download_id"]
         if normalized_id in seen_ids:
             raise ManifestError("download_id values must be unique")
         seen_ids.add(normalized_id)
-        if not isinstance(row["document_role"], str) or row["document_role"] not in {"MAIN", "SI"}:
-            raise ManifestError("document_role must be MAIN or SI")
-        expected_format = row.get("expected_format", "PDF")
-        if not isinstance(expected_format, str) or expected_format not in {"PDF", "DOCX", "XLSX"}:
-            raise ManifestError("expected_format must be PDF, DOCX, or XLSX")
+        expected_format = row["expected_format"]
         expected_sha256 = row.get("expected_sha256")
         if expected_sha256 is not None:
             if not isinstance(expected_sha256, str) or not SHA256_RE.fullmatch(expected_sha256):
@@ -190,10 +232,12 @@ def _safe_url(url: str) -> tuple[bool, str | None, str]:
         raise ValueError("URL has an invalid host or port") from exc
     if not hostname or not _valid_hostname(hostname):
         raise ValueError("URL requires a valid hostname")
-    keys = {key.lower() for key, _ in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)}
-    has_sensitive_query = any(_is_sensitive_query_key(key) for key in keys)
+    query_pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    has_forbidden_query = bool(parsed.query) and (
+        not query_pairs or any(not _is_allowed_query_key(key) for key, _ in query_pairs)
+    )
     safe_netloc = parsed.netloc.rsplit("@", 1)[-1]
-    safe_query = "[REDACTED]" if has_sensitive_query else parsed.query
+    safe_query = "[REDACTED]" if has_forbidden_query else parsed.query
     report_url = urllib.parse.urlunsplit((parsed.scheme, safe_netloc, parsed.path, safe_query, ""))
     if parsed.username or parsed.password:
         return False, "URL_USERINFO_FORBIDDEN", report_url
@@ -201,20 +245,14 @@ def _safe_url(url: str) -> tuple[bool, str | None, str]:
     local_http = parsed.scheme == "http" and hostname in {"127.0.0.1", "localhost", "::1"}
     if parsed.scheme != "https" and not local_http:
         return False, "INSECURE_NONLOCAL_HTTP", report_url
-    if has_sensitive_query:
+    if has_forbidden_query:
         return False, "SENSITIVE_URL_PARAMETER_FORBIDDEN", report_url
     return True, None, report_url
 
 
-def _is_sensitive_query_key(key: str) -> bool:
+def _is_allowed_query_key(key: str) -> bool:
     normalized = key.casefold()
-    segments = {segment for segment in re.split(r"[^a-z0-9]+", normalized) if segment}
-    return (
-        normalized in SENSITIVE_QUERY_KEYS
-        or any(marker in normalized for marker in SENSITIVE_QUERY_MARKERS)
-        or bool(segments & SENSITIVE_QUERY_SEGMENTS)
-        or normalized.endswith(("_key", "-key"))
-    )
+    return normalized in PUBLIC_QUERY_KEYS or (normalized.startswith("utm_") and len(normalized) > 4)
 
 
 def _open_without_redirect(request: urllib.request.Request, timeout_seconds: float):
@@ -230,8 +268,26 @@ def _open_without_redirect(request: urllib.request.Request, timeout_seconds: flo
 def _read_network_chunk(response: Any, size: int) -> bytes:
     try:
         return response.read(size)
+    except http.client.IncompleteRead as exc:
+        raise _ContentLengthMismatch from exc
     except (OSError, urllib.error.URLError) as exc:
         raise _NetworkFailure from exc
+
+
+def _content_length(headers: Any, max_bytes: int) -> tuple[int | None, str | None]:
+    values = headers.get_all("Content-Length", [])
+    if not values:
+        return None, None
+    if len(values) != 1:
+        return None, "INVALID_CONTENT_LENGTH"
+    value = values[0].strip()
+    if not re.fullmatch(r"[0-9]+", value):
+        return None, "INVALID_CONTENT_LENGTH"
+    normalized = value.lstrip("0") or "0"
+    limit = str(max_bytes)
+    if len(normalized) > len(limit) or (len(normalized) == len(limit) and normalized > limit):
+        return None, "FILE_EXCEEDS_SIZE_LIMIT"
+    return int(normalized), None
 
 
 def _robots_allowed(url: str, timeout_seconds: float, cache: dict[str, urllib.robotparser.RobotFileParser | str]) -> tuple[bool, str | None]:
@@ -267,7 +323,13 @@ def _robots_allowed(url: str, timeout_seconds: float, cache: dict[str, urllib.ro
 def _matches_format(path: Path, expected_format: str) -> bool:
     if expected_format == "PDF":
         with path.open("rb") as handle:
-            return handle.read(5) == b"%PDF-"
+            if handle.read(5) != b"%PDF-":
+                return False
+            size = os.fstat(handle.fileno()).st_size
+            if size < MIN_PDF_BYTES:
+                return False
+            handle.seek(max(0, size - PDF_TAIL_BYTES))
+            return b"%%EOF" in handle.read(PDF_TAIL_BYTES)
     required_part, required_content_type = OOXML_REQUIREMENTS[expected_format]
     try:
         with zipfile.ZipFile(path) as archive:
@@ -318,9 +380,9 @@ def _download_source(url: str, target: Path, output_root: Path, robots_cache: di
                 request = urllib.request.Request(current_url, headers={"User-Agent": USER_AGENT, "Accept": accept + ",application/octet-stream;q=0.8"})
                 with _open_without_redirect(request, timeout_seconds) as response:
                     status = getattr(response, "status", 200)
-                    length = response.headers.get("Content-Length")
-                    if length and int(length) > max_bytes:
-                        return MANUAL_STATUS, "FILE_EXCEEDS_SIZE_LIMIT", None, status, report_url
+                    declared_length, length_reason = _content_length(response.headers, max_bytes)
+                    if length_reason is not None:
+                        return MANUAL_STATUS, length_reason, None, status, report_url
                     digest = hashlib.sha256()
                     size = 0
                     descriptor, partial_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".part", dir=target.parent)
@@ -335,6 +397,8 @@ def _download_source(url: str, target: Path, output_root: Path, robots_cache: di
                                 raise _DownloadLimitExceeded
                             digest.update(chunk)
                             handle.write(chunk)
+                    if declared_length is not None and size != declared_length:
+                        return MANUAL_STATUS, "CONTENT_LENGTH_MISMATCH", None, status, report_url
                     actual_sha256 = digest.hexdigest()
                     if expected_sha256 is not None and actual_sha256 != expected_sha256:
                         return MANUAL_STATUS, "DOWNLOADED_HASH_MISMATCH", actual_sha256, status, report_url
@@ -347,6 +411,8 @@ def _download_source(url: str, target: Path, output_root: Path, robots_cache: di
                     return "DOWNLOADED", None, actual_sha256, status, report_url
             except _DownloadLimitExceeded:
                 return MANUAL_STATUS, "FILE_EXCEEDS_SIZE_LIMIT", None, None, report_url
+            except _ContentLengthMismatch:
+                return MANUAL_STATUS, "CONTENT_LENGTH_MISMATCH", None, None, report_url
             except urllib.error.HTTPError as exc:
                 status = exc.code
                 headers = exc.headers

@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
+import stat
 import subprocess
 import tempfile
 import threading
@@ -10,6 +12,7 @@ import unittest
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 import sys
 
@@ -58,12 +61,15 @@ FOREIGN_NAMESPACE_DOCX_BYTES = make_ooxml_with_content_types(
 
 class FixtureHandler(BaseHTTPRequestHandler):
     pdf_requests = 0
+    query_pdf_requests = 0
     redirect_loop_requests = 0
     redirect_new_credential_requests = 0
     redirect_sensitive_requests = 0
     redirect_target_url = ""
 
     def do_GET(self):  # noqa: N802 - stdlib handler contract
+        content_length_headers = None
+        chunked = False
         if self.path == "/robots.txt":
             body = b"User-agent: *\nAllow: /\n"
             self.send_response(200)
@@ -71,6 +77,56 @@ class FixtureHandler(BaseHTTPRequestHandler):
         elif self.path == "/paper.pdf":
             type(self).pdf_requests += 1
             body = PDF_BYTES
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+        elif self.path == "/truncated.pdf":
+            body = b"%PDF-1.4\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+        elif self.path == "/too-short.pdf":
+            body = b"%PDF-%%EOF"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+        elif self.path == "/no-content-length.pdf":
+            body = PDF_BYTES
+            content_length_headers = []
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+        elif self.path == "/chunked.pdf":
+            body = PDF_BYTES
+            content_length_headers = []
+            chunked = True
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Transfer-Encoding", "chunked")
+        elif self.path == "/invalid-content-length.pdf":
+            body = PDF_BYTES
+            content_length_headers = ["content-length-secret"]
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+        elif self.path == "/negative-content-length.pdf":
+            body = PDF_BYTES
+            content_length_headers = ["-1"]
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+        elif self.path == "/duplicate-content-length.pdf":
+            body = PDF_BYTES
+            content_length_headers = [str(len(body)), str(len(body))]
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+        elif self.path == "/conflicting-content-length.pdf":
+            body = PDF_BYTES
+            content_length_headers = [str(len(body)), str(len(body) + 1)]
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+        elif self.path == "/over-limit-content-length.pdf":
+            body = PDF_BYTES
+            content_length_headers = [str(len(body) + 1)]
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+        elif self.path == "/mismatched-content-length.pdf":
+            body = PDF_BYTES
+            content_length_headers = [str(len(body) + 10)]
             self.send_response(200)
             self.send_header("Content-Type", "application/pdf")
         elif self.path == "/redirect-sensitive":
@@ -97,6 +153,11 @@ class FixtureHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/pdf")
         elif self.path.startswith("/paper.pdf?download_sig="):
             type(self).redirect_new_credential_requests += 1
+            body = PDF_BYTES
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+        elif self.path.startswith("/paper.pdf?"):
+            type(self).query_pdf_requests += 1
             body = PDF_BYTES
             self.send_response(200)
             self.send_header("Content-Type", "application/pdf")
@@ -136,9 +197,15 @@ class FixtureHandler(BaseHTTPRequestHandler):
             body = b"login required"
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
-        self.send_header("Content-Length", str(len(body)))
+        if content_length_headers is None:
+            content_length_headers = [str(len(body))]
+        for content_length in content_length_headers:
+            self.send_header("Content-Length", content_length)
         self.end_headers()
-        self.wfile.write(body)
+        if chunked:
+            self.wfile.write(f"{len(body):X}\r\n".encode("ascii") + body + b"\r\n0\r\n\r\n")
+        else:
+            self.wfile.write(body)
 
     def log_message(self, _format, *_args):
         return
@@ -211,6 +278,86 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
             self.assertFalse((root / "acquired/sources/S002/MAIN.pdf").exists())
             self.assertTrue((root / "acquired/manual_acquisition.tsv").is_file())
             self.assertTrue((root / "acquired/manual_acquisition.html").is_file())
+
+    def test_truncated_downloaded_and_existing_pdfs_are_rejected(self):
+        download_cases = ["/truncated.pdf", "/too-short.pdf"]
+        for index, route in enumerate(download_cases):
+            with self.subTest(route=route), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                target_path = f"sources/PDF_TRUNCATED_{index}/MAIN.pdf"
+                manifest = self.write_manifest(
+                    root,
+                    [{"download_id": f"PDF_TRUNCATED_{index}", "study_id": f"PDF_TRUNCATED_{index}", "document_role": "MAIN", "url": self.base_url + route, "target_path": target_path, "source_class": "PUBLIC_DIRECT"}],
+                )
+
+                receipt = acquire_manifest(manifest, root / "acquired")
+
+                self.assertEqual(receipt["results"][0]["reason"], "RESPONSE_NOT_PDF")
+                self.assertFalse((root / "acquired" / target_path).exists())
+
+        for index, body in enumerate([b"%PDF-1.4\n", b"%PDF-%%EOF"]):
+            with self.subTest(existing_index=index), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                output_root = root / "acquired"
+                target_path = f"sources/PDF_EXISTING_{index}/MAIN.pdf"
+                target = output_root / target_path
+                target.parent.mkdir(parents=True)
+                target.write_bytes(body)
+                manifest = self.write_manifest(
+                    root,
+                    [{"download_id": f"PDF_EXISTING_{index}", "study_id": f"PDF_EXISTING_{index}", "document_role": "MAIN", "url": self.base_url + "/paper.pdf", "target_path": target_path, "source_class": "PUBLIC_DIRECT"}],
+                )
+
+                receipt = acquire_manifest(manifest, output_root, allow_network=False)
+
+                self.assertEqual(receipt["results"][0]["reason"], "EXISTING_FILE_NOT_PDF")
+                self.assertEqual(target.read_bytes(), body)
+
+    def test_content_length_is_optional_but_single_valid_value_must_match(self):
+        for index, route in enumerate(["/no-content-length.pdf", "/chunked.pdf"]):
+            with self.subTest(route=route), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                target_path = f"sources/OPTIONAL_LENGTH_{index}/MAIN.pdf"
+                manifest = self.write_manifest(
+                    root,
+                    [{"download_id": f"OPTIONAL_LENGTH_{index}", "study_id": f"OPTIONAL_LENGTH_{index}", "document_role": "MAIN", "url": self.base_url + route, "target_path": target_path, "source_class": "PUBLIC_DIRECT"}],
+                )
+
+                receipt = acquire_manifest(manifest, root / "acquired")
+
+                self.assertEqual(receipt["results"][0]["status"], "DOWNLOADED")
+                self.assertEqual((root / "acquired" / target_path).read_bytes(), PDF_BYTES)
+
+        cases = [
+            ("/invalid-content-length.pdf", "INVALID_CONTENT_LENGTH", None),
+            ("/negative-content-length.pdf", "INVALID_CONTENT_LENGTH", None),
+            ("/duplicate-content-length.pdf", "INVALID_CONTENT_LENGTH", None),
+            ("/conflicting-content-length.pdf", "INVALID_CONTENT_LENGTH", None),
+            ("/over-limit-content-length.pdf", "FILE_EXCEEDS_SIZE_LIMIT", len(PDF_BYTES)),
+            ("/mismatched-content-length.pdf", "CONTENT_LENGTH_MISMATCH", None),
+        ]
+        for index, (route, reason, limit) in enumerate(cases):
+            with self.subTest(route=route), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                target_path = f"sources/LENGTH_{index}/MAIN.pdf"
+                manifest = self.write_manifest(
+                    root,
+                    [{"download_id": f"LENGTH_{index}", "study_id": f"LENGTH_{index}", "document_role": "MAIN", "url": self.base_url + route, "target_path": target_path, "source_class": "PUBLIC_DIRECT"}],
+                )
+                kwargs = {"retries": 0}
+                if limit is not None:
+                    kwargs["max_bytes"] = limit
+
+                receipt = acquire_manifest(manifest, root / "acquired", **kwargs)
+
+                self.assertEqual(receipt["results"][0]["reason"], reason)
+                self.assertFalse((root / "acquired" / target_path).exists())
+                rendered_outputs = "\n".join([
+                    json.dumps(receipt),
+                    (root / "acquired/manual_acquisition.tsv").read_text(),
+                    (root / "acquired/manual_acquisition.html").read_text(),
+                ])
+                self.assertNotIn("content-length-secret", rendered_outputs)
 
     def test_rejects_external_plain_http_and_sensitive_query_parameters(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -498,6 +645,55 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
             self.assertEqual(receipt["results"][0]["status"], "MANUAL_OR_AUTHORIZED_ACCESS_REQUIRED")
             self.assertEqual(receipt["results"][0]["reason"], "NO_PUBLIC_DIRECT_PDF")
             self.assertEqual(FixtureHandler.pdf_requests, 0)
+
+    def test_acquisition_normalizes_shared_manifest_identities(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.write_manifest(
+                root,
+                [{
+                    "download_id": "  SHARED_MAIN  ",
+                    "study_id": "  SHARED_STUDY  ",
+                    "doi": "https://doi.org/10.1000/SHARED.S1.",
+                    "document_role": "MAIN",
+                    "url": self.base_url + "/paper.pdf",
+                    "target_path": "sources/SHARED_STUDY/MAIN.pdf",
+                    "source_class": "MANUAL_SHARED_TEST",
+                }],
+            )
+
+            receipt = acquire_manifest(manifest, root / "acquired")
+
+            result = receipt["results"][0]
+            self.assertEqual(result["download_id"], "SHARED_MAIN")
+            self.assertEqual(result["study_id"], "SHARED_STUDY")
+            self.assertEqual(result["doi"], "10.1000/shared.s1")
+
+    def test_acquisition_rejects_invalid_shared_manifest_fields(self):
+        invalid_updates = [
+            {"expected_format": "TXT"},
+            {"expected_format": ["PDF"]},
+            {"doi": "https://doi.org/10.1000/shared.s1?credential=hidden"},
+            {"doi": 123},
+        ]
+        for update in invalid_updates:
+            with self.subTest(update=update), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                row = {
+                    "download_id": "SHARED_INVALID",
+                    "study_id": "SHARED_INVALID",
+                    "document_role": "MAIN",
+                    "url": self.base_url + "/paper.pdf",
+                    "target_path": "sources/SHARED_INVALID/MAIN.pdf",
+                    "source_class": "PUBLIC_DIRECT",
+                    **update,
+                }
+                manifest = self.write_manifest(root, [row])
+
+                with self.assertRaises(ManifestError):
+                    acquire_manifest(manifest, root / "acquired")
+
+                self.assertFalse((root / "acquired").exists())
 
     def test_url_preflight_rejects_missing_hosts_and_invalid_ports_before_opener(self):
         cases = [
@@ -1122,6 +1318,67 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
 
                 self.assertFalse(output_root.exists())
 
+    def test_target_path_uses_portable_posix_relative_syntax(self):
+        invalid_paths = [
+            r"sources\S043\MAIN.pdf",
+            "C:/sources/S043/MAIN.pdf",
+            "//server/share/MAIN.pdf",
+            "/absolute/MAIN.pdf",
+            "sources//MAIN.pdf",
+            "sources/./MAIN.pdf",
+            "sources/../MAIN.pdf",
+            "sources/S043/paper.pdf:stream",
+            "sources/S043/CON",
+            "sources/S043/con.pdf",
+            "sources/S043/LPT9.txt",
+            "sources/S043/CONIN$",
+            "sources/S043/trailing.",
+            "sources/S043/trailing ",
+        ]
+        for target_path in invalid_paths:
+            with self.subTest(target_path=target_path), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                manifest = self.write_manifest(
+                    root,
+                    [{"download_id": "PORTABLE", "study_id": "S043", "document_role": "MAIN", "url": self.base_url + "/paper.pdf", "target_path": target_path, "source_class": "PUBLIC_DIRECT"}],
+                )
+                output_root = root / "acquired"
+
+                with self.assertRaises(ManifestError):
+                    acquire_manifest(manifest, output_root)
+
+                self.assertFalse(output_root.exists())
+
+    def test_preflight_rejects_existing_parent_symlink_before_effects(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_root = root / "acquired"
+            real_parent = output_root / "sources/real"
+            real_parent.mkdir(parents=True)
+            alias_parent = output_root / "sources/alias"
+            alias_parent.symlink_to(real_parent, target_is_directory=True)
+            before = {path.relative_to(output_root).as_posix() for path in output_root.rglob("*")}
+            manifest = self.write_manifest(
+                root,
+                [{"download_id": "PARENT_ALIAS", "study_id": "S044", "document_role": "MAIN", "url": self.base_url + "/paper.pdf", "target_path": "sources/alias/MAIN.pdf", "source_class": "PUBLIC_DIRECT"}],
+            )
+            FixtureHandler.pdf_requests = 0
+
+            with self.assertRaises(ManifestError):
+                acquire_manifest(manifest, output_root)
+
+            self.assertEqual(FixtureHandler.pdf_requests, 0)
+            self.assertEqual({path.relative_to(output_root).as_posix() for path in output_root.rglob("*")}, before)
+            self.assertFalse((real_parent / "MAIN.pdf").exists())
+
+    def test_reparse_attribute_is_recognized_without_platform_specific_api(self):
+        synthetic_stat = SimpleNamespace(
+            st_mode=stat.S_IFDIR,
+            st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT,
+        )
+        with mock.patch.object(os, "lstat", return_value=synthetic_stat):
+            self.assertTrue(public_corpus._is_link_or_reparse(Path("synthetic-component")))
+
     def test_extended_credential_keys_are_redacted_from_source_and_landing_outputs(self):
         credential_keys = ["PaSsWoRd", "passwd", "pass", "client_secret", "download_sig"]
         with tempfile.TemporaryDirectory() as tmp:
@@ -1153,6 +1410,57 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
             for secret in secrets:
                 for output in outputs:
                     self.assertNotIn(secret, output)
+
+    def test_query_allowlist_accepts_public_selectors_and_rejects_unknown_keys(self):
+        allowed_query = (
+            "download=1&FORMAT=pdf&type=full&file=paper.pdf&filename=paper.pdf&"
+            "article=A1&doi=10.1000%2Fpublic&id=42&lang=en&locale=en-US&pdf=1&"
+            "view=full&inline=true&sequence=1&isAllowed=y&utm_source=index"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.write_manifest(
+                root,
+                [{"download_id": "QUERY_ALLOWED", "study_id": "QUERY_ALLOWED", "document_role": "MAIN", "url": self.base_url + "/paper.pdf?" + allowed_query, "target_path": "sources/QUERY_ALLOWED/MAIN.pdf", "source_class": "PUBLIC_DIRECT"}],
+            )
+            FixtureHandler.query_pdf_requests = 0
+
+            receipt = acquire_manifest(manifest, root / "acquired")
+
+            self.assertEqual(receipt["results"][0]["status"], "DOWNLOADED")
+            self.assertEqual(FixtureHandler.query_pdf_requests, 1)
+
+        unknown_keys = ["code", "ticket", "jwt", "SAMLResponse", "AWSAccessKeyId"]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            secrets = [f"unknown-query-secret-{index}" for index in range(len(unknown_keys))]
+            downloads = [
+                {
+                    "download_id": f"QUERY_DENIED_{index}",
+                    "study_id": f"QUERY_DENIED_{index}",
+                    "document_role": "MAIN",
+                    "url": self.base_url + f"/paper.pdf?{key}={secrets[index]}",
+                    "landing_page_url": self.base_url + f"/article?{key}=landing-{secrets[index]}",
+                    "target_path": f"sources/QUERY_DENIED_{index}/MAIN.pdf",
+                    "source_class": "PUBLIC_DIRECT",
+                }
+                for index, key in enumerate(unknown_keys)
+            ]
+            manifest = self.write_manifest(root, downloads)
+            FixtureHandler.query_pdf_requests = 0
+
+            receipt = acquire_manifest(manifest, root / "acquired")
+
+            self.assertEqual({row["reason"] for row in receipt["results"]}, {"SENSITIVE_URL_PARAMETER_FORBIDDEN"})
+            self.assertEqual(FixtureHandler.query_pdf_requests, 0)
+            rendered_outputs = "\n".join([
+                json.dumps(receipt),
+                (root / "acquired/manual_acquisition.tsv").read_text(),
+                (root / "acquired/manual_acquisition.html").read_text(),
+            ])
+            for secret in secrets:
+                self.assertNotIn(secret, rendered_outputs)
+                self.assertNotIn(f"landing-{secret}", rendered_outputs)
 
     def test_extended_credential_key_on_redirect_is_rejected_and_redacted(self):
         with tempfile.TemporaryDirectory() as tmp:
