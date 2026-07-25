@@ -13,6 +13,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import urllib.robotparser
+import xml.etree.ElementTree as ET
 import zipfile
 from collections import Counter
 from datetime import datetime, timezone
@@ -21,7 +22,9 @@ from typing import Any
 
 
 USER_AGENT = "review-writer-public-acquisition/1.0"
-SENSITIVE_QUERY_KEYS = {"access_token", "api_key", "apikey", "auth", "authorization", "cookie", "credential", "key", "session", "sessionid", "signature", "token"}
+SENSITIVE_QUERY_KEYS = {"access_token", "api_key", "apikey", "auth", "authorization", "bearer", "cookie", "credential", "key", "pass", "passwd", "password", "pwd", "secret", "session", "sessionid", "sig", "signature", "token"}
+SENSITIVE_QUERY_MARKERS = ("auth", "cookie", "credential", "passwd", "password", "secret", "session", "signature", "token")
+SENSITIVE_QUERY_SEGMENTS = frozenset({"key", "pass", "pwd", "sig"})
 MANUAL_STATUS = "MANUAL_OR_AUTHORIZED_ACCESS_REQUIRED"
 METADATA_FILENAMES = frozenset({"acquisition_receipt.json", "manual_acquisition.tsv", "manual_acquisition.html"})
 REDIRECT_STATUS_CODES = frozenset({301, 302, 303, 307, 308})
@@ -71,6 +74,8 @@ def _sha256_bytes(data: bytes) -> str:
 def _safe_target(output_root: Path, relative: str) -> Path:
     if not isinstance(relative, str) or not relative.strip():
         raise ManifestError("target_path must be a nonempty relative path")
+    if any(ord(character) <= 0x1F or ord(character) == 0x7F for character in relative):
+        raise ManifestError("target_path contains an ASCII control character")
     raw = Path(relative)
     if raw.is_absolute():
         raise ManifestError(f"absolute target_path is forbidden: {relative}")
@@ -140,7 +145,7 @@ def _preflight_manifest(manifest: dict[str, Any], output_root: Path) -> list[dic
 def _safe_url(url: str) -> tuple[bool, str | None, str]:
     parsed = urllib.parse.urlsplit(url)
     keys = {key.lower() for key, _ in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)}
-    has_sensitive_query = any(key in SENSITIVE_QUERY_KEYS or any(marker in key for marker in ("auth", "cookie", "credential", "session", "signature", "token")) or key.endswith(("_key", "-key")) for key in keys)
+    has_sensitive_query = any(_is_sensitive_query_key(key) for key in keys)
     safe_netloc = parsed.netloc.rsplit("@", 1)[-1]
     safe_query = "[REDACTED]" if has_sensitive_query else parsed.query
     report_url = urllib.parse.urlunsplit((parsed.scheme, safe_netloc, parsed.path, safe_query, ""))
@@ -153,6 +158,17 @@ def _safe_url(url: str) -> tuple[bool, str | None, str]:
     if has_sensitive_query:
         return False, "SENSITIVE_URL_PARAMETER_FORBIDDEN", report_url
     return True, None, report_url
+
+
+def _is_sensitive_query_key(key: str) -> bool:
+    normalized = key.casefold()
+    segments = {segment for segment in re.split(r"[^a-z0-9]+", normalized) if segment}
+    return (
+        normalized in SENSITIVE_QUERY_KEYS
+        or any(marker in normalized for marker in SENSITIVE_QUERY_MARKERS)
+        or bool(segments & SENSITIVE_QUERY_SEGMENTS)
+        or normalized.endswith(("_key", "-key"))
+    )
 
 
 def _open_without_redirect(request: urllib.request.Request, timeout_seconds: float):
@@ -222,7 +238,22 @@ def _matches_format(path: Path, expected_format: str) -> bool:
                 return False
             if archive.testzip() is not None:
                 return False
-            return required_content_type in archive.read(content_types_info)
+            content_types = archive.read(content_types_info)
+            try:
+                root = ET.fromstring(content_types)
+            except ET.ParseError:
+                return False
+            if not isinstance(root.tag, str) or root.tag.rsplit("}", 1)[-1] != "Types":
+                return False
+            required_part_name = f"/{required_part}"
+            required_content_type_text = required_content_type.decode("ascii")
+            return any(
+                isinstance(element.tag, str)
+                and element.tag.rsplit("}", 1)[-1] == "Override"
+                and element.attrib.get("PartName") == required_part_name
+                and element.attrib.get("ContentType") == required_content_type_text
+                for element in root.iter()
+            )
     except (KeyError, RuntimeError, ValueError, zipfile.BadZipFile, zipfile.LargeZipFile):
         return False
 

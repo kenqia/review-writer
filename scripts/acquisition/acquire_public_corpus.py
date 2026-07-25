@@ -58,6 +58,9 @@ def main() -> int:
     except ManifestError:
         print("error: invalid or unsafe acquisition manifest", file=sys.stderr)
         return 2
+    except OSError:
+        print("error: local acquisition I/O failure", file=sys.stderr)
+        return 2
     print(json.dumps({"manifest_sha256": receipt["manifest_sha256"], "counts": receipt["counts"], "manual_queue_count": receipt["manual_queue_count"]}, sort_keys=True))
     return 0
 

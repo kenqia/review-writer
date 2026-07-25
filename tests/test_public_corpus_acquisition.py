@@ -21,25 +21,41 @@ from review_writer.acquisition.public_corpus import ManifestError, acquire_manif
 PDF_BYTES = b"%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF\n"
 
 
-def make_ooxml_bytes(main_part: str, content_type: str) -> bytes:
+def make_ooxml_with_content_types(main_part: str, content_types_xml: str) -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(
-            "[Content_Types].xml",
-            f'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/{main_part}" ContentType="{content_type}"/></Types>',
-        )
+        archive.writestr("[Content_Types].xml", content_types_xml)
         archive.writestr(main_part, "<synthetic/>")
     return buffer.getvalue()
 
 
-DOCX_BYTES = make_ooxml_bytes("word/document.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml")
-XLSX_BYTES = make_ooxml_bytes("xl/workbook.xml", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml")
+def make_ooxml_bytes(main_part: str, content_type: str) -> bytes:
+    return make_ooxml_with_content_types(
+        main_part,
+        f'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/{main_part}" ContentType="{content_type}"/></Types>',
+    )
+
+
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
+DOCX_BYTES = make_ooxml_bytes("word/document.xml", DOCX_MIME)
+XLSX_BYTES = make_ooxml_bytes("xl/workbook.xml", XLSX_MIME)
 CORRUPT_ZIP_BYTES = b"PK\x03\x04not-a-valid-zip"
+MALFORMED_TYPES_DOCX_BYTES = make_ooxml_with_content_types("word/document.xml", f"<Types>{DOCX_MIME}")
+FAKE_MIME_DOCX_BYTES = make_ooxml_with_content_types(
+    "word/document.xml",
+    f'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="txt" ContentType="{DOCX_MIME}"/><Override PartName="/word/document.xml" ContentType="application/octet-stream"/></Types>',
+)
+WRONG_MAIN_TYPE_DOCX_BYTES = make_ooxml_with_content_types(
+    "word/document.xml",
+    f'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="{XLSX_MIME}"/><Override PartName="/other.xml" ContentType="{DOCX_MIME}"/></Types>',
+)
 
 
 class FixtureHandler(BaseHTTPRequestHandler):
     pdf_requests = 0
     redirect_loop_requests = 0
+    redirect_new_credential_requests = 0
     redirect_sensitive_requests = 0
     redirect_target_url = ""
 
@@ -57,6 +73,10 @@ class FixtureHandler(BaseHTTPRequestHandler):
             body = b""
             self.send_response(302)
             self.send_header("Location", "/paper.pdf?token=redirect-secret")
+        elif self.path == "/redirect-new-credential":
+            body = b""
+            self.send_response(302)
+            self.send_header("Location", "/paper.pdf?download_sig=redirect-credential-secret")
         elif self.path == "/redirect-loop":
             type(self).redirect_loop_requests += 1
             body = b""
@@ -68,6 +88,11 @@ class FixtureHandler(BaseHTTPRequestHandler):
             self.send_header("Location", type(self).redirect_target_url)
         elif self.path.startswith("/paper.pdf?token="):
             type(self).redirect_sensitive_requests += 1
+            body = PDF_BYTES
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+        elif self.path.startswith("/paper.pdf?download_sig="):
+            type(self).redirect_new_credential_requests += 1
             body = PDF_BYTES
             self.send_response(200)
             self.send_header("Content-Type", "application/pdf")
@@ -85,6 +110,18 @@ class FixtureHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
         elif self.path == "/xlsx-as-docx.docx":
             body = XLSX_BYTES
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        elif self.path == "/malformed-types.docx":
+            body = MALFORMED_TYPES_DOCX_BYTES
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        elif self.path == "/fake-mime.docx":
+            body = FAKE_MIME_DOCX_BYTES
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        elif self.path == "/wrong-main-type.docx":
+            body = WRONG_MAIN_TYPE_DOCX_BYTES
             self.send_response(200)
             self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
         else:
@@ -737,6 +774,133 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
 
             self.assertEqual(completed.returncode, 2)
             self.assertEqual(completed.stderr, "error: invalid or unsafe acquisition manifest\n")
+            self.assertNotIn("Traceback", completed.stderr)
+
+    def test_target_path_rejects_ascii_control_characters_before_output(self):
+        for control in ["\x00", "\n", "\r", "\t", "\x1f", "\x7f"]:
+            with self.subTest(codepoint=ord(control)), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                target_path = f"sources/S032/bad{control}name.pdf"
+                manifest = self.write_manifest(
+                    root,
+                    [{"download_id": "S032_MAIN", "study_id": "S032", "document_role": "MAIN", "url": self.base_url + "/paper.pdf", "target_path": target_path, "source_class": "PUBLIC_DIRECT"}],
+                )
+                output_root = root / "acquired"
+
+                with self.assertRaises(ManifestError):
+                    acquire_manifest(manifest, output_root)
+
+                self.assertFalse(output_root.exists())
+
+    def test_extended_credential_keys_are_redacted_from_source_and_landing_outputs(self):
+        credential_keys = ["PaSsWoRd", "passwd", "pass", "client_secret", "download_sig"]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            downloads = []
+            secrets = []
+            for index, key in enumerate(credential_keys):
+                source_secret = f"source-credential-value-{index}"
+                landing_secret = f"landing-credential-value-{index}"
+                secrets.extend([source_secret, landing_secret])
+                downloads.append({
+                    "download_id": f"S033_{index}",
+                    "study_id": f"S033_{index}",
+                    "document_role": "MAIN",
+                    "url": f"http://example.com/paper.pdf?{key}={source_secret}",
+                    "landing_page_url": f"https://example.com/article?{key}={landing_secret}",
+                    "target_path": f"sources/S033_{index}/MAIN.pdf",
+                    "source_class": "PUBLIC_DIRECT",
+                })
+            manifest = self.write_manifest(root, downloads)
+
+            receipt = acquire_manifest(manifest, root / "acquired")
+
+            outputs = [
+                json.dumps(receipt),
+                (root / "acquired/manual_acquisition.tsv").read_text(),
+                (root / "acquired/manual_acquisition.html").read_text(),
+            ]
+            for secret in secrets:
+                for output in outputs:
+                    self.assertNotIn(secret, output)
+
+    def test_extended_credential_key_on_redirect_is_rejected_and_redacted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.write_manifest(
+                root,
+                [{"download_id": "S034_MAIN", "study_id": "S034", "document_role": "MAIN", "url": self.base_url + "/redirect-new-credential", "target_path": "sources/S034/MAIN.pdf", "source_class": "PUBLIC_DIRECT"}],
+            )
+            FixtureHandler.redirect_new_credential_requests = 0
+
+            receipt = acquire_manifest(manifest, root / "acquired")
+
+            self.assertEqual(receipt["results"][0]["reason"], "SENSITIVE_URL_PARAMETER_FORBIDDEN")
+            outputs = [
+                json.dumps(receipt),
+                (root / "acquired/manual_acquisition.tsv").read_text(),
+                (root / "acquired/manual_acquisition.html").read_text(),
+            ]
+            self.assertTrue(all("redirect-credential-secret" not in output for output in outputs))
+            self.assertEqual(FixtureHandler.redirect_new_credential_requests, 0)
+            self.assertFalse((root / "acquired/sources/S034/MAIN.pdf").exists())
+
+    def test_ooxml_content_types_requires_valid_main_part_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.write_manifest(
+                root,
+                [
+                    {"download_id": "S035_MALFORMED", "study_id": "S035", "document_role": "SI", "url": self.base_url + "/malformed-types.docx", "target_path": "sources/S035/SI/malformed.docx", "source_class": "PUBLIC_DIRECT", "expected_format": "DOCX"},
+                    {"download_id": "S036_FAKE", "study_id": "S036", "document_role": "SI", "url": self.base_url + "/fake-mime.docx", "target_path": "sources/S036/SI/fake.docx", "source_class": "PUBLIC_DIRECT", "expected_format": "DOCX"},
+                    {"download_id": "S037_WRONG", "study_id": "S037", "document_role": "SI", "url": self.base_url + "/wrong-main-type.docx", "target_path": "sources/S037/SI/wrong.docx", "source_class": "PUBLIC_DIRECT", "expected_format": "DOCX"},
+                ],
+            )
+
+            receipt = acquire_manifest(manifest, root / "acquired")
+
+            self.assertEqual([row["reason"] for row in receipt["results"]], ["RESPONSE_FORMAT_MISMATCH"] * 3)
+            self.assertFalse((root / "acquired/sources/S035/SI/malformed.docx").exists())
+            self.assertFalse((root / "acquired/sources/S036/SI/fake.docx").exists())
+            self.assertFalse((root / "acquired/sources/S037/SI/wrong.docx").exists())
+
+    def test_cli_reports_local_oserror_without_traceback_or_input_details(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.write_manifest(root, [])
+            output_root = root / "local-secret-value"
+            output_root.write_text("not a directory")
+
+            completed = subprocess.run(
+                [sys.executable, str(Path(__file__).resolve().parents[1] / "scripts/acquisition/acquire_public_corpus.py"), "--manifest", str(manifest), "--output-root", str(output_root)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 2)
+            self.assertEqual(completed.stderr, "error: local acquisition I/O failure\n")
+            self.assertNotIn(str(output_root), completed.stdout + completed.stderr)
+            self.assertNotIn("local-secret-value", completed.stdout + completed.stderr)
+            self.assertNotIn("Traceback", completed.stderr)
+
+    def test_cli_reports_invalid_manifest_encoding_without_traceback_or_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "decode-secret-value.json"
+            manifest.write_bytes(b"\xff\xfe\xfa")
+
+            completed = subprocess.run(
+                [sys.executable, str(Path(__file__).resolve().parents[1] / "scripts/acquisition/acquire_public_corpus.py"), "--manifest", str(manifest), "--output-root", str(root / "acquired")],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 2)
+            self.assertEqual(completed.stderr, "error: invalid or unsafe acquisition manifest\n")
+            self.assertNotIn(str(manifest), completed.stdout + completed.stderr)
+            self.assertNotIn("decode-secret-value", completed.stdout + completed.stderr)
             self.assertNotIn("Traceback", completed.stderr)
 
 

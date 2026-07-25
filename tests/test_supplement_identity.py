@@ -40,8 +40,8 @@ class SupplementIdentityTests(unittest.TestCase):
                 {"candidate_id": "C1", "doi": "10.1000/a.s1"}, {"candidate_id": "C2", "doi": "10.1000/plain"},
             ]) + "\n")
             manifest.write_text(json.dumps({"schema_version": "public-corpus-acquisition.v1", "downloads": [
-                {"download_id": "C1_MAIN", "study_id": "C1", "doi": "10.1000/a.s1", "document_role": "MAIN"},
-                {"download_id": "C2_MAIN", "study_id": "C2", "doi": "10.1000/plain", "document_role": "MAIN"},
+                {"download_id": "C1_MAIN", "study_id": "C1", "doi": "10.1000/a.s1", "document_role": "MAIN", "url": "https://example.com/C1.pdf", "target_path": "sources/C1/MAIN.pdf", "source_class": "PUBLIC_DIRECT"},
+                {"download_id": "C2_MAIN", "study_id": "C2", "doi": "10.1000/plain", "document_role": "MAIN", "url": "https://example.com/C2.pdf", "target_path": "sources/C2/MAIN.pdf", "source_class": "PUBLIC_DIRECT"},
             ]}))
             audit = audit_supplement_reports(pool, manifest)
             self.assertEqual(audit["counts"], {"candidate_pool_suffix_reports": 1, "acquisition_manifest_suffix_reports": 1})
@@ -129,12 +129,72 @@ class SupplementIdentityTests(unittest.TestCase):
             pool = root / "pool.jsonl"
             manifest = root / "manifest.json"
             pool.write_text(json.dumps({"candidate_id": "C0"}) + "\n")
-            manifest.write_text(json.dumps({"schema_version": "public-corpus-acquisition.v1", "downloads": [{"download_id": "D0"}]}))
+            manifest.write_text(json.dumps({"schema_version": "public-corpus-acquisition.v1", "downloads": [{
+                "download_id": "D0",
+                "study_id": "C0",
+                "document_role": "MAIN",
+                "url": "https://example.com/paper.pdf",
+                "target_path": "sources/C0/MAIN.pdf",
+                "source_class": "PUBLIC_DIRECT",
+            }]}))
 
             audit = audit_supplement_reports(pool, manifest)
 
             self.assertEqual(audit["records"], [])
             self.assertEqual(audit["counts"], {"candidate_pool_suffix_reports": 0, "acquisition_manifest_suffix_reports": 0})
+
+    def test_acquisition_rows_require_all_six_preflight_fields(self):
+        required_fields = ["download_id", "study_id", "document_role", "url", "target_path", "source_class"]
+        complete = {
+            "download_id": "D1",
+            "study_id": "C1",
+            "document_role": "MAIN",
+            "url": "https://example.com/paper.pdf",
+            "target_path": "sources/C1/MAIN.pdf",
+            "source_class": "PUBLIC_DIRECT",
+        }
+        for missing in required_fields:
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                pool = root / "pool.jsonl"
+                manifest = root / "manifest.json"
+                pool.write_text(json.dumps({"candidate_id": "C1"}) + "\n")
+                row = dict(complete)
+                row.pop(missing)
+                manifest.write_text(json.dumps({"schema_version": "public-corpus-acquisition.v1", "downloads": [row]}))
+
+                with self.assertRaises(ValueError):
+                    audit_supplement_reports(pool, manifest)
+
+    def test_acquisition_rows_reject_unsupported_role_and_invalid_field_shapes(self):
+        complete = {
+            "download_id": "D1",
+            "study_id": "C1",
+            "document_role": "MAIN",
+            "url": "https://example.com/paper.pdf",
+            "target_path": "sources/C1/MAIN.pdf",
+            "source_class": "PUBLIC_DIRECT",
+        }
+        invalid_updates = [
+            {"download_id": ""},
+            {"study_id": ""},
+            {"document_role": "SUPPLEMENT"},
+            {"document_role": ["MAIN"]},
+            {"url": None},
+            {"target_path": 123},
+            {"source_class": []},
+        ]
+        for update in invalid_updates:
+            with self.subTest(update=update), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                pool = root / "pool.jsonl"
+                manifest = root / "manifest.json"
+                pool.write_text(json.dumps({"candidate_id": "C1"}) + "\n")
+                row = {**complete, **update}
+                manifest.write_text(json.dumps({"schema_version": "public-corpus-acquisition.v1", "downloads": [row]}))
+
+                with self.assertRaises(ValueError):
+                    audit_supplement_reports(pool, manifest)
 
 
 if __name__ == "__main__":

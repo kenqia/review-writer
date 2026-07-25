@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 
 _DOI_RE = re.compile(r"^10\.\d{4,9}/[-._;()/:a-z0-9]+$", re.IGNORECASE)
 _SUPPLEMENT_RE = re.compile(r"^(?P<parent>.+)\.(?P<suffix>s\d+|supp\d*)$", re.IGNORECASE)
+_ACQUISITION_REQUIRED_FIELDS = frozenset({"download_id", "study_id", "document_role", "url", "target_path", "source_class"})
 
 
 class SupplementAuditError(ValueError):
@@ -135,7 +136,14 @@ def _load_acquisition_manifest(path: Path) -> list[dict[str, Any]]:
     downloads: list[dict[str, Any]] = []
     seen: set[str] = set()
     for parsed in manifest["downloads"]:
+        if not isinstance(parsed, dict) or not _ACQUISITION_REQUIRED_FIELDS.issubset(parsed):
+            raise SupplementAuditError("acquisition rows require download_id, study_id, document_role, url, target_path, and source_class")
         download = _validated_identity_record(parsed, id_field="download_id", source="acquisition manifest")
+        for field in ("study_id", "url", "target_path", "source_class"):
+            if not isinstance(download[field], str) or not download[field].strip():
+                raise SupplementAuditError(f"acquisition rows require a nonempty string {field}")
+        if not isinstance(download["document_role"], str) or download["document_role"] not in {"MAIN", "SI"}:
+            raise SupplementAuditError("acquisition rows require document_role MAIN or SI")
         if download["download_id"] in seen:
             raise SupplementAuditError("download_id values must be unique")
         seen.add(download["download_id"])
