@@ -40,7 +40,7 @@ USER_AGENT = (
     "(+https://github.com/XuehaiWang/review-writer)"
 )
 DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$", re.IGNORECASE)
-OPENALEX_ID_RE = re.compile(r"^W[A-Z0-9]+$", re.IGNORECASE)
+OPENALEX_ID_RE = re.compile(r"^W[0-9]+$")
 SAFE_ERROR_CLASS_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,79}$")
 PROVIDER_PRIORITY = {"openalex": 0, "crossref": 1}
 
@@ -118,10 +118,28 @@ def _valid_doi(value: Any) -> bool:
 def _normalize_openalex_id(value: Any) -> str:
     if not isinstance(value, str):
         return ""
-    candidate = value.strip().rstrip("/").rsplit("/", 1)[-1]
-    if not OPENALEX_ID_RE.fullmatch(candidate):
+    raw_value = value.strip()
+    if OPENALEX_ID_RE.fullmatch(raw_value):
+        return raw_value
+    try:
+        parsed = urllib.parse.urlsplit(raw_value)
+        port = parsed.port
+    except ValueError:
         return ""
-    return "W" + candidate[1:]
+    if (
+        parsed.scheme != "https"
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        return ""
+    if parsed.hostname == "openalex.org" and re.fullmatch(r"/W[0-9]+", parsed.path):
+        return parsed.path[1:]
+    if parsed.hostname == "api.openalex.org" and re.fullmatch(r"/works/W[0-9]+", parsed.path):
+        return parsed.path.rsplit("/", 1)[-1]
+    return ""
 
 
 def validate_search_plan(plan: dict) -> dict:
@@ -404,7 +422,7 @@ def _openalex_candidate(item: dict[str, Any], provenance: dict[str, Any]) -> dic
     }
 
 
-def _validate_seed_work(payload: Any, seed_doi: str) -> dict[str, Any]:
+def _validate_seed_work(payload: Any, seed_doi: str) -> tuple[dict[str, Any], str]:
     if not isinstance(payload, dict):
         raise TypeError("OpenAlex seed response must be a JSON object")
     identifiers = payload.get("ids")
@@ -413,7 +431,7 @@ def _validate_seed_work(payload: Any, seed_doi: str) -> dict[str, Any]:
     resolved_doi = _normalize_doi(payload.get("doi") or ids.get("doi"))
     if not openalex_id or resolved_doi != seed_doi:
         raise ValueError("OpenAlex seed response identity is invalid")
-    return payload
+    return payload, openalex_id
 
 
 def _crossref_candidate(item: dict[str, Any], provenance: dict[str, Any]) -> dict[str, Any]:
@@ -585,6 +603,14 @@ def _deduplicate(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if (keys := _identity_keys(candidate))
     ]
     parents = list(range(len(keyed_candidates)))
+    component_dois = [
+        {doi} if (doi := _normalize_doi(candidate.get("doi"))) and _valid_doi(doi) else set()
+        for candidate, _keys in keyed_candidates
+    ]
+    component_openalex_ids = [
+        {openalex_id} if (openalex_id := _normalize_openalex_id(candidate.get("openalex_id"))) else set()
+        for candidate, _keys in keyed_candidates
+    ]
 
     def find(index: int) -> int:
         while parents[index] != index:
@@ -598,14 +624,34 @@ def _deduplicate(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
             return
         lower, higher = sorted((left_root, right_root))
         parents[higher] = lower
+        component_dois[lower].update(component_dois[higher])
+        component_openalex_ids[lower].update(component_openalex_ids[higher])
 
     identity_owner: dict[str, int] = {}
     for index, (_candidate, keys) in enumerate(keyed_candidates):
         for key in keys:
+            if key.startswith("title:"):
+                continue
             if key in identity_owner:
                 union(index, identity_owner[key])
             else:
                 identity_owner[key] = index
+
+    title_groups: dict[str, list[int]] = {}
+    for index, (candidate, _keys) in enumerate(keyed_candidates):
+        title = _normalized_title(candidate.get("title", ""))
+        if title:
+            title_groups.setdefault(title, []).append(index)
+    for title in sorted(title_groups):
+        roots = sorted({find(index) for index in title_groups[title]})
+        if len(roots) < 2:
+            continue
+        doi_roots = [root for root in roots if component_dois[root]]
+        openalex_roots = [root for root in roots if component_openalex_ids[root]]
+        if len(doi_roots) > 1 or len(openalex_roots) > 1:
+            continue
+        for root in roots[1:]:
+            union(roots[0], root)
 
     components: dict[int, list[dict[str, Any]]] = {}
     for index, (candidate, _keys) in enumerate(keyed_candidates):
@@ -715,9 +761,10 @@ def build_candidate_pool(
 
     for seed_doi in validated["seed_dois"]:
         seed_work: dict[str, Any] | None = None
+        seed_openalex_id = ""
         try:
             payload = transport.get_json(_seed_url(seed_doi), timeout_seconds)
-            seed_work = _validate_seed_work(payload, seed_doi)
+            seed_work, seed_openalex_id = _validate_seed_work(payload, seed_doi)
             raw_seed_resolution_hits += 1
             seed_candidate = _openalex_candidate(
                 seed_work,
@@ -736,7 +783,6 @@ def build_candidate_pool(
 
         if seed_work is None:
             continue
-        seed_openalex_id = _normalize_openalex_id(seed_work.get("id"))
         references = seed_work.get("referenced_works")
         if isinstance(references, list):
             reference_ids = list(

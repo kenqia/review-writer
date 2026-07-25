@@ -16,6 +16,7 @@ from review_writer.discovery import scholarly as scholarly_module
 from review_writer.discovery.scholarly import (
     UrllibScholarlyTransport,
     _deduplicate,
+    _normalize_openalex_id,
     build_candidate_pool,
     validate_search_plan,
 )
@@ -512,6 +513,49 @@ def test_dedup_closes_transitive_identity_intersections() -> None:
     }
 
 
+def test_same_title_does_not_merge_conflicting_dois() -> None:
+    first = _raw_candidate(
+        provider="crossref",
+        query="first DOI",
+        title="Shared but Ambiguous Title",
+        doi="10.1000/conflict-a",
+    )
+    second = _raw_candidate(
+        provider="crossref",
+        query="second DOI",
+        title="shared but ambiguous title",
+        doi="10.1000/conflict-b",
+    )
+
+    candidates = _deduplicate([first, second])
+
+    assert len(candidates) == 2
+    assert {candidate["doi"] for candidate in candidates} == {
+        "10.1000/conflict-a",
+        "10.1000/conflict-b",
+    }
+
+
+def test_same_title_does_not_merge_conflicting_openalex_ids() -> None:
+    first = _raw_candidate(
+        provider="openalex",
+        query="first OpenAlex",
+        title="Shared OpenAlex Title",
+        openalex_id="W3100",
+    )
+    second = _raw_candidate(
+        provider="openalex",
+        query="second OpenAlex",
+        title="shared openalex title",
+        openalex_id="W3200",
+    )
+
+    candidates = _deduplicate([first, second])
+
+    assert len(candidates) == 2
+    assert {candidate["openalex_id"] for candidate in candidates} == {"W3100", "W3200"}
+
+
 def test_candidate_pool_is_identical_when_provider_results_are_reversed() -> None:
     plan = {
         "schema_version": "scholarly-search-plan.v1",
@@ -595,6 +639,17 @@ def test_validation_normalizes_seed_dois_and_rejects_bool_years() -> None:
         validate_search_plan(invalid_doi)
 
 
+def test_openalex_identity_accepts_only_canonical_host_and_numeric_format() -> None:
+    assert _normalize_openalex_id("W123") == "W123"
+    assert _normalize_openalex_id("https://openalex.org/W123") == "W123"
+    assert _normalize_openalex_id("https://api.openalex.org/works/W123") == "W123"
+
+    assert _normalize_openalex_id("https://example.org/W123") == ""
+    assert _normalize_openalex_id("https://openalex.org/WNOTREAL") == ""
+    assert _normalize_openalex_id("WNOTREAL") == ""
+    assert _normalize_openalex_id("http://openalex.org/W123") == ""
+
+
 def test_search_plan_requires_explicit_seed_dois_list() -> None:
     missing_seed_dois = search_plan()
     missing_seed_dois.pop("seed_dois")
@@ -669,8 +724,12 @@ def test_malformed_search_envelope_warns_without_erasing_other_provider(
         {"private_marker": "SEED_PAYLOAD_MUST_NOT_LEAK"},
         _openalex_work("", "Seed Missing OpenAlex Identity", 2020, doi="10.1000/seed"),
         _openalex_work("W900", "Seed With Wrong DOI", 2020, doi="10.1000/not-the-seed"),
+        {
+            **_openalex_work("W900", "Seed With Foreign Identity Host", 2020, doi="10.1000/seed"),
+            "id": "https://example.org/W900",
+        },
     ],
-    ids=["arbitrary-object", "missing-openalex-id", "mismatched-doi"],
+    ids=["arbitrary-object", "missing-openalex-id", "mismatched-doi", "foreign-identity-host"],
 )
 def test_invalid_seed_work_identity_warns_without_counting_success(seed_payload: dict) -> None:
     plan = {
@@ -698,6 +757,33 @@ def test_invalid_seed_work_identity_warns_without_counting_success(seed_payload:
     ]
     assert len(transport.calls) == 3
     assert "MUST_NOT_LEAK" not in json.dumps(pool["warnings"], sort_keys=True)
+
+
+def test_seed_ids_openalex_fallback_drives_exactly_one_forward_request() -> None:
+    seed_payload = _openalex_work("", "Seed With IDs Fallback", 2020, doi="10.1000/seed")
+    seed_payload["ids"] = {
+        "openalex": "https://openalex.org/W901",
+        "doi": "https://doi.org/10.1000/seed",
+    }
+    plan = {
+        "schema_version": "scholarly-search-plan.v1",
+        "from_year": 2017,
+        "to_year": 2025,
+        "queries": ["seed fallback fixture"],
+        "seed_dois": ["10.1000/seed"],
+    }
+    transport = InvalidSeedTransport(seed_payload)
+
+    pool = build_candidate_pool(plan, transport=transport)
+
+    forward_filters = [
+        parse_qs(urlsplit(url).query)["filter"][0]
+        for url in transport.calls
+        if parse_qs(urlsplit(url).query).get("filter", [""])[0].startswith("cites:")
+    ]
+    assert pool["counts"]["raw_seed_resolution_hits"] == 1
+    assert pool["warnings"] == []
+    assert forward_filters == ["cites:W901"]
 
 
 @pytest.mark.parametrize(
