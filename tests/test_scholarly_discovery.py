@@ -15,6 +15,7 @@ import pytest
 from review_writer.discovery import scholarly as scholarly_module
 from review_writer.discovery.scholarly import (
     UrllibScholarlyTransport,
+    _deduplicate,
     build_candidate_pool,
     validate_search_plan,
 )
@@ -118,6 +119,41 @@ def _crossref_lifecycle_only_work() -> dict:
         }
     )
     return item
+
+
+def _raw_candidate(
+    *,
+    provider: str,
+    query: str,
+    title: str,
+    doi: str = "",
+    openalex_id: str = "",
+    authors: list[str] | None = None,
+    year: int | None = None,
+    journal: str = "",
+    landing_page_url: str = "",
+    abstract: str = "",
+) -> dict:
+    return {
+        "title": title,
+        "authors": authors or [],
+        "year": year,
+        "journal": journal,
+        "doi": doi,
+        "openalex_id": openalex_id,
+        "landing_page_url": landing_page_url,
+        "oa_locations": [],
+        "abstract": abstract,
+        "provenance": [
+            {
+                "provider": provider,
+                "route": "/works",
+                "operation": "query_search",
+                "query": query,
+                "bounded_pass": 1,
+            }
+        ],
+    }
 
 
 class _RedirectingOpener:
@@ -276,6 +312,122 @@ class FakeTransport:
         return _openalex_work("W301", "Bounded Forward Citation", 2024, doi="10.1000/forward")
 
 
+class OrderingTransport:
+    def __init__(self, *, reverse_openalex_results: bool) -> None:
+        self.reverse_openalex_results = reverse_openalex_results
+
+    def get_json(self, url: str, timeout_seconds: float) -> dict:
+        assert timeout_seconds == 20.0
+        parsed = urlsplit(url)
+        params = parse_qs(parsed.query)
+        if parsed.netloc == "api.openalex.org" and "search" in params:
+            rows = self._openalex_rows()
+            if self.reverse_openalex_results:
+                rows.reverse()
+            return {"results": rows}
+        if parsed.netloc == "api.crossref.org" and "query.bibliographic" in params:
+            crossref = _crossref_work(
+                "Crossref title intentionally longer than either OpenAlex title",
+                2010,
+                doi="10.1000/order-independent",
+                abstract="<jats:p>Crossref abstract intentionally much longer.</jats:p>",
+            )
+            crossref["author"] = [
+                {"given": "Crossref", "family": "One"},
+                {"given": "Crossref", "family": "Two"},
+                {"given": "Crossref", "family": "Three"},
+            ]
+            return {"message": {"items": [crossref]}}
+        raise AssertionError("ordering fixture received an unexpected route")
+
+    @staticmethod
+    def _openalex_rows() -> list[dict]:
+        first = _openalex_work(
+            "W700",
+            "Short title",
+            2020,
+            doi="10.1000/order-independent",
+            abstract_inverted_index={"Zulu": [0], "data": [1]},
+        )
+        first["authorships"] = [{"author": {"display_name": "Solo Author"}}]
+        first["primary_location"] = {
+            "landing_page_url": "https://example.org/z",
+            "source": {"display_name": "Zulu Venue"},
+        }
+        second = _openalex_work(
+            "W700",
+            "A substantially longer OpenAlex title",
+            2021,
+            doi="10.1000/order-independent",
+            abstract_inverted_index={"Beta": [0], "data": [1]},
+        )
+        second["primary_location"] = {
+            "landing_page_url": "https://example.org/a",
+            "source": {"display_name": "Beta Venue"},
+        }
+        return [first, second]
+
+
+class EnvelopeTransport:
+    def __init__(self, *, malformed_provider: str, malformed_payload: dict) -> None:
+        self.malformed_provider = malformed_provider
+        self.malformed_payload = malformed_payload
+
+    def get_json(self, url: str, timeout_seconds: float) -> dict:
+        assert timeout_seconds == 20.0
+        parsed = urlsplit(url)
+        params = parse_qs(parsed.query)
+        if parsed.netloc == "api.openalex.org" and "search" in params:
+            if self.malformed_provider == "openalex":
+                return copy.deepcopy(self.malformed_payload)
+            return {
+                "results": [
+                    _openalex_work(
+                        "W810",
+                        "Valid OpenAlex Route Result",
+                        2020,
+                        doi="10.1000/valid-openalex",
+                    )
+                ]
+            }
+        if parsed.netloc == "api.crossref.org" and "query.bibliographic" in params:
+            if self.malformed_provider == "crossref":
+                return copy.deepcopy(self.malformed_payload)
+            return {
+                "message": {
+                    "items": [
+                        _crossref_work(
+                            "Valid Crossref Route Result",
+                            2020,
+                            doi="10.1000/valid-crossref",
+                        )
+                    ]
+                }
+            }
+        raise AssertionError("envelope fixture received an unexpected route")
+
+
+class InvalidSeedTransport:
+    def __init__(self, seed_payload: dict) -> None:
+        self.seed_payload = seed_payload
+        self.calls: list[str] = []
+
+    def get_json(self, url: str, timeout_seconds: float) -> dict:
+        assert timeout_seconds == 20.0
+        self.calls.append(url)
+        parsed = urlsplit(url)
+        params = parse_qs(parsed.query)
+        if parsed.netloc == "api.crossref.org":
+            return {"message": {"items": []}}
+        if parsed.path.startswith("/works/https://doi.org/"):
+            return copy.deepcopy(self.seed_payload)
+        if "search" in params:
+            return {"results": []}
+        if params.get("filter", [""])[0].startswith(("cites:", "openalex:")):
+            return {"results": []}
+        raise AssertionError("seed fixture received an unexpected route")
+
+
 def _query_calls(transport: FakeTransport, host: str) -> list[str]:
     return [
         url
@@ -294,6 +446,99 @@ def test_doi_dedup_retains_all_query_provenance() -> None:
     assert len(rows) == 1
     assert {item["query"] for item in rows[0]["provenance"]} == set(QUERIES)
     assert pool["counts"]["unique_candidates"] == len(pool["candidates"])
+
+
+def test_dedup_merges_rich_doi_openalex_record_with_sparse_openalex_record() -> None:
+    rich = _raw_candidate(
+        provider="openalex",
+        query="rich query",
+        title="Rich Canonical Scholarly Record",
+        doi="10.1000/rich-sparse",
+        openalex_id="W1000",
+        authors=["Ada Rich", "Bo Rich"],
+        year=2021,
+        journal="Rich Journal",
+        abstract="Rich abstract metadata.",
+    )
+    sparse = _raw_candidate(
+        provider="openalex",
+        query="sparse query",
+        title="Sparse Record",
+        openalex_id="W1000",
+    )
+
+    candidates = _deduplicate([rich, sparse])
+
+    assert len(candidates) == 1
+    assert candidates[0]["doi"] == "10.1000/rich-sparse"
+    assert candidates[0]["openalex_id"] == "W1000"
+    assert candidates[0]["title"] == "Rich Canonical Scholarly Record"
+    assert {item["query"] for item in candidates[0]["provenance"]} == {
+        "rich query",
+        "sparse query",
+    }
+
+
+def test_dedup_closes_transitive_identity_intersections() -> None:
+    doi_and_openalex = _raw_candidate(
+        provider="openalex",
+        query="doi-openalex",
+        title="Primary Identity Record",
+        doi="10.1000/transitive",
+        openalex_id="W2000",
+    )
+    openalex_and_title = _raw_candidate(
+        provider="openalex",
+        query="openalex-title",
+        title="Bridge Identity Title",
+        openalex_id="W2000",
+    )
+    title_only = _raw_candidate(
+        provider="crossref",
+        query="title-only",
+        title="  bridge   identity title  ",
+        abstract="Metadata reached through the title bridge.",
+    )
+
+    candidates = _deduplicate([doi_and_openalex, openalex_and_title, title_only])
+
+    assert len(candidates) == 1
+    assert candidates[0]["doi"] == "10.1000/transitive"
+    assert candidates[0]["openalex_id"] == "W2000"
+    assert {item["query"] for item in candidates[0]["provenance"]} == {
+        "doi-openalex",
+        "openalex-title",
+        "title-only",
+    }
+
+
+def test_candidate_pool_is_identical_when_provider_results_are_reversed() -> None:
+    plan = {
+        "schema_version": "scholarly-search-plan.v1",
+        "from_year": 2017,
+        "to_year": 2025,
+        "queries": ["ordering fixture"],
+        "seed_dois": [],
+    }
+
+    forward = build_candidate_pool(
+        plan,
+        transport=OrderingTransport(reverse_openalex_results=False),
+    )
+    reverse = build_candidate_pool(
+        plan,
+        transport=OrderingTransport(reverse_openalex_results=True),
+    )
+
+    assert forward == reverse
+    assert len(forward["candidates"]) == 1
+    candidate = forward["candidates"][0]
+    assert candidate["title"] == "A substantially longer OpenAlex title"
+    assert candidate["authors"] == ["Ada Example", "Bo Researcher"]
+    assert candidate["year"] == 2020
+    assert candidate["journal"] == "Beta Venue"
+    assert candidate["landing_page_url"] == "https://example.org/a"
+    assert candidate["abstract"] == "Beta data"
 
 
 def test_provenance_uses_operation_with_bounded_context() -> None:
@@ -360,6 +605,99 @@ def test_search_plan_requires_explicit_seed_dois_list() -> None:
     empty_seed_dois = search_plan()
     empty_seed_dois["seed_dois"] = []
     assert validate_search_plan(empty_seed_dois)["seed_dois"] == []
+
+
+@pytest.mark.parametrize(
+    ("malformed_provider", "malformed_payload", "surviving_doi"),
+    [
+        (
+            "openalex",
+            {"private_marker": "OPENALEX_PAYLOAD_MUST_NOT_LEAK"},
+            "10.1000/valid-crossref",
+        ),
+        (
+            "crossref",
+            {"private_marker": "CROSSREF_MESSAGE_MUST_NOT_LEAK"},
+            "10.1000/valid-openalex",
+        ),
+        (
+            "crossref",
+            {"message": {"private_marker": "CROSSREF_ITEMS_MUST_NOT_LEAK"}},
+            "10.1000/valid-openalex",
+        ),
+    ],
+    ids=["missing-openalex-results", "missing-crossref-message", "missing-crossref-items"],
+)
+def test_malformed_search_envelope_warns_without_erasing_other_provider(
+    malformed_provider: str,
+    malformed_payload: dict,
+    surviving_doi: str,
+) -> None:
+    plan = {
+        "schema_version": "scholarly-search-plan.v1",
+        "from_year": 2017,
+        "to_year": 2025,
+        "queries": ["envelope fixture"],
+        "seed_dois": [],
+    }
+
+    pool = build_candidate_pool(
+        plan,
+        transport=EnvelopeTransport(
+            malformed_provider=malformed_provider,
+            malformed_payload=malformed_payload,
+        ),
+    )
+
+    assert pool["counts"]["raw_search_hits"] == 1
+    assert pool["counts"]["unique_candidates"] == 1
+    assert pool["candidates"][0]["doi"] == surviving_doi
+    assert pool["warnings"] == [
+        {
+            "provider": malformed_provider,
+            "operation": "query_search",
+            "error_class": "TypeError",
+            "message": "provider request failed",
+        }
+    ]
+    assert "MUST_NOT_LEAK" not in json.dumps(pool["warnings"], sort_keys=True)
+
+
+@pytest.mark.parametrize(
+    "seed_payload",
+    [
+        {"private_marker": "SEED_PAYLOAD_MUST_NOT_LEAK"},
+        _openalex_work("", "Seed Missing OpenAlex Identity", 2020, doi="10.1000/seed"),
+        _openalex_work("W900", "Seed With Wrong DOI", 2020, doi="10.1000/not-the-seed"),
+    ],
+    ids=["arbitrary-object", "missing-openalex-id", "mismatched-doi"],
+)
+def test_invalid_seed_work_identity_warns_without_counting_success(seed_payload: dict) -> None:
+    plan = {
+        "schema_version": "scholarly-search-plan.v1",
+        "from_year": 2017,
+        "to_year": 2025,
+        "queries": ["seed identity fixture"],
+        "seed_dois": ["10.1000/seed"],
+    }
+    transport = InvalidSeedTransport(seed_payload)
+
+    pool = build_candidate_pool(plan, transport=transport)
+
+    assert pool["counts"]["raw_seed_resolution_hits"] == 0
+    assert pool["counts"]["raw_backward_hits"] == 0
+    assert pool["counts"]["raw_forward_hits"] == 0
+    assert pool["candidates"] == []
+    assert pool["warnings"] == [
+        {
+            "provider": "openalex",
+            "operation": "seed_resolution",
+            "error_class": "ValueError",
+            "message": "provider request failed",
+        }
+    ]
+    assert len(transport.calls) == 3
+    assert "MUST_NOT_LEAK" not in json.dumps(pool["warnings"], sort_keys=True)
 
 
 @pytest.mark.parametrize(

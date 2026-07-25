@@ -42,6 +42,7 @@ USER_AGENT = (
 DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$", re.IGNORECASE)
 OPENALEX_ID_RE = re.compile(r"^W[A-Z0-9]+$", re.IGNORECASE)
 SAFE_ERROR_CLASS_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,79}$")
+PROVIDER_PRIORITY = {"openalex": 0, "crossref": 1}
 
 
 class _MarkupTextExtractor(HTMLParser):
@@ -209,15 +210,26 @@ def _results_list(payload: dict, *, provider: str) -> list[dict[str, Any]]:
     if not isinstance(payload, dict):
         raise TypeError("provider response must be a JSON object")
     if provider == "openalex":
-        results = payload.get("results", [])
-    else:
-        message = payload.get("message", {})
+        if "results" not in payload:
+            raise TypeError("OpenAlex response requires a results list")
+        results = payload["results"]
+    elif provider == "crossref":
+        if "message" not in payload:
+            raise TypeError("Crossref response requires a message object")
+        message = payload["message"]
         if not isinstance(message, dict):
             raise TypeError("Crossref response message must be an object")
-        results = message.get("items", [])
+        if "items" not in message:
+            raise TypeError("Crossref response message requires an items list")
+        results = message["items"]
+    else:
+        raise ValueError("unknown scholarly provider")
     if not isinstance(results, list):
         raise TypeError("provider results must be a list")
-    return [item for item in results[:RESULT_LIMIT] if isinstance(item, dict)]
+    bounded_results = results[:RESULT_LIMIT]
+    if not all(isinstance(item, dict) for item in bounded_results):
+        raise TypeError("provider result items must be objects")
+    return bounded_results
 
 
 def _first_text(value: Any) -> str:
@@ -392,6 +404,18 @@ def _openalex_candidate(item: dict[str, Any], provenance: dict[str, Any]) -> dic
     }
 
 
+def _validate_seed_work(payload: Any, seed_doi: str) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise TypeError("OpenAlex seed response must be a JSON object")
+    identifiers = payload.get("ids")
+    ids = identifiers if isinstance(identifiers, dict) else {}
+    openalex_id = _normalize_openalex_id(payload.get("id") or ids.get("openalex"))
+    resolved_doi = _normalize_doi(payload.get("doi") or ids.get("doi"))
+    if not openalex_id or resolved_doi != seed_doi:
+        raise ValueError("OpenAlex seed response identity is invalid")
+    return payload
+
+
 def _crossref_candidate(item: dict[str, Any], provenance: dict[str, Any]) -> dict[str, Any]:
     doi = _normalize_doi(item.get("DOI"))
     if doi and not _valid_doi(doi):
@@ -426,6 +450,20 @@ def _dedup_key(candidate: dict[str, Any]) -> str:
     return f"title:{title}" if title else ""
 
 
+def _identity_keys(candidate: dict[str, Any]) -> tuple[str, ...]:
+    keys: list[str] = []
+    doi = _normalize_doi(candidate.get("doi"))
+    if doi and _valid_doi(doi):
+        keys.append(f"doi:{doi}")
+    openalex_id = _normalize_openalex_id(candidate.get("openalex_id"))
+    if openalex_id:
+        keys.append(f"openalex:{openalex_id.casefold()}")
+    title = _normalized_title(candidate.get("title", ""))
+    if title:
+        keys.append(f"title:{title}")
+    return tuple(keys)
+
+
 def _provenance_sort_key(item: dict[str, Any]) -> tuple[str, str, str, str, str, int]:
     return (
         str(item.get("provider", "")),
@@ -437,25 +475,101 @@ def _provenance_sort_key(item: dict[str, Any]) -> tuple[str, str, str, str, str,
     )
 
 
-def _merge_candidates(existing: dict[str, Any], incoming: dict[str, Any]) -> None:
-    for field in (
-        "title",
-        "authors",
-        "year",
-        "journal",
-        "doi",
-        "openalex_id",
-        "landing_page_url",
-        "abstract",
-    ):
-        if not existing[field] and incoming[field]:
-            existing[field] = incoming[field]
-    locations = existing["oa_locations"] + incoming["oa_locations"]
+def _provider_rank(candidate: dict[str, Any]) -> int:
+    ranks = [
+        PROVIDER_PRIORITY.get(str(item.get("provider", "")), len(PROVIDER_PRIORITY))
+        for item in candidate.get("provenance", [])
+        if isinstance(item, dict)
+    ]
+    return min(ranks, default=len(PROVIDER_PRIORITY))
+
+
+def _select_text(candidates: list[dict[str, Any]], field: str) -> str:
+    """Prefer OpenAlex, then Crossref; within a provider prefer length, then lexical order."""
+
+    choices: list[tuple[int, int, str, str]] = []
+    for candidate in candidates:
+        value = _normalize_text(candidate.get(field))
+        if value:
+            choices.append((_provider_rank(candidate), -len(value), value.casefold(), value))
+    return min(choices)[-1] if choices else ""
+
+
+def _select_authors(candidates: list[dict[str, Any]]) -> list[str]:
+    choices: list[tuple[int, int, tuple[str, ...], tuple[str, ...]]] = []
+    for candidate in candidates:
+        raw_authors = candidate.get("authors")
+        if not isinstance(raw_authors, list):
+            continue
+        authors = tuple(
+            author
+            for author in (_normalize_text(value) for value in raw_authors)
+            if author
+        )
+        if authors:
+            choices.append(
+                (
+                    _provider_rank(candidate),
+                    -len(authors),
+                    tuple(author.casefold() for author in authors),
+                    authors,
+                )
+            )
+    return list(min(choices)[-1]) if choices else []
+
+
+def _select_year(candidates: list[dict[str, Any]]) -> int | None:
+    choices = [
+        (_provider_rank(candidate), year)
+        for candidate in candidates
+        if (year := _year(candidate.get("year"))) is not None
+    ]
+    return min(choices)[1] if choices else None
+
+
+def _select_identifier(candidates: list[dict[str, Any]], field: str) -> str:
+    if field == "doi":
+        values = {
+            value
+            for value in (_normalize_doi(candidate.get(field)) for candidate in candidates)
+            if value and _valid_doi(value)
+        }
+    else:
+        values = {
+            value
+            for value in (_normalize_openalex_id(candidate.get(field)) for candidate in candidates)
+            if value
+        }
+    return min(values, key=lambda value: (value.casefold(), value)) if values else ""
+
+
+def _reduce_identity_component(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    locations = [
+        location
+        for candidate in candidates
+        for location in candidate.get("oa_locations", [])
+        if isinstance(location, dict)
+    ]
     unique_locations = {json.dumps(location, sort_keys=True): location for location in locations}
-    existing["oa_locations"] = [unique_locations[key] for key in sorted(unique_locations)]
-    provenance = existing["provenance"] + incoming["provenance"]
+    provenance = [
+        item
+        for candidate in candidates
+        for item in candidate.get("provenance", [])
+        if isinstance(item, dict)
+    ]
     unique_provenance = {json.dumps(item, sort_keys=True): item for item in provenance}
-    existing["provenance"] = sorted(unique_provenance.values(), key=_provenance_sort_key)
+    return {
+        "title": _select_text(candidates, "title"),
+        "authors": _select_authors(candidates),
+        "year": _select_year(candidates),
+        "journal": _select_text(candidates, "journal"),
+        "doi": _select_identifier(candidates, "doi"),
+        "openalex_id": _select_identifier(candidates, "openalex_id"),
+        "landing_page_url": _select_text(candidates, "landing_page_url"),
+        "oa_locations": [unique_locations[key] for key in sorted(unique_locations)],
+        "abstract": _select_text(candidates, "abstract"),
+        "provenance": sorted(unique_provenance.values(), key=_provenance_sort_key),
+    }
 
 
 def _candidate_id(candidate: dict[str, Any]) -> str:
@@ -465,17 +579,41 @@ def _candidate_id(candidate: dict[str, Any]) -> str:
 
 
 def _deduplicate(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    merged: dict[str, dict[str, Any]] = {}
-    for candidate in candidates:
-        key = _dedup_key(candidate)
-        if not key:
-            continue
-        if key in merged:
-            _merge_candidates(merged[key], candidate)
-        else:
-            merged[key] = candidate
+    keyed_candidates = [
+        (candidate, keys)
+        for candidate in candidates
+        if (keys := _identity_keys(candidate))
+    ]
+    parents = list(range(len(keyed_candidates)))
+
+    def find(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root == right_root:
+            return
+        lower, higher = sorted((left_root, right_root))
+        parents[higher] = lower
+
+    identity_owner: dict[str, int] = {}
+    for index, (_candidate, keys) in enumerate(keyed_candidates):
+        for key in keys:
+            if key in identity_owner:
+                union(index, identity_owner[key])
+            else:
+                identity_owner[key] = index
+
+    components: dict[int, list[dict[str, Any]]] = {}
+    for index, (candidate, _keys) in enumerate(keyed_candidates):
+        components.setdefault(find(index), []).append(candidate)
+
     result: list[dict[str, Any]] = []
-    for candidate in merged.values():
+    for component in components.values():
+        candidate = _reduce_identity_component(component)
         candidate["candidate_id"] = _candidate_id(candidate)
         result.append(candidate)
     result.sort(
@@ -579,9 +717,7 @@ def build_candidate_pool(
         seed_work: dict[str, Any] | None = None
         try:
             payload = transport.get_json(_seed_url(seed_doi), timeout_seconds)
-            if not isinstance(payload, dict):
-                raise TypeError("OpenAlex seed response must be a JSON object")
-            seed_work = payload
+            seed_work = _validate_seed_work(payload, seed_doi)
             raw_seed_resolution_hits += 1
             seed_candidate = _openalex_candidate(
                 seed_work,
