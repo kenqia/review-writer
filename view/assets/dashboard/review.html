@@ -3,24 +3,284 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>科研综述专家 · Review Writer</title>
+  <title>科研综述工作台</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/assets/dashboard/review-ui.css">
-  <style>
-    body{margin:0;background:#f2ecdf;color:#21312d;font-family:Georgia,"Noto Serif SC",serif}.shell{max-width:1180px;margin:auto;padding:28px}.mast{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;border-bottom:2px solid #315f54;padding-bottom:18px}.eyebrow{letter-spacing:.14em;font-size:12px;color:#6d7168}.mast h1{margin:6px 0 0;font-size:32px}.mast select{min-width:260px;padding:10px;border:1px solid #9cb0a4;background:#fffdf7}.grid{display:grid;grid-template-columns:1.4fr 1fr;gap:16px;margin-top:18px}.panel{background:#fffdf7;border:1px solid #d8cdb8;border-radius:14px;padding:20px;box-shadow:0 12px 30px rgba(56,45,28,.08)}.stage{font-size:24px;color:#1e6a58;margin:8px 0}.counts{display:flex;gap:10px;flex-wrap:wrap}.count{border-left:3px solid #c46f33;padding:4px 12px;background:#f7eedf}.label{font-size:12px;color:#6d7168;letter-spacing:.06em}.blockers{margin:12px 0;padding-left:20px}.actions{display:flex;gap:9px;flex-wrap:wrap}.actions a,.actions button{border:1px solid #315f54;background:#315f54;color:white;padding:9px 13px;text-decoration:none;cursor:pointer}.actions a.alt{background:#fffdf7;color:#315f54}@media(max-width:760px){.mast,.grid{display:block}.mast select{margin-top:14px;width:100%}.grid{margin-top:14px}}
-  </style>
 </head>
-<body>
-  <main class="shell">
-    <header class="mast"><div><div class="eyebrow">QODERWORK · 动态项目伴侣</div><h1>科研综述专家</h1></div><select id="project"></select></header>
-    <section class="grid"><article class="panel"><div class="label">综述简报</div><h2 id="topic">正在读取项目…</h2><p id="brief"></p><div class="label">当前阶段</div><div id="stage" class="stage">—</div><div id="status"></div><div class="counts" id="counts"></div></article><aside class="panel"><div class="label">人工与发布状态</div><h2>阻塞项</h2><ul id="blockers" class="blockers"></ul><div id="draft"></div><div class="actions"><a href="/draft">查看/编辑草稿</a><a class="alt" href="/final">终稿审查</a><button id="export">导出 DOCX</button></div><p id="message"></p></aside></section>
+<body class="page-review">
+  <main class="workbench-shell">
+    <header class="workbench-mast">
+      <div>
+        <div class="workbench-kicker">动态科研工作台</div>
+        <h1>科研综述专家</h1>
+        <p>从证据到集中决策，再到可交付稿件。</p>
+      </div>
+      <label class="project-picker">当前项目<select id="project" aria-label="选择综述项目"></select></label>
+    </header>
+
+    <nav class="workbench-tabs" role="tablist" aria-label="工作台页面">
+      <button id="tab-overview" role="tab" aria-selected="true" aria-controls="panel-overview" tabindex="0">Overview</button>
+      <button id="tab-evidence" role="tab" aria-selected="false" aria-controls="panel-evidence" tabindex="-1">Evidence</button>
+      <button id="tab-decisions" role="tab" aria-selected="false" aria-controls="panel-decisions" tabindex="-1">Decisions</button>
+      <button id="tab-manuscript" role="tab" aria-selected="false" aria-controls="panel-manuscript" tabindex="-1">Manuscript</button>
+    </nav>
+
+    <section id="panel-overview" class="workbench-panel" role="tabpanel" aria-labelledby="tab-overview">
+      <div class="overview-grid">
+        <article class="workbench-card overview-brief">
+          <div class="workbench-label">综述简报</div>
+          <h2 id="topic">正在读取项目…</h2>
+          <p id="brief" class="workbench-lede"></p>
+          <dl class="stage-summary">
+            <div><dt>当前阶段</dt><dd id="stage">—</dd></div>
+            <div><dt>进展状态</dt><dd id="status">—</dd></div>
+          </dl>
+        </article>
+        <aside class="workbench-card coverage-card">
+          <div class="workbench-label">证据覆盖</div>
+          <div id="coverage" class="metric-grid" aria-live="polite"></div>
+        </aside>
+      </div>
+    </section>
+
+    <section id="panel-evidence" class="workbench-panel" role="tabpanel" aria-labelledby="tab-evidence" hidden>
+      <header class="panel-heading">
+        <div><div class="workbench-label">可追溯证据</div><h2>逐项核对研究依据</h2></div>
+        <div class="evidence-filters">
+          <label>研究<select id="study-filter"><option value="">全部研究</option></select></label>
+          <label>激活方式<select id="activation-filter"><option value="">全部方式</option></select></label>
+        </div>
+      </header>
+      <div id="evidence-list" class="evidence-list" aria-live="polite"></div>
+    </section>
+
+    <section id="panel-decisions" class="workbench-panel" role="tabpanel" aria-labelledby="tab-decisions" hidden>
+      <header class="panel-heading">
+        <div><div class="workbench-label">集中决策</div><h2>一次完成科学风险复核</h2><p>每项选择一种处置；改写时填写可直接用于稿件的表述。</p></div>
+        <button id="save-decisions" class="workbench-button primary" type="button">保存全部决策</button>
+      </header>
+      <div id="decision-list" class="decision-list"></div>
+      <p id="decision-message" class="workbench-message" role="status" aria-live="polite"></p>
+    </section>
+
+    <section id="panel-manuscript" class="workbench-panel" role="tabpanel" aria-labelledby="tab-manuscript" hidden>
+      <div class="manuscript-grid">
+        <article class="workbench-card">
+          <div class="workbench-label">稿件编排</div>
+          <h2>继续编辑章节</h2>
+          <p>查看各章节当前内容，完成结构与措辞调整。</p>
+          <a class="workbench-button primary" href="/sections">打开章节编辑器</a>
+        </article>
+        <article class="workbench-card">
+          <div class="workbench-label">当前文稿</div>
+          <h2 id="docx-state">正在检查 DOCX…</h2>
+          <p>在终稿页面打开当前 DOCX，或生成最新版本。</p>
+          <div class="manuscript-actions">
+            <a class="workbench-button" href="/final">打开当前 DOCX</a>
+            <button id="export" class="workbench-button primary" type="button">生成最新 DOCX</button>
+          </div>
+          <p id="export-message" class="workbench-message" role="status" aria-live="polite"></p>
+        </article>
+      </div>
+    </section>
   </main>
+
   <script>
-    const $=id=>document.getElementById(id); let projectId='';
-    const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
-    async function loadState(){const state=await (await fetch(`/api/project/${encodeURIComponent(projectId)}/review-state`)).json();const brief=state.brief||{};$('topic').textContent=brief.topic||'未填写主题';$('brief').textContent=[brief.audience&&`读者：${brief.audience}`,brief.scope&&`范围：${brief.scope}`].filter(Boolean).join('　');$('stage').textContent=state.current_stage||'not_started';$('status').textContent=`状态：${state.status||'not_started'}`;$('counts').innerHTML=Object.entries(state.counts||{}).map(([k,v])=>`<div class="count"><div class="label">${esc(k)}</div><strong>${esc(v)}</strong></div>`).join('');const blockers=state.blockers||[];$('blockers').innerHTML=blockers.length?blockers.map(x=>`<li>${esc(x)}</li>`).join(''):'<li>当前没有记录的阻塞项。</li>';$('draft').textContent=`草稿：${state.draft?.first_draft_exists?'可用':'未生成'}；终稿：${state.draft?.final_draft_exists?'可用':'未生成'}；DOCX：${state.draft?.docx_exists?'已存在':'未导出'}`;}
-    async function loadProjects(){const projects=await (await fetch('/api/projects')).json();$('project').innerHTML=projects.map(p=>`<option value="${esc(p.project_id)}">${esc(p.project_id)}</option>`).join('');projectId=projects[0]?.project_id||'';if(projectId)loadState();}
-    $('project').addEventListener('change',e=>{projectId=e.target.value;loadState()});$('export').addEventListener('click',async()=>{const response=await fetch(`/api/project/${encodeURIComponent(projectId)}/export-docx`,{method:'POST'});const result=await response.json();$('message').textContent=result.ok?'DOCX 已导出到项目终稿目录。':(result.error||'导出失败');if(result.ok)loadState()});loadProjects();
+    const $ = id => document.getElementById(id);
+    const esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[character]));
+    const decisionLabels = {approve:'采纳', reword:'改写', exclude:'排除', unresolved:'待定'};
+    const stageLabels = {not_started:'尚未开始', evidence_review:'证据复核', drafting:'稿件撰写', final_review:'终稿审查', complete:'已完成'};
+    const statusLabels = {not_started:'尚未开始', needs_human_review:'需要复核', in_progress:'进行中', complete:'已完成'};
+    let projectId = '';
+    let projectState = {};
+    let evidencePayload = {coverage:{}, cards:[]};
+    let riskPayload = {coverage:{}, targets:[]};
+    const decisionState = new Map();
+
+    async function getPayload(url, options) {
+      const response = await fetch(url, options);
+      if (!response.ok) throw new Error('request failed');
+      return response.json();
+    }
+
+    function activateTab(tab, moveFocus = true) {
+      document.querySelectorAll('[role="tab"]').forEach(item => {
+        const active = item === tab;
+        item.setAttribute('aria-selected', String(active));
+        item.tabIndex = active ? 0 : -1;
+        $(item.getAttribute('aria-controls')).hidden = !active;
+      });
+      if (moveFocus) tab.focus();
+    }
+
+    const tabs = [...document.querySelectorAll('[role="tab"]')];
+    tabs.forEach((tab, index) => {
+      tab.addEventListener('click', () => activateTab(tab, false));
+      tab.addEventListener('keydown', event => {
+        let next = index;
+        if (event.key === 'ArrowRight') next = (index + 1) % tabs.length;
+        else if (event.key === 'ArrowLeft') next = (index - 1 + tabs.length) % tabs.length;
+        else if (event.key === 'Home') next = 0;
+        else if (event.key === 'End') next = tabs.length - 1;
+        else return;
+        event.preventDefault();
+        activateTab(tabs[next]);
+      });
+    });
+
+    function renderOverview() {
+      const brief = projectState.brief || {};
+      const coverage = evidencePayload.coverage || {};
+      $('topic').textContent = brief.topic || '未填写主题';
+      $('brief').textContent = [brief.audience && `面向：${brief.audience}`, brief.scope && `范围：${brief.scope}`].filter(Boolean).join('　');
+      $('stage').textContent = stageLabels[projectState.current_stage] || '进行中';
+      $('status').textContent = statusLabels[projectState.status] || '进行中';
+      const metrics = [
+        ['研究', coverage.studies || 0],
+        ['可处理', coverage.processable || 0],
+        ['受阻', coverage.blocked || 0],
+        ['主张', coverage.claims || 0],
+      ];
+      $('coverage').innerHTML = metrics.map(([label, value]) => `<div class="metric"><strong>${esc(value)}</strong><span>${label}</span></div>`).join('');
+    }
+
+    function fillEvidenceFilters() {
+      const cards = evidencePayload.cards || [];
+      const studies = [...new Set(cards.map(card => card.study_id).filter(Boolean))].sort();
+      const modes = [...new Set(cards.map(card => card.activation_mode).filter(Boolean))].sort();
+      $('study-filter').innerHTML = '<option value="">全部研究</option>' + studies.map(value => `<option value="${esc(value)}">${esc(value)}</option>`).join('');
+      $('activation-filter').innerHTML = '<option value="">全部方式</option>' + modes.map(value => `<option value="${esc(value)}">${esc(value)}</option>`).join('');
+    }
+
+    function renderEvidence() {
+      const study = $('study-filter').value;
+      const mode = $('activation-filter').value;
+      const cards = (evidencePayload.cards || []).filter(card => (!study || card.study_id === study) && (!mode || card.activation_mode === mode));
+      if (!cards.length) {
+        $('evidence-list').innerHTML = '<p class="empty-state">当前筛选下没有证据卡片。</p>';
+        return;
+      }
+      $('evidence-list').innerHTML = cards.map(card => {
+        const observations = (card.observations || []).map(item => `<li>${esc(item)}</li>`).join('');
+        const limitations = (card.limitations || []).map(item => `<li>${esc(item)}</li>`).join('');
+        const claims = (card.claims || []).map(item => `<li>${esc(item)}</li>`).join('');
+        const locators = (card.locators || []).map(locator => `<a href="${esc(locator.href)}">${esc(locator.label)}</a>`).join('');
+        return `<details class="evidence-card"><summary><span><strong>${esc(card.citation || card.study_id)}</strong><small>${esc(card.activation_mode || '未标注激活方式')} · ${esc(card.reaction_class || '未标注反应类型')}</small></span><span class="expand-label">展开证据</span></summary><div class="evidence-body"><div><h3>观察</h3><ul>${observations || '<li>未记录</li>'}</ul></div><div><h3>限制</h3><ul>${limitations || '<li>未记录</li>'}</ul></div><div class="wide"><h3>支持的主张</h3><ul>${claims || '<li>未记录</li>'}</ul></div><blockquote class="wide">${esc(card.source_excerpt || '未提供原文摘录')}</blockquote><nav class="locator-links wide" aria-label="证据定位">${locators || '<span>未提供定位链接</span>'}</nav></div></details>`;
+      }).join('');
+    }
+
+    function resetDecisionState() {
+      decisionState.clear();
+      (riskPayload.targets || []).forEach(target => {
+        const selected = Object.hasOwn(decisionLabels, target.existing_decision) ? target.existing_decision : 'unresolved';
+        decisionState.set(target.target_id, {decision:selected, approved_text:'', decision_token:target.decision_token});
+      });
+    }
+
+    function renderDecisions() {
+      const targets = riskPayload.targets || [];
+      if (!targets.length) {
+        $('decision-list').innerHTML = '<p class="empty-state">当前没有需要集中复核的主张。</p>';
+        $('save-decisions').disabled = true;
+        return;
+      }
+      $('save-decisions').disabled = false;
+      $('decision-list').innerHTML = targets.map(target => {
+        const current = decisionState.get(target.target_id) || {decision:'unresolved', approved_text:''};
+        const categories = (target.risk_categories || []).map(value => `<span>${esc(value.replaceAll('_', ' ').toLowerCase())}</span>`).join('');
+        const buttons = Object.entries(decisionLabels).map(([value, label]) => `<button type="button" data-target="${esc(target.target_id)}" data-decision="${value}" aria-pressed="${current.decision === value}">${label}</button>`).join('');
+        const disabled = current.decision === 'reword' ? '' : 'disabled';
+        return `<article class="decision-card"><div class="decision-copy"><div class="risk-categories">${categories}</div><h3>${esc(target.claim_text)}</h3><p>${esc(target.evidence_summary)}</p><blockquote>${esc(target.source_excerpt || '未提供原文摘录')}</blockquote><small>${esc(target.proposed_action)}</small></div><div class="decision-controls" role="group" aria-label="主张处置">${buttons}</div><label class="reword-field">改写文本<input type="text" data-reword-target="${esc(target.target_id)}" value="${esc(current.approved_text)}" ${disabled}></label></article>`;
+      }).join('');
+    }
+
+    $('decision-list').addEventListener('click', event => {
+      const button = event.target.closest('button[data-decision]');
+      if (!button) return;
+      const state = decisionState.get(button.dataset.target);
+      if (!state) return;
+      state.decision = button.dataset.decision;
+      renderDecisions();
+    });
+    $('decision-list').addEventListener('input', event => {
+      const targetId = event.target.dataset.rewordTarget;
+      if (targetId && decisionState.has(targetId)) decisionState.get(targetId).approved_text = event.target.value;
+    });
+    $('study-filter').addEventListener('change', renderEvidence);
+    $('activation-filter').addEventListener('change', renderEvidence);
+
+    async function saveDecisions() {
+      const decisions = (riskPayload.targets || []).map(target => {
+        const state = decisionState.get(target.target_id);
+        return {
+          target_id: target.target_id,
+          decision: state.decision,
+          ...(state.decision === 'reword' ? {approved_text: state.approved_text} : {}),
+          decision_token: state.decision_token,
+        };
+      });
+      if (decisions.some(row => row.decision === 'reword' && !row.approved_text.trim())) {
+        $('decision-message').textContent = '请先填写所有改写文本。';
+        return;
+      }
+      $('save-decisions').disabled = true;
+      $('decision-message').textContent = '正在保存…';
+      try {
+        await getPayload(`/api/project/${encodeURIComponent(projectId)}/risk-decisions`, {
+          method:'PUT',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({decisions}),
+        });
+        riskPayload = await getPayload(`/api/project/${encodeURIComponent(projectId)}/risk-packet`);
+        resetDecisionState();
+        renderDecisions();
+        $('decision-message').textContent = '全部决策已保存。';
+      } catch (error) {
+        $('decision-message').textContent = '保存失败；请刷新后重新核对。';
+      } finally {
+        $('save-decisions').disabled = false;
+      }
+    }
+
+    async function loadState() {
+      projectState = await (await fetch(`/api/project/${encodeURIComponent(projectId)}/review-state`)).json();
+      [evidencePayload, riskPayload] = await Promise.all([
+        getPayload(`/api/project/${encodeURIComponent(projectId)}/evidence`),
+        getPayload(`/api/project/${encodeURIComponent(projectId)}/risk-packet`),
+      ]);
+      fillEvidenceFilters();
+      renderOverview();
+      renderEvidence();
+      resetDecisionState();
+      renderDecisions();
+      $('docx-state').textContent = projectState.draft?.docx_exists ? '当前 DOCX 已可用' : '当前 DOCX 尚未生成';
+    }
+
+    async function loadProjects() {
+      const projects = await getPayload('/api/projects');
+      $('project').innerHTML = projects.map(project => `<option value="${esc(project.project_id)}">${esc(project.project_id)}</option>`).join('');
+      projectId = projects[0]?.project_id || '';
+      if (projectId) await loadState();
+    }
+
+    $('project').addEventListener('change', async event => {
+      projectId = event.target.value;
+      await loadState();
+    });
+    $('save-decisions').addEventListener('click', saveDecisions);
+    $('export').addEventListener('click', async () => {
+      $('export-message').textContent = '正在生成…';
+      try {
+        const result = await getPayload(`/api/project/${encodeURIComponent(projectId)}/export-docx`, {method:'POST'});
+        $('export-message').textContent = result.ok ? '最新 DOCX 已生成。' : '生成失败。';
+        if (result.ok) await loadState();
+      } catch (error) {
+        $('export-message').textContent = '生成失败；请检查终稿状态。';
+      }
+    });
+    loadProjects().catch(() => {
+      $('topic').textContent = '项目暂时无法读取';
+    });
   </script>
 </body>
 </html>

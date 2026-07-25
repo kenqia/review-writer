@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
+from html.parser import HTMLParser
 from pathlib import Path
 from unittest.mock import patch
 
@@ -55,6 +56,53 @@ ALLOWED_MAIN_COMMANDS = {
     "skills/review-final-audit-release/scripts/final_audit_scan.py",
     "view/serve_review_dashboard.py",
 }
+
+VISIBLE_EVIDENCE_CARD_FIELDS = {
+    "study_id",
+    "citation",
+    "activation_mode",
+    "reaction_class",
+    "observations",
+    "limitations",
+    "claims",
+    "source_excerpt",
+    "locators",
+}
+VISIBLE_RISK_TARGET_FIELDS = {
+    "target_id",
+    "claim_text",
+    "risk_categories",
+    "evidence_summary",
+    "source_excerpt",
+    "source_label",
+    "page",
+    "proposed_action",
+    "existing_decision",
+    "decision_token",
+}
+
+
+class VisibleTextParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.hidden_depth = 0
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag in {"script", "style"}:
+            self.hidden_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"script", "style"}:
+            self.hidden_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self.hidden_depth:
+            self.parts.append(data)
+
+    @property
+    def text(self) -> str:
+        return " ".join(self.parts)
 
 
 class NativeReviewWriterPluginTests(unittest.TestCase):
@@ -258,6 +306,21 @@ class NativeReviewWriterPluginTests(unittest.TestCase):
 
 class NativeReviewWriterDashboardTests(unittest.TestCase):
     @staticmethod
+    def _copy_fixture(destination: Path) -> Path:
+        review_root = destination / "review-root"
+        shutil.copytree(FIXTURE, review_root)
+        return review_root
+
+    @staticmethod
+    def _project_file_bytes(review_root: Path) -> dict[str, bytes]:
+        project = review_root / "review-projects" / "synthetic-review"
+        return {
+            path.relative_to(project).as_posix(): path.read_bytes()
+            for path in project.rglob("*")
+            if path.is_file()
+        }
+
+    @staticmethod
     def _request(dashboard, review_root: Path, raw_request: bytes) -> tuple[int, dict[str, str], bytes]:
         class FakeSocket:
             def __init__(self, incoming: bytes) -> None:
@@ -315,6 +378,167 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             review_html = (ROOT / "view" / "assets" / "dashboard" / "review.html").read_text(encoding="utf-8")
             self.assertIn('fetch(`/api/project/${encodeURIComponent(projectId)}/review-state`)', review_html)
             self.assertIn('<link rel="icon" href="data:,">', review_html)
+
+    def test_evidence_and_risk_payloads_are_scientist_safe(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = self._copy_fixture(Path(temp_dir))
+            with patch.object(
+                dashboard,
+                "benchmark_metrics",
+                wraps=dashboard.benchmark_metrics,
+            ) as metrics:
+                evidence = dashboard.project_evidence_payload(review_root, "synthetic-review")
+            metrics.assert_called_once_with(
+                review_root / "review-projects" / "synthetic-review"
+            )
+            self.assertEqual(
+                {"studies": 1, "processable": 1, "blocked": 0, "claims": 1},
+                evidence["coverage"],
+            )
+            self.assertEqual(1, len(evidence["cards"]))
+            card = evidence["cards"][0]
+            self.assertEqual(VISIBLE_EVIDENCE_CARD_FIELDS, set(card))
+            self.assertEqual(["A defined synthetic intervention was associated with a measured response under the reported conditions."], card["claims"])
+            self.assertEqual("Synthetic study, Results · p. 3 · Results, measured response", card["locators"][0]["label"])
+            self.assertTrue(card["locators"][0]["href"].startswith("/library?"))
+
+            risk = dashboard.project_risk_payload(review_root, "synthetic-review")
+            self.assertEqual(1, risk["coverage"]["targets"])
+            self.assertEqual(VISIBLE_RISK_TARGET_FIELDS, set(risk["targets"][0]))
+            self.assertEqual("unresolved", risk["targets"][0]["existing_decision"])
+            self.assertEqual(
+                "b4dac5597d27c55c41a2438b9cbe38d267495993d1c88f17fabbe54c386b1afc",
+                risk["targets"][0]["decision_token"],
+            )
+
+            visible_payload = json.dumps({"evidence": evidence, "risk": risk}, ensure_ascii=False)
+            for hidden in (
+                "schema_version",
+                "job_id",
+                "sha256",
+                "self_check",
+                "prompt",
+                "absolute_source_path",
+                "review_target_digest",
+                "/synthetic-fixture/",
+                "internal fixture marker",
+            ):
+                self.assertNotIn(hidden, visible_payload)
+
+    def test_risk_decision_write_maps_to_task4_and_fails_closed(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = self._copy_fixture(Path(temp_dir))
+            token = dashboard.project_risk_payload(review_root, "synthetic-review")["targets"][0]["decision_token"]
+            result = dashboard.write_project_risk_decisions(
+                review_root,
+                "synthetic-review",
+                {
+                    "decisions": [
+                        {
+                            "target_id": "claim-neutral-01",
+                            "decision": "reword",
+                            "approved_text": "The measured response changed under the reported conditions.",
+                            "decision_token": token,
+                        }
+                    ]
+                },
+            )
+            self.assertEqual(
+                {"status": "saved", "decisions": [{"target_id": "claim-neutral-01", "decision": "reword"}]},
+                result,
+            )
+            serialized_result = json.dumps(result)
+            self.assertNotIn("token", serialized_result)
+            self.assertNotIn("digest", serialized_result)
+            stored = json.loads(
+                (
+                    review_root
+                    / "review-projects"
+                    / "synthetic-review"
+                    / "03_review"
+                    / "risk_decisions.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual("REWORD", stored["decisions"][0]["action"])
+            self.assertEqual(token, stored["decisions"][0]["review_target_digest"])
+
+        invalid_cases = {
+            "empty reword": lambda token: {"decisions": [{"target_id": "claim-neutral-01", "decision": "reword", "approved_text": "  ", "decision_token": token}]},
+            "duplicate target": lambda token: {"decisions": [{"target_id": "claim-neutral-01", "decision": "approve", "decision_token": token}, {"target_id": "claim-neutral-01", "decision": "exclude", "decision_token": token}]},
+            "unknown target": lambda token: {"decisions": [{"target_id": "claim-unknown", "decision": "approve", "decision_token": token}]},
+            "stale token": lambda token: {"decisions": [{"target_id": "claim-neutral-01", "decision": "approve", "decision_token": "stale-review-binding"}]},
+            "missing token": lambda token: {"decisions": [{"target_id": "claim-neutral-01", "decision": "approve"}]},
+            "invalid decision": lambda token: {"decisions": [{"target_id": "claim-neutral-01", "decision": "maybe", "decision_token": token}]},
+        }
+        for name, make_payload in invalid_cases.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temp_dir:
+                review_root = self._copy_fixture(Path(temp_dir))
+                token = dashboard.project_risk_payload(review_root, "synthetic-review")["targets"][0]["decision_token"]
+                before = self._project_file_bytes(review_root)
+                with self.assertRaises(ValueError):
+                    dashboard.write_project_risk_decisions(
+                        review_root,
+                        "synthetic-review",
+                        make_payload(token),
+                    )
+                self.assertEqual(before, self._project_file_bytes(review_root))
+
+    def test_evidence_risk_and_decision_routes_return_expected_statuses(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = self._copy_fixture(Path(temp_dir))
+            for route in ("evidence", "risk-packet"):
+                status, _, body = self._request(
+                    dashboard,
+                    review_root,
+                    f"GET /api/project/synthetic-review/{route} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode(),
+                )
+                self.assertEqual(200, status, route)
+                self.assertIsInstance(json.loads(body), dict)
+            token = dashboard.project_risk_payload(review_root, "synthetic-review")["targets"][0]["decision_token"]
+            request_body = json.dumps(
+                {"decisions": [{"target_id": "claim-neutral-01", "decision": "approve", "decision_token": token}]}
+            ).encode()
+            request = (
+                b"PUT /api/project/synthetic-review/risk-decisions HTTP/1.1\r\n"
+                b"Host: localhost\r\nContent-Type: application/json\r\nContent-Length: "
+                + str(len(request_body)).encode()
+                + b"\r\n\r\n"
+                + request_body
+            )
+            status, _, body = self._request(dashboard, review_root, request)
+            self.assertEqual(200, status)
+            self.assertEqual("saved", json.loads(body)["status"])
+
+    def test_review_workbench_has_four_accessible_tabs_and_no_internal_visible_text(self) -> None:
+        review_html = (ROOT / "view" / "assets" / "dashboard" / "review.html").read_text(encoding="utf-8")
+        self.assertEqual(4, len(re.findall(r'<button[^>]+role="tab"', review_html)))
+        for tab in ("Overview", "Evidence", "Decisions", "Manuscript"):
+            self.assertRegex(review_html, rf">\s*{tab}\s*<")
+        for control in ("ArrowLeft", "ArrowRight", "Home", "End"):
+            self.assertIn(control, review_html)
+        for link in ('href="/sections"', 'href="/final"'):
+            self.assertIn(link, review_html)
+        for decision in ("approve", "reword", "exclude", "unresolved"):
+            self.assertRegex(review_html, rf"\b{decision}:'[^']+'")
+        self.assertIn('data-decision="${value}"', review_html)
+        self.assertIn('type="text"', review_html)
+        self.assertIn("decision_token", review_html)
+        self.assertNotRegex(review_html, r"(?:textContent|innerHTML)\s*=\s*[^;\n]*decision_token")
+
+        parser = VisibleTextParser()
+        parser.feed(review_html)
+        visible = parser.text.casefold()
+        for forbidden in ("json", "hash", "path", "agent", "prompt", "git", "provider", "decision_token"):
+            self.assertNotIn(forbidden, visible)
 
     def test_dashboard_accepts_qoderwork_native_project_root_without_library_metadata(self) -> None:
         sys.path.insert(0, str(ROOT))

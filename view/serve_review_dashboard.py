@@ -11,7 +11,19 @@ import sys
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from typing import Any
+from urllib.parse import parse_qs, unquote, urlencode, urlparse
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from review_writer.project.vertical_review import (  # noqa: E402
+    VerticalReviewError,
+    apply_risk_decisions,
+    benchmark_metrics,
+)
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -126,6 +138,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
                 return
             self.handle_project_draft_put(project_id)
+            return
+        if parsed.path.startswith("/api/project/") and parsed.path.endswith("/risk-decisions"):
+            project_id = project_id_from_route(parsed.path, "risk-decisions")
+            if project_id is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                return
+            self.handle_project_risk_decisions_put(project_id)
             return
         if parsed.path.startswith("/api/project/") and parsed.path.endswith("/review-state"):
             project_id = project_id_from_route(parsed.path, "review-state")
@@ -282,6 +301,35 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self.send_json({"ok": True, "project_id": project_id, "current_stage": state["current_stage"]})
 
+    def handle_project_risk_decisions_put(self, project_id: str) -> None:
+        try:
+            project = project_dir(self.review_root, project_id)
+        except ValueError as exc:
+            self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+        if not project.exists():
+            self.send_error(HTTPStatus.NOT_FOUND, "project not found")
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
+            result = write_project_risk_decisions(self.review_root, project_id, data)
+        except json.JSONDecodeError:
+            self.send_error(HTTPStatus.BAD_REQUEST, "The decisions could not be read.")
+            return
+        except VerticalReviewError as exc:
+            message = (
+                "These decisions are no longer current. Refresh and review them again."
+                if exc.code == "RISK_TARGET_STALE"
+                else "The decisions were not saved. Check each target and try again."
+            )
+            self.send_error(HTTPStatus.BAD_REQUEST, message)
+            return
+        except ValueError:
+            self.send_error(HTTPStatus.BAD_REQUEST, "The decisions were not saved. Check each target and try again.")
+            return
+        self.send_json(result)
+
     def handle_project_stage_get(self, project_id: str, stage: str) -> None:
         try:
             project = project_dir(self.review_root, project_id)
@@ -292,6 +340,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND, "project not found")
             return
         payloads = {
+            "evidence": project_evidence_payload,
+            "risk-packet": project_risk_payload,
             "matrix": project_matrix_payload,
             "blueprint": project_blueprint_payload,
             "sections": project_sections_payload,
@@ -302,7 +352,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not builder:
             self.send_error(HTTPStatus.NOT_FOUND, "unknown stage")
             return
-        self.send_json(builder(self.review_root, project_id))
+        try:
+            payload = builder(self.review_root, project_id)
+        except ValueError:
+            self.send_error(HTTPStatus.BAD_REQUEST, "project stage data is unavailable")
+            return
+        self.send_json(payload)
 
     def handle_static_asset(self, path: str) -> None:
         assets_root = Path(__file__).resolve().parent / "assets"
@@ -574,6 +629,232 @@ def read_json_if_exists(path: Path) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
+
+
+def read_jsonl_if_exists(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    try:
+        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("project evidence is unavailable") from exc
+    if not all(isinstance(row, dict) for row in rows):
+        raise ValueError("project evidence is unavailable")
+    return rows
+
+
+def visible_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return ", ".join(item.strip() for item in value if isinstance(item, str) and item.strip())
+    if isinstance(value, dict):
+        for key in ("display", "text", "value", "title"):
+            text = value.get(key)
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+    return ""
+
+
+def visible_text_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+    text = visible_text(value)
+    return [text] if text else []
+
+
+def scientist_locators(claims: list[dict[str, Any]]) -> list[dict[str, str]]:
+    locators: list[dict[str, str]] = []
+    seen: set[tuple[str, int | None, str]] = set()
+    for claim in claims:
+        refs = claim.get("evidence_refs") if isinstance(claim.get("evidence_refs"), list) else []
+        for ref in refs:
+            if not isinstance(ref, dict):
+                continue
+            source_id = visible_text(ref.get("source_id"))
+            source_label = visible_text(ref.get("source_label")) or source_id or "Source record"
+            raw_page = ref.get("page")
+            page = raw_page if isinstance(raw_page, int) and not isinstance(raw_page, bool) and raw_page > 0 else None
+            section = visible_text(ref.get("section_or_item"))
+            identity = (source_id, page, section)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            label_parts = [source_label]
+            if page is not None:
+                label_parts.append(f"p. {page}")
+            if section:
+                label_parts.append(section)
+            query: dict[str, str | int] = {}
+            if source_id:
+                query["paper_id"] = source_id
+            if page is not None:
+                query["page"] = page
+            locators.append(
+                {
+                    "label": " · ".join(label_parts),
+                    "href": f"/library?{urlencode(query)}" if query else "/library",
+                }
+            )
+    return locators
+
+
+def project_evidence_payload(review_root: Path, project_id: str) -> dict[str, Any]:
+    project = project_dir(review_root, project_id)
+    metrics = benchmark_metrics(project)
+    cards = read_jsonl_if_exists(project / "01_evidence" / "evidence_cards.jsonl")
+    visible_cards: list[dict[str, Any]] = []
+    for card in cards:
+        candidate = card.get("candidate") if isinstance(card.get("candidate"), dict) else {}
+        study_id = visible_text(card.get("study_id")) or visible_text(candidate.get("study_id"))
+        if not study_id:
+            continue
+        claims = candidate.get("claims") if isinstance(candidate.get("claims"), list) else []
+        claim_rows = [claim for claim in claims if isinstance(claim, dict)]
+        claim_texts = [
+            text
+            for text in (visible_text(claim.get("claim_text")) for claim in claim_rows)
+            if text
+        ]
+        excerpt = visible_text(candidate.get("source_excerpt"))
+        if not excerpt:
+            excerpt = next(
+                (
+                    visible_text(ref.get("exact_quote"))
+                    for claim in claim_rows
+                    for ref in (claim.get("evidence_refs") or [])
+                    if isinstance(ref, dict) and visible_text(ref.get("exact_quote"))
+                ),
+                "",
+            )
+        visible_cards.append(
+            {
+                "study_id": study_id,
+                "citation": visible_text(candidate.get("citation")),
+                "activation_mode": visible_text(candidate.get("activation_mode")),
+                "reaction_class": visible_text(candidate.get("reaction_class")),
+                "observations": visible_text_list(candidate.get("observations")),
+                "limitations": visible_text_list(candidate.get("limitations")),
+                "claims": claim_texts,
+                "source_excerpt": excerpt,
+                "locators": scientist_locators(claim_rows),
+            }
+        )
+    visible_cards.sort(key=lambda card: card["study_id"])
+    return {
+        "project_id": project_id,
+        "coverage": {
+            "studies": metrics["registered_study_count"],
+            "processable": metrics["approved_claim_count"] + metrics["human_required_claim_count"],
+            "blocked": metrics["blocked_claim_count"] + metrics["exception_count"],
+            "claims": metrics["projected_claim_count"],
+        },
+        "cards": visible_cards,
+    }
+
+
+def project_risk_payload(review_root: Path, project_id: str) -> dict[str, Any]:
+    project = project_dir(review_root, project_id)
+    packet = read_json_if_exists(project / "03_review" / "risk_packet.json") or {}
+    decision_payload = read_json_if_exists(project / "03_review" / "risk_decisions.json") or {}
+    raw_targets = packet.get("targets") if isinstance(packet, dict) else []
+    raw_decisions = decision_payload.get("decisions") if isinstance(decision_payload, dict) else []
+    if not isinstance(raw_targets, list) or not all(isinstance(row, dict) for row in raw_targets):
+        raise ValueError("project risk review is unavailable")
+    if not isinstance(raw_decisions, list) or not all(isinstance(row, dict) for row in raw_decisions):
+        raise ValueError("project risk review is unavailable")
+    existing: dict[str, dict[str, Any]] = {}
+    for row in raw_decisions:
+        claim_id = visible_text(row.get("claim_id"))
+        if claim_id:
+            existing[claim_id] = row
+    targets: list[dict[str, Any]] = []
+    target_ids: list[str] = []
+    for row in raw_targets:
+        target_id = visible_text(row.get("claim_id"))
+        decision_token = row.get("review_target_digest")
+        if not target_id or not isinstance(decision_token, str) or not decision_token:
+            raise ValueError("project risk review is unavailable")
+        target_ids.append(target_id)
+        refs = row.get("evidence_refs") if isinstance(row.get("evidence_refs"), list) else []
+        source = next((ref for ref in refs if isinstance(ref, dict)), {})
+        source_label = visible_text(source.get("source_label")) or visible_text(source.get("source_id")) or "Source record"
+        raw_page = source.get("page")
+        page = raw_page if isinstance(raw_page, int) and not isinstance(raw_page, bool) and raw_page > 0 else None
+        section = visible_text(source.get("section_or_item"))
+        summary_parts = [source_label]
+        if page is not None:
+            summary_parts.append(f"p. {page}")
+        if section:
+            summary_parts.append(section)
+        saved = existing.get(target_id, {})
+        action = visible_text(saved.get("action")).lower()
+        if saved.get("review_target_digest") != decision_token or action not in {"approve", "reword", "exclude", "unresolved"}:
+            action = "unresolved"
+        targets.append(
+            {
+                "target_id": target_id,
+                "claim_text": visible_text(row.get("original_text")) or visible_text(row.get("text")),
+                "risk_categories": visible_text_list(row.get("risk_categories")),
+                "evidence_summary": " · ".join(summary_parts),
+                "source_excerpt": visible_text(source.get("exact_quote")),
+                "source_label": source_label,
+                "page": page,
+                "proposed_action": "Review the evidence fit and choose approve, reword, exclude, or unresolved.",
+                "existing_decision": action,
+                "decision_token": decision_token,
+            }
+        )
+    if len(target_ids) != len(set(target_ids)):
+        raise ValueError("project risk review is unavailable")
+    targets.sort(key=lambda target: target["target_id"])
+    return {
+        "project_id": project_id,
+        "coverage": {
+            "targets": len(targets),
+            "human_required": int(packet.get("human_required_count") or 0),
+            "low_risk_audit": int(packet.get("low_risk_sample_count") or 0),
+        },
+        "targets": targets,
+    }
+
+
+def write_project_risk_decisions(review_root: Path, project_id: str, data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict) or not isinstance(data.get("decisions"), list):
+        raise ValueError("decisions must contain a list")
+    action_map = {
+        "approve": "APPROVE",
+        "reword": "REWORD",
+        "exclude": "EXCLUDE",
+        "unresolved": "UNRESOLVED",
+    }
+    task4_rows: list[dict[str, Any]] = []
+    visible_rows: list[dict[str, str]] = []
+    for row in data["decisions"]:
+        if not isinstance(row, dict):
+            raise ValueError("decision rows must be objects")
+        target_id = row.get("target_id")
+        decision = row.get("decision")
+        decision_token = row.get("decision_token")
+        if not isinstance(target_id, str) or not target_id.strip():
+            raise ValueError("decision target is required")
+        if not isinstance(decision, str) or decision not in action_map:
+            raise ValueError("decision is invalid")
+        if not isinstance(decision_token, str) or not decision_token:
+            raise ValueError("decision is no longer current")
+        task4_row: dict[str, Any] = {
+            "claim_id": target_id,
+            "action": action_map[decision],
+            "review_target_digest": decision_token,
+        }
+        if decision == "reword":
+            task4_row["approved_text"] = row.get("approved_text")
+        task4_rows.append(task4_row)
+        visible_rows.append({"target_id": target_id, "decision": decision})
+    project = project_dir(review_root, project_id)
+    apply_risk_decisions(project, {"decisions": task4_rows})
+    visible_rows.sort(key=lambda row: row["target_id"])
+    return {"status": "saved", "decisions": visible_rows}
 
 
 def infer_project_topic(project: Path) -> str:
