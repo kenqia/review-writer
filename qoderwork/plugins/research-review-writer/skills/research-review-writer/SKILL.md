@@ -1,31 +1,45 @@
 ---
 name: research-review-writer
-description: 当用户要在 QoderWork 写作工作台中，用一个任务将中文综述主题和本地来源推进为可审计草稿、动态状态与 DOCX 时使用。
+description: 当科研用户要在 QoderWork 写作工作台中，以三次确认完成证据受控的中文综述和 DOCX 时使用。
 ---
 
 # 科研综述专家
 
-在 QoderWork 的内置“写作工作台”中执行一个综述任务。语义判断、证据阅读、审查与写作由本专家插件中的 Agents 使用当前工作台模型完成；确定性脚本只负责项目路径、状态、校验与导出。没有直接模型接口、Provider/API 回退或自定义 Workbench SDK。
+在 QoderWork 内置“写作工作台”中执行一个有界综述作业。研究者只进行以下三次 interaction；两个 Automatic 阶段由插件连续调度，不增加用户可见编号。语义任务交给六个既有 Agent，确定性任务只运行下列仓库维护命令。
 
-## 只问必要问题
+## 1. Review Brief
 
-首次仅补齐以下缺失项：综述主题/问题、目标读者和语言、时间或范围边界、本地工作文件夹、可用本地来源的位置、期望交付（草稿或 DOCX）。若用户已经给出，直接开始；不得猜测个人路径或要求凭据。
+- 把用户给出的 topic/context 委派给 `REVIEW_BRIEFING_AGENT`，只询问缺失的 material scope：研究问题、目标读者与语言、时间/纳排边界、可用本地材料和交付形式。已有信息不重复询问。
+- 展示 human-readable brief；内部将已确认字段交给本地 product command `scripts/run_vertical_review.py` 的 `init` 子命令，由它写入 `00_brief/review_state.json`，不要求研究者操作内部状态。
+- 启动 `view/serve_review_dashboard.py` 的 localhost dashboard，并呈现该项目的 brief URL。
+- 此处只等待一次确认；确认后的 brief 是后续检索、证据和写作的唯一范围基线。
 
-## 单任务工作流
+### Automatic corpus/evidence（后台自动工作，不是 interaction）
 
-1. 由 `REVIEW_BRIEFING_AGENT` 写入 `00_brief/review_state.json` 与简报，状态为 `briefing`。
-2. 由 `DISCOVERY_ACQUISITION_PLANNER` 建立来源获取与纳入计划；候选始终是待核验状态。
-3. 对每一项已提供研究调用 `PER_STUDY_EVIDENCE_EXTRACTOR`，把可定位证据、风险与缺失写入项目状态计数和证据产物。
-4. 由 `ADVERSARIAL_EVIDENCE_REVIEWER` 审查高风险主张、定位、外推和冲突；存在实质性问题即把状态设为 `needs_human_review` 并列出 blockers。
-5. 只有可写证据足够时，调用 `SYNTHESIS_MANUSCRIPT_WRITER` 写入 `04_first_draft/first_draft.md`；不能支持的内容不写成事实。
-6. 由 `QUALITY_RELEASE_REVIEWER` 形成发布条件。随后运行已有确定性质量检查；仅在人工门通过后使用既有 DOCX 导出端点。
+- `DISCOVERY_ACQUISITION_PLANNER` 根据 confirmed brief 与 candidate pool 生成 bounded scholarly-search-plan.v1、screening decisions 和 acquisition rows。只用 `scripts/discovery/discover_scholarly_corpus.py` 与 `scripts/acquisition/acquire_public_corpus.py` 执行 Task 1/2 的检索和合法获取；候选在验证前保持待核验。
+- 先处理三篇 calibration，记录实测消耗并给出 credits forecast；未超过已确认预算后，自动按 4–6 篇 batch 继续。若缺少 job-level Qoder egress/credits 授权，必须停在任何 paid run 之前。
+- 每项研究先由 `scripts/evidence/build_pdf_text_layers.py` 与 `scripts/evidence/build_page_atom_catalog.py` 产生确定性 atom catalog，再以 fresh delegation contract 委派 `PER_STUDY_EVIDENCE_EXTRACTOR` 选择 atom，随后用 `scripts/evidence/assemble_evidence_candidate_from_atoms.py` 和 `scripts/evidence/validate_evidence_candidate.py` 组装、校验 candidate。
+- 对每项 assembled candidate 重新委派 `ADVERSARIAL_EVIDENCE_REVIEWER` 做 fresh adversarial review，再运行 `scripts/run_vertical_review.py` 的 `register-study` 完成逐项 deterministic registration。失败项写入 `01_evidence/exception_queue.json`，其余研究继续；整个队列无需研究者按单项触发。
+- fresh delegation contract 只约束每次以最小、当前输入重新委派，不声称底层平台提供额外的上下文隔离能力。
 
-BLOCKED 决定具有单调性：除非项目状态记录明确的人类 `APPROVE` 或 `REWORD` 决定，后续 Writer、Reviewer 或措辞弱化都不能重新放行。证据矩阵和正文只能消费来源明示字段及上游允许写作的主张；缺失字段保持缺失，不用标题联想或模型记忆补齐。
+## 2. Scientific Risk Packet
 
-## 项目状态契约
+- 所有可处理研究完成后，只运行一次 `scripts/run_vertical_review.py` 的 `build-risk-packet`，构建去重的 Scientific Risk Packet；它同时包含必须裁决的目标与确定性抽样项。
+- 在写作工作台集中呈现科学表述、证据、冲突和建议动作，只等待一次 `approve / reword / exclude / unresolved` 决定。
+- 应用决定时运行同一 product command 的 `apply-risk-decisions`。系统在后台自动携带当前 `review_target_digest`；研究者看不到也不填写 hash。
+- BLOCKED 决定具有单调性；没有本次集中决定明确放行的 BLOCKED 或 HUMAN_REQUIRED 内容不得进入 Writer。
 
-状态文件固定为 `<工作文件夹>/review-projects/<项目标识>/00_brief/review_state.json`，至少包含：`project_id`、`brief`、`current_stage`、`status`、`blockers`、`counts` 和 `updated_at`。`counts` 只记录 `sources`、`evidence`、`claims`。动态仪表盘读取这一文件及现有草稿/终稿目录；不要新建第二份稿件库或证据库。
+### Automatic Draft/Final（后台自动工作，不是 interaction）
 
-## 停止条件
+- 运行 `scripts/run_vertical_review.py` 的 `build-writer-packet`，只从 APPROVED claim 生成 `02_claims/writer_packet.json`。
+- 以 fresh delegation contract 将该 packet 委派给 `SYNTHESIS_MANUSCRIPT_WRITER`，生成 section drafts、唯一 authoritative manuscript 与 `manuscript_lineage.json`；正文不读取其他科学来源。
+- 运行 `scripts/validators/validate_review_quality.py` 与 `skills/review-final-audit-release/scripts/final_audit_scan.py`，再由 `QUALITY_RELEASE_REVIEWER` 对 manuscript、lineage 和 quality report 给出语义发布 verdict。任何 BLOCKED、HUMAN_REQUIRED 或确定性失败都不能被它覆盖。
+- 通过后使用现有 `skills/review-export-docx/scripts/md2docx.py` 做确定性 export，并由 localhost dashboard 呈现同一 authoritative manuscript 的编辑工作台与 DOCX。
 
-仅在以下真实门槛停止：用户未提供必要范围或本地来源；来源不可访问；高风险证据/冲突需专家或人工决定；人工检查点未通过；确定性校验或导出失败。每次停止时说明当前阶段、阻塞项和用户可执行的下一步。不得因模型不确定而虚构完成、虚构引用或切换替代模型。
+## 3. Final Review
+
+向研究者呈现可编辑写作工作台、质量/发布结论和 DOCX，只等待最终确认。实质修改会使旧 verdict 失效，并自动重跑相关确定性检查后再回到本次 Final Review，不增加新的 interaction 类型。
+
+## 运行与停止边界
+
+只运行本 Skill 明列的 Task 1–4 product/evidence 命令和既有 dashboard、quality、release、export 命令。必要 material scope 缺失、来源不可访问、授权或预算缺失、研究进入 exception、集中科学决定未闭合、质量/导出失败时，展示当前阶段与可执行下一步；单项 exception 不阻塞其他可处理研究。不得虚构完成、证据、引用或授权。

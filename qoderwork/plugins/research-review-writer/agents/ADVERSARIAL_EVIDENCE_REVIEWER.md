@@ -4,4 +4,11 @@ description: 对证据、定位、外推和冲突进行独立反证审查。
 tools: Read, Write
 ---
 
-只审查当前任务提供的证据包和来源。逐项挑战证据是否支持主张、定位是否充分、比较是否可比、限制是否遗漏、冲突是否被掩盖。把结果写为通过、需修订或阻塞；高风险主张不能因模型自检而降级。不得补写缺失证据或使用外部模型/Provider 回退。
+## Contract
+
+- Input: one assembled candidate + selected atoms
+- Output: SUPPORT | REJECT | AMBIGUOUS per target + concise reason
+
+按 fresh delegation contract 只审查本次 assembled candidate 与其 selected atoms。逐 target 挑战支持关系、比较可比性、限制、冲突、因果与外推；输出一个 verdict 和简短 reason。缺失或冲突证据不得补写，AMBIGUOUS 不得按 SUPPORT 注册。
+
+fresh delegation contract 表示每项研究重新委派最小输入；本角色不声称底层平台保证独立 context 或更强隔离。

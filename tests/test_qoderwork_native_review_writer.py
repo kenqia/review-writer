@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -33,6 +34,27 @@ EXPECTED_INVENTORY = (
     "skills/research-review-writer/SKILL.md",
 )
 MANIFEST_KEYS = {"name", "displayName", "version", "description", "descriptionZh", "author", "keywords", "skills"}
+EXPECTED_AGENT_TOOLS = {
+    "ADVERSARIAL_EVIDENCE_REVIEWER": ("Read", "Write"),
+    "DISCOVERY_ACQUISITION_PLANNER": ("Read", "Write", "Bash"),
+    "PER_STUDY_EVIDENCE_EXTRACTOR": ("Read", "Write"),
+    "QUALITY_RELEASE_REVIEWER": ("Read", "Write", "Bash"),
+    "REVIEW_BRIEFING_AGENT": ("Read", "Write"),
+    "SYNTHESIS_MANUSCRIPT_WRITER": ("Read", "Write"),
+}
+ALLOWED_MAIN_COMMANDS = {
+    "scripts/acquisition/acquire_public_corpus.py",
+    "scripts/discovery/discover_scholarly_corpus.py",
+    "scripts/evidence/assemble_evidence_candidate_from_atoms.py",
+    "scripts/evidence/build_page_atom_catalog.py",
+    "scripts/evidence/build_pdf_text_layers.py",
+    "scripts/evidence/validate_evidence_candidate.py",
+    "scripts/run_vertical_review.py",
+    "scripts/validators/validate_review_quality.py",
+    "skills/review-export-docx/scripts/md2docx.py",
+    "skills/review-final-audit-release/scripts/final_audit_scan.py",
+    "view/serve_review_dashboard.py",
+}
 
 
 class NativeReviewWriterPluginTests(unittest.TestCase):
@@ -40,7 +62,7 @@ class NativeReviewWriterPluginTests(unittest.TestCase):
         manifest = json.loads((PLUGIN / ".qoder-plugin" / "plugin.json").read_text(encoding="utf-8"))
         self.assertEqual(MANIFEST_KEYS, set(manifest))
         self.assertEqual("research-review-writer", manifest["name"])
-        self.assertEqual("0.1.1", manifest["version"])
+        self.assertEqual("0.2.0", manifest["version"])
         self.assertEqual("科研综述专家", manifest["displayName"])
         self.assertTrue(manifest["description"].isascii())
         self.assertIn("科研综述", manifest["descriptionZh"])
@@ -56,14 +78,153 @@ class NativeReviewWriterPluginTests(unittest.TestCase):
         self.assertIn("写作工作台", content)
         self.assertIn("人工", content)
 
+    def test_plugin_exposes_exactly_three_researcher_interactions(self) -> None:
+        skill = (PLUGIN / "skills" / "research-review-writer" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("研究者只进行以下三次 interaction", skill)
+        self.assertEqual(
+            ["1. Review Brief", "2. Scientific Risk Packet", "3. Final Review"],
+            re.findall(r"^## ([1-9]\. .+)$", skill, flags=re.MULTILINE),
+        )
+        for forbidden in (
+            "复制 Prompt",
+            "编辑 JSON",
+            "git ",
+            "worktree",
+            "逐篇确认",
+            "七个检查点",
+            "七检查点",
+            "选择 sub-Agent",
+            "打开 output folder",
+        ):
+            self.assertNotIn(forbidden.casefold(), skill.casefold())
+
+    def test_main_skill_orders_automatic_work_between_three_interactions(self) -> None:
+        skill = (PLUGIN / "skills" / "research-review-writer" / "SKILL.md").read_text(encoding="utf-8")
+        markers = (
+            "## 1. Review Brief",
+            "### Automatic corpus/evidence",
+            "## 2. Scientific Risk Packet",
+            "### Automatic Draft/Final",
+            "## 3. Final Review",
+        )
+        for marker in markers:
+            self.assertIn(marker, skill)
+        positions = [skill.index(marker) for marker in markers]
+        self.assertEqual(sorted(positions), positions)
+
+        for required in (
+            "只询问缺失的 material scope",
+            "本地 product command",
+            "review_state.json",
+            "localhost dashboard",
+            "brief URL",
+            "只等待一次确认",
+            "bounded scholarly-search-plan.v1",
+            "三篇 calibration",
+            "credits forecast",
+            "4–6 篇 batch",
+            "deterministic registration",
+            "exception_queue.json",
+            "所有可处理研究完成后",
+            "去重",
+            "approve / reword / exclude / unresolved",
+            "review_target_digest",
+            "writer_packet.json",
+            "APPROVED",
+            "authoritative manuscript",
+            "manuscript_lineage.json",
+            "DOCX",
+            "最终确认",
+            "job-level Qoder egress/credits 授权",
+            "paid run",
+        ):
+            self.assertIn(required, skill)
+
+        command_refs = set(re.findall(r"`((?:scripts|skills|view)/[^`\s]+\.py)`", skill))
+        self.assertTrue(command_refs)
+        self.assertLessEqual(command_refs, ALLOWED_MAIN_COMMANDS)
+        self.assertIn("scripts/run_vertical_review.py", command_refs)
+        self.assertIn("view/serve_review_dashboard.py", command_refs)
+
+    def test_agent_contracts_and_tool_permissions_are_exact(self) -> None:
+        contracts = {
+            "REVIEW_BRIEFING_AGENT": (
+                "Input: topic/context",
+                "Output: human-readable brief fields only",
+            ),
+            "DISCOVERY_ACQUISITION_PLANNER": (
+                "Input: confirmed brief + candidate pool",
+                "Output: scholarly-search-plan.v1 + screening decisions + acquisition rows",
+            ),
+            "PER_STUDY_EVIDENCE_EXTRACTOR": (
+                "Input: one evidence_atom_catalog.v1 + semantic schema",
+                "Output: evidence-atom-semantic-decision.v1 only",
+            ),
+            "ADVERSARIAL_EVIDENCE_REVIEWER": (
+                "Input: one assembled candidate + selected atoms",
+                "Output: SUPPORT | REJECT | AMBIGUOUS per target + concise reason",
+            ),
+            "SYNTHESIS_MANUSCRIPT_WRITER": (
+                "Input: writer_packet.json only",
+                "Output: section drafts + authoritative manuscript + manuscript_lineage.json",
+            ),
+            "QUALITY_RELEASE_REVIEWER": (
+                "Input: authoritative manuscript + lineage + quality report",
+                "Output: semantic release verdict",
+            ),
+        }
+        actual_names = set()
+        for path in (PLUGIN / "agents").glob("*.md"):
+            content = path.read_text(encoding="utf-8")
+            name_match = re.search(r"^name:\s*(\S+)\s*$", content, flags=re.MULTILINE)
+            tools_match = re.search(r"^tools:\s*(.+?)\s*$", content, flags=re.MULTILINE)
+            self.assertIsNotNone(name_match, path.name)
+            self.assertIsNotNone(tools_match, path.name)
+            name = name_match.group(1)
+            actual_names.add(name)
+            tools = tuple(value.strip() for value in tools_match.group(1).split(","))
+            self.assertEqual(EXPECTED_AGENT_TOOLS[name], tools, name)
+            for required in contracts[name]:
+                self.assertIn(required, content)
+        self.assertEqual(set(EXPECTED_AGENT_TOOLS), actual_names)
+
+        for name in (
+            "ADVERSARIAL_EVIDENCE_REVIEWER",
+            "SYNTHESIS_MANUSCRIPT_WRITER",
+            "QUALITY_RELEASE_REVIEWER",
+        ):
+            content = (PLUGIN / "agents" / f"{name}.md").read_text(encoding="utf-8")
+            self.assertIn("fresh delegation contract", content)
+            self.assertIn("不声称底层平台保证独立 context", content)
+
+        discovery = (PLUGIN / "agents" / "DISCOVERY_ACQUISITION_PLANNER.md").read_text(encoding="utf-8")
+        quality = (PLUGIN / "agents" / "QUALITY_RELEASE_REVIEWER.md").read_text(encoding="utf-8")
+        self.assertIn("scripts/discovery/discover_scholarly_corpus.py", discovery)
+        self.assertIn("scripts/acquisition/acquire_public_corpus.py", discovery)
+        self.assertIn("scripts/validators/validate_review_quality.py", quality)
+        self.assertIn("skills/review-export-docx/scripts/md2docx.py", quality)
+
+    def test_extractor_selects_existing_atoms_and_cannot_author_mechanical_fields(self) -> None:
+        extractor = (PLUGIN / "agents" / "PER_STUDY_EVIDENCE_EXTRACTOR.md").read_text(encoding="utf-8")
+        self.assertIn("Select existing atom_id only", extractor)
+        self.assertIn(
+            "Do not write source_id, page, exact_quote, depiction, coverage, or self_check fields",
+            extractor,
+        )
+
+    def test_writer_reads_only_approved_writer_packet(self) -> None:
+        writer = (PLUGIN / "agents" / "SYNTHESIS_MANUSCRIPT_WRITER.md").read_text(encoding="utf-8")
+        self.assertIn("Input: writer_packet.json only", writer)
+        self.assertIn("只读取 decision=APPROVED", writer)
+        self.assertIn("Do not read full PDF files", writer)
+        self.assertNotIn("完整 PDF", writer)
+
     def test_agents_enforce_monotonic_claim_decisions(self) -> None:
         skill = (PLUGIN / "skills" / "research-review-writer" / "SKILL.md").read_text(encoding="utf-8")
-        extractor = (PLUGIN / "agents" / "PER_STUDY_EVIDENCE_EXTRACTOR.md").read_text(encoding="utf-8")
         writer = (PLUGIN / "agents" / "SYNTHESIS_MANUSCRIPT_WRITER.md").read_text(encoding="utf-8")
         reviewer = (PLUGIN / "agents" / "QUALITY_RELEASE_REVIEWER.md").read_text(encoding="utf-8")
 
         self.assertIn("BLOCKED 决定具有单调性", skill)
-        self.assertIn("矩阵字段只能复制来源明示值或已批准主张", extractor)
         self.assertIn("不得用 hedging、改写或模型复审重新放行", writer)
         self.assertIn("不得覆盖或降级上游 BLOCKED 决定", reviewer)
 
