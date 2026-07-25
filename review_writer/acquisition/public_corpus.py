@@ -4,6 +4,7 @@ import csv
 import hashlib
 import html
 import io
+import ipaddress
 import json
 import os
 import re
@@ -30,6 +31,7 @@ METADATA_FILENAMES = frozenset({"acquisition_receipt.json", "manual_acquisition.
 REDIRECT_STATUS_CODES = frozenset({301, 302, 303, 307, 308})
 MAX_REDIRECTS = 5
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
+DNS_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.IGNORECASE)
 OOXML_CONTENT_TYPES_NAMESPACE = "http://schemas.openxmlformats.org/package/2006/content-types"
 OOXML_REQUIREMENTS = {
     "DOCX": ("word/document.xml", b"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"),
@@ -72,7 +74,7 @@ def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _safe_target(output_root: Path, relative: str) -> Path:
+def _safe_target(output_root: Path, relative: str) -> tuple[Path, Path]:
     if not isinstance(relative, str) or not relative.strip():
         raise ManifestError("target_path must be a nonempty relative path")
     if any(ord(character) <= 0x1F or ord(character) == 0x7F for character in relative):
@@ -88,7 +90,7 @@ def _safe_target(output_root: Path, relative: str) -> Path:
     normalized = resolved_target.relative_to(root).as_posix().casefold()
     if normalized in METADATA_FILENAMES:
         raise ManifestError("target_path collides with acquisition metadata")
-    return target
+    return target, resolved_target
 
 
 def _validate_target_parent(output_root: Path, target: Path) -> None:
@@ -122,27 +124,30 @@ def _preflight_manifest(manifest: dict[str, Any], output_root: Path) -> list[dic
             raise ManifestError("download_id must be nonempty")
         if not isinstance(row["study_id"], str) or not row["study_id"].strip():
             raise ManifestError("study_id must be a nonempty string")
+        for field in ("url", "target_path", "source_class"):
+            if not isinstance(row[field], str) or not row[field].strip():
+                raise ManifestError(f"{field} must be a nonempty string")
         normalized_id = download_id.strip()
         if normalized_id in seen_ids:
             raise ManifestError("download_id values must be unique")
         seen_ids.add(normalized_id)
-        if row["document_role"] not in {"MAIN", "SI"}:
-            raise ManifestError(f"unsupported document_role: {row['document_role']}")
+        if not isinstance(row["document_role"], str) or row["document_role"] not in {"MAIN", "SI"}:
+            raise ManifestError("document_role must be MAIN or SI")
         expected_format = row.get("expected_format", "PDF")
-        if expected_format not in {"PDF", "DOCX", "XLSX"}:
-            raise ManifestError(f"unsupported expected_format: {expected_format}")
+        if not isinstance(expected_format, str) or expected_format not in {"PDF", "DOCX", "XLSX"}:
+            raise ManifestError("expected_format must be PDF, DOCX, or XLSX")
         expected_sha256 = row.get("expected_sha256")
         if expected_sha256 is not None:
             if not isinstance(expected_sha256, str) or not SHA256_RE.fullmatch(expected_sha256):
                 raise ManifestError("expected_sha256 must be exactly 64 hexadecimal characters")
             expected_sha256 = expected_sha256.lower()
-        target = _safe_target(output_root, row["target_path"])
-        normalized_target = target.as_posix().casefold()
+        target, canonical_target = _safe_target(output_root, row["target_path"])
+        normalized_target = canonical_target.as_posix().casefold()
         if normalized_target in seen_targets:
             raise ManifestError("normalized target_path values must be unique")
         seen_targets.add(normalized_target)
         try:
-            allowed, url_reason, report_url = _safe_url(str(row["url"]))
+            allowed, url_reason, report_url = _safe_url(row["url"])
             landing_report_url = None
             if row.get("landing_page_url") is not None:
                 _, _, landing_report_url = _safe_url(str(row["landing_page_url"]))
@@ -152,15 +157,35 @@ def _preflight_manifest(manifest: dict[str, Any], output_root: Path) -> list[dic
     return prepared
 
 
+def _valid_hostname(hostname: str) -> bool:
+    try:
+        ipaddress.ip_address(hostname)
+        return True
+    except ValueError:
+        pass
+    dns_name = hostname[:-1] if hostname.endswith(".") else hostname
+    if not dns_name:
+        return False
+    try:
+        ascii_name = dns_name.encode("idna").decode("ascii")
+    except UnicodeError:
+        return False
+    if len(ascii_name) > 253 or all(character.isdigit() or character == "." for character in ascii_name):
+        return False
+    return all(DNS_LABEL_RE.fullmatch(label) for label in ascii_name.split("."))
+
+
 def _safe_url(url: str) -> tuple[bool, str | None, str]:
+    if any(character.isspace() or ord(character) <= 0x1F or ord(character) == 0x7F for character in url):
+        raise ValueError("URL contains whitespace or control characters")
     try:
         parsed = urllib.parse.urlsplit(url)
         hostname = parsed.hostname
         _ = parsed.port
     except ValueError as exc:
         raise ValueError("URL has an invalid host or port") from exc
-    if not hostname:
-        raise ValueError("URL requires a hostname")
+    if not hostname or not _valid_hostname(hostname):
+        raise ValueError("URL requires a valid hostname")
     keys = {key.lower() for key, _ in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)}
     has_sensitive_query = any(_is_sensitive_query_key(key) for key in keys)
     safe_netloc = parsed.netloc.rsplit("@", 1)[-1]
@@ -491,11 +516,11 @@ def acquire_manifest(manifest_path: Path | str, output_root: Path | str, *, allo
         elif not allowed:
             result.update(status=MANUAL_STATUS, reason=url_reason)
         else:
-            robots_ok, robots_reason = _robots_allowed(str(row["url"]), timeout_seconds, robots_cache)
+            robots_ok, robots_reason = _robots_allowed(row["url"], timeout_seconds, robots_cache)
             if not robots_ok:
                 result.update(status=MANUAL_STATUS, reason=robots_reason)
             else:
-                status, reason, digest, http_status, final_report_url = _download_source(str(row["url"]), target, output_root, robots_cache, expected_format=expected_format, expected_sha256=expected_sha256, timeout_seconds=timeout_seconds, max_bytes=max_bytes, retries=retries)
+                status, reason, digest, http_status, final_report_url = _download_source(row["url"], target, output_root, robots_cache, expected_format=expected_format, expected_sha256=expected_sha256, timeout_seconds=timeout_seconds, max_bytes=max_bytes, retries=retries)
                 result.update(status=status, reason=reason, sha256=digest, http_status=http_status, source_url=final_report_url)
                 _validate_existing_target_boundary(output_root, target)
                 if target.is_file():

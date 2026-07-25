@@ -329,6 +329,32 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
                 self.assertEqual(FixtureHandler.pdf_requests, 0)
                 self.assertFalse(output_root.exists())
 
+    def test_preflight_rejects_in_root_symlink_alias_target_collisions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_root = root / "acquired"
+            target_dir = output_root / "sources/S_ALIAS"
+            target_dir.mkdir(parents=True)
+            canonical_target = target_dir / "canonical.pdf"
+            canonical_target.write_bytes(PDF_BYTES)
+            alias_target = target_dir / "alias.pdf"
+            alias_target.symlink_to(canonical_target)
+            manifest = self.write_manifest(
+                root,
+                [
+                    {"download_id": "ALIAS_ONE", "study_id": "S_ALIAS", "document_role": "MAIN", "url": self.base_url + "/paper.pdf", "target_path": "sources/S_ALIAS/alias.pdf", "source_class": "PUBLIC_DIRECT"},
+                    {"download_id": "ALIAS_TWO", "study_id": "S_ALIAS", "document_role": "SI", "url": self.base_url + "/paper.pdf", "target_path": "sources/S_ALIAS/canonical.pdf", "source_class": "PUBLIC_DIRECT"},
+                ],
+            )
+
+            with mock.patch.object(public_corpus, "_validate_existing_target_boundary", side_effect=AssertionError("canonical aliases must fail during preflight")):
+                with self.assertRaises(ManifestError):
+                    acquire_manifest(manifest, output_root, allow_network=False)
+
+            self.assertTrue(alias_target.is_symlink())
+            self.assertEqual(canonical_target.read_bytes(), PDF_BYTES)
+            self.assertFalse((output_root / "acquisition_receipt.json").exists())
+
     def test_preflight_rejects_empty_and_nonstring_study_ids(self):
         for study_id in ["", "   ", None, 123, []]:
             with self.subTest(study_id=study_id), tempfile.TemporaryDirectory() as tmp:
@@ -343,6 +369,82 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
                     acquire_manifest(manifest, output_root, allow_network=False)
 
                 self.assertFalse(output_root.exists())
+
+    def test_preflight_rejects_invalid_role_format_and_source_class_shapes(self):
+        cases = [
+            ("document_role", ["MAIN"]),
+            ("expected_format", ["PDF"]),
+            ("source_class", ""),
+            ("source_class", "   "),
+            ("source_class", None),
+            ("source_class", []),
+        ]
+        for field, value in cases:
+            with self.subTest(field=field, value=value), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                row = {
+                    "download_id": "STRICT_SHAPE",
+                    "study_id": "STRICT_SHAPE",
+                    "document_role": "MAIN",
+                    "url": self.base_url + "/paper.pdf",
+                    "target_path": "sources/STRICT_SHAPE/MAIN.pdf",
+                    "source_class": "PUBLIC_DIRECT",
+                    **{field: value},
+                }
+                manifest = self.write_manifest(root, [row])
+                output_root = root / "acquired"
+
+                with self.assertRaises(ManifestError):
+                    acquire_manifest(manifest, output_root, allow_network=False)
+
+                self.assertFalse(output_root.exists())
+
+    def test_preflight_rejects_nonempty_string_violations_before_url_or_path_use(self):
+        cases = [
+            ("url", ""),
+            ("url", [self.base_url + "/paper.pdf"]),
+            ("target_path", "   "),
+            ("target_path", ["sources/STRICT_VALUE/MAIN.pdf"]),
+        ]
+        for field, value in cases:
+            with self.subTest(field=field, value=value), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                row = {
+                    "download_id": "STRICT_VALUE",
+                    "study_id": "STRICT_VALUE",
+                    "document_role": "MAIN",
+                    "url": self.base_url + "/paper.pdf",
+                    "target_path": "sources/STRICT_VALUE/MAIN.pdf",
+                    "source_class": "PUBLIC_DIRECT",
+                    **{field: value},
+                }
+                manifest = self.write_manifest(root, [row])
+                output_root = root / "acquired"
+
+                if field == "url":
+                    with mock.patch.object(public_corpus, "_safe_url", side_effect=AssertionError("URL sanitizer must not receive invalid shapes")):
+                        with self.assertRaises(ManifestError):
+                            acquire_manifest(manifest, output_root, allow_network=False)
+                else:
+                    with self.assertRaises(ManifestError):
+                        acquire_manifest(manifest, output_root, allow_network=False)
+
+                self.assertFalse(output_root.exists())
+
+    def test_nonempty_future_source_class_remains_manual(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.write_manifest(
+                root,
+                [{"download_id": "FUTURE_CLASS", "study_id": "FUTURE_CLASS", "document_role": "MAIN", "url": self.base_url + "/paper.pdf", "target_path": "sources/FUTURE_CLASS/MAIN.pdf", "source_class": "FUTURE_GENERIC_CLASS"}],
+            )
+            FixtureHandler.pdf_requests = 0
+
+            receipt = acquire_manifest(manifest, root / "acquired")
+
+            self.assertEqual(receipt["results"][0]["status"], "MANUAL_OR_AUTHORIZED_ACCESS_REQUIRED")
+            self.assertEqual(receipt["results"][0]["reason"], "NO_PUBLIC_DIRECT_PDF")
+            self.assertEqual(FixtureHandler.pdf_requests, 0)
 
     def test_url_preflight_rejects_missing_hosts_and_invalid_ports_before_opener(self):
         cases = [
@@ -371,6 +473,45 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
                         acquire_manifest(manifest, output_root)
 
                 self.assertFalse(output_root.exists())
+
+    def test_url_preflight_rejects_malformed_hostname_syntax_before_opener(self):
+        invalid_urls = [
+            "https://bad host.example/paper.pdf",
+            "https://bad\tlabel.example/paper.pdf",
+            "https://bad\x01label.example/paper.pdf",
+            "https://-leading.example/paper.pdf",
+            "https://double..example/paper.pdf",
+            f"https://{'a' * 64}.example/paper.pdf",
+            "https://999.999.999.999/paper.pdf",
+        ]
+        for url in invalid_urls:
+            with self.subTest(url=url), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                manifest = self.write_manifest(
+                    root,
+                    [{"download_id": "STRICT_HOST", "study_id": "STRICT_HOST", "document_role": "MAIN", "url": url, "target_path": "sources/STRICT_HOST/MAIN.pdf", "source_class": "PUBLIC_DIRECT"}],
+                )
+                output_root = root / "acquired"
+
+                with mock.patch.object(public_corpus.urllib.request, "build_opener", side_effect=AssertionError("opener must not receive malformed hostnames")):
+                    with self.assertRaises(ManifestError):
+                        acquire_manifest(manifest, output_root)
+
+                self.assertFalse(output_root.exists())
+
+    def test_url_safety_accepts_supported_hostname_forms_without_resolution(self):
+        urls = [
+            "https://papers.example.org/article",
+            "https://sub-domain.example.org./article",
+            "http://localhost:8080/paper.pdf",
+            "http://127.0.0.1:8080/paper.pdf",
+            "http://[::1]:8080/paper.pdf",
+        ]
+        for url in urls:
+            with self.subTest(url=url):
+                allowed, reason, _ = public_corpus._safe_url(url)
+                self.assertTrue(allowed)
+                self.assertIsNone(reason)
 
     def test_invalid_root_target_preserves_file_outside_output_root(self):
         with tempfile.TemporaryDirectory() as tmp:
