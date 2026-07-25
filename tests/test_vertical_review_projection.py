@@ -175,6 +175,49 @@ def test_initialize_rejects_descendant_directory_symlink_without_touching_target
     assert not (project / "00_brief" / "review_state.json").exists()
 
 
+@pytest.mark.parametrize(
+    ("boundary", "operation"),
+    [
+        ("project", "metrics"),
+        ("01_evidence", "register"),
+        ("02_claims", "writer"),
+        ("03_review", "risk"),
+    ],
+)
+def test_project_operations_reject_symlink_boundaries_without_touching_target(
+    tmp_path: Path,
+    boundary: str,
+    operation: str,
+) -> None:
+    project = _initialize(tmp_path)
+    outside = tmp_path / f"outside-{boundary}"
+    if boundary == "project":
+        project.rename(outside)
+        project.symlink_to(outside, target_is_directory=True)
+    else:
+        component = project / boundary
+        component.rename(outside)
+        component.symlink_to(outside, target_is_directory=True)
+    before = _file_bytes(outside)
+
+    with pytest.raises(VerticalReviewError):
+        if operation == "metrics":
+            benchmark_metrics(project)
+        elif operation == "register":
+            register_study(
+                project,
+                _candidate("STUDY-BOUNDARY", [_claim("CLAIM-BOUNDARY")]),
+                _r0("STUDY-BOUNDARY"),
+                _reviewer("STUDY-BOUNDARY"),
+            )
+        elif operation == "writer":
+            build_writer_packet(project)
+        else:
+            build_risk_packet(project)
+
+    assert _file_bytes(outside) == before
+
+
 @pytest.mark.parametrize("invalid_kind", ["nonempty_object", "unknown_file"])
 def test_initialize_rejects_invalid_or_unknown_existing_objects_without_writes(
     tmp_path: Path,

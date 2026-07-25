@@ -25,6 +25,17 @@ _INITIALIZATION_OBJECTS = (
 _INITIALIZATION_PATHS = frozenset(
     {_REVIEW_STATE_PATH, *(relative for relative, _, _ in _INITIALIZATION_OBJECTS)}
 )
+_AUTHORITATIVE_PATHS = frozenset(
+    {
+        _REVIEW_STATE_PATH,
+        Path("01_evidence/evidence_cards.jsonl"),
+        Path("01_evidence/exception_queue.json"),
+        Path("02_claims/claim_projection.jsonl"),
+        Path("02_claims/writer_packet.json"),
+        Path("03_review/risk_packet.json"),
+        Path("03_review/risk_decisions.json"),
+    }
+)
 HIGH_RISK_CATEGORIES = frozenset(
     {
         "CROSS_STUDY_COMPARISON",
@@ -165,8 +176,28 @@ def _read_jsonl(path: Path, code: str) -> list[dict[str, Any]]:
     return rows
 
 
+def _validate_project_path_boundary(project: Path, *, allow_missing: bool) -> None:
+    if project.is_symlink():
+        _fail("PROJECT_PATH_INVALID", "project root must not be a symlink")
+    if not project.exists():
+        if allow_missing:
+            return
+        _fail("PROJECT_PATH_INVALID", "project root is missing")
+    if not project.is_dir():
+        _fail("PROJECT_PATH_INVALID", "project root must be a directory")
+    for relative in _AUTHORITATIVE_PATHS:
+        component = project
+        for part in relative.parts:
+            component /= part
+            if component.is_symlink():
+                _fail("PROJECT_PATH_INVALID", "authoritative path contains a symlink")
+            if not component.exists():
+                break
+
+
 def _project_state(project: Path) -> dict[str, Any]:
-    state = _read_json(project / "00_brief" / "review_state.json", "PROJECT_STATE_INVALID")
+    _validate_project_path_boundary(project, allow_missing=False)
+    state = _read_json(project / _REVIEW_STATE_PATH, "PROJECT_STATE_INVALID")
     if not isinstance(state, dict) or not isinstance(state.get("project_id"), str):
         _fail("PROJECT_STATE_INVALID", "review state does not identify a project")
     return state
@@ -186,25 +217,26 @@ def initialize_review(review_root: Path, project_id: str, brief: dict) -> Path:
         _fail("BRIEF_INVALID", "brief must be a JSON object")
 
     project = root / project_id
+    _validate_project_path_boundary(project, allow_missing=True)
     state_path = project / _REVIEW_STATE_PATH
     state = {
         "brief": brief_copy,
         "project_id": project_id,
         "schema_version": "vertical-review-state.v1",
     }
-    if project.is_symlink():
-        _fail("PROJECT_ALREADY_EXISTS", "project path must not be a symlink")
-    if project.exists() and not project.is_dir():
-        _fail("PROJECT_ALREADY_EXISTS", "project path is not a directory")
     if project.exists():
-        for path in project.rglob("*"):
-            if path.is_symlink():
+        allowed_directories = {relative.parts[0] for relative in _INITIALIZATION_PATHS}
+        for directory in project.iterdir():
+            if directory.is_symlink():
                 _fail("PROJECT_ALREADY_EXISTS", "project contains a symlink")
-            if path.is_dir():
-                continue
-            relative = path.relative_to(project)
-            if relative not in _INITIALIZATION_PATHS:
+            if not directory.is_dir() or directory.name not in allowed_directories:
                 _fail("PROJECT_ALREADY_EXISTS", "project contains an unknown object")
+            for path in directory.iterdir():
+                if path.is_symlink():
+                    _fail("PROJECT_ALREADY_EXISTS", "project contains a symlink")
+                relative = path.relative_to(project)
+                if path.is_dir() or relative not in _INITIALIZATION_PATHS:
+                    _fail("PROJECT_ALREADY_EXISTS", "project contains an unknown object")
 
     if state_path.exists() and _read_json(state_path, "PROJECT_STATE_INVALID") != state:
         _fail("PROJECT_ALREADY_EXISTS", "existing project state differs")
