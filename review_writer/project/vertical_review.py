@@ -690,11 +690,16 @@ def apply_risk_decisions(project: Path, decisions: dict) -> list[dict]:
     for row in payload["decisions"]:
         if not isinstance(row, dict):
             _fail("RISK_DECISIONS_INVALID", "decision rows must be objects")
-        record = {"action": row.get("action"), "claim_id": row.get("claim_id")}
+        review_target_digest = row.get("review_target_digest")
+        if not isinstance(review_target_digest, str) or not review_target_digest:
+            _fail("RISK_TARGET_STALE", "risk decision requires a current target digest")
+        record = {
+            "action": row.get("action"),
+            "claim_id": row.get("claim_id"),
+            "review_target_digest": review_target_digest,
+        }
         if row.get("action") == "REWORD":
             record["approved_text"] = row.get("approved_text")
-        if "review_target_digest" in row:
-            record["review_target_digest"] = row.get("review_target_digest")
         normalized.append(record)
     normalized.sort(key=lambda row: str(row.get("claim_id", "")))
 
@@ -703,8 +708,8 @@ def apply_risk_decisions(project: Path, decisions: dict) -> list[dict]:
     by_id = {row["claim_id"]: row for row in base}
     for record in normalized:
         row = by_id.get(record.get("claim_id"))
-        if row is not None:
-            record.setdefault("review_target_digest", row["review_target_digest"])
+        if row is not None and record["review_target_digest"] != row["review_target_digest"]:
+            _fail("RISK_TARGET_STALE", "risk decision target digest is stale")
     projected = _apply_risk_records(base, normalized)
     decision_payload = {
         "decisions": normalized,

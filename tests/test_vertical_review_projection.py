@@ -98,6 +98,40 @@ def _file_bytes(root: Path) -> dict[str, bytes]:
     }
 
 
+def _authoritative_bytes(project: Path) -> dict[str, bytes]:
+    relative_paths = (
+        "00_brief/review_state.json",
+        "01_evidence/evidence_cards.jsonl",
+        "01_evidence/exception_queue.json",
+        "02_claims/claim_projection.jsonl",
+        "02_claims/writer_packet.json",
+        "03_review/risk_packet.json",
+        "03_review/risk_decisions.json",
+    )
+    return {
+        relative: (project / relative).read_bytes()
+        for relative in relative_paths
+        if (project / relative).is_file()
+    }
+
+
+def _bound_decision(project: Path, claim_id: str, action: str, **extra) -> dict:
+    projection = [
+        json.loads(line)
+        for line in (project / "02_claims" / "claim_projection.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    digest = next(
+        row["review_target_digest"] for row in projection if row["claim_id"] == claim_id
+    )
+    return {
+        "action": action,
+        "claim_id": claim_id,
+        "review_target_digest": digest,
+        **extra,
+    }
+
+
 def test_initialize_repairs_state_only_project(tmp_path: Path) -> None:
     project = _initialize(tmp_path)
     state_path = project / "00_brief" / "review_state.json"
@@ -384,7 +418,7 @@ def test_writer_packet_requires_explicit_rebuild_after_projection_or_decision_ch
     build_writer_packet(project)
     apply_risk_decisions(
         project,
-        {"decisions": [{"claim_id": "CLAIM-FRESHNESS", "action": "EXCLUDE"}]},
+        {"decisions": [_bound_decision(project, "CLAIM-FRESHNESS", "EXCLUDE")]},
     )
     assert not writer_path.exists()
     rebuilt = build_writer_packet(project)
@@ -595,14 +629,15 @@ def test_risk_decisions_reduce_to_consumer_text_and_status_only(tmp_path: Path) 
         project,
         {
             "decisions": [
-                {"claim_id": "CLAIM-APPROVE", "action": "APPROVE"},
-                {
-                    "claim_id": "CLAIM-REWORD",
-                    "action": "REWORD",
-                    "approved_text": "Human-approved wording.",
-                },
-                {"claim_id": "CLAIM-EXCLUDE", "action": "EXCLUDE"},
-                {"claim_id": "CLAIM-UNRESOLVED", "action": "UNRESOLVED"},
+                _bound_decision(project, "CLAIM-APPROVE", "APPROVE"),
+                _bound_decision(
+                    project,
+                    "CLAIM-REWORD",
+                    "REWORD",
+                    approved_text="Human-approved wording.",
+                ),
+                _bound_decision(project, "CLAIM-EXCLUDE", "EXCLUDE"),
+                _bound_decision(project, "CLAIM-UNRESOLVED", "UNRESOLVED"),
             ]
         },
     )
@@ -667,7 +702,15 @@ def test_apply_risk_decision_persists_current_review_target_digest(tmp_path: Pat
 
     apply_risk_decisions(
         project,
-        {"decisions": [{"claim_id": "CLAIM-DECISION-DIGEST", "action": "APPROVE"}]},
+        {
+            "decisions": [
+                {
+                    "claim_id": "CLAIM-DECISION-DIGEST",
+                    "action": "APPROVE",
+                    "review_target_digest": digest,
+                }
+            ]
+        },
     )
 
     stored = json.loads((project / "03_review" / "risk_decisions.json").read_text())
@@ -685,9 +728,14 @@ def test_old_risk_approval_is_ignored_after_claim_target_changes(tmp_path: Path)
         _reviewer(study_id),
     )
     old_digest = first["claim_projection"][0]["review_target_digest"]
+    old_decision = {
+        "claim_id": claim_id,
+        "action": "APPROVE",
+        "review_target_digest": old_digest,
+    }
     apply_risk_decisions(
         project,
-        {"decisions": [{"claim_id": claim_id, "action": "APPROVE"}]},
+        {"decisions": [old_decision]},
     )
 
     changed_claim = _claim(claim_id, text="Changed wording.", risk_level="R3")
@@ -707,6 +755,36 @@ def test_old_risk_approval_is_ignored_after_claim_target_changes(tmp_path: Path)
     packet = build_writer_packet(project)
     assert packet["claims"] == []
     assert packet["human_required_count"] == 1
+    build_risk_packet(project)
+    before = _authoritative_bytes(project)
+
+    with pytest.raises(VerticalReviewError) as error:
+        apply_risk_decisions(project, {"decisions": [old_decision]})
+
+    assert error.value.code == "RISK_TARGET_STALE"
+    assert _authoritative_bytes(project) == before
+
+
+def test_missing_risk_target_digest_is_rejected_without_state_change(tmp_path: Path) -> None:
+    project = _initialize(tmp_path)
+    register_study(
+        project,
+        _candidate("STUDY-MISSING-DIGEST", [_claim("CLAIM-MISSING-DIGEST", risk_level="R3")]),
+        _r0("STUDY-MISSING-DIGEST"),
+        _reviewer("STUDY-MISSING-DIGEST"),
+    )
+    build_risk_packet(project)
+    build_writer_packet(project)
+    before = _authoritative_bytes(project)
+
+    with pytest.raises(VerticalReviewError) as error:
+        apply_risk_decisions(
+            project,
+            {"decisions": [{"claim_id": "CLAIM-MISSING-DIGEST", "action": "APPROVE"}]},
+        )
+
+    assert error.value.code == "RISK_TARGET_STALE"
+    assert _authoritative_bytes(project) == before
 
 
 @pytest.mark.parametrize(
@@ -741,9 +819,17 @@ def test_invalid_risk_decisions_fail_closed(tmp_path: Path, decisions: dict, cod
     )
     projection_path = project / "02_claims" / "claim_projection.jsonl"
     projection_bytes = projection_path.read_bytes()
+    current_digest = _bound_decision(project, "CLAIM-RISK", "APPROVE")[
+        "review_target_digest"
+    ]
+    bound_decisions = copy.deepcopy(decisions)
+    for row in bound_decisions["decisions"]:
+        row["review_target_digest"] = (
+            current_digest if row.get("claim_id") == "CLAIM-RISK" else "unknown-target"
+        )
 
     with pytest.raises(VerticalReviewError) as error:
-        apply_risk_decisions(project, decisions)
+        apply_risk_decisions(project, bound_decisions)
 
     assert error.value.code == code
     assert projection_path.read_bytes() == projection_bytes
@@ -819,7 +905,7 @@ def test_register_and_risk_application_never_mutate_input_fixtures(tmp_path: Pat
     build_risk_packet(project)
     apply_risk_decisions(
         project,
-        {"decisions": [{"claim_id": "CLAIM-IMMUTABLE", "action": "APPROVE"}]},
+        {"decisions": [_bound_decision(project, "CLAIM-IMMUTABLE", "APPROVE")]},
     )
 
     assert loaded == loaded_before
