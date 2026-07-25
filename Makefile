@@ -16,6 +16,11 @@ public-corpus-acquisition-check:
 	PYTHONPATH=$(CURDIR) PYTHONDONTWRITEBYTECODE=1 $(PYTHON) tests/test_public_corpus_acquisition.py
 	PYTHONPATH=$(CURDIR) PYTHONDONTWRITEBYTECODE=1 $(PYTHON) tests/test_supplement_identity.py
 
+.PHONY: scholarly-discovery-check
+
+scholarly-discovery-check:
+	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) -m pytest tests/test_scholarly_discovery.py -q
+
 smoke:
 	$(PYTHON) tests/test_project_manifest_schema.py
 	$(PYTHON) tests/test_project_manifest_resolver.py
