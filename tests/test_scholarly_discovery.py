@@ -541,6 +541,33 @@ class IdentitylessChainResultTransport:
         raise AssertionError("identityless-chain fixture received an unexpected route")
 
 
+class WarningSliceTransport:
+    def get_json(self, url: str, timeout_seconds: float) -> dict:
+        assert timeout_seconds == 20.0
+        parsed = urlsplit(url)
+        params = parse_qs(parsed.query)
+        if parsed.netloc == "api.crossref.org":
+            return {"message": {"items": []}}
+        if "search" in params:
+            if params["search"] == ["failing query"]:
+                raise TimeoutError("QUERY_FAILURE_MUST_NOT_LEAK")
+            return {"results": []}
+        if parsed.path.startswith("/works/https://doi.org/"):
+            seed_doi = unquote(parsed.path.removeprefix("/works/https://doi.org/"))
+            if seed_doi == "10.1000/failing-seed":
+                raise ConnectionError("SEED_FAILURE_MUST_NOT_LEAK")
+            if seed_doi == "10.1000/valid-seed":
+                return _openalex_work(
+                    "W940",
+                    "Valid Warning Context Seed",
+                    2020,
+                    doi=seed_doi,
+                )
+        if params.get("filter") == ["cites:W940"]:
+            return {"results": []}
+        raise AssertionError("warning-slice fixture received an unexpected route")
+
+
 def _query_calls(transport: FakeTransport, host: str) -> list[str]:
     return [
         url
@@ -776,6 +803,53 @@ def test_validation_normalizes_seed_dois_and_rejects_bool_years() -> None:
         validate_search_plan(invalid_doi)
 
 
+def test_search_plan_enforces_canonical_request_and_input_bounds() -> None:
+    boundary_doi = "10.1000/" + "x" * 504
+    plan = {
+        "schema_version": "scholarly-search-plan.v1",
+        "from_year": 2017,
+        "to_year": 2025,
+        "queries": ["界" * 500, *(f"query {index}" for index in range(1, 8)), " query 1 "],
+        "seed_dois": [
+            boundary_doi,
+            "10.1000/seed-1",
+            "10.1000/seed-2",
+            "10.1000/seed-3",
+            "DOI:10.1000/SEED-1",
+        ],
+    }
+
+    validated = validate_search_plan(plan)
+
+    assert len(validated["queries"]) == 8
+    assert len(validated["seed_dois"]) == 4
+    assert len(validated["queries"][0]) == 500
+    assert len(validated["seed_dois"][0]) == 512
+
+    over_cases = []
+    too_many_queries = copy.deepcopy(plan)
+    too_many_queries["queries"] = [f"unique query {index}" for index in range(9)]
+    over_cases.append(too_many_queries)
+    too_many_seeds = copy.deepcopy(plan)
+    too_many_seeds["seed_dois"] = [f"10.1000/unique-{index}" for index in range(5)]
+    over_cases.append(too_many_seeds)
+    query_too_long = copy.deepcopy(plan)
+    query_too_long["queries"] = ["界" * 501]
+    over_cases.append(query_too_long)
+    doi_too_long = copy.deepcopy(plan)
+    doi_too_long["seed_dois"] = ["10.1000/" + "x" * 505]
+    over_cases.append(doi_too_long)
+
+    for over_plan in over_cases:
+        with pytest.raises(ValueError, match="search plan"):
+            validate_search_plan(over_plan)
+
+    pool = build_candidate_pool(search_plan(), transport=FakeTransport())
+    assert pool["request_bounds"]["max_queries"] == 8
+    assert pool["request_bounds"]["max_seed_dois"] == 4
+    assert pool["request_bounds"]["max_provider_calls"] == 28
+
+
 def test_openalex_identity_accepts_only_canonical_host_and_numeric_format() -> None:
     assert _normalize_openalex_id("W123") == "W123"
     assert _normalize_openalex_id("https://openalex.org/W123") == "W123"
@@ -848,6 +922,7 @@ def test_malformed_search_envelope_warns_without_erasing_other_provider(
         {
             "provider": malformed_provider,
             "operation": "query_search",
+            "query": "envelope fixture",
             "error_class": "TypeError",
             "message": "provider request failed",
         }
@@ -886,6 +961,7 @@ def test_identityless_query_item_warns_and_is_not_counted_as_valid_hit(
         {
             "provider": malformed_provider,
             "operation": "query_result",
+            "query": "identityless item fixture",
             "error_class": "ValueError",
             "message": "provider request failed",
         }
@@ -909,6 +985,7 @@ def test_identityless_backward_item_warns_without_counting_or_erasing_valid_item
         {
             "provider": "openalex",
             "operation": "backward_reference_result",
+            "seed_doi": "10.1000/seed",
             "error_class": "ValueError",
             "message": "provider request failed",
         }
@@ -932,6 +1009,7 @@ def test_identityless_forward_item_warns_without_counting_or_erasing_valid_item(
         {
             "provider": "openalex",
             "operation": "forward_citation_result",
+            "seed_doi": "10.1000/seed",
             "error_class": "ValueError",
             "message": "provider request failed",
         }
@@ -972,6 +1050,7 @@ def test_invalid_seed_work_identity_warns_without_counting_success(seed_payload:
         {
             "provider": "openalex",
             "operation": "seed_resolution",
+            "seed_doi": "10.1000/seed",
             "error_class": "ValueError",
             "message": "provider request failed",
         }
@@ -1005,6 +1084,39 @@ def test_seed_ids_openalex_fallback_drives_exactly_one_forward_request() -> None
     assert pool["counts"]["raw_seed_resolution_hits"] == 1
     assert pool["warnings"] == []
     assert forward_filters == ["cites:W901"]
+
+
+def test_warnings_identify_query_and_seed_slices_deterministically() -> None:
+    plan = {
+        "schema_version": "scholarly-search-plan.v1",
+        "from_year": 2017,
+        "to_year": 2025,
+        "queries": ["valid query", "failing query"],
+        "seed_dois": ["10.1000/failing-seed", "10.1000/valid-seed"],
+    }
+    expected = [
+        {
+            "provider": "openalex",
+            "operation": "query_search",
+            "query": "failing query",
+            "error_class": "TimeoutError",
+            "message": "provider request failed",
+        },
+        {
+            "provider": "openalex",
+            "operation": "seed_resolution",
+            "seed_doi": "10.1000/failing-seed",
+            "error_class": "ConnectionError",
+            "message": "provider request failed",
+        },
+    ]
+
+    first = build_candidate_pool(plan, transport=WarningSliceTransport())
+    second = build_candidate_pool(plan, transport=WarningSliceTransport())
+
+    assert first["warnings"] == second["warnings"] == expected
+    assert first["counts"]["raw_seed_resolution_hits"] == 1
+    assert "MUST_NOT_LEAK" not in json.dumps(first["warnings"], sort_keys=True)
 
 
 @pytest.mark.parametrize(
@@ -1129,6 +1241,7 @@ def test_bounded_routes_normalization_failure_isolation_and_determinism() -> Non
         {
             "provider": "crossref",
             "operation": "query_search",
+            "query": QUERIES[1],
             "error_class": "TimeoutError",
             "message": "provider request failed",
         }

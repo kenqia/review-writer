@@ -35,6 +35,11 @@ from typing import Any
 OPENALEX_ORIGIN = "https://api.openalex.org"
 CROSSREF_ORIGIN = "https://api.crossref.org"
 RESULT_LIMIT = 100
+MAX_QUERIES = 8
+MAX_SEED_DOIS = 4
+MAX_QUERY_CHARS = 500
+MAX_DOI_INPUT_CHARS = 512
+MAX_PROVIDER_CALLS = 2 * MAX_QUERIES + 3 * MAX_SEED_DOIS
 USER_AGENT = (
     "review-writer-scholarly-discovery/1.0 "
     "(+https://github.com/XuehaiWang/review-writer)"
@@ -150,7 +155,12 @@ def validate_search_plan(plan: dict) -> dict:
     if (
         not isinstance(queries, list)
         or not queries
-        or not all(isinstance(query, str) and query.strip() for query in queries)
+        or not all(
+            isinstance(query, str)
+            and query.strip()
+            and len(query) <= MAX_QUERY_CHARS
+            for query in queries
+        )
     ):
         raise ValueError("search plan requires nonempty queries")
     if (
@@ -162,10 +172,22 @@ def validate_search_plan(plan: dict) -> dict:
     ):
         raise ValueError("search plan year range is invalid")
     seed_dois = plan.get("seed_dois")
-    if not isinstance(seed_dois, list) or not all(_valid_doi(doi) for doi in seed_dois):
+    if not isinstance(seed_dois, list) or not all(
+        isinstance(doi, str)
+        and len(doi) <= MAX_DOI_INPUT_CHARS
+        and _valid_doi(doi)
+        for doi in seed_dois
+    ):
         raise ValueError("search plan seed_dois are invalid")
     normalized_queries = list(dict.fromkeys(query.strip() for query in queries))
     normalized_seed_dois = list(dict.fromkeys(_normalize_doi(doi) for doi in seed_dois))
+    if (
+        len(normalized_queries) > MAX_QUERIES
+        or len(normalized_seed_dois) > MAX_SEED_DOIS
+        or any(len(query) > MAX_QUERY_CHARS for query in normalized_queries)
+        or any(len(doi) > MAX_DOI_INPUT_CHARS for doi in normalized_seed_dois)
+    ):
+        raise ValueError("search plan request bounds are invalid")
     return {
         **plan,
         "queries": normalized_queries,
@@ -686,16 +708,28 @@ def _deduplicate(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
-def _warning(provider: str, operation: str, error: Exception) -> dict[str, str]:
+def _warning(
+    provider: str,
+    operation: str,
+    error: Exception,
+    *,
+    query: str = "",
+    seed_doi: str = "",
+) -> dict[str, str]:
     error_class = type(error).__name__
     if not SAFE_ERROR_CLASS_RE.fullmatch(error_class):
         error_class = "Exception"
-    return {
+    warning = {
         "provider": provider,
         "operation": operation,
         "error_class": error_class,
         "message": "provider request failed",
     }
+    if query:
+        warning["query"] = query
+    if seed_doi:
+        warning["seed_doi"] = seed_doi
+    return warning
 
 
 def _in_year_range(candidate: dict[str, Any], start: int, end: int) -> bool:
@@ -770,6 +804,7 @@ def build_candidate_pool(
                                 provider,
                                 "query_result",
                                 ValueError("normalized result has no usable identity"),
+                                query=query,
                             )
                         )
                         continue
@@ -779,7 +814,7 @@ def build_candidate_pool(
                     else:
                         filtered_out_by_year += 1
             except Exception as error:  # noqa: BLE001 - each external source is isolated into a warning.
-                warnings.append(_warning(provider, "query_search", error))
+                warnings.append(_warning(provider, "query_search", error, query=query))
 
     for seed_doi in validated["seed_dois"]:
         seed_work: dict[str, Any] | None = None
@@ -801,7 +836,9 @@ def build_candidate_pool(
             else:
                 filtered_out_by_year += 1
         except Exception as error:  # noqa: BLE001 - seed failures cannot erase query results.
-            warnings.append(_warning("openalex", "seed_resolution", error))
+            warnings.append(
+                _warning("openalex", "seed_resolution", error, seed_doi=seed_doi)
+            )
 
         if seed_work is None:
             continue
@@ -836,6 +873,7 @@ def build_candidate_pool(
                                 "openalex",
                                 "backward_reference_result",
                                 ValueError("normalized result has no usable identity"),
+                                seed_doi=seed_doi,
                             )
                         )
                         continue
@@ -845,7 +883,14 @@ def build_candidate_pool(
                     else:
                         filtered_out_by_year += 1
             except Exception as error:  # noqa: BLE001 - forward pass still runs after this warning.
-                warnings.append(_warning("openalex", "backward_references", error))
+                warnings.append(
+                    _warning(
+                        "openalex",
+                        "backward_references",
+                        error,
+                        seed_doi=seed_doi,
+                    )
+                )
 
         if seed_openalex_id:
             try:
@@ -866,6 +911,7 @@ def build_candidate_pool(
                                 "openalex",
                                 "forward_citation_result",
                                 ValueError("normalized result has no usable identity"),
+                                seed_doi=seed_doi,
                             )
                         )
                         continue
@@ -875,7 +921,14 @@ def build_candidate_pool(
                     else:
                         filtered_out_by_year += 1
             except Exception as error:  # noqa: BLE001 - completed work remains available.
-                warnings.append(_warning("openalex", "forward_citations", error))
+                warnings.append(
+                    _warning(
+                        "openalex",
+                        "forward_citations",
+                        error,
+                        seed_doi=seed_doi,
+                    )
+                )
 
     candidates = _deduplicate(raw_candidates)
     canonical_plan = {
@@ -889,6 +942,9 @@ def build_candidate_pool(
         "schema_version": "scholarly-candidate-pool.v1",
         "search_plan": canonical_plan,
         "request_bounds": {
+            "max_queries": MAX_QUERIES,
+            "max_seed_dois": MAX_SEED_DOIS,
+            "max_provider_calls": MAX_PROVIDER_CALLS,
             "openalex_results_per_request": RESULT_LIMIT,
             "crossref_results_per_request": RESULT_LIMIT,
             "query_requests_per_provider": 1,
