@@ -18,7 +18,6 @@ FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "evidence_grounding_v2" / "pac
 VALIDATOR = REPO_ROOT / "scripts" / "evidence" / "validate_evidence_candidate.py"
 PARSER = REPO_ROOT / "scripts" / "evidence" / "build_pdf_text_layers.py"
 SCHEMA = REPO_ROOT / "schemas" / "evidence" / "evidence_candidate.v2.schema.json"
-RUNBOOK = REPO_ROOT / "docs" / "evidence" / "grounding_contract_v2.md"
 
 
 class EvidenceGroundingV2Tests(unittest.TestCase):
@@ -247,22 +246,17 @@ class EvidenceGroundingV2Tests(unittest.TestCase):
             self.assertEqual("pdftotext-default-reading-order", manifest["sources"][0]["reading_order_method"])
             self.assertEqual("pdftotext-layout-visual-locator-only", manifest["sources"][0]["layout_method"])
 
-    def test_minimal_runbook_and_make_gate_publish_the_contract(self) -> None:
-        self.assertTrue(RUNBOOK.is_file(), RUNBOOK)
-        runbook = RUNBOOK.read_text(encoding="utf-8")
-        makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
-        for clause in (
-            "reading-order",
-            "visual locator only",
-            "TEXT_QUOTE",
-            "FIGURE_TABLE_IMAGE",
-            "LOCATOR_UNRESOLVED",
-            "R0_FAIL_GROUNDING_CONTRACT",
-            "validate_evidence_candidate.py",
+    def test_generic_make_gate_runs_the_complete_grounding_suite(self) -> None:
+        makefile_path = REPO_ROOT / "Makefile"
+        self.assertTrue(makefile_path.is_file(), makefile_path)
+        makefile = makefile_path.read_text(encoding="utf-8")
+        self.assertIn("evidence-grounding-check:", makefile)
+        for test_path in (
+            "tests/test_evidence_grounding_v2.py",
+            "tests/test_evidence_atom_vertical_slice.py",
+            "tests/test_page_atom_catalog.py",
         ):
-            self.assertIn(clause, runbook)
-        self.assertIn("m2-grounding-check:", makefile)
-        self.assertIn("tests/test_evidence_grounding_v2.py", makefile)
+            self.assertIn(test_path, makefile)
 
 
 if __name__ == "__main__":

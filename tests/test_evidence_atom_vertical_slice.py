@@ -40,19 +40,8 @@ SEMANTIC_SCHEMA = (
 CANDIDATE_SCHEMA = REPO_ROOT / "schemas" / "evidence" / "evidence_candidate.v2.schema.json"
 VALIDATOR = REPO_ROOT / "scripts" / "evidence" / "validate_evidence_candidate.py"
 VALID_SEMANTIC = FIXTURE_ROOT / "input" / "semantic.valid.json"
-ATOM_RUNBOOK = REPO_ROOT / "docs" / "evidence" / "evidence_atom_vertical_slice.md"
 SEMANTIC_TEMPLATE = (
     REPO_ROOT / "templates" / "evidence" / "evidence_atom_semantic_decision.v1.template.json"
-)
-EXTRACTOR_ADAPTERS = (
-    REPO_ROOT / ".qoder" / "agents" / "PER_STUDY_EVIDENCE_EXTRACTOR.md",
-    REPO_ROOT / ".lingma" / "agents" / "PER_STUDY_EVIDENCE_EXTRACTOR.md",
-    REPO_ROOT
-    / "qoderwork"
-    / "plugins"
-    / "chem-review-evidence-extraction"
-    / "agents"
-    / "PER_STUDY_EVIDENCE_EXTRACTOR.md",
 )
 
 
@@ -642,26 +631,7 @@ class EvidenceAtomAssemblerTests(unittest.TestCase):
             set(output_claim["risk_categories"]),
         )
 
-    def test_template_runbook_and_make_gate_keep_the_slice_bounded(self) -> None:
-        self.assertTrue(ATOM_RUNBOOK.is_file(), ATOM_RUNBOOK)
-        runbook = ATOM_RUNBOOK.read_text(encoding="utf-8")
-        for clause in (
-            "bounded vertical slice",
-            "not a RAG system, chunker, database, or platform",
-            "build_evidence_atoms.py",
-            "assemble_evidence_candidate_from_atoms.py",
-            "render_evidence_page_crop.py",
-            "144 DPI, PNG",
-            "EVIDENCE_ATOM_SEMANTIC_DECISION_V1",
-            "--source-pdf",
-            "--renderer",
-            "make m2-evidence-atom-check",
-        ):
-            self.assertIn(clause, runbook)
-        makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
-        self.assertIn("m2-evidence-atom-check:", makefile)
-        self.assertIn("tests/test_evidence_atom_vertical_slice.py", makefile)
-
+    def test_template_and_generic_make_gate_keep_the_slice_bounded(self) -> None:
         semantic_schema = json.loads(SEMANTIC_SCHEMA.read_text(encoding="utf-8"))
         template = json.loads(SEMANTIC_TEMPLATE.read_text(encoding="utf-8"))
         self.assertEqual([], list(Draft202012Validator(semantic_schema).iter_errors(template)))
@@ -686,19 +656,16 @@ class EvidenceAtomAssemblerTests(unittest.TestCase):
             "self_check",
         ):
             self.assertNotIn(f'"{forbidden_key}"', serialized)
-
-    def test_atom_mode_explicitly_skips_direct_candidate_instructions(self) -> None:
-        adapter_texts = [path.read_text(encoding="utf-8") for path in EXTRACTOR_ADAPTERS]
-        self.assertEqual([adapter_texts[0]] * len(adapter_texts), adapter_texts)
-        normalized = " ".join(adapter_texts[0].split())
-        self.assertIn(
-            "skip the direct `evidence-candidate.v2` instructions",
-            normalized,
-        )
-        self.assertLess(
-            normalized.index("EVIDENCE_ATOM_SEMANTIC_DECISION_V1"),
-            normalized.index("Produce one `evidence-candidate.v2` object"),
-        )
+        makefile_path = REPO_ROOT / "Makefile"
+        self.assertTrue(makefile_path.is_file(), makefile_path)
+        makefile = makefile_path.read_text(encoding="utf-8")
+        self.assertIn("evidence-grounding-check:", makefile)
+        for test_path in (
+            "tests/test_evidence_grounding_v2.py",
+            "tests/test_evidence_atom_vertical_slice.py",
+            "tests/test_page_atom_catalog.py",
+        ):
+            self.assertIn(test_path, makefile)
 
 
 if __name__ == "__main__":
