@@ -429,6 +429,55 @@ class InvalidSeedTransport:
         raise AssertionError("seed fixture received an unexpected route")
 
 
+class IdentitylessResultTransport:
+    def __init__(self, malformed_provider: str) -> None:
+        self.malformed_provider = malformed_provider
+
+    def get_json(self, url: str, timeout_seconds: float) -> dict:
+        assert timeout_seconds == 20.0
+        parsed = urlsplit(url)
+        params = parse_qs(parsed.query)
+        if parsed.netloc == "api.openalex.org" and "search" in params:
+            if self.malformed_provider != "openalex":
+                return {"results": []}
+            return {
+                "results": [
+                    {
+                        "id": "https://example.org/W999",
+                        "doi": "not-a-doi",
+                        "display_name": "   ",
+                        "private_marker": "OPENALEX_RESULT_MUST_NOT_LEAK",
+                    },
+                    _openalex_work(
+                        "W820",
+                        "Valid OpenAlex Item",
+                        2020,
+                        doi="10.1000/valid-openalex-item",
+                    ),
+                ]
+            }
+        if parsed.netloc == "api.crossref.org" and "query.bibliographic" in params:
+            if self.malformed_provider != "crossref":
+                return {"message": {"items": []}}
+            return {
+                "message": {
+                    "items": [
+                        {
+                            "DOI": "not-a-doi",
+                            "title": ["   "],
+                            "private_marker": "CROSSREF_RESULT_MUST_NOT_LEAK",
+                        },
+                        _crossref_work(
+                            "Valid Crossref Item",
+                            2020,
+                            doi="10.1000/valid-crossref-item",
+                        ),
+                    ]
+                }
+            }
+        raise AssertionError("identityless-result fixture received an unexpected route")
+
+
 def _query_calls(transport: FakeTransport, host: str) -> list[str]:
     return [
         url
@@ -477,6 +526,31 @@ def test_dedup_merges_rich_doi_openalex_record_with_sparse_openalex_record() -> 
     assert {item["query"] for item in candidates[0]["provenance"]} == {
         "rich query",
         "sparse query",
+    }
+
+
+def test_same_openalex_id_does_not_merge_conflicting_nonempty_dois() -> None:
+    first = _raw_candidate(
+        provider="openalex",
+        query="first DOI",
+        title="First DOI Record",
+        doi="10.1000/openalex-conflict-a",
+        openalex_id="W1100",
+    )
+    second = _raw_candidate(
+        provider="openalex",
+        query="second DOI",
+        title="Second DOI Record",
+        doi="10.1000/openalex-conflict-b",
+        openalex_id="W1100",
+    )
+
+    candidates = _deduplicate([first, second])
+
+    assert len(candidates) == 2
+    assert {candidate["doi"] for candidate in candidates} == {
+        "10.1000/openalex-conflict-a",
+        "10.1000/openalex-conflict-b",
     }
 
 
@@ -712,6 +786,44 @@ def test_malformed_search_envelope_warns_without_erasing_other_provider(
             "provider": malformed_provider,
             "operation": "query_search",
             "error_class": "TypeError",
+            "message": "provider request failed",
+        }
+    ]
+    assert "MUST_NOT_LEAK" not in json.dumps(pool["warnings"], sort_keys=True)
+
+
+@pytest.mark.parametrize(
+    ("malformed_provider", "surviving_doi"),
+    [
+        ("openalex", "10.1000/valid-openalex-item"),
+        ("crossref", "10.1000/valid-crossref-item"),
+    ],
+)
+def test_identityless_query_item_warns_and_is_not_counted_as_valid_hit(
+    malformed_provider: str,
+    surviving_doi: str,
+) -> None:
+    plan = {
+        "schema_version": "scholarly-search-plan.v1",
+        "from_year": 2017,
+        "to_year": 2025,
+        "queries": ["identityless item fixture"],
+        "seed_dois": [],
+    }
+
+    pool = build_candidate_pool(
+        plan,
+        transport=IdentitylessResultTransport(malformed_provider),
+    )
+
+    assert pool["counts"]["raw_search_hits"] == 1
+    assert pool["counts"]["unique_candidates"] == 1
+    assert pool["candidates"][0]["doi"] == surviving_doi
+    assert pool["warnings"] == [
+        {
+            "provider": malformed_provider,
+            "operation": "query_result",
+            "error_class": "ValueError",
             "message": "provider request failed",
         }
     ]

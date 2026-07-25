@@ -627,15 +627,28 @@ def _deduplicate(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
         component_dois[lower].update(component_dois[higher])
         component_openalex_ids[lower].update(component_openalex_ids[higher])
 
-    identity_owner: dict[str, int] = {}
+    doi_owner: dict[str, int] = {}
     for index, (_candidate, keys) in enumerate(keyed_candidates):
         for key in keys:
-            if key.startswith("title:"):
+            if not key.startswith("doi:"):
                 continue
-            if key in identity_owner:
-                union(index, identity_owner[key])
+            if key in doi_owner:
+                union(index, doi_owner[key])
             else:
-                identity_owner[key] = index
+                doi_owner[key] = index
+
+    openalex_groups: dict[str, list[int]] = {}
+    for index, (_candidate, keys) in enumerate(keyed_candidates):
+        for key in keys:
+            if key.startswith("openalex:"):
+                openalex_groups.setdefault(key, []).append(index)
+    for key in sorted(openalex_groups):
+        roots = sorted({find(index) for index in openalex_groups[key]})
+        dois = {doi for root in roots for doi in component_dois[root]}
+        if len(dois) > 1:
+            continue
+        for root in roots[1:]:
+            union(roots[0], root)
 
     title_groups: dict[str, list[int]] = {}
     for index, (candidate, _keys) in enumerate(keyed_candidates):
@@ -744,7 +757,6 @@ def build_candidate_pool(
             try:
                 payload = transport.get_json(url, timeout_seconds)
                 items = _results_list(payload, provider=provider)
-                raw_search_hits += len(items)
                 for item in items:
                     provenance = _search_provenance(provider, query)
                     candidate = (
@@ -752,6 +764,16 @@ def build_candidate_pool(
                         if provider == "openalex"
                         else _crossref_candidate(item, provenance)
                     )
+                    if not _identity_keys(candidate):
+                        warnings.append(
+                            _warning(
+                                provider,
+                                "query_result",
+                                ValueError("normalized result has no usable identity"),
+                            )
+                        )
+                        continue
+                    raw_search_hits += 1
                     if _in_year_range(candidate, start, end):
                         raw_candidates.append(candidate)
                     else:
