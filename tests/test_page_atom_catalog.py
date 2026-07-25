@@ -5,23 +5,20 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import importlib.util
+import inspect
 import json
 import subprocess
 import sys
 from pathlib import Path
-from types import ModuleType
 
 from jsonschema import Draft202012Validator
+
+from scripts.evidence.build_page_atom_catalog import PageCatalogError, build_page_atom_catalog
+from scripts.evidence.evidence_atom_core import canonical_json_sha256
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EVIDENCE_SCRIPTS = REPO_ROOT / "scripts" / "evidence"
-sys.path.insert(0, str(EVIDENCE_SCRIPTS))
-
-from evidence_atom_core import canonical_json_sha256  # noqa: E402
-
-
 CATALOG_BUILDER = EVIDENCE_SCRIPTS / "build_page_atom_catalog.py"
 CATALOG_SCHEMA = REPO_ROOT / "schemas" / "evidence" / "evidence_atom_catalog.v1.schema.json"
 VISUAL_FIXTURE_ROOT = (
@@ -85,15 +82,6 @@ def make_bound_packet(tmp_path: Path) -> tuple[Path, Path, dict]:
     return packet_root, job_path, job
 
 
-def load_builder() -> ModuleType:
-    assert CATALOG_BUILDER.is_file(), f"page atom catalog builder is missing: {CATALOG_BUILDER}"
-    spec = importlib.util.spec_from_file_location("build_page_atom_catalog", CATALOG_BUILDER)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def load_schema() -> dict:
     return json.loads(CATALOG_SCHEMA.read_text(encoding="utf-8"))
 
@@ -103,12 +91,15 @@ def without_hash(payload: dict, field: str) -> dict:
 
 
 def test_builds_stable_page_local_text_atoms_and_atomic_cli_output(tmp_path: Path) -> None:
-    builder = load_builder()
     packet_root, job_path, _ = make_bound_packet(tmp_path)
     schema = load_schema()
 
-    first = builder.build_page_catalog(job_path, packet_root, schema)
-    second = builder.build_page_catalog(job_path, packet_root, schema)
+    assert list(inspect.signature(build_page_atom_catalog).parameters) == [
+        "job_path",
+        "packet_root",
+    ]
+    first = build_page_atom_catalog(job_path, packet_root)
+    second = build_page_atom_catalog(job_path, packet_root)
 
     assert first == second
     Draft202012Validator(schema).validate(first)
@@ -155,9 +146,7 @@ def test_builds_stable_page_local_text_atoms_and_atomic_cli_output(tmp_path: Pat
 
 
 def test_rejects_hash_mismatch_unbound_visual_and_cross_page_jobs(tmp_path: Path) -> None:
-    builder = load_builder()
-    packet_root, job_path, valid_job = make_bound_packet(tmp_path)
-    schema = load_schema()
+    packet_root, _, valid_job = make_bound_packet(tmp_path)
 
     invalid_jobs = []
     hash_mismatch = copy.deepcopy(valid_job)
@@ -183,18 +172,31 @@ def test_rejects_hash_mismatch_unbound_visual_and_cross_page_jobs(tmp_path: Path
         invalid_path = packet_root / "input" / f"invalid-{index}.json"
         write_json(invalid_path, invalid_job)
         try:
-            builder.build_page_catalog(invalid_path, packet_root, schema)
-        except builder.PageCatalogError as exc:
+            build_page_atom_catalog(invalid_path, packet_root)
+        except PageCatalogError as exc:
             assert exc.code == expected_code
         else:
             raise AssertionError(f"invalid job unexpectedly accepted: {expected_code}")
 
 
-def test_visual_atom_is_derived_only_from_hash_bound_job_and_manifest() -> None:
-    builder = load_builder()
-    schema = load_schema()
+def test_rejects_hash_bound_layout_page_count_mismatch(tmp_path: Path) -> None:
+    packet_root, _, job = make_bound_packet(tmp_path)
+    layout_path = packet_root / job["source_files"][0]["layout_path"]
+    layout_path.write_text("Only one visual page.\f", encoding="utf-8")
+    job["source_files"][0]["layout_sha256"] = sha256_bytes(layout_path.read_bytes())
+    invalid_path = packet_root / "input" / "layout-page-count-mismatch.json"
+    write_json(invalid_path, job)
 
-    catalog = builder.build_page_catalog(VISUAL_JOB, VISUAL_FIXTURE_ROOT, schema)
+    try:
+        build_page_atom_catalog(invalid_path, packet_root)
+    except PageCatalogError as exc:
+        assert exc.code == "SOURCE_PAGE_COUNT_MISMATCH"
+    else:
+        raise AssertionError("hash-bound one-page layout unexpectedly accepted for a two-page source")
+
+
+def test_visual_atom_is_derived_only_from_hash_bound_job_and_manifest() -> None:
+    catalog = build_page_atom_catalog(VISUAL_JOB, VISUAL_FIXTURE_ROOT)
     visual_atoms = [
         atom for atom in catalog["atoms"] if atom["evidence_mode"] == "FIGURE_TABLE_IMAGE"
     ]

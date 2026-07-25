@@ -18,15 +18,26 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
-from build_evidence_atoms import AtomBuildError, load_bound_crop_manifest
-from evidence_atom_core import (
-    EvidenceAtomCoreError,
-    canonical_json_sha256,
-    canonicalize_text,
-    packet_path,
-    sha256_file,
-    verify_job_source_layers,
-)
+try:
+    from .build_evidence_atoms import AtomBuildError, load_bound_crop_manifest
+    from .evidence_atom_core import (
+        EvidenceAtomCoreError,
+        canonical_json_sha256,
+        canonicalize_text,
+        packet_path,
+        sha256_file,
+        verify_job_source_layers,
+    )
+except ImportError:  # Direct-script fallback.
+    from build_evidence_atoms import AtomBuildError, load_bound_crop_manifest
+    from evidence_atom_core import (
+        EvidenceAtomCoreError,
+        canonical_json_sha256,
+        canonicalize_text,
+        packet_path,
+        sha256_file,
+        verify_job_source_layers,
+    )
 
 
 PARAGRAPH_SPLIT_RE = re.compile(r"\n[ \t]*\n+")
@@ -199,7 +210,7 @@ def build_visual_atoms(
     return atoms
 
 
-def build_page_catalog(job_path: Path, packet_root: Path, schema: dict[str, Any]) -> dict[str, Any]:
+def build_page_atom_catalog(job_path: Path, packet_root: Path) -> dict:
     try:
         job = load_json(job_path)
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -221,13 +232,16 @@ def build_page_catalog(job_path: Path, packet_root: Path, schema: dict[str, Any]
         "atoms": atoms,
     }
     catalog["catalog_sha256"] = canonical_json_sha256(catalog)
+    return catalog
+
+
+def validate_catalog_schema(catalog: dict, schema: dict[str, Any]) -> None:
     schema_errors = sorted(
         Draft202012Validator(schema).iter_errors(catalog),
         key=lambda error: tuple(str(part) for part in error.path),
     )
     if schema_errors:
         raise PageCatalogError("CATALOG_SCHEMA_INVALID", schema_errors[0].message)
-    return catalog
 
 
 def write_json_atomic(output: Path, payload: dict[str, Any]) -> None:
@@ -260,11 +274,11 @@ def main() -> int:
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     try:
-        catalog = build_page_catalog(
+        catalog = build_page_atom_catalog(
             args.job,
             args.packet_root,
-            load_json(args.schema),
         )
+        validate_catalog_schema(catalog, load_json(args.schema))
         write_json_atomic(args.output, catalog)
     except PageCatalogError as exc:
         sys.stderr.write(f"{exc.code}: {exc}\n")

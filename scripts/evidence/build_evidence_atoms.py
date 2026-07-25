@@ -11,16 +11,28 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
-from evidence_atom_core import (
-    HIGH_RISK_CATEGORIES,
-    RENDERER_CONTRACT,
-    EvidenceAtomCoreError,
-    canonical_json_sha256,
-    canonicalize_text,
-    packet_path,
-    sha256_file,
-    verify_job_source_layers,
-)
+try:
+    from .evidence_atom_core import (
+        HIGH_RISK_CATEGORIES,
+        RENDERER_CONTRACT,
+        EvidenceAtomCoreError,
+        canonical_json_sha256,
+        canonicalize_text,
+        packet_path,
+        sha256_file,
+        verify_job_source_layers,
+    )
+except ImportError:  # Direct-script fallback.
+    from evidence_atom_core import (
+        HIGH_RISK_CATEGORIES,
+        RENDERER_CONTRACT,
+        EvidenceAtomCoreError,
+        canonical_json_sha256,
+        canonicalize_text,
+        packet_path,
+        sha256_file,
+        verify_job_source_layers,
+    )
 
 
 IMAGE_SUFFIX = ".png"

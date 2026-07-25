@@ -137,13 +137,18 @@ def verify_job_source_layers(
                 "SOURCE_LAYER_HASH_MISMATCH",
                 f"layout layer drift: {source_id}",
             )
-        pages = split_pages(reading_path)
-        if len(pages) != source.get("page_count"):
+        reading_pages = split_pages(reading_path)
+        layout_pages = split_pages(layout_path)
+        expected_page_count = source.get("page_count")
+        if (
+            len(reading_pages) != expected_page_count
+            or len(layout_pages) != expected_page_count
+        ):
             raise EvidenceAtomCoreError(
                 "SOURCE_PAGE_COUNT_MISMATCH",
                 f"page count drift: {source_id}",
             )
-        sources[source_id] = (source, pages)
+        sources[source_id] = (source, reading_pages)
     if not sources:
         raise EvidenceAtomCoreError("JOB_SOURCE_INVALID", "job contains no source_files")
     return sources
