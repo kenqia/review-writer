@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from review_writer.acquisition.supplement_identity import audit_supplement_reports, normalize_doi, supplement_parent_relation
 
@@ -38,14 +39,102 @@ class SupplementIdentityTests(unittest.TestCase):
             pool.write_text("\n".join(json.dumps(x) for x in [
                 {"candidate_id": "C1", "doi": "10.1000/a.s1"}, {"candidate_id": "C2", "doi": "10.1000/plain"},
             ]) + "\n")
-            manifest.write_text(json.dumps({"downloads": [
+            manifest.write_text(json.dumps({"schema_version": "public-corpus-acquisition.v1", "downloads": [
                 {"download_id": "C1_MAIN", "study_id": "C1", "doi": "10.1000/a.s1", "document_role": "MAIN"},
                 {"download_id": "C2_MAIN", "study_id": "C2", "doi": "10.1000/plain", "document_role": "MAIN"},
             ]}))
             audit = audit_supplement_reports(pool, manifest)
             self.assertEqual(audit["counts"], {"candidate_pool_suffix_reports": 1, "acquisition_manifest_suffix_reports": 1})
             self.assertEqual({x["stable_identity"] for x in audit["records"]}, {"C1", "C1_MAIN"})
-            self.assertTrue(all(x["study_count_role"] == "NOT_AN_INDEPENDENT_STUDY" for x in audit["records"]))
+            self.assertTrue(all(x["study_count_role"] == "REQUIRES_REVIEW" for x in audit["records"]))
+
+    def test_audit_rejects_invalid_candidate_stable_id_and_doi_records(self):
+        invalid_records = [
+            {"doi": "10.1000/plain"},
+            {"candidate_id": "", "doi": "10.1000/a.s1"},
+            {"candidate_id": "C1", "doi": 123},
+        ]
+        for record in invalid_records:
+            with self.subTest(record=record), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                pool = root / "pool.jsonl"
+                manifest = root / "manifest.json"
+                pool.write_text(json.dumps(record) + "\n")
+                manifest.write_text(json.dumps({"schema_version": "public-corpus-acquisition.v1", "downloads": []}))
+
+                with self.assertRaises(ValueError):
+                    audit_supplement_reports(pool, manifest)
+
+    def test_audit_rejects_invalid_manifest_schema_download_list_and_stable_ids(self):
+        invalid_manifests = [
+            {},
+            {"downloads": []},
+            {"schema_version": "wrong", "downloads": []},
+            {"schema_version": "public-corpus-acquisition.v1", "downloads": {}},
+            {"schema_version": "public-corpus-acquisition.v1", "downloads": [{"doi": "10.1000/plain"}]},
+            {"schema_version": "public-corpus-acquisition.v1", "downloads": [{"download_id": "", "doi": "10.1000/a.s1"}]},
+        ]
+        for manifest_data in invalid_manifests:
+            with self.subTest(manifest=manifest_data), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                pool = root / "pool.jsonl"
+                manifest = root / "manifest.json"
+                pool.write_text(json.dumps({"candidate_id": "C1", "doi": "10.1000/plain"}) + "\n")
+                manifest.write_text(json.dumps(manifest_data))
+
+                with self.assertRaises(ValueError):
+                    audit_supplement_reports(pool, manifest)
+
+    def test_only_explicit_publisher_confirmation_changes_study_count_role(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pool = root / "pool.jsonl"
+            manifest = root / "manifest.json"
+            pool.write_text("\n".join(json.dumps(record) for record in [
+                {"candidate_id": "C1", "doi": "10.1000/a.s1"},
+                {"candidate_id": "C2", "doi": "10.1000/b.s1", "publisher_confirmed_parent_doi": "10.1000/b"},
+            ]) + "\n")
+            manifest.write_text(json.dumps({"schema_version": "public-corpus-acquisition.v1", "downloads": []}))
+
+            audit = audit_supplement_reports(pool, manifest)
+
+            roles = {record["stable_identity"]: record["study_count_role"] for record in audit["records"]}
+            self.assertEqual(roles, {"C1": "REQUIRES_REVIEW", "C2": "NOT_AN_INDEPENDENT_STUDY"})
+            statuses = {record["stable_identity"]: record["relation_status"] for record in audit["records"]}
+            self.assertEqual(statuses["C1"], "PARENT_CANDIDATE_STRING_DERIVED")
+            self.assertEqual(statuses["C2"], "PUBLISHER_CONFIRMED_PARENT")
+
+    def test_audit_hashes_inputs_without_reading_complete_files(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pool = root / "pool.jsonl"
+            manifest = root / "manifest.json"
+            pool.write_text(json.dumps({"candidate_id": "C1", "doi": "10.1000/a.s1"}) + "\n")
+            manifest.write_text(json.dumps({"schema_version": "public-corpus-acquisition.v1", "downloads": []}))
+            original_read_bytes = Path.read_bytes
+
+            def guarded_read_bytes(path):
+                if path in {pool, manifest}:
+                    raise AssertionError("input hashing must stream")
+                return original_read_bytes(path)
+
+            with mock.patch.object(Path, "read_bytes", guarded_read_bytes):
+                audit = audit_supplement_reports(pool, manifest)
+
+            self.assertEqual(audit["counts"]["candidate_pool_suffix_reports"], 1)
+
+    def test_records_without_optional_doi_are_valid_but_not_reported(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pool = root / "pool.jsonl"
+            manifest = root / "manifest.json"
+            pool.write_text(json.dumps({"candidate_id": "C0"}) + "\n")
+            manifest.write_text(json.dumps({"schema_version": "public-corpus-acquisition.v1", "downloads": [{"download_id": "D0"}]}))
+
+            audit = audit_supplement_reports(pool, manifest)
+
+            self.assertEqual(audit["records"], [])
+            self.assertEqual(audit["counts"], {"candidate_pool_suffix_reports": 0, "acquisition_manifest_suffix_reports": 0})
 
 
 if __name__ == "__main__":

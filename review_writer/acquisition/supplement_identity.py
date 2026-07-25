@@ -15,6 +15,10 @@ _DOI_RE = re.compile(r"^10\.\d{4,9}/[-._;()/:a-z0-9]+$", re.IGNORECASE)
 _SUPPLEMENT_RE = re.compile(r"^(?P<parent>.+)\.(?P<suffix>s\d+|supp\d*)$", re.IGNORECASE)
 
 
+class SupplementAuditError(ValueError):
+    """The supplement audit inputs are structurally invalid."""
+
+
 def normalize_doi(value: str | None) -> str | None:
     """Return a safe normalized DOI, rejecting URL decorations and malformed input."""
 
@@ -76,18 +80,78 @@ def supplement_parent_relation(
 
 
 def sha256_file(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _validated_identity_record(record: Any, *, id_field: str, source: str) -> dict[str, Any]:
+    if not isinstance(record, dict):
+        raise SupplementAuditError(f"{source} records must be JSON objects")
+    stable_id = record.get(id_field)
+    if not isinstance(stable_id, str) or not stable_id.strip():
+        raise SupplementAuditError(f"{source} records require a nonempty {id_field}")
+    doi = record.get("doi")
+    if doi is not None and not isinstance(doi, str):
+        raise SupplementAuditError(f"{source} records require a string or null doi")
+    if isinstance(doi, str) and normalize_doi(doi) is None:
+        raise SupplementAuditError(f"{source} records contain an invalid doi")
+    confirmation = record.get("publisher_confirmed_parent_doi")
+    if confirmation is not None and (not isinstance(confirmation, str) or normalize_doi(confirmation) is None):
+        raise SupplementAuditError(f"{source} records contain an invalid publisher confirmation")
+    validated = dict(record)
+    validated[id_field] = stable_id.strip()
+    return validated
+
+
+def _load_candidate_records(path: Path) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise SupplementAuditError(f"candidate pool line {line_number} is not valid JSON") from exc
+            record = _validated_identity_record(parsed, id_field="candidate_id", source="candidate pool")
+            if record["candidate_id"] in seen:
+                raise SupplementAuditError("candidate_id values must be unique")
+            seen.add(record["candidate_id"])
+            records.append(record)
+    return records
+
+
+def _load_acquisition_manifest(path: Path) -> list[dict[str, Any]]:
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SupplementAuditError("acquisition manifest is not valid JSON") from exc
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != "public-corpus-acquisition.v1" or not isinstance(manifest.get("downloads"), list):
+        raise SupplementAuditError("acquisition manifest must use public-corpus-acquisition.v1 with a downloads list")
+    downloads: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for parsed in manifest["downloads"]:
+        download = _validated_identity_record(parsed, id_field="download_id", source="acquisition manifest")
+        if download["download_id"] in seen:
+            raise SupplementAuditError("download_id values must be unique")
+        seen.add(download["download_id"])
+        downloads.append(download)
+    return downloads
 
 
 def audit_supplement_reports(candidate_pool: Path | str, acquisition_manifest: Path | str) -> dict[str, Any]:
     """Inventory suffix reports without changing either frozen input."""
 
     pool_path, manifest_path = Path(candidate_pool), Path(acquisition_manifest)
-    candidates = [json.loads(line) for line in pool_path.read_text(encoding="utf-8").splitlines() if line]
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    candidates = _load_candidate_records(pool_path)
+    downloads = _load_acquisition_manifest(manifest_path)
     rows: list[dict[str, Any]] = []
     for record in candidates:
-        relation = supplement_parent_relation(record.get("doi"))
+        relation = supplement_parent_relation(record.get("doi"), publisher_confirmed_parent_doi=record.get("publisher_confirmed_parent_doi"))
         if relation["candidate_parent_doi"]:
             rows.append({
                 "source": "candidate_pool",
@@ -95,12 +159,12 @@ def audit_supplement_reports(candidate_pool: Path | str, acquisition_manifest: P
                 "candidate_id": record["candidate_id"],
                 "doi": relation["normalized_doi"],
                 "report_role": "SUPPLEMENTARY_REPORT",
-                "study_count_role": "NOT_AN_INDEPENDENT_STUDY",
+                "study_count_role": "NOT_AN_INDEPENDENT_STUDY" if relation["relation_status"] == "PUBLISHER_CONFIRMED_PARENT" else "REQUIRES_REVIEW",
                 "future_acquisition_document_role": "SI_OR_REPORT_ROLE_REQUIRED",
                 **relation,
             })
-    for download in manifest.get("downloads", []):
-        relation = supplement_parent_relation(download.get("doi"))
+    for download in downloads:
+        relation = supplement_parent_relation(download.get("doi"), publisher_confirmed_parent_doi=download.get("publisher_confirmed_parent_doi"))
         if relation["candidate_parent_doi"]:
             rows.append({
                 "source": "acquisition_manifest",
@@ -109,7 +173,7 @@ def audit_supplement_reports(candidate_pool: Path | str, acquisition_manifest: P
                 "doi": relation["normalized_doi"],
                 "frozen_document_role": download.get("document_role"),
                 "report_role": "SUPPLEMENTARY_REPORT",
-                "study_count_role": "NOT_AN_INDEPENDENT_STUDY",
+                "study_count_role": "NOT_AN_INDEPENDENT_STUDY" if relation["relation_status"] == "PUBLISHER_CONFIRMED_PARENT" else "REQUIRES_REVIEW",
                 "future_acquisition_document_role": "SI_OR_REPORT_ROLE_REQUIRED",
                 **relation,
             })
