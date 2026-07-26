@@ -163,6 +163,53 @@ def _update_lineage(project: Path, **changes: object) -> None:
     _write_json(path, lineage)
 
 
+def test_final_dashboard_marks_edited_snapshot_stale_until_release_is_rebuilt(tmp_path: Path) -> None:
+    from review_writer.delivery.project_release import build_project_release
+    from view import serve_review_dashboard as dashboard
+
+    project = make_release_ready_project(tmp_path / "review-projects")
+    build_project_release(project)
+
+    ready = dashboard.project_final_payload(tmp_path, "synthetic-release")
+    assert ready["release_snapshot"]["matches_authoritative"] is True
+    assert ready["release_snapshot"]["docx_exists"] is True
+    assert ready["release_status"] == "AI_REVIEWED_BENCHMARK"
+
+    manuscript_path = project / "04_first_draft" / "first_draft.md"
+    revised = manuscript_path.read_text(encoding="utf-8").replace(
+        "# Synthetic Review\n\n",
+        "# Synthetic Review\n\nEditorial context revised by the scientist.\n\n",
+        1,
+    )
+    manuscript_path.write_text(revised, encoding="utf-8")
+
+    stale = dashboard.project_final_payload(tmp_path, "synthetic-release")
+    assert stale["release_snapshot"]["matches_authoritative"] is False
+    assert stale["release_snapshot"]["docx_exists"] is True
+    assert stale["release_status"] == "AI_REVIEWED_BENCHMARK"
+
+    _update_lineage(
+        project,
+        manuscript_sha256=hashlib.sha256(revised.encode("utf-8")).hexdigest(),
+    )
+    build_project_release(project)
+    rebuilt = dashboard.project_final_payload(tmp_path, "synthetic-release")
+    assert rebuilt["release_snapshot"]["matches_authoritative"] is True
+    assert rebuilt["release_snapshot"]["docx_exists"] is True
+    assert rebuilt["release_status"] == "AI_REVIEWED_BENCHMARK"
+
+    final_html = (
+        Path(__file__).resolve().parents[1] / "view" / "assets" / "dashboard" / "final.html"
+    ).read_text(encoding="utf-8")
+    assert "payload?.release_snapshot?.matches_authoritative === true" in final_html
+    assert "Release outdated" in final_html
+    assert "Regenerate DOCX" in final_html
+    assert "Current release ready" in final_html
+    assert "currentReleaseReady?fileUrl(payload.final_draft_docx_path):'#'" in final_html
+    assert "manuscript_sha256" not in final_html
+    assert "docx_sha256" not in final_html
+
+
 def _tree_bytes(root: Path) -> dict[str, bytes]:
     return {
         path.relative_to(root).as_posix(): path.read_bytes()
