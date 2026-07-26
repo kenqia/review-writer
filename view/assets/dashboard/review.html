@@ -32,9 +32,20 @@
           <h2 id="topic">正在读取项目…</h2>
           <p id="brief" class="workbench-lede"></p>
           <dl class="stage-summary">
+            <div><dt>研究问题</dt><dd id="review-question">—</dd></div>
+            <div><dt>年份范围</dt><dd id="review-years">—</dd></div>
+            <div><dt>目标研究数</dt><dd id="review-target">—</dd></div>
+            <div><dt>必需激活方式</dt><dd id="required-modes">—</dd></div>
+            <div><dt>排除范围</dt><dd id="review-exclusions">—</dd></div>
+            <div><dt>输出语言</dt><dd id="output-language">—</dd></div>
+            <div><dt>交付物</dt><dd id="review-deliverables">—</dd></div>
+          </dl>
+          <dl class="stage-summary">
             <div><dt>当前阶段</dt><dd id="stage">—</dd></div>
             <div><dt>进展状态</dt><dd id="status">—</dd></div>
           </dl>
+          <button id="confirm-brief" class="workbench-button primary" type="button">确认综述简报</button>
+          <p id="brief-confirmation-message" class="workbench-message" role="status" aria-live="polite"></p>
         </article>
         <aside class="workbench-card coverage-card">
           <div class="workbench-label">证据覆盖</div>
@@ -89,8 +100,8 @@
     const $ = id => document.getElementById(id);
     const esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[character]));
     const decisionLabels = {approve:'采纳', reword:'改写', exclude:'排除', unresolved:'待定'};
-    const stageLabels = {not_started:'尚未开始', evidence_review:'证据复核', drafting:'稿件撰写', final_review:'终稿审查', complete:'已完成'};
-    const statusLabels = {not_started:'尚未开始', needs_human_review:'需要复核', in_progress:'进行中', complete:'已完成'};
+    const stageLabels = {not_started:'尚未开始', review_brief:'综述简报确认', ready_for_discovery:'可开始文献发现', evidence_review:'证据复核', drafting:'稿件撰写', final_review:'终稿审查', complete:'已完成'};
+    const statusLabels = {not_started:'尚未开始', AWAITING_BRIEF_CONFIRMATION:'等待确认综述简报', BRIEF_CONFIRMED:'综述简报已确认', needs_human_review:'需要复核', in_progress:'进行中', complete:'已完成'};
     let projectId = '';
     let projectState = {};
     let evidencePayload = {coverage:{}, cards:[]};
@@ -131,10 +142,23 @@
     function renderOverview() {
       const brief = projectState.brief || {};
       const coverage = evidencePayload.coverage || {};
+      const listText = value => Array.isArray(value) && value.length ? value.join('、') : '—';
       $('topic').textContent = brief.topic || '未填写主题';
       $('brief').textContent = [brief.audience && `面向：${brief.audience}`, brief.scope && `范围：${brief.scope}`].filter(Boolean).join('　');
+      $('review-question').textContent = brief.review_question || '—';
+      $('review-years').textContent = Number.isInteger(brief.from_year) && Number.isInteger(brief.to_year) ? `${brief.from_year}–${brief.to_year}` : '—';
+      const range = Array.isArray(brief.acceptable_core_range) && brief.acceptable_core_range.length === 2 ? `（可接受 ${brief.acceptable_core_range[0]}–${brief.acceptable_core_range[1]}）` : '';
+      $('review-target').textContent = Number.isInteger(brief.target_primary_studies) ? `${brief.target_primary_studies}${range}` : '—';
+      $('required-modes').textContent = listText(brief.required_modes);
+      $('review-exclusions').textContent = listText(brief.exclusions);
+      $('output-language').textContent = brief.output_language || '—';
+      $('review-deliverables').textContent = listText(brief.deliverables);
       $('stage').textContent = stageLabels[projectState.current_stage] || '进行中';
       $('status').textContent = statusLabels[projectState.status] || '进行中';
+      const awaitingConfirmation = projectState.status === 'AWAITING_BRIEF_CONFIRMATION';
+      $('confirm-brief').hidden = !awaitingConfirmation;
+      $('confirm-brief').disabled = !awaitingConfirmation;
+      $('brief-confirmation-message').textContent = projectState.status === 'BRIEF_CONFIRMED' ? '综述简报已确认，可以开始文献发现。' : '';
       const metrics = [
         ['研究', coverage.studies || 0],
         ['可处理', coverage.processable || 0],
@@ -242,6 +266,23 @@
       }
     }
 
+    async function confirmBrief() {
+      $('confirm-brief').disabled = true;
+      $('brief-confirmation-message').textContent = '正在确认…';
+      try {
+        await getPayload(`/api/project/${encodeURIComponent(projectId)}/review-state`, {
+          method:'PUT',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({action:'confirm_brief',project_id:projectId}),
+        });
+        projectState = await getPayload(`/api/project/${encodeURIComponent(projectId)}/review-state`);
+        renderOverview();
+      } catch (error) {
+        $('brief-confirmation-message').textContent = '确认失败；简报范围未更改。';
+        $('confirm-brief').disabled = false;
+      }
+    }
+
     async function loadState() {
       projectState = await (await fetch(`/api/project/${encodeURIComponent(projectId)}/review-state`)).json();
       [evidencePayload, riskPayload] = await Promise.all([
@@ -267,6 +308,7 @@
       projectId = event.target.value;
       await loadState();
     });
+    $('confirm-brief').addEventListener('click', confirmBrief);
     $('save-decisions').addEventListener('click', saveDecisions);
     $('export').addEventListener('click', async () => {
       $('export-message').textContent = '正在生成…';

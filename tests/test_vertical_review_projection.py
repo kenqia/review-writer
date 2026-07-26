@@ -133,6 +133,41 @@ def _bound_decision(project: Path, claim_id: str, action: str, **extra) -> dict:
     }
 
 
+def test_initialize_awaits_brief_confirmation_without_discovery_side_effects(
+    tmp_path: Path,
+) -> None:
+    project = _initialize(tmp_path)
+
+    state = json.loads((project / "00_brief" / "review_state.json").read_text())
+
+    assert state == {
+        "blockers": [],
+        "brief": {"topic": "Synthetic review"},
+        "counts": {"claims": 0, "evidence": 0, "sources": 0},
+        "current_stage": "review_brief",
+        "project_id": "synthetic-review",
+        "schema_version": "vertical-review-state.v1",
+        "status": "AWAITING_BRIEF_CONFIRMATION",
+    }
+    assert not (project / "00_discovery").exists()
+
+
+def test_confirm_review_brief_is_idempotent_and_preserves_scope(tmp_path: Path) -> None:
+    project = _initialize(tmp_path)
+    initial = json.loads((project / "00_brief" / "review_state.json").read_text())
+
+    confirmed = vertical_review.confirm_review_brief(project)
+
+    assert confirmed["brief"] == initial["brief"]
+    assert confirmed["status"] == "BRIEF_CONFIRMED"
+    assert confirmed["current_stage"] == "ready_for_discovery"
+    assert not (project / "00_discovery").exists()
+    confirmed_bytes = (project / "00_brief" / "review_state.json").read_bytes()
+
+    assert vertical_review.confirm_review_brief(project) == confirmed
+    assert (project / "00_brief" / "review_state.json").read_bytes() == confirmed_bytes
+
+
 def test_initialize_repairs_state_only_project(tmp_path: Path) -> None:
     project = _initialize(tmp_path)
     state_path = project / "00_brief" / "review_state.json"
@@ -1083,6 +1118,40 @@ def test_cli_exposes_required_subcommands_and_prepare_creates_no_state(tmp_path:
         if path.is_file()
     }
     assert after == before
+
+
+def test_cli_init_reports_awaiting_brief_confirmation_without_discovery(
+    tmp_path: Path,
+) -> None:
+    brief = tmp_path / "brief.json"
+    brief.write_text('{"topic":"Synthetic review"}\n', encoding="utf-8")
+    project_root = tmp_path / "review-projects"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(CLI),
+            "init",
+            "--review-root",
+            str(project_root),
+            "--project-id",
+            "synthetic-review",
+            "--brief",
+            str(brief),
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["status"] == "AWAITING_BRIEF_CONFIRMATION"
+    project = project_root / "synthetic-review"
+    assert json.loads((project / "00_brief" / "review_state.json").read_text())[
+        "status"
+    ] == "AWAITING_BRIEF_CONFIRMATION"
+    assert not (project / "00_discovery").exists()
 
 
 def test_makefile_has_focused_vertical_projection_gate() -> None:

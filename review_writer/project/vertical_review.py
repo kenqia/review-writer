@@ -15,6 +15,8 @@ from typing import Any
 
 PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 RISK_LEVELS = frozenset({"R0", "R1", "R2", "R3"})
+AWAITING_BRIEF_CONFIRMATION = "AWAITING_BRIEF_CONFIRMATION"
+BRIEF_CONFIRMED = "BRIEF_CONFIRMED"
 _REVIEW_STATE_PATH = Path("00_brief/review_state.json")
 _INITIALIZATION_OBJECTS = (
     (Path("01_evidence/evidence_cards.jsonl"), "jsonl", []),
@@ -220,9 +222,13 @@ def initialize_review(review_root: Path, project_id: str, brief: dict) -> Path:
     _validate_project_path_boundary(project, allow_missing=True)
     state_path = project / _REVIEW_STATE_PATH
     state = {
+        "blockers": [],
         "brief": brief_copy,
+        "counts": {"claims": 0, "evidence": 0, "sources": 0},
+        "current_stage": "review_brief",
         "project_id": project_id,
         "schema_version": "vertical-review-state.v1",
+        "status": AWAITING_BRIEF_CONFIRMATION,
     }
     if project.exists():
         allowed_directories = {relative.parts[0] for relative in _INITIALIZATION_PATHS}
@@ -261,6 +267,28 @@ def initialize_review(review_root: Path, project_id: str, brief: dict) -> Path:
             _write_json(path, expected)
     _write_json(state_path, state)
     return project
+
+
+def confirm_review_brief(project: Path) -> dict[str, Any]:
+    """Confirm the stored brief without changing its scope or starting discovery."""
+    project = Path(project)
+    state = _project_state(project)
+    status = state.get("status")
+    if status == BRIEF_CONFIRMED:
+        if state.get("current_stage") != "ready_for_discovery":
+            _fail("BRIEF_CONFIRMATION_STATE_INVALID", "confirmed brief has an invalid stage")
+        return state
+    if status != AWAITING_BRIEF_CONFIRMATION or state.get("current_stage") != "review_brief":
+        _fail("BRIEF_CONFIRMATION_STATE_INVALID", "brief is not awaiting confirmation")
+    if not isinstance(state.get("brief"), dict):
+        _fail("PROJECT_STATE_INVALID", "review state does not contain a brief")
+    confirmed = {
+        **state,
+        "current_stage": "ready_for_discovery",
+        "status": BRIEF_CONFIRMED,
+    }
+    _write_json(project / _REVIEW_STATE_PATH, confirmed)
+    return confirmed
 
 
 def _source_locators(evidence_refs: list[dict[str, Any]]) -> list[dict[str, Any]]:

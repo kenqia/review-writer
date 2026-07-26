@@ -23,9 +23,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from review_writer.project.vertical_review import (  # noqa: E402
+    AWAITING_BRIEF_CONFIRMATION,
     VerticalReviewError,
     apply_risk_decisions,
     benchmark_metrics,
+    confirm_review_brief,
 )
 from review_writer.delivery.project_release import (  # noqa: E402
     PROJECT_RELEASE_LOCK,
@@ -335,11 +337,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         try:
             data = json.loads(self.rfile.read(length).decode("utf-8"))
-            state = write_project_review_state(self.review_root, project_id, data)
+            if isinstance(data, dict) and "action" in data:
+                valid_confirmation = (
+                    set(data) == {"action", "project_id"}
+                    and data.get("action") == "confirm_brief"
+                    and data.get("project_id") == project_id
+                )
+                if not valid_confirmation:
+                    raise ValueError("brief confirmation requires exactly action and matching project_id")
+                state = confirm_review_brief(project)
+            else:
+                state = write_project_review_state(self.review_root, project_id, data)
         except (ValueError, json.JSONDecodeError) as exc:
             self.send_error(HTTPStatus.BAD_REQUEST, f"invalid review state: {exc}")
             return
-        self.send_json({"ok": True, "project_id": project_id, "current_stage": state["current_stage"]})
+        self.send_json(
+            {
+                "ok": True,
+                "project_id": project_id,
+                "current_stage": state["current_stage"],
+                "status": state["status"],
+            }
+        )
 
     def handle_project_risk_decisions_put(self, project_id: str) -> None:
         try:
@@ -1090,6 +1109,15 @@ def write_project_review_state(review_root: Path, project_id: str, data: Any) ->
         raise ValueError("state requires brief, current_stage, status, blockers, and counts")
     if not all(isinstance(data.get(key), str) and data[key].strip() for key in ("current_stage", "status")):
         raise ValueError("current_stage and status must be nonempty strings")
+    existing = read_json_if_exists(review_state_path(review_root, project_id))
+    if isinstance(existing, dict):
+        if isinstance(existing.get("brief"), dict) and data["brief"] != existing["brief"]:
+            raise ValueError("brief fields are immutable after initialization")
+        if existing.get("status") == AWAITING_BRIEF_CONFIRMATION and (
+            data["status"] != AWAITING_BRIEF_CONFIRMATION
+            or data["current_stage"] != "review_brief"
+        ):
+            raise ValueError("brief confirmation requires the confirm_brief action")
     counts = data["counts"]
     state = {
         "project_id": project_id,

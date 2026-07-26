@@ -111,7 +111,7 @@ class NativeReviewWriterPluginTests(unittest.TestCase):
         manifest = json.loads((PLUGIN / ".qoder-plugin" / "plugin.json").read_text(encoding="utf-8"))
         self.assertEqual(MANIFEST_KEYS, set(manifest))
         self.assertEqual("research-review-writer", manifest["name"])
-        self.assertEqual("0.2.0", manifest["version"])
+        self.assertEqual("0.2.1", manifest["version"])
         self.assertEqual("科研综述专家", manifest["displayName"])
         self.assertTrue(manifest["description"].isascii())
         self.assertIn("科研综述", manifest["descriptionZh"])
@@ -194,6 +194,22 @@ class NativeReviewWriterPluginTests(unittest.TestCase):
         self.assertLessEqual(command_refs, ALLOWED_MAIN_COMMANDS)
         self.assertIn("scripts/run_vertical_review.py", command_refs)
         self.assertIn("view/serve_review_dashboard.py", command_refs)
+
+    def test_main_skill_blocks_discovery_until_brief_confirmation(self) -> None:
+        skill = (PLUGIN / "skills" / "research-review-writer" / "SKILL.md").read_text(encoding="utf-8")
+
+        for required in (
+            "AWAITING_BRIEF_CONFIRMATION",
+            "BRIEF_CONFIRMED",
+            "ready_for_discovery",
+            "未观察到 `BRIEF_CONFIRMED` 前不得",
+            "同一个 QoderWork 任务",
+        ):
+            self.assertIn(required, skill)
+        self.assertLess(
+            skill.index("BRIEF_CONFIRMED"),
+            skill.index("DISCOVERY_ACQUISITION_PLANNER"),
+        )
 
     def test_agent_contracts_and_tool_permissions_are_exact(self) -> None:
         contracts = {
@@ -384,6 +400,116 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             review_html = (ROOT / "view" / "assets" / "dashboard" / "review.html").read_text(encoding="utf-8")
             self.assertIn('fetch(`/api/project/${encodeURIComponent(projectId)}/review-state`)', review_html)
             self.assertIn('<link rel="icon" href="data:,">', review_html)
+
+    def test_brief_confirmation_endpoint_is_idempotent_and_rejects_scope_mutation(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from review_writer.project.vertical_review import initialize_review
+        from view import serve_review_dashboard as dashboard
+
+        brief = {
+            "topic": "Katritzky salt deaminative functionalization",
+            "review_question": "How do activation modes differ?",
+            "from_year": 2017,
+            "to_year": 2025,
+            "target_primary_studies": 24,
+            "acceptable_core_range": [20, 30],
+            "required_modes": ["photoredox", "electrochemical"],
+            "exclusions": ["abstract-only evidence"],
+            "output_language": "English",
+            "deliverables": ["dynamic workbench", "editable DOCX"],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir) / "review-root"
+            projects = review_root / "review-projects"
+            project_id = "case-02"
+            project = initialize_review(projects, project_id, brief)
+            state_path = project / "00_brief" / "review_state.json"
+
+            def put(payload: dict) -> tuple[int, bytes]:
+                request_body = json.dumps(payload).encode("utf-8")
+                request = (
+                    f"PUT /api/project/{project_id}/review-state HTTP/1.1\r\n"
+                    "Host: localhost\r\nContent-Type: application/json\r\nContent-Length: "
+                ).encode() + str(len(request_body)).encode() + b"\r\n\r\n" + request_body
+                status, _, body = self._request(dashboard, review_root, request)
+                return status, body
+
+            action = {"action": "confirm_brief", "project_id": project_id}
+            initial_bytes = state_path.read_bytes()
+            for bypass in (
+                {
+                    "project_id": project_id,
+                    "brief": brief,
+                    "current_stage": "ready_for_discovery",
+                    "status": "BRIEF_CONFIRMED",
+                    "blockers": [],
+                    "counts": {"sources": 0, "evidence": 0, "claims": 0},
+                },
+                {
+                    "project_id": project_id,
+                    "brief": {**brief, "topic": "mutated scope"},
+                    "current_stage": "review_brief",
+                    "status": "AWAITING_BRIEF_CONFIRMATION",
+                    "blockers": [],
+                    "counts": {"sources": 0, "evidence": 0, "claims": 0},
+                },
+            ):
+                with self.subTest(bypass=bypass):
+                    status, _ = put(bypass)
+                    self.assertEqual(400, status)
+                    self.assertEqual(initial_bytes, state_path.read_bytes())
+
+            status, body = put(action)
+            self.assertEqual(200, status)
+            self.assertEqual("BRIEF_CONFIRMED", json.loads(body)["status"])
+            confirmed = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(brief, confirmed["brief"])
+            self.assertEqual("ready_for_discovery", confirmed["current_stage"])
+            confirmed_bytes = state_path.read_bytes()
+
+            status, _ = put(action)
+            self.assertEqual(200, status)
+            self.assertEqual(confirmed_bytes, state_path.read_bytes())
+
+            for invalid in (
+                {**action, "brief": {"topic": "mutated scope"}},
+                {"action": "confirm", "project_id": project_id},
+                {"action": "confirm_brief"},
+            ):
+                with self.subTest(payload=invalid):
+                    status, _ = put(invalid)
+                    self.assertEqual(400, status)
+                    self.assertEqual(confirmed_bytes, state_path.read_bytes())
+
+    def test_review_workbench_shows_scientist_readable_brief_and_confirmation(self) -> None:
+        review_html = (ROOT / "view" / "assets" / "dashboard" / "review.html").read_text(encoding="utf-8")
+
+        for element_id in (
+            "review-question",
+            "review-years",
+            "review-target",
+            "required-modes",
+            "review-exclusions",
+            "output-language",
+            "review-deliverables",
+            "confirm-brief",
+        ):
+            self.assertIn(f'id="{element_id}"', review_html)
+        for label in (
+            "研究问题",
+            "年份范围",
+            "目标研究数",
+            "必需激活方式",
+            "排除范围",
+            "输出语言",
+            "交付物",
+            "确认综述简报",
+        ):
+            self.assertIn(label, review_html)
+        self.assertIn("AWAITING_BRIEF_CONFIRMATION", review_html)
+        self.assertIn("BRIEF_CONFIRMED", review_html)
+        self.assertIn("action:'confirm_brief'", review_html)
+        self.assertNotIn("action:'confirm_brief',brief:", review_html)
 
     def test_draft_route_exposes_sections_and_rejects_whole_manuscript_payload(self) -> None:
         sys.path.insert(0, str(ROOT))

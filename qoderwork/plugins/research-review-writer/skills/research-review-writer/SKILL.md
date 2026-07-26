@@ -10,9 +10,10 @@ description: 当科研用户要在 QoderWork 写作工作台中，以三次确�
 ## 1. Review Brief
 
 - 把用户给出的 topic/context 委派给 `REVIEW_BRIEFING_AGENT`，只询问缺失的 material scope：研究问题、目标读者与语言、时间/纳排边界、可用本地材料和交付形式。已有信息不重复询问。
-- 展示 human-readable brief；内部将已确认字段交给本地 product command `scripts/run_vertical_review.py` 的 `init` 子命令，由它写入 `00_brief/review_state.json`，不要求研究者操作内部状态。
+- 展示 human-readable brief；内部将待确认字段交给本地 product command `scripts/run_vertical_review.py` 的 `init` 子命令，由它写入状态为 `AWAITING_BRIEF_CONFIRMATION` 的 `00_brief/review_state.json`，不要求研究者操作内部状态。
 - 启动 `view/serve_review_dashboard.py` 的 localhost dashboard，并呈现该项目的 brief URL。
-- 此处只等待一次确认；确认后的 brief 是后续检索、证据和写作的唯一范围基线。
+- 此处只等待一次确认；留在同一个 QoderWork 任务中观察通用状态接口，直到状态为 `BRIEF_CONFIRMED` 且阶段为 `ready_for_discovery`。确认动作不得改写 brief，也不得自身触发检索、Provider 或网络操作。
+- 未观察到 `BRIEF_CONFIRMED` 前不得委派 `DISCOVERY_ACQUISITION_PLANNER`，也不得生成 search plan 或运行 discovery/acquisition；确认后的 brief 是后续检索、证据和写作的唯一范围基线，同一任务随后自动继续。
 
 ### Automatic corpus/evidence（后台自动工作，不是 interaction）
 

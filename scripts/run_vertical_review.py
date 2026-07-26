@@ -161,8 +161,9 @@ def _parser() -> argparse.ArgumentParser:
 def _run(args: argparse.Namespace) -> int:
     if args.command == "init":
         project = initialize_review(args.review_root, args.project_id, _load_json(args.brief))
+        state = _load_json(project / "00_brief" / "review_state.json")
         _print_summary(
-            {"command": "init", "project_dir": str(project), "status": "INITIALIZED"}
+            {"command": "init", "project_dir": str(project), "status": state["status"]}
         )
         return 0
     if args.command == "prepare-study":
