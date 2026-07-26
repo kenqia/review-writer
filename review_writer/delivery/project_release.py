@@ -19,6 +19,7 @@ from review_writer.project.vertical_review import VerticalReviewError, benchmark
 
 _ATX_HEADING_RE = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
 _FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+_DOCX_CODE_FENCE_RE = re.compile(r"^```(\w*)\s*$")
 _IMAGE_MARKER_RE = re.compile(r"!\[")
 _CANONICAL_IMAGE_RE = re.compile(r"^!\[([^\]\r\n]*)\]\(([^\s()<>\"']+)\)[ \t]*$")
 _REFERENCE_RE = re.compile(r"^\s*(?:\[(\d+)\]|(\d+)[.)])\s+\S")
@@ -234,22 +235,20 @@ def _read_jsonl(path: Path, code: str) -> list[dict[str, Any]]:
     return rows
 
 
-def _without_fenced_blocks(markdown: str) -> str:
+def _without_docx_code_blocks(markdown: str) -> str:
     visible: list[str] = []
-    fence: str | None = None
+    in_code_block = False
     for line in markdown.splitlines(keepends=True):
-        match = _FENCE_RE.match(line.rstrip("\r\n"))
-        if match:
-            marker = match.group(1)[0]
-            if fence is None:
-                fence = marker
-            elif marker == fence:
-                fence = None
+        content = line.rstrip("\r\n")
+        if not in_code_block and _DOCX_CODE_FENCE_RE.match(content):
+            in_code_block = True
             visible.append("\n" if line.endswith(("\n", "\r")) else "")
-        elif fence is None:
-            visible.append(line)
+        elif in_code_block:
+            if content.startswith("```"):
+                in_code_block = False
+            visible.append("\n" if line.endswith(("\n", "\r")) else "")
         else:
-            visible.append("\n" if line.endswith(("\n", "\r")) else "")
+            visible.append(line)
     return "".join(visible)
 
 
@@ -458,7 +457,7 @@ def _validate_manuscript_lineage(
     if not marker_ids <= referenced:
         raise ProjectReleaseError("MANUSCRIPT_LINEAGE_DRIFT", "manuscript claim markers are absent from lineage")
 
-    visible_markdown = _without_fenced_blocks(markdown)
+    visible_markdown = _without_docx_code_blocks(markdown)
     image_paths: list[str] = []
     for line in visible_markdown.splitlines():
         if not _IMAGE_MARKER_RE.search(line):

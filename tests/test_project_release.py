@@ -696,6 +696,43 @@ def test_release_uses_literal_percent_encoded_image_path(tmp_path: Path) -> None
         build_project_release(project)
 
 
+def test_release_rejects_unsafe_image_inside_tilde_fence_before_export(tmp_path: Path) -> None:
+    from review_writer.delivery import project_release
+    from review_writer.delivery.project_release import ProjectReleaseError, build_project_release
+
+    project = make_release_ready_project(tmp_path)
+    manuscript_path = project / "04_first_draft" / "first_draft.md"
+    manuscript = manuscript_path.read_text(encoding="utf-8").replace(
+        "![Synthetic one-pixel figure](../assets/tiny.png)",
+        "~~~\n![Unsafe tilde image](../../outside.png)\n~~~",
+    )
+    manuscript_path.write_text(manuscript, encoding="utf-8")
+    _update_lineage(project, manuscript_sha256=hashlib.sha256(manuscript.encode("utf-8")).hexdigest())
+
+    with patch.object(project_release.subprocess, "run") as converter:
+        with pytest.raises(ProjectReleaseError, match="IMAGE_INVALID"):
+            build_project_release(project)
+
+    converter.assert_not_called()
+
+
+def test_release_ignores_image_text_inside_backtick_fence(tmp_path: Path) -> None:
+    from review_writer.delivery.project_release import build_project_release
+
+    project = make_release_ready_project(tmp_path)
+    manuscript_path = project / "04_first_draft" / "first_draft.md"
+    manuscript = manuscript_path.read_text(encoding="utf-8").replace(
+        "![Synthetic one-pixel figure](../assets/tiny.png)",
+        "```text\n![Inert code image](../../outside.png)\n```",
+    )
+    manuscript_path.write_text(manuscript, encoding="utf-8")
+    _update_lineage(project, manuscript_sha256=hashlib.sha256(manuscript.encode("utf-8")).hexdigest())
+
+    build_project_release(project)
+
+    assert (project / "05_final_audit" / "final_draft.docx").is_file()
+
+
 @pytest.mark.parametrize(
     "unsupported_image",
     [
