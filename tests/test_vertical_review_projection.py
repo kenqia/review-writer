@@ -115,6 +115,111 @@ def _file_bytes(root: Path) -> dict[str, bytes]:
     }
 
 
+def _write_prepare_json(path: Path, payload: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _prepare_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _canonical_prepare_project(
+    tmp_path: Path,
+    *,
+    study_id: str = "STUDY-CANARY",
+) -> Path:
+    project = _initialize(tmp_path)
+    doi = "10.1000/canary.test"
+    _write_prepare_json(
+        project / "00_discovery/candidate_pool.json",
+        {"candidates": [{"candidate_id": study_id, "doi": f"https://doi.org/{doi}."}]},
+    )
+    _write_prepare_json(
+        project / "00_discovery/screening_decisions.json",
+        {"decisions": [{"candidate_id": study_id, "disposition": "INCLUDE_FOR_FULL_TEXT"}]},
+    )
+    _write_prepare_json(
+        project / "00_discovery/acquisition_manifest.json",
+        {"schema_version": "case02-acquisition-plan.v1", "rows": []},
+    )
+    acquired: dict[str, dict[str, str]] = {}
+    completed = []
+    text_sources = []
+    for role, source_id, text in (
+        ("MAIN", "CANARY_MAIN", "Main evidence paragraph."),
+        ("SI", "CANARY_SI", "Supporting information paragraph."),
+    ):
+        relative_pdf = f"sources/{study_id}/{role}.pdf"
+        pdf = project / "00_sources" / relative_pdf
+        pdf.parent.mkdir(parents=True, exist_ok=True)
+        pdf.write_bytes(f"synthetic {role} pdf bytes\n".encode())
+        acquired[role] = {"path": relative_pdf, "sha256": _prepare_sha256(pdf)}
+        markdown = project / f"01_evidence/mineru/markdown/{source_id}.md"
+        markdown.parent.mkdir(parents=True, exist_ok=True)
+        markdown.write_text(f"# Parsed {role}\n", encoding="utf-8")
+        completed.append({
+            "markdown_copy": rf"C:\runtime\mineru\markdown\{source_id}.md",
+            "relative_pdf_path": relative_pdf,
+            "slug": source_id,
+        })
+        reading = project / f"01_evidence/text_layers/{source_id}.reading.txt"
+        layout = project / f"01_evidence/text_layers/{source_id}.layout.txt"
+        reading.parent.mkdir(parents=True, exist_ok=True)
+        reading.write_text(text + "\f", encoding="utf-8")
+        layout.write_text(f"{role} visual locator.\f", encoding="utf-8")
+        text_sources.append(
+            {
+                "layout_path": layout.name,
+                "layout_sha256": _prepare_sha256(layout),
+                "page_count": 1,
+                "pdf_sha256": _prepare_sha256(pdf),
+                "reading_order_path": reading.name,
+                "reading_order_sha256": _prepare_sha256(reading),
+                "source_id": source_id,
+            }
+        )
+    _write_prepare_json(
+        project / "00_sources" / "acquisition_final_receipt.json",
+        {
+            "studies": [
+                {
+                    "doi": f"DOI:{doi}",
+                    "main_pdf": acquired["MAIN"],
+                    "si_pdf": acquired["SI"],
+                    "status": "ACQUIRED",
+                }
+            ]
+        },
+    )
+    _write_prepare_json(
+        project / "00_sources" / "source_identity_audit.json",
+        {"results": [{"doi": doi, "verdict": "PASS"}]},
+    )
+    _write_prepare_json(
+        project / "01_evidence/mineru/manifest.json",
+        {"completed": list(reversed(completed)), "failed": []},
+    )
+    _write_prepare_json(
+        project / "01_evidence/text_layers/text_layers.manifest.json",
+        {"schema_version": "pdf-text-layers.v1", "sources": list(reversed(text_sources))},
+    )
+    return project
+
+
+def _run_prepare(project: Path, study_id: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(CLI), "prepare-study", "--project-dir", str(project), "--study-id", study_id],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
 def _authoritative_bytes(project: Path) -> dict[str, bytes]:
     relative_paths = (
         "00_brief/review_state.json",
@@ -1526,6 +1631,122 @@ def test_cli_exposes_required_subcommands_and_prepare_creates_no_state(tmp_path:
         if path.is_file()
     }
     assert after == before
+
+
+def test_prepare_study_builds_current_pre_provider_packet_without_reruns_and_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    study_id = "STUDY-CANARY"
+    project = _canonical_prepare_project(tmp_path, study_id=study_id)
+    before = _file_bytes(project)
+    first = _run_prepare(project, study_id)
+    assert first.returncode == 0, first.stderr
+    summary = json.loads(first.stdout)
+    assert (summary["status"], summary["reason_code"], summary["study_id"]) == (
+        "READY",
+        "PRE_PROVIDER_PACKET_READY",
+        study_id,
+    )
+    assert set(summary["outputs"]) == {"sealed_job", "atom_catalog"}
+    assert "evidence paragraph" not in first.stdout
+
+    job_path = project / summary["outputs"]["sealed_job"]
+    catalog_path = project / summary["outputs"]["atom_catalog"]
+    job = json.loads(job_path.read_text(encoding="utf-8"))
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    assert job["study"] == {"doi": "10.1000/canary.test", "study_id": study_id}
+    assert [source["document_role"] for source in job["source_files"]] == ["MAIN", "SI"]
+    assert all(
+        {
+            "source_id",
+            "document_role",
+            "reading_order_path",
+            "reading_order_sha256",
+            "layout_path",
+            "layout_sha256",
+            "page_count",
+        }
+        <= source.keys()
+        for source in job["source_files"]
+    )
+    assert catalog["job_id"] == job["job_id"]
+    assert catalog["study_id"] == study_id
+    assert catalog["atoms"]
+
+    after = _file_bytes(project)
+    assert {path: after[path] for path in before} == before
+    assert set(after) - set(before) == {
+        f"01_evidence/{study_id}/sealed_job.json",
+        f"01_evidence/{study_id}/atom_catalog.json",
+    }
+    output_bytes = (job_path.read_bytes(), catalog_path.read_bytes())
+    second = _run_prepare(project, study_id)
+    assert second.returncode == 0, second.stderr
+    assert json.loads(second.stdout) == summary
+    assert (job_path.read_bytes(), catalog_path.read_bytes()) == output_bytes
+
+
+@pytest.mark.parametrize(
+    ("case", "reason_code"),
+    (
+        ("missing", "TEXT_LAYER_BINDING_MISSING"),
+        ("ambiguous", "TEXT_LAYER_BINDING_AMBIGUOUS"),
+    ),
+)
+def test_prepare_study_fails_closed_for_missing_or_ambiguous_bindings(
+    tmp_path: Path,
+    case: str,
+    reason_code: str,
+) -> None:
+    study_id = "STUDY-CANARY"
+    project = _canonical_prepare_project(tmp_path, study_id=study_id)
+    manifest_path = project / "01_evidence/text_layers/text_layers.manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    si_row = next(row for row in manifest["sources"] if row["source_id"] == "CANARY_SI")
+    if case == "missing":
+        manifest["sources"].remove(si_row)
+    else:
+        manifest["sources"].append({**si_row, "source_id": "CANARY_SI_DUPLICATE"})
+    _write_prepare_json(manifest_path, manifest)
+    before = _file_bytes(project)
+    result = _run_prepare(project, study_id)
+    assert result.returncode == 3, result.stderr
+    assert json.loads(result.stdout)["reason_code"] == reason_code
+    assert _file_bytes(project) == before
+    assert not (project / "01_evidence" / study_id).exists()
+
+
+def test_prepare_batch_persists_ready_studies_independently(tmp_path: Path) -> None:
+    project = _canonical_prepare_project(tmp_path)
+    study_ids = tmp_path / "study-ids.txt"
+    study_ids.write_text("STUDY-CANARY\nSTUDY-NOT-DECLARED\n", encoding="utf-8")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(CLI),
+            "prepare-batch",
+            "--project-dir",
+            str(project),
+            "--study-ids-file",
+            str(study_ids),
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 3, result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["status"] == "NOT_READY"
+    assert summary["ready_count"] == summary["not_ready_count"] == 1
+    assert [(row["study_id"], row["status"]) for row in summary["studies"]] == [
+        ("STUDY-CANARY", "READY"),
+        ("STUDY-NOT-DECLARED", "NOT_READY"),
+    ]
+    assert (project / "01_evidence/STUDY-CANARY/sealed_job.json").is_file()
+    assert (project / "01_evidence/STUDY-CANARY/atom_catalog.json").is_file()
+    assert not (project / "01_evidence/STUDY-NOT-DECLARED").exists()
 
 
 def test_cli_init_reports_awaiting_brief_confirmation_without_discovery(

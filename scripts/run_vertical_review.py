@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -16,6 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from review_writer.acquisition.manifest_identity import normalize_doi  # noqa: E402
 from review_writer.project.vertical_review import (  # noqa: E402
     VerticalReviewError,
     apply_risk_decisions,
@@ -25,6 +27,15 @@ from review_writer.project.vertical_review import (  # noqa: E402
     initialize_review,
     register_study,
 )
+from scripts.evidence.build_page_atom_catalog import (  # noqa: E402
+    PageCatalogError,
+    build_page_atom_catalog,
+    validate_catalog_schema,
+)
+from scripts.evidence.evidence_atom_core import sha256_file  # noqa: E402
+
+
+CATALOG_SCHEMA = REPO_ROOT / "schemas" / "evidence" / "evidence_atom_catalog.v1.schema.json"
 
 
 def _load_json(path: Path) -> Any:
@@ -83,9 +94,232 @@ def _decision_counts(projection: list[dict[str, Any]]) -> dict[str, int]:
     }
 
 
+class _PrepareNotReady(Exception):
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+def _prepare_block(code: str) -> None:
+    raise _PrepareNotReady(code)
+
+
+def _prepare_manifest(
+    project: Path,
+    relative: str,
+    *,
+    missing: str,
+    invalid: str,
+) -> dict[str, Any]:
+    path = project / relative
+    if not path.is_file():
+        _prepare_block(missing)
+    try:
+        payload = _load_json(path)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        _prepare_block(invalid)
+    if not isinstance(payload, dict):
+        _prepare_block(invalid)
+    return payload
+
+
+def _prepare_rows(payload: dict[str, Any], key: str, invalid: str) -> list[dict[str, Any]]:
+    rows = payload.get(key)
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        _prepare_block(invalid)
+    return rows
+
+
+def _bound_file(project: Path, root: Path, value: Any, code: str) -> Path:
+    if not isinstance(value, str) or not value.strip():
+        _prepare_block(code)
+    portable = value.strip().replace("\\", "/")
+    relative = Path(portable)
+    if relative.is_absolute():
+        candidate = relative
+    elif relative.parts and relative.parts[0] in {
+        "00_sources",
+        "01_evidence",
+    }:
+        candidate = project / relative
+    else:
+        candidate = root / relative
+    try:
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(project.resolve())
+    except (OSError, ValueError):
+        _prepare_block(code)
+    if not resolved.is_file():
+        _prepare_block(code)
+    return resolved
+
+
+def _receipt_sources(project: Path, study: dict[str, Any]) -> list[dict[str, Any]]:
+    main = study.get("main_pdf")
+    if study.get("status") != "ACQUIRED" or not isinstance(main, dict):
+        _prepare_block("ACQUISITION_MAIN_NOT_ACQUIRED")
+    si_value = study.get("si_pdf")
+    supplements = si_value if isinstance(si_value, list) else [si_value]
+    declared = [("MAIN", main)] + [
+        ("SI", row)
+        for row in supplements
+        if isinstance(row, dict) and isinstance(row.get("path"), str)
+    ]
+    declared[1:] = sorted(declared[1:], key=lambda item: str(item[1].get("path")))
+    sources: list[dict[str, Any]] = []
+    seen_paths: set[Path] = set()
+    for role, row in declared:
+        path = _bound_file(project, project / "00_sources", row.get("path"), "ACQUISITION_SOURCE_MISSING")
+        if path in seen_paths:
+            _prepare_block("ACQUISITION_SOURCE_AMBIGUOUS")
+        seen_paths.add(path)
+        observed = sha256_file(path)
+        expected = row.get("sha256", row.get("pdf_sha256"))
+        if expected is not None and expected != observed:
+            _prepare_block("ACQUISITION_SOURCE_HASH_MISMATCH")
+        sources.append({"document_role": role, "path": path, "pdf_sha256": observed})
+    return sources
+
+
+def _verify_source_identity(project: Path, doi: str) -> None:
+    audit = _prepare_manifest(
+        project,
+        "00_sources/source_identity_audit.json",
+        missing="SOURCE_IDENTITY_AUDIT_MISSING",
+        invalid="SOURCE_IDENTITY_AUDIT_INVALID",
+    )
+    rows = audit.get("results")
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        _prepare_block("SOURCE_IDENTITY_AUDIT_INVALID")
+    matches = [row for row in rows if normalize_doi(row.get("doi")) == doi]
+    if not matches:
+        _prepare_block("SOURCE_IDENTITY_BINDING_MISSING")
+    if any(str(row.get("verdict", "")).upper() == "QUARANTINE" for row in matches):
+        _prepare_block("SOURCE_IDENTITY_QUARANTINED")
+
+
+def _bind_source_layers(project: Path, sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    mineru_root = project / "01_evidence/mineru"
+    mineru = _prepare_manifest(
+        project,
+        "01_evidence/mineru/manifest.json",
+        missing="MINERU_MANIFEST_MISSING",
+        invalid="MINERU_MANIFEST_INVALID",
+    )
+    completed = _prepare_rows(mineru, "completed", "MINERU_MANIFEST_INVALID")
+    completed_paths = [
+        (_bound_file(project, project / "00_sources", row.get("relative_pdf_path"), "MINERU_MANIFEST_INVALID"), row)
+        for row in completed
+    ]
+
+    layer_root = project / "01_evidence/text_layers"
+    layer_manifest = _prepare_manifest(
+        project,
+        "01_evidence/text_layers/text_layers.manifest.json",
+        missing="TEXT_LAYER_MANIFEST_MISSING",
+        invalid="TEXT_LAYER_MANIFEST_INVALID",
+    )
+    layer_rows = _prepare_rows(layer_manifest, "sources", "TEXT_LAYER_MANIFEST_INVALID")
+    bound: list[dict[str, Any]] = []
+    seen_source_ids: set[str] = set()
+    for source in sources:
+        mineru_matches = [row for path, row in completed_paths if path == source["path"]]
+        if len(mineru_matches) != 1:
+            _prepare_block(
+                "MINERU_BINDING_MISSING" if not mineru_matches else "MINERU_BINDING_AMBIGUOUS"
+            )
+        mineru_row = mineru_matches[0]
+        slug = mineru_row.get("slug")
+        markdown_value = (
+            f"markdown/{slug}.md"
+            if isinstance(slug, str)
+            and slug
+            and "/" not in slug
+            and "\\" not in slug
+            else mineru_row.get("markdown_copy")
+        )
+        _bound_file(project, mineru_root, markdown_value, "MINERU_MARKDOWN_MISSING")
+
+        matches = [row for row in layer_rows if row.get("pdf_sha256") == source["pdf_sha256"]]
+        if len(matches) != 1:
+            _prepare_block(
+                "TEXT_LAYER_BINDING_MISSING" if not matches else "TEXT_LAYER_BINDING_AMBIGUOUS"
+            )
+        row = matches[0]
+        source_id = row.get("source_id")
+        page_count = row.get("page_count")
+        if (
+            not isinstance(source_id, str)
+            or not source_id
+            or source_id in seen_source_ids
+            or not isinstance(page_count, int)
+            or isinstance(page_count, bool)
+            or page_count < 1
+        ):
+            _prepare_block("TEXT_LAYER_BINDING_INVALID")
+        seen_source_ids.add(source_id)
+        reading = _bound_file(project, layer_root, row.get("reading_order_path"), "TEXT_LAYER_BINDING_INVALID")
+        layout = _bound_file(project, layer_root, row.get("layout_path"), "TEXT_LAYER_BINDING_INVALID")
+        if sha256_file(reading) != row.get("reading_order_sha256") or sha256_file(layout) != row.get("layout_sha256"):
+            _prepare_block("TEXT_LAYER_HASH_MISMATCH")
+        bound.append(
+            {
+                "document_role": source["document_role"],
+                "layout_path": layout.relative_to(project.resolve()).as_posix(),
+                "layout_sha256": row["layout_sha256"],
+                "page_count": page_count,
+                "reading_order_path": reading.relative_to(project.resolve()).as_posix(),
+                "reading_order_sha256": row["reading_order_sha256"],
+                "source_binary_sha256": source["pdf_sha256"],
+                "source_id": source_id,
+                "visual_evidence_allowed": False,
+            }
+        )
+    return bound
+
+
+def _persist_prepare_packet(project: Path, study_id: str, job: dict[str, Any]) -> None:
+    evidence_root = project / "01_evidence"
+    target = evidence_root / study_id
+    stage: Path | None = Path(
+        tempfile.mkdtemp(prefix=f".{study_id}.prepare-", dir=evidence_root)
+    )
+    try:
+        job_path = stage / "sealed_job.json"
+        catalog_path = stage / "atom_catalog.json"
+        _atomic_write_json(job_path, job)
+        catalog = build_page_atom_catalog(job_path, project)
+        validate_catalog_schema(catalog, _load_json(CATALOG_SCHEMA))
+        _atomic_write_json(catalog_path, catalog)
+        if target.exists():
+            existing = (target / "sealed_job.json", target / "atom_catalog.json")
+            if (
+                target.is_dir()
+                and not target.is_symlink()
+                and all(path.is_file() for path in existing)
+                and existing[0].read_bytes() == job_path.read_bytes()
+                and existing[1].read_bytes() == catalog_path.read_bytes()
+            ):
+                return
+            _prepare_block("PREPARE_OUTPUT_CONFLICT")
+        stage.rename(target)
+        stage = None
+    finally:
+        if stage is not None:
+            for name in ("sealed_job.json", "atom_catalog.json"):
+                (stage / name).unlink(missing_ok=True)
+            stage.rmdir()
+
+
 def _prepare_status(project: Path, study_id: str) -> dict[str, Any]:
-    benchmark_metrics(project)
-    if not study_id.strip():
+    metrics = benchmark_metrics(project)
+    if (
+        not study_id.strip()
+        or study_id != study_id.strip()
+        or study_id in {".", ".."}
+        or "/" in study_id
+        or "\\" in study_id
+    ):
         raise VerticalReviewError("STUDY_ID_INVALID", "study_id must be nonempty")
     manifest_path = project / "00_discovery" / "acquisition_manifest.json"
     if not manifest_path.is_file():
@@ -95,26 +329,81 @@ def _prepare_status(project: Path, study_id: str) -> dict[str, Any]:
             "status": "NOT_READY",
             "study_id": study_id,
         }
-    manifest = _load_json(manifest_path)
-    downloads = manifest.get("downloads") if isinstance(manifest, dict) else None
-    if not isinstance(downloads, list):
-        raise VerticalReviewError(
-            "ACQUISITION_MANIFEST_INVALID",
-            "acquisition manifest requires a downloads list",
+    try:
+        pool = _prepare_manifest(
+            project,
+            "00_discovery/candidate_pool.json",
+            missing="CANDIDATE_POOL_MISSING",
+            invalid="CANDIDATE_POOL_INVALID",
         )
-    declared = [
-        row
-        for row in downloads
-        if isinstance(row, dict) and row.get("study_id") == study_id
-    ]
-    if not declared:
-        reason = "STUDY_NOT_DECLARED"
-    else:
-        reason = "TASK3_JOB_STATE_CONTRACT_UNDEFINED"
+        candidates = _prepare_rows(pool, "candidates", "CANDIDATE_POOL_INVALID")
+        matches = [row for row in candidates if row.get("candidate_id") == study_id]
+        if len(matches) != 1:
+            _prepare_block("STUDY_NOT_DECLARED" if not matches else "STUDY_ID_AMBIGUOUS")
+        doi = normalize_doi(matches[0].get("doi"))
+        if doi is None:
+            _prepare_block("CANDIDATE_DOI_INVALID")
+
+        screening = _prepare_manifest(
+            project,
+            "00_discovery/screening_decisions.json",
+            missing="SCREENING_DECISIONS_MISSING",
+            invalid="SCREENING_DECISIONS_INVALID",
+        )
+        decisions = [
+            row
+            for row in _prepare_rows(screening, "decisions", "SCREENING_DECISIONS_INVALID")
+            if row.get("candidate_id") == study_id
+        ]
+        if len(decisions) != 1:
+            _prepare_block(
+                "SCREENING_DECISION_MISSING" if not decisions else "SCREENING_DECISION_AMBIGUOUS"
+            )
+        if decisions[0].get("disposition") != "INCLUDE_FOR_FULL_TEXT":
+            _prepare_block("STUDY_NOT_INCLUDED")
+
+        receipt = _prepare_manifest(
+            project,
+            "00_sources/acquisition_final_receipt.json",
+            missing="ACQUISITION_FINAL_RECEIPT_MISSING",
+            invalid="ACQUISITION_FINAL_RECEIPT_INVALID",
+        )
+        studies = [
+            row
+            for row in _prepare_rows(receipt, "studies", "ACQUISITION_FINAL_RECEIPT_INVALID")
+            if normalize_doi(row.get("doi")) == doi
+        ]
+        if len(studies) != 1:
+            _prepare_block("ACQUISITION_DOI_MISSING" if not studies else "ACQUISITION_DOI_AMBIGUOUS")
+        _verify_source_identity(project, doi)
+        source_files = _bind_source_layers(project, _receipt_sources(project, studies[0]))
+        identity = {"doi": doi, "project_id": metrics["project_id"], "study_id": study_id}
+        job = {
+            "job_id": "JOB-" + hashlib.sha256(
+                json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest(),
+            "mode": "EVIDENCE_ATOM_SEMANTIC_DECISION_V1",
+            "schema_version": "sealed-evidence-extraction-job.v2",
+            "source_files": source_files,
+            "study": {"doi": doi, "study_id": study_id},
+            "visual_crops": [],
+        }
+        _persist_prepare_packet(project, study_id, job)
+    except (_PrepareNotReady, PageCatalogError) as exc:
+        return {
+            "command": "prepare-study",
+            "reason_code": exc.code,
+            "status": "NOT_READY",
+            "study_id": study_id,
+        }
     return {
         "command": "prepare-study",
-        "reason_code": reason,
-        "status": "NOT_READY",
+        "outputs": {
+            "atom_catalog": f"01_evidence/{study_id}/atom_catalog.json",
+            "sealed_job": f"01_evidence/{study_id}/sealed_job.json",
+        },
+        "reason_code": "PRE_PROVIDER_PACKET_READY",
+        "status": "READY",
         "study_id": study_id,
     }
 
@@ -185,11 +474,7 @@ def _run(args: argparse.Namespace) -> int:
             "ready_count": ready_count,
             "status": "READY" if ready_count == len(studies) else "NOT_READY",
             "studies": [
-                {
-                    "reason_code": row["reason_code"],
-                    "status": row["status"],
-                    "study_id": row["study_id"],
-                }
+                {key: row[key] for key in ("outputs", "reason_code", "status", "study_id") if key in row}
                 for row in studies
             ],
         }
