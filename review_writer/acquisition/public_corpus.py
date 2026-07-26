@@ -23,7 +23,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .manifest_identity import ManifestIdentityError, validate_acquisition_row
+from .manifest_identity import (
+    ManifestIdentityError,
+    canonical_acquisition_save_as,
+    validate_acquisition_row,
+    windows_portable_name_key,
+)
 
 
 USER_AGENT = "review-writer-public-acquisition/1.0"
@@ -150,13 +155,6 @@ def _safe_target(output_root: Path, relative: str) -> tuple[Path, Path]:
     return target, resolved_target
 
 
-def _canonical_save_as(download_id: str, expected_format: str) -> str:
-    filename = f"{download_id}.{expected_format.lower()}"
-    if len(_portable_target_components(filename)) != 1:
-        raise ManifestError("download_id does not form a portable save_as filename")
-    return filename
-
-
 def _validate_target_parent(output_root: Path, target: Path) -> None:
     root = output_root.resolve()
     parent = target.parent.resolve()
@@ -196,18 +194,26 @@ def _preflight_manifest(manifest: dict[str, Any], output_root: Path) -> list[dic
         raise ManifestError("manifest must use public-corpus-acquisition.v1 with a downloads list")
     prepared: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
+    seen_save_as: set[str] = set()
     seen_targets: set[str] = set()
     for raw_row in downloads:
         try:
             row = validate_acquisition_row(raw_row)
         except ManifestIdentityError as exc:
             raise ManifestError("manifest contains an invalid acquisition row") from exc
-        normalized_id = row["download_id"]
+        normalized_id = windows_portable_name_key(row["download_id"])
         if normalized_id in seen_ids:
-            raise ManifestError("download_id values must be unique")
+            raise ManifestError("download_id values must be Windows-portable unique")
         seen_ids.add(normalized_id)
         expected_format = row["expected_format"]
-        save_as = _canonical_save_as(row["download_id"], expected_format)
+        try:
+            save_as = canonical_acquisition_save_as(row["download_id"], expected_format)
+        except ManifestIdentityError as exc:
+            raise ManifestError("manifest contains an invalid acquisition row") from exc
+        normalized_save_as = windows_portable_name_key(save_as)
+        if normalized_save_as in seen_save_as:
+            raise ManifestError("save_as values must be Windows-portable unique")
+        seen_save_as.add(normalized_save_as)
         expected_sha256 = row.get("expected_sha256")
         if expected_sha256 is not None:
             if not isinstance(expected_sha256, str) or not SHA256_RE.fullmatch(expected_sha256):
@@ -565,12 +571,20 @@ def _stage_bytes(path: Path, content: bytes) -> Path:
             temporary.unlink(missing_ok=True)
 
 
+def _spreadsheet_safe_tsv_cell(value: Any) -> str:
+    cell = str(value or "")
+    return "'" + cell if cell.lstrip().startswith(("=", "+", "-", "@")) else cell
+
+
 def _render_manual_queue(rows: list[dict[str, Any]]) -> tuple[str, str]:
     fields = ["download_id", "save_as", "study_id", "doi", "document_role", "landing_page_url", "source_url", "target_path", "reason"]
     tsv = io.StringIO(newline="")
     writer = csv.DictWriter(tsv, fieldnames=fields, delimiter="\t", extrasaction="ignore")
     writer.writeheader()
-    writer.writerows(rows)
+    writer.writerows(
+        {field: _spreadsheet_safe_tsv_cell(row.get(field)) for field in fields}
+        for row in rows
+    )
     body_rows = []
     for row in rows:
         cells = []

@@ -11,6 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 from review_writer.acquisition.manual_archive import (  # noqa: E402
+    DEFAULT_MAX_ARCHIVE_BYTES,
     DEFAULT_MAX_MEMBER_BYTES,
     DEFAULT_MAX_MEMBERS,
     DEFAULT_MAX_TOTAL_BYTES,
@@ -36,6 +37,7 @@ def main() -> int:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--archive", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--max-archive-bytes", type=positive_int, default=DEFAULT_MAX_ARCHIVE_BYTES)
     parser.add_argument("--max-members", type=positive_int, default=DEFAULT_MAX_MEMBERS)
     parser.add_argument("--max-member-bytes", type=positive_int, default=DEFAULT_MAX_MEMBER_BYTES)
     parser.add_argument("--max-total-bytes", type=positive_int, default=DEFAULT_MAX_TOTAL_BYTES)
@@ -45,6 +47,7 @@ def main() -> int:
             args.manifest,
             args.archive,
             args.output_root,
+            max_archive_bytes=args.max_archive_bytes,
             max_members=args.max_members,
             max_member_bytes=args.max_member_bytes,
             max_total_bytes=args.max_total_bytes,

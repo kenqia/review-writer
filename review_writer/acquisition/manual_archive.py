@@ -15,6 +15,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, BinaryIO
 
+from .manifest_identity import canonical_acquisition_save_as
 from .public_corpus import (
     ManifestError,
     _matches_format,
@@ -31,9 +32,14 @@ from .public_corpus import (
 )
 
 
+DEFAULT_MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
 DEFAULT_MAX_MEMBERS = 1_000
 DEFAULT_MAX_MEMBER_BYTES = 250 * 1024 * 1024
 DEFAULT_MAX_TOTAL_BYTES = 4 * 1024 * 1024 * 1024
+HARD_MAX_ARCHIVE_BYTES = 4 * 1024 * 1024 * 1024
+HARD_MAX_MEMBERS = 2_000
+HARD_MAX_MEMBER_BYTES = 512 * 1024 * 1024
+HARD_MAX_TOTAL_BYTES = 8 * 1024 * 1024 * 1024
 RECEIPT_FILENAME = "manual_import_receipt.json"
 FORMAT_EXTENSIONS = {"PDF": "pdf", "DOCX": "docx", "XLSX": "xlsx"}
 CHUNK_BYTES = 1024 * 1024
@@ -44,14 +50,22 @@ class ManualArchiveError(ManifestError):
     """The manual archive or its deterministic mapping is unsafe."""
 
 
-def _validate_policy(max_members: int, max_member_bytes: int, max_total_bytes: int) -> None:
-    for name, value in (
-        ("max_members", max_members),
-        ("max_member_bytes", max_member_bytes),
-        ("max_total_bytes", max_total_bytes),
+def _validate_policy(
+    max_archive_bytes: int,
+    max_members: int,
+    max_member_bytes: int,
+    max_total_bytes: int,
+) -> None:
+    for name, value, ceiling in (
+        ("max_archive_bytes", max_archive_bytes, HARD_MAX_ARCHIVE_BYTES),
+        ("max_members", max_members, HARD_MAX_MEMBERS),
+        ("max_member_bytes", max_member_bytes, HARD_MAX_MEMBER_BYTES),
+        ("max_total_bytes", max_total_bytes, HARD_MAX_TOTAL_BYTES),
     ):
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise ManualArchiveError(f"{name} must be a positive integer")
+        if value > ceiling:
+            raise ManualArchiveError(f"{name} exceeds the hard safety ceiling")
 
 
 def _normalized_portable_path(value: str) -> str:
@@ -204,7 +218,8 @@ def _build_alias_indexes(
         row = item["row"]
         full_aliases[_normalized_portable_path(row["target_path"])].add(row_index)
         basename_aliases[_normalized_safe_basename(row["target_path"].rsplit("/", 1)[-1])].add(row_index)
-        basename_aliases[_normalized_safe_basename(item["save_as"])].add(row_index)
+        save_as = canonical_acquisition_save_as(row["download_id"], item["expected_format"])
+        basename_aliases[_normalized_safe_basename(save_as)].add(row_index)
         url_alias = _url_basename_alias(row, FORMAT_EXTENSIONS[item["expected_format"]])
         if url_alias is not None:
             basename_aliases[url_alias].add(row_index)
@@ -221,23 +236,44 @@ def _map_members(
     full_aliases: dict[str, set[int]],
     basename_aliases: dict[str, set[int]],
 ) -> tuple[dict[int, int], set[int], int]:
-    row_members: dict[int, list[int]] = defaultdict(list)
+    exact_matches: dict[int, int] = {}
+    exact_member_indexes: set[int] = set()
     ambiguous_rows: set[int] = set()
     for member_index, member in enumerate(members):
-        candidates = set(full_aliases.get(member["normalized_name"], set()))
-        candidates.update(basename_aliases.get(member["normalized_basename"], set()))
+        candidates = full_aliases.get(member["normalized_name"], set())
         if len(candidates) == 1:
-            row_members[next(iter(candidates))].append(member_index)
+            row_index = next(iter(candidates))
+            if row_index in exact_matches:
+                ambiguous_rows.add(row_index)
+            else:
+                exact_matches[row_index] = member_index
+                exact_member_indexes.add(member_index)
         elif len(candidates) > 1:
             ambiguous_rows.update(candidates)
+
+    for row_index in ambiguous_rows:
+        exact_member_indexes.discard(exact_matches.pop(row_index, -1))
+
+    row_members: dict[int, list[int]] = defaultdict(list)
+    for member_index, member in enumerate(members):
+        if member_index in exact_member_indexes:
+            continue
+        candidates = basename_aliases.get(member["normalized_basename"], set())
+        if len(candidates) == 1:
+            row_index = next(iter(candidates))
+            if row_index not in exact_matches:
+                row_members[row_index].append(member_index)
+        elif len(candidates) > 1:
+            ambiguous_rows.update(row_index for row_index in candidates if row_index not in exact_matches)
     for row_index, matches in row_members.items():
         if len(matches) > 1:
             ambiguous_rows.add(row_index)
-    resolved = {
+    fallback_matches = {
         row_index: matches[0]
         for row_index, matches in row_members.items()
         if row_index not in ambiguous_rows and len(matches) == 1
     }
+    resolved = {**fallback_matches, **exact_matches}
     matched_members = set(resolved.values())
     return resolved, ambiguous_rows, len(members) - len(matched_members)
 
@@ -330,19 +366,61 @@ def _stage_member(
             temporary.unlink(missing_ok=True)
 
 
-def _publish_receipt(output_root: Path, receipt: dict[str, Any]) -> None:
+def _stage_receipt(output_root: Path, receipt: dict[str, Any]) -> tuple[Path, Path]:
     destination = output_root / RECEIPT_FILENAME
     _validate_target_parent(output_root, destination)
     if destination.is_symlink() or (destination.exists() and not destination.is_file()):
         raise ManualArchiveError("manual import receipt destination is unsafe")
     payload = (json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
     staged = _stage_bytes(destination, payload)
+    return destination, staged
+
+
+def _publish_transaction(
+    output_root: Path,
+    prepared: list[dict[str, Any]],
+    staged_targets: dict[int, tuple[Path, str, int]],
+    receipt: dict[str, Any],
+) -> None:
+    receipt_destination, staged_receipt = _stage_receipt(output_root, receipt)
+    published: list[tuple[Path, Path]] = []
     try:
-        if destination.is_symlink() or (destination.exists() and not destination.is_file()):
-            raise ManualArchiveError("manual import receipt destination is unsafe")
-        os.replace(staged, destination)
+        try:
+            for row_index, (staged_path, _, _) in staged_targets.items():
+                item = prepared[row_index]
+                target, _ = _safe_target(output_root, item["row"]["target_path"])
+                _validate_target_parent(output_root, target)
+                if target.exists() or target.is_symlink():
+                    raise ManualArchiveError("target appeared during atomic publication")
+                os.link(staged_path, target)
+                published.append((target, staged_path))
+            if receipt_destination.is_symlink() or (
+                receipt_destination.exists() and not receipt_destination.is_file()
+            ):
+                raise ManualArchiveError("manual import receipt destination is unsafe")
+            os.replace(staged_receipt, receipt_destination)
+            staged_receipt = None
+        except BaseException as publication_error:
+            rollback_error: BaseException | None = None
+            for target, staged_path in reversed(published):
+                try:
+                    try:
+                        target_exists = target.exists() or target.is_symlink()
+                    except OSError:
+                        target_exists = True
+                    if not target_exists:
+                        continue
+                    if not os.path.samefile(staged_path, target):
+                        raise OSError("published target changed before rollback")
+                    target.unlink()
+                except BaseException as exc:
+                    rollback_error = rollback_error or exc
+            if rollback_error is not None:
+                raise OSError("manual import target rollback failed") from publication_error
+            raise
     finally:
-        staged.unlink(missing_ok=True)
+        if staged_receipt is not None:
+            staged_receipt.unlink(missing_ok=True)
 
 
 def import_manual_archive(
@@ -350,13 +428,14 @@ def import_manual_archive(
     archive_path: Path | str,
     output_root: Path | str,
     *,
+    max_archive_bytes: int = DEFAULT_MAX_ARCHIVE_BYTES,
     max_members: int = DEFAULT_MAX_MEMBERS,
     max_member_bytes: int = DEFAULT_MAX_MEMBER_BYTES,
     max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES,
 ) -> dict[str, Any]:
     """Import uniquely mapped files from one bounded ZIP without network access."""
 
-    _validate_policy(max_members, max_member_bytes, max_total_bytes)
+    _validate_policy(max_archive_bytes, max_members, max_member_bytes, max_total_bytes)
     manifest_path = Path(manifest_path)
     archive_path = Path(archive_path)
     output_root = Path(output_root)
@@ -370,6 +449,13 @@ def import_manual_archive(
         _preflight_metadata_destinations(output_root)
     except ManifestError as exc:
         raise ManualArchiveError("manifest or output targets are unsafe") from exc
+
+    try:
+        archive_size = archive_path.stat().st_size
+    except OSError:
+        raise
+    if archive_size > max_archive_bytes:
+        raise ManualArchiveError("archive exceeds bounded raw byte policy")
 
     archive_digest = hashlib.sha256()
     try:
@@ -440,57 +526,55 @@ def import_manual_archive(
 
                 for row_index, (staged_path, digest, size_bytes) in list(staged.items()):
                     item = prepared[row_index]
-                    target, _ = _safe_target(output_root, item["row"]["target_path"])
                     existing = _inspect_existing(item, output_root)
                     if existing is not None:
                         results[row_index] = existing
+                        staged_path.unlink(missing_ok=True)
+                        staged.pop(row_index)
                         continue
-                    try:
-                        os.link(staged_path, target)
-                    except FileExistsError:
-                        existing = _inspect_existing(item, output_root)
-                        if existing is None:
-                            raise ManualArchiveError("target appeared during atomic publication")
-                        results[row_index] = existing
-                        continue
-                    staged_path.unlink()
-                    staged.pop(row_index)
                     results[row_index].update(
                         status="IMPORTED",
                         sha256=digest,
                         size_bytes=size_bytes,
                     )
+
+                counts = Counter(result["status"] for result in results)
+                receipt = {
+                    "schema_version": "manual-archive-import-receipt.v1",
+                    "created_at": _now(),
+                    "manifest_basename": manifest_path.name,
+                    "manifest_sha256": _sha256_bytes(manifest_bytes),
+                    "archive_basename": archive_path.name,
+                    "archive_sha256": archive_digest.hexdigest(),
+                    "policy": {
+                        "max_archive_bytes": max_archive_bytes,
+                        "max_members": max_members,
+                        "max_member_bytes": max_member_bytes,
+                        "max_total_bytes": max_total_bytes,
+                        "network_enabled": False,
+                        "overwrite_existing": False,
+                    },
+                    "results": results,
+                    "counts": dict(sorted(counts.items())),
+                    "unmatched_count": unmatched_count,
+                }
+                _publish_transaction(output_root, prepared, staged, receipt)
             finally:
                 for staged_path, _, _ in staged.values():
                     staged_path.unlink(missing_ok=True)
 
-    counts = Counter(result["status"] for result in results)
-    receipt = {
-        "schema_version": "manual-archive-import-receipt.v1",
-        "created_at": _now(),
-        "manifest_basename": manifest_path.name,
-        "manifest_sha256": _sha256_bytes(manifest_bytes),
-        "archive_basename": archive_path.name,
-        "archive_sha256": archive_digest.hexdigest(),
-        "policy": {
-            "max_members": max_members,
-            "max_member_bytes": max_member_bytes,
-            "max_total_bytes": max_total_bytes,
-            "network_enabled": False,
-            "overwrite_existing": False,
-        },
-        "results": results,
-        "counts": dict(sorted(counts.items())),
-        "unmatched_count": unmatched_count,
-    }
-    _publish_receipt(output_root, receipt)
     return receipt
 
 
 __all__ = [
+    "DEFAULT_MAX_ARCHIVE_BYTES",
     "DEFAULT_MAX_MEMBER_BYTES",
     "DEFAULT_MAX_MEMBERS",
     "DEFAULT_MAX_TOTAL_BYTES",
+    "HARD_MAX_ARCHIVE_BYTES",
+    "HARD_MAX_MEMBER_BYTES",
+    "HARD_MAX_MEMBERS",
+    "HARD_MAX_TOTAL_BYTES",
     "ManualArchiveError",
     "import_manual_archive",
 ]

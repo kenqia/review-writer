@@ -239,6 +239,7 @@ class NativeReviewWriterPluginTests(unittest.TestCase):
             "fresh reviewer",
             "registration",
             "输入 handoff",
+            "插件在同一个任务内运行",
         ):
             self.assertIn(required, skill)
         self.assertLess(
@@ -260,6 +261,24 @@ class NativeReviewWriterPluginTests(unittest.TestCase):
             "不要求研究者",
         ):
             self.assertIn(required, planner)
+
+    def test_quickstart_keeps_commands_inside_expert_task_and_out_of_scientist_steps(self) -> None:
+        quickstart = (ROOT / "docs/qoderwork/research_review_writer_quickstart.md").read_text(encoding="utf-8")
+
+        self.assertIn("准备好的 review-writer 仓库工作区", quickstart)
+        self.assertNotIn("选择一个 Windows 原生工作文件夹", quickstart)
+        self.assertIn("专家套件在同一个任务中", quickstart)
+        for scientist_action in ("确认 Review Brief", "上传一个 ZIP", "审阅 Scientific Risk Packet", "编辑并下载最终 DOCX"):
+            self.assertIn(scientist_action, quickstart)
+        self.assertIn("维护者专用诊断/恢复", quickstart)
+        self.assertIn("不是正常产品操作", quickstart)
+        maintainer_section = quickstart.split("## 维护者专用诊断/恢复", 1)[1]
+        for command in (
+            "scripts/acquisition/acquire_public_corpus.py",
+            "scripts/acquisition/import_manual_archive.py",
+            "skills/mineru-precise-parse-review-writer/scripts/parse_review_writer_pdfs.py",
+        ):
+            self.assertIn(command, maintainer_section)
 
     def test_agent_contracts_and_tool_permissions_are_exact(self) -> None:
         contracts = {

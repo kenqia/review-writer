@@ -18,6 +18,7 @@ description: 当科研用户要在 QoderWork 写作工作台中，以三次确�
 
 ### Automatic corpus/evidence（后台自动工作，不是 interaction）
 
+- 插件在同一个任务内运行 dashboard、discovery/acquisition、manual ZIP import 与 MinerU 命令；研究者只确认 Brief、条件性上传一个 ZIP、审阅 Risk Packet，并在 Final Review 编辑和下载 DOCX。
 - `DISCOVERY_ACQUISITION_PLANNER` 根据 confirmed brief 与 candidate pool 生成 bounded scholarly-search-plan.v1、screening decisions 和覆盖每个 expected MAIN/SI 的 acquisition rows。只用 `scripts/discovery/discover_scholarly_corpus.py` 与 `scripts/acquisition/acquire_public_corpus.py` 执行一次确定性 public-direct 检索和合法获取；候选在验证前保持待核验。Qwen 不逐篇浏览或下载论文，也不启动浏览器机器人。
 - 剩余来源只显示一次 consolidated HTML queue。若仍有缺失，暂停进行一次必要来源交接：研究者从页面链接下载并上传一个 ZIP，不逐篇提问，也不要求编辑映射文件。这个条件性 ZIP 是至多一次 consolidated 输入 handoff，不是新的科学 decision；科学 checkpoints 仍只有 Brief、Risk Packet、Final Review。
 - 收到 ZIP 后运行 `scripts/acquisition/import_manual_archive.py`，再运行 `scripts/acquisition/acquire_public_corpus.py` 的 `--verify-only`；unmatched / ambiguous / missing rows 继续留在同一个 queue，绝不做模糊、内容或模型匹配。

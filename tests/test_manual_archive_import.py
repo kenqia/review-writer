@@ -169,6 +169,52 @@ class ManualArchiveImportTests(unittest.TestCase):
             self.assertTrue((root / "out/sources/exact/paper.pdf").is_file())
             self.assertTrue((root / "out/sources/alias/main.pdf").is_file())
 
+    def test_exact_target_paths_win_when_declared_rows_share_a_basename(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.write_manifest(
+                root,
+                [
+                    self.row("ROW_A", "sources/A/MAIN.pdf"),
+                    self.row("ROW_B", "sources/B/MAIN.pdf"),
+                ],
+            )
+            archive = root / "sources.zip"
+            self.write_zip(
+                archive,
+                [
+                    ("sources/A/MAIN.pdf", PDF_BYTES),
+                    ("sources/B/MAIN.pdf", PDF_BYTES),
+                ],
+            )
+
+            receipt = manual_archive.import_manual_archive(manifest, archive, root / "out")
+
+            self.assertEqual({"IMPORTED": 2}, receipt["counts"])
+            self.assertEqual(PDF_BYTES, (root / "out/sources/A/MAIN.pdf").read_bytes())
+            self.assertEqual(PDF_BYTES, (root / "out/sources/B/MAIN.pdf").read_bytes())
+
+    def test_shared_flat_basename_remains_ambiguous(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.write_manifest(
+                root,
+                [
+                    self.row("ROW_A", "sources/A/MAIN.pdf"),
+                    self.row("ROW_B", "sources/B/MAIN.pdf"),
+                ],
+            )
+            archive = root / "sources.zip"
+            self.write_zip(archive, [("MAIN.pdf", PDF_BYTES)])
+            output_root = root / "out"
+
+            receipt = manual_archive.import_manual_archive(manifest, archive, output_root)
+
+            self.assertEqual({"AMBIGUOUS": 2}, receipt["counts"])
+            self.assertEqual(1, receipt["unmatched_count"])
+            self.assertFalse((output_root / "sources/A/MAIN.pdf").exists())
+            self.assertFalse((output_root / "sources/B/MAIN.pdf").exists())
+
     def test_safe_archive_name_alias_and_docx_use_shared_structure_validator(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -317,6 +363,29 @@ class ManualArchiveImportTests(unittest.TestCase):
 
                 self.assertFalse((root / "out").exists())
 
+    def test_raw_archive_bytes_are_checked_before_hashing_or_zip_parsing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.write_manifest(root, [self.row("D1", "sources/D1/main.pdf")])
+            archive = root / "sources.zip"
+            self.write_zip(archive, [("D1.pdf", PDF_BYTES)])
+            output_root = root / "out"
+
+            with mock.patch.object(
+                manual_archive.hashlib,
+                "sha256",
+                side_effect=AssertionError("oversized archive must not be hashed"),
+            ):
+                with self.assertRaises(manual_archive.ManualArchiveError):
+                    manual_archive.import_manual_archive(
+                        manifest,
+                        archive,
+                        output_root,
+                        max_archive_bytes=archive.stat().st_size - 1,
+                    )
+
+            self.assertFalse(output_root.exists())
+
     def test_html_disguised_as_pdf_and_hash_mismatch_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -452,6 +521,83 @@ class ManualArchiveImportTests(unittest.TestCase):
 
             self.assertFalse((root / "out").exists())
 
+    def test_second_target_publication_failure_rolls_back_all_new_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_root = root / "out"
+            output_root.mkdir()
+            receipt_path = output_root / "manual_import_receipt.json"
+            old_receipt = b"previous receipt sentinel\n"
+            receipt_path.write_bytes(old_receipt)
+            manifest = self.write_manifest(
+                root,
+                [
+                    self.row("ROW_A", "sources/A/MAIN.pdf"),
+                    self.row("ROW_B", "sources/B/MAIN.pdf"),
+                ],
+            )
+            archive = root / "sources.zip"
+            self.write_zip(
+                archive,
+                [("ROW_A.pdf", PDF_BYTES), ("ROW_B.pdf", PDF_BYTES)],
+            )
+            real_link = os.link
+            calls = 0
+
+            def fail_second_link(source, destination, *args, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise OSError("synthetic second target publication failure")
+                return real_link(source, destination, *args, **kwargs)
+
+            with mock.patch.object(manual_archive.os, "link", side_effect=fail_second_link):
+                with self.assertRaises(OSError):
+                    manual_archive.import_manual_archive(manifest, archive, output_root)
+
+            self.assertEqual(2, calls)
+            self.assertFalse((output_root / "sources/A/MAIN.pdf").exists())
+            self.assertFalse((output_root / "sources/B/MAIN.pdf").exists())
+            self.assertEqual(old_receipt, receipt_path.read_bytes())
+
+    def test_receipt_replace_failure_rolls_back_new_targets_and_preserves_old_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_root = root / "out"
+            output_root.mkdir()
+            receipt_path = output_root / "manual_import_receipt.json"
+            old_receipt = b"previous receipt sentinel\n"
+            receipt_path.write_bytes(old_receipt)
+            manifest = self.write_manifest(root, [self.row("D1", "sources/D1/MAIN.pdf")])
+            archive = root / "sources.zip"
+            self.write_zip(archive, [("D1.pdf", PDF_BYTES)])
+            real_replace = os.replace
+
+            def fail_receipt_replace(source, destination):
+                if Path(destination).name == "manual_import_receipt.json":
+                    raise OSError("synthetic receipt replacement failure")
+                return real_replace(source, destination)
+
+            with mock.patch.object(manual_archive.os, "replace", side_effect=fail_receipt_replace):
+                with self.assertRaises(OSError):
+                    manual_archive.import_manual_archive(manifest, archive, output_root)
+
+            self.assertFalse((output_root / "sources/D1/MAIN.pdf").exists())
+            self.assertEqual(old_receipt, receipt_path.read_bytes())
+
+    def test_nonportable_download_id_is_rejected_before_output_effects(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.write_manifest(root, [self.row("D／1", "sources/D1/MAIN.pdf")])
+            archive = root / "sources.zip"
+            self.write_zip(archive, [("D1.pdf", PDF_BYTES)])
+            output_root = root / "out"
+
+            with self.assertRaises(manual_archive.ManualArchiveError):
+                manual_archive.import_manual_archive(manifest, archive, output_root)
+
+            self.assertFalse(output_root.exists())
+
     def test_cli_success_summary_and_errors_do_not_expose_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -487,6 +633,43 @@ class ManualArchiveImportTests(unittest.TestCase):
             self.assertNotIn("sensitive-marker", completed.stdout + completed.stderr)
             self.assertNotIn("do-not-echo", completed.stdout + completed.stderr)
             self.assertNotIn("Traceback", completed.stderr)
+
+    def test_cli_rejects_policy_values_above_hard_ceilings_without_leaking_them(self) -> None:
+        options = (
+            ("--max-archive-bytes", manual_archive.HARD_MAX_ARCHIVE_BYTES + 1),
+            ("--max-members", manual_archive.HARD_MAX_MEMBERS + 1),
+            ("--max-member-bytes", manual_archive.HARD_MAX_MEMBER_BYTES + 1),
+            ("--max-total-bytes", manual_archive.HARD_MAX_TOTAL_BYTES + 1),
+        )
+        for option, value in options:
+            with self.subTest(option=option), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                manifest = self.write_manifest(root, [self.row("D1", "sources/D1/main.pdf")])
+                archive = root / "sources.zip"
+                self.write_zip(archive, [("D1.pdf", PDF_BYTES)])
+
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        str(SCRIPT),
+                        "--manifest",
+                        str(manifest),
+                        "--archive",
+                        str(archive),
+                        "--output-root",
+                        str(root / "out"),
+                        option,
+                        str(value),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+
+                self.assertEqual(2, completed.returncode)
+                self.assertEqual("error: manual archive import failed\n", completed.stderr)
+                self.assertNotIn(str(value), completed.stdout + completed.stderr)
+                self.assertNotIn("Traceback", completed.stderr)
 
 
 if __name__ == "__main__":

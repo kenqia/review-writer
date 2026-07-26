@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import hashlib
 import io
 import json
@@ -530,6 +531,34 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
                 self.assertIn("save_as", rendered)
                 self.assertIn("S007_MAIN.pdf", rendered)
 
+    def test_manual_queue_tsv_sanitizes_formula_cells_without_altering_html_escaping(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            formula_study_id = '   =HYPERLINK("x<&")'
+            formula_target = "   @SUM/safe.pdf"
+            manifest = self.write_manifest(
+                root,
+                [{
+                    "download_id": "FORMULA_MAIN",
+                    "study_id": formula_study_id,
+                    "document_role": "MAIN",
+                    "url": self.base_url + "/paper.pdf",
+                    "target_path": formula_target,
+                    "source_class": "LANDING_PAGE_ONLY",
+                }],
+            )
+
+            acquire_manifest(manifest, root / "acquired")
+
+            queue_tsv = (root / "acquired/manual_acquisition.tsv").read_text(encoding="utf-8")
+            row = next(csv.DictReader(io.StringIO(queue_tsv), delimiter="\t"))
+            self.assertTrue(row["study_id"].startswith("'="), row["study_id"])
+            self.assertTrue(row["target_path"].startswith("'   @"), row["target_path"])
+            queue_html = (root / "acquired/manual_acquisition.html").read_text(encoding="utf-8")
+            self.assertIn("=HYPERLINK(&quot;x&lt;&amp;&quot;)", queue_html)
+            self.assertIn("   @SUM/safe.pdf", queue_html)
+            self.assertNotIn("&#x27;=HYPERLINK", queue_html)
+
     def test_downloads_explicit_docx_supplement_with_openxml_magic(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -614,6 +643,36 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
                     acquire_manifest(manifest, output_root)
 
                 self.assertEqual(FixtureHandler.pdf_requests, 0)
+                self.assertFalse(output_root.exists())
+
+    def test_preflight_rejects_nonportable_and_windows_equivalent_download_ids_before_effects(self):
+        cases = (
+            [
+                {"download_id": "D／1", "study_id": "S_PORTABLE", "document_role": "MAIN", "url": self.base_url + "/paper.pdf", "target_path": "sources/S_PORTABLE/MAIN.pdf", "source_class": "PUBLIC_DIRECT"},
+            ],
+            [
+                {"download_id": "A" * 129, "study_id": "S_LONG", "document_role": "MAIN", "url": self.base_url + "/paper.pdf", "target_path": "sources/S_LONG/MAIN.pdf", "source_class": "PUBLIC_DIRECT"},
+            ],
+            [
+                {"download_id": "Case", "study_id": "S_CASE_A", "document_role": "MAIN", "url": self.base_url + "/paper.pdf", "target_path": "sources/S_CASE_A/MAIN.pdf", "source_class": "PUBLIC_DIRECT"},
+                {"download_id": "case", "study_id": "S_CASE_B", "document_role": "MAIN", "url": self.base_url + "/paper.pdf", "target_path": "sources/S_CASE_B/MAIN.pdf", "source_class": "PUBLIC_DIRECT"},
+            ],
+            [
+                {"download_id": "D1", "study_id": "S_DOT_A", "document_role": "MAIN", "url": self.base_url + "/paper.pdf", "target_path": "sources/S_DOT_A/MAIN.pdf", "source_class": "PUBLIC_DIRECT"},
+                {"download_id": "D1.", "study_id": "S_DOT_B", "document_role": "MAIN", "url": self.base_url + "/paper.pdf", "target_path": "sources/S_DOT_B/MAIN.pdf", "source_class": "PUBLIC_DIRECT"},
+            ],
+        )
+        for downloads in cases:
+            with self.subTest(downloads=downloads), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                output_root = root / "acquired"
+                manifest = self.write_manifest(root, downloads)
+                FixtureHandler.pdf_requests = 0
+
+                with self.assertRaises(ManifestError):
+                    acquire_manifest(manifest, output_root)
+
+                self.assertEqual(0, FixtureHandler.pdf_requests)
                 self.assertFalse(output_root.exists())
 
     def test_preflight_rejects_in_root_symlink_alias_target_collisions(self):

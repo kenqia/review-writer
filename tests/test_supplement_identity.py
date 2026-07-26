@@ -252,6 +252,7 @@ class SupplementIdentityTests(unittest.TestCase):
 
     def test_acquisition_audit_rejects_invalid_shared_manifest_fields(self):
         invalid_updates = [
+            {"download_id": "D／1"},
             {"expected_format": "TXT"},
             {"expected_format": ["PDF"]},
             {"doi": "https://doi.org/10.1000/shared.s1?credential=hidden"},
