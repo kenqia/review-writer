@@ -1691,6 +1691,8 @@ def test_prepare_study_builds_current_pre_provider_packet_without_reruns_and_is_
     (
         ("missing", "TEXT_LAYER_BINDING_MISSING"),
         ("ambiguous", "TEXT_LAYER_BINDING_AMBIGUOUS"),
+        ("malformed_si", "ACQUISITION_SI_INVALID"),
+        ("wrong_subtree", "TEXT_LAYER_BINDING_INVALID"),
     ),
 )
 def test_prepare_study_fails_closed_for_missing_or_ambiguous_bindings(
@@ -1700,14 +1702,24 @@ def test_prepare_study_fails_closed_for_missing_or_ambiguous_bindings(
 ) -> None:
     study_id = "STUDY-CANARY"
     project = _canonical_prepare_project(tmp_path, study_id=study_id)
-    manifest_path = project / "01_evidence/text_layers/text_layers.manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    si_row = next(row for row in manifest["sources"] if row["source_id"] == "CANARY_SI")
-    if case == "missing":
-        manifest["sources"].remove(si_row)
+    if case == "malformed_si":
+        receipt_path = project / "00_sources/acquisition_final_receipt.json"
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt["studies"][0]["si_pdf"] = {"sha256": "0" * 64}
+        _write_prepare_json(receipt_path, receipt)
     else:
-        manifest["sources"].append({**si_row, "source_id": "CANARY_SI_DUPLICATE"})
-    _write_prepare_json(manifest_path, manifest)
+        manifest_path = project / "01_evidence/text_layers/text_layers.manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        si_row = next(row for row in manifest["sources"] if row["source_id"] == "CANARY_SI")
+        if case == "missing":
+            manifest["sources"].remove(si_row)
+        elif case == "ambiguous":
+            manifest["sources"].append({**si_row, "source_id": "CANARY_SI_DUPLICATE"})
+        else:
+            wrong = project / "01_evidence/mineru/markdown/CANARY_SI.md"
+            si_row["reading_order_path"] = wrong.relative_to(project).as_posix()
+            si_row["reading_order_sha256"] = _prepare_sha256(wrong)
+        _write_prepare_json(manifest_path, manifest)
     before = _file_bytes(project)
     result = _run_prepare(project, study_id)
     assert result.returncode == 3, result.stderr

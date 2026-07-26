@@ -146,7 +146,7 @@ def _bound_file(project: Path, root: Path, value: Any, code: str) -> Path:
         candidate = root / relative
     try:
         resolved = candidate.resolve(strict=True)
-        resolved.relative_to(project.resolve())
+        resolved.relative_to(root.resolve())
     except (OSError, ValueError):
         _prepare_block(code)
     if not resolved.is_file():
@@ -159,12 +159,17 @@ def _receipt_sources(project: Path, study: dict[str, Any]) -> list[dict[str, Any
     if study.get("status") != "ACQUIRED" or not isinstance(main, dict):
         _prepare_block("ACQUISITION_MAIN_NOT_ACQUIRED")
     si_value = study.get("si_pdf")
-    supplements = si_value if isinstance(si_value, list) else [si_value]
-    declared = [("MAIN", main)] + [
-        ("SI", row)
-        for row in supplements
-        if isinstance(row, dict) and isinstance(row.get("path"), str)
-    ]
+    if si_value is None:
+        supplements = []
+    elif isinstance(si_value, dict):
+        supplements = [si_value]
+    elif isinstance(si_value, list) and all(isinstance(row, dict) for row in si_value):
+        supplements = si_value
+    else:
+        _prepare_block("ACQUISITION_SI_INVALID")
+    if any(not isinstance(row.get("path"), str) or not row["path"].strip() for row in supplements):
+        _prepare_block("ACQUISITION_SI_INVALID")
+    declared = [("MAIN", main)] + [("SI", row) for row in supplements]
     declared[1:] = sorted(declared[1:], key=lambda item: str(item[1].get("path")))
     sources: list[dict[str, Any]] = []
     seen_paths: set[Path] = set()
