@@ -43,8 +43,7 @@ def _section_id(heading: str, seen: dict[str, int]) -> str:
     return base if seen[base] == 1 else f"{base}-{seen[base]}"
 
 
-def split_manuscript_sections(markdown: str) -> list[dict[str, Any]]:
-    """Split an ATX-heading manuscript into ordered, editable sections."""
+def _split_manuscript_sections(markdown: str, *, include_spans: bool) -> list[dict[str, Any]]:
     if not isinstance(markdown, str):
         raise ProjectReleaseError("MANUSCRIPT_INVALID", "markdown must be text")
 
@@ -83,15 +82,52 @@ def split_manuscript_sections(markdown: str) -> list[dict[str, Any]]:
     for index, (_, heading_end, level, heading) in enumerate(matches):
         body_end = matches[index + 1][0] if index + 1 < len(matches) else len(markdown)
         body = markdown[heading_end:body_end].strip("\r\n")
-        sections.append(
-            {
-                "id": _section_id(heading, seen),
-                "heading": heading,
-                "level": level,
-                "body": body,
-            }
-        )
+        section = {
+            "id": _section_id(heading, seen),
+            "heading": heading,
+            "level": level,
+            "body": body,
+        }
+        if include_spans:
+            section["_body_start"] = heading_end
+            section["_body_end"] = body_end
+        sections.append(section)
     return sections
+
+
+def split_manuscript_sections(markdown: str) -> list[dict[str, Any]]:
+    """Split an ATX-heading manuscript into ordered, editable sections."""
+    return _split_manuscript_sections(markdown, include_spans=False)
+
+
+def replace_manuscript_section_body(markdown: str, section_id: str, body: str) -> str:
+    """Replace one section body while preserving every non-target manuscript byte."""
+    if not isinstance(section_id, str) or not section_id or not isinstance(body, str):
+        raise ProjectReleaseError("MANUSCRIPT_SECTIONS_INVALID", "section_id and body are required")
+    sections = _split_manuscript_sections(markdown, include_spans=True)
+    targets = [section for section in sections if section["id"] == section_id]
+    if len(targets) != 1:
+        raise ProjectReleaseError("MANUSCRIPT_SECTIONS_INVALID", "target section must exist exactly once")
+    target = targets[0]
+    body_start = int(target["_body_start"])
+    body_end = int(target["_body_end"])
+    original_body = markdown[body_start:body_end]
+    newline = "\r\n" if markdown[:body_start].endswith("\r\n") else "\n"
+    normalized_body = body.strip("\r\n").replace("\r\n", "\n").replace("\r", "\n").replace("\n", newline)
+
+    if not normalized_body:
+        replacement = original_body if not original_body.strip("\r\n") else (
+            original_body[: len(original_body) - len(original_body.lstrip("\r\n"))]
+            + original_body[len(original_body.rstrip("\r\n")) :]
+        )
+    elif original_body.strip("\r\n"):
+        leading_length = len(original_body) - len(original_body.lstrip("\r\n"))
+        trailing_start = len(original_body.rstrip("\r\n"))
+        replacement = original_body[:leading_length] + normalized_body + original_body[trailing_start:]
+    else:
+        replacement = newline + normalized_body
+        replacement += newline * (2 if body_end < len(markdown) else 1)
+    return markdown[:body_start] + replacement + markdown[body_end:]
 
 
 def render_manuscript_sections(sections: list[dict[str, Any]]) -> str:
@@ -147,18 +183,18 @@ def _canonical_sha256(value: Any) -> str:
     return _sha256_bytes(payload)
 
 
-def _is_reparse_component(path: Path) -> bool:
+def is_reparse_component(path: Path) -> bool:
     return path.is_symlink() or bool(hasattr(path, "is_junction") and path.is_junction())
 
 
 def _reject_reparse_components(project: Path, relatives: tuple[Path, ...]) -> None:
-    if _is_reparse_component(project) or not project.is_dir():
+    if is_reparse_component(project) or not project.is_dir():
         raise ProjectReleaseError("PROJECT_PATH_INVALID", "project root must be a real directory")
     for relative in relatives:
         component = project
         for part in relative.parts:
             component /= part
-            if _is_reparse_component(component):
+            if is_reparse_component(component):
                 raise ProjectReleaseError("PROJECT_PATH_INVALID", "release path contains a symlink or reparse point")
 
 
@@ -256,7 +292,15 @@ def _validate_references(sections: list[dict[str, Any]]) -> int:
 def _validated_image(project: Path, relative_url: str) -> Path:
     raw = unquote(relative_url.strip())
     parsed = urlparse(raw)
-    if not raw or parsed.scheme or parsed.netloc or raw.startswith(("/", "\\")) or "\\" in raw:
+    if (
+        not raw
+        or parsed.scheme
+        or parsed.netloc
+        or parsed.query
+        or parsed.fragment
+        or raw.startswith(("/", "\\"))
+        or "\\" in raw
+    ):
         raise ProjectReleaseError("IMAGE_INVALID", "release images must use project-local relative paths")
     relative = Path(parsed.path)
     if any(part in {"", "."} for part in relative.parts):
@@ -273,7 +317,7 @@ def _validated_image(project: Path, relative_url: str) -> Path:
         checked = project
         for part in lexical_relative.parts:
             checked /= part
-            if _is_reparse_component(checked):
+            if is_reparse_component(checked):
                 raise ProjectReleaseError("IMAGE_INVALID", "release image path contains a symlink or reparse point")
         try:
             resolved = candidate.resolve(strict=True)
@@ -309,8 +353,12 @@ def _lineage_entries(lineage: dict[str, Any]) -> list[dict[str, Any]]:
     return entries
 
 
-def validate_manuscript_lineage(project: Path, markdown: str) -> dict[str, Any]:
-    """Validate current Task4 state, manuscript lineage, citations, and images."""
+def _validate_manuscript_lineage(
+    project: Path,
+    markdown: str,
+    *,
+    lineage_override: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     project_path = Path(project)
     if not isinstance(markdown, str):
         raise ProjectReleaseError("MANUSCRIPT_INVALID", "markdown must be text")
@@ -330,7 +378,9 @@ def validate_manuscript_lineage(project: Path, markdown: str) -> dict[str, Any]:
     )
     projection = _read_jsonl(projection_path, "PROJECTION_INVALID")
     writer_packet = _read_json(writer_path, "WRITER_PACKET_INVALID")
-    lineage = _read_json(lineage_path, "MANUSCRIPT_LINEAGE_INVALID")
+    lineage = lineage_override if lineage_override is not None else _read_json(
+        lineage_path, "MANUSCRIPT_LINEAGE_INVALID"
+    )
     if not isinstance(writer_packet, dict) or not isinstance(lineage, dict):
         raise ProjectReleaseError("RELEASE_STATE_INVALID", "writer packet and lineage must be objects")
 
@@ -356,7 +406,8 @@ def validate_manuscript_lineage(project: Path, markdown: str) -> dict[str, Any]:
         raise ProjectReleaseError("MANUSCRIPT_LINEAGE_DRIFT", "lineage does not bind the current projection")
 
     sections = split_manuscript_sections(markdown)
-    section_ids = {section["id"] for section in sections}
+    sections_by_id = {section["id"]: section for section in sections}
+    section_ids = set(sections_by_id)
     reference_count = _validate_references(sections)
     entries = _lineage_entries(lineage)
     if not all(isinstance(entry, dict) for entry in entries):
@@ -375,8 +426,15 @@ def validate_manuscript_lineage(project: Path, markdown: str) -> dict[str, Any]:
         if section_id is not None and section_id not in section_ids:
             raise ProjectReleaseError("MANUSCRIPT_LINEAGE_DRIFT", "lineage references an unknown manuscript section")
         text_span = entry.get("text_span") or entry.get("manuscript_text") or entry.get("text")
-        if text_span is not None and (not isinstance(text_span, str) or not text_span or text_span not in markdown):
-            raise ProjectReleaseError("MANUSCRIPT_LINEAGE_DRIFT", "lineage text span is absent from the manuscript")
+        if text_span is not None:
+            if not isinstance(text_span, str) or not text_span:
+                raise ProjectReleaseError("MANUSCRIPT_LINEAGE_DRIFT", "lineage text span is absent from the manuscript")
+            bound_text = sections_by_id[section_id]["body"] if section_id is not None else markdown
+            if text_span not in bound_text:
+                raise ProjectReleaseError(
+                    "MANUSCRIPT_LINEAGE_DRIFT",
+                    "lineage text span is absent from its bound manuscript section",
+                )
         referenced.add(claim_id)
 
     marker_ids = {match.group(1) or match.group(2) for match in _CLAIM_MARKER_RE.finditer(markdown)}
@@ -397,6 +455,31 @@ def validate_manuscript_lineage(project: Path, markdown: str) -> dict[str, Any]:
         "reference_count": reference_count,
         "image_count": len(image_paths),
     }
+
+
+def validate_manuscript_lineage(project: Path, markdown: str) -> dict[str, Any]:
+    """Validate current Task4 state, manuscript lineage, citations, and images."""
+    return _validate_manuscript_lineage(project, markdown)
+
+
+def refreshed_manuscript_lineage(
+    project: Path,
+    current_markdown: str,
+    candidate_markdown: str,
+) -> dict[str, Any]:
+    """Return lineage with only its manuscript hash refreshed after full candidate validation."""
+    project_path = Path(project)
+    validate_manuscript_lineage(project_path, current_markdown)
+    lineage_path = validate_project_file_path(
+        project_path, Path("04_first_draft/manuscript_lineage.json"), "MANUSCRIPT_LINEAGE_INVALID"
+    )
+    lineage = _read_json(lineage_path, "MANUSCRIPT_LINEAGE_INVALID")
+    if not isinstance(lineage, dict):
+        raise ProjectReleaseError("MANUSCRIPT_LINEAGE_INVALID", "lineage must be an object")
+    updated = dict(lineage)
+    updated["manuscript_sha256"] = _sha256_bytes(candidate_markdown.encode("utf-8"))
+    _validate_manuscript_lineage(project_path, candidate_markdown, lineage_override=updated)
+    return updated
 
 
 def _atomic_write(path: Path, payload: bytes) -> None:

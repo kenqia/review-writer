@@ -465,7 +465,11 @@
       const res = await fetch(`/api/project/${encodeURIComponent(selectedProject)}/draft`, {
         method: 'PUT',
         headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({sections: payload.sections || []})
+        body: JSON.stringify({
+          section_id:selectedSectionId,
+          body:els.sectionEditor.value,
+          manuscript_version:payload.manuscript_version
+        })
       });
       if (!res.ok) { msg(await res.text()); return; }
       msg('Draft saved');

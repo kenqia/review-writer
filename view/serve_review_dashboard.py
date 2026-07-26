@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import mimetypes
 import os
@@ -27,7 +28,9 @@ from review_writer.project.vertical_review import (  # noqa: E402
 )
 from review_writer.delivery.project_release import (  # noqa: E402
     build_project_release,
-    render_manuscript_sections,
+    is_reparse_component,
+    refreshed_manuscript_lineage,
+    replace_manuscript_section_body,
     split_manuscript_sections,
     validate_project_file_path,
 )
@@ -481,6 +484,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not path.exists() or not path.is_file():
             self.send_error(HTTPStatus.NOT_FOUND, "file not found")
             return
+        if is_project_release_docx(path, self.review_root) and not project_release_docx_is_current(path):
+            self.send_error(HTTPStatus.FORBIDDEN, "release DOCX is outdated")
+            return
         ctype = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
         self.send_file(path, ctype)
 
@@ -910,7 +916,10 @@ def normalized_project_id(project_id: str) -> str:
 def project_dir(review_root: Path, project_id: str) -> Path:
     normalized_id = normalized_project_id(project_id)
     root = review_root.resolve()
-    nested_root = (root / "review-projects").resolve()
+    projects_path = root / "review-projects"
+    if is_reparse_component(projects_path):
+        raise ValueError("invalid review-projects boundary")
+    nested_root = projects_path.resolve()
     nested = (nested_root / normalized_id).resolve()
     if not is_relative_to(nested, nested_root):
         raise ValueError("invalid project_id")
@@ -1040,30 +1049,83 @@ def _atomic_write_bytes(path: Path, payload: bytes) -> None:
             temporary.unlink(missing_ok=True)
 
 
+def _commit_draft_and_lineage(
+    manuscript_path: Path,
+    manuscript_payload: bytes,
+    lineage_path: Path,
+    lineage_payload: bytes,
+    previous: dict[Path, bytes],
+) -> None:
+    try:
+        _atomic_write_bytes(manuscript_path, manuscript_payload)
+        _atomic_write_bytes(lineage_path, lineage_payload)
+    except Exception:
+        for path in (manuscript_path, lineage_path):
+            _atomic_write_bytes(path, previous[path])
+        raise
+
+
 def write_project_draft_sections(review_root: Path, project_id: str, data: Any) -> dict[str, Any]:
-    if not isinstance(data, dict) or not isinstance(data.get("sections"), list):
-        raise ValueError("draft payload requires sections")
+    required = {"section_id", "body", "manuscript_version"}
+    if not isinstance(data, dict) or set(data) != required:
+        raise ValueError("draft payload requires exactly section_id, body, and manuscript_version")
+    section_id = data["section_id"]
+    body = data["body"]
+    version = data["manuscript_version"]
+    if not isinstance(section_id, str) or not section_id or not isinstance(body, str):
+        raise ValueError("draft payload requires one target section body")
+    if not isinstance(version, str) or len(version) != 64:
+        raise ValueError("draft payload manuscript version is invalid")
     project = project_dir(review_root, project_id)
     manuscript_path = validate_project_file_path(
         project, Path("04_first_draft/first_draft.md"), "MANUSCRIPT_INVALID"
     )
-    current_sections = split_manuscript_sections(manuscript_path.read_text(encoding="utf-8"))
-    incoming = data["sections"]
-    current_order = [(row["id"], row["heading"], row["level"]) for row in current_sections]
+    lineage_path = validate_project_file_path(
+        project, Path("04_first_draft/manuscript_lineage.json"), "MANUSCRIPT_LINEAGE_INVALID"
+    )
+    manuscript_bytes = manuscript_path.read_bytes()
+    lineage_bytes = lineage_path.read_bytes()
+    if hashlib.sha256(manuscript_bytes).hexdigest() != version:
+        raise ValueError("stale manuscript version")
     try:
-        incoming_order = [(row["id"], row["heading"], row["level"]) for row in incoming]
-    except (KeyError, TypeError) as exc:
-        raise ValueError("sections must preserve ordered ids and headings") from exc
-    if incoming_order != current_order:
-        raise ValueError("sections must preserve ordered ids and headings")
-    rebuilt = render_manuscript_sections(incoming)
-    if sum(row["heading"].strip().casefold() == "references" for row in incoming) != 1:
-        raise ValueError("draft requires exactly one References section")
+        current_markdown = manuscript_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("authoritative manuscript is not valid UTF-8") from exc
+    current_sections = split_manuscript_sections(current_markdown)
+    current_order = [(row["id"], row["heading"], row["level"]) for row in current_sections]
+    if sum(row["id"] == section_id for row in current_sections) != 1:
+        raise ValueError("target section must exist exactly once")
+    candidate = replace_manuscript_section_body(current_markdown, section_id, body)
+    candidate_sections = split_manuscript_sections(candidate)
+    candidate_order = [(row["id"], row["heading"], row["level"]) for row in candidate_sections]
+    if candidate_order != current_order:
+        raise ValueError("section edit must preserve ordered ids and headings")
+    updated_lineage = refreshed_manuscript_lineage(project, current_markdown, candidate)
+    candidate_bytes = candidate.encode("utf-8")
+    lineage_payload = (
+        json.dumps(updated_lineage, ensure_ascii=False, allow_nan=False, indent=2) + "\n"
+    ).encode("utf-8")
     manuscript_path = validate_project_file_path(
         project, Path("04_first_draft/first_draft.md"), "MANUSCRIPT_INVALID"
     )
-    _atomic_write_bytes(manuscript_path, (rebuilt + "\n").encode("utf-8"))
-    return {"ok": True, "project_id": project_id, "sections": incoming}
+    lineage_path = validate_project_file_path(
+        project, Path("04_first_draft/manuscript_lineage.json"), "MANUSCRIPT_LINEAGE_INVALID"
+    )
+    if manuscript_path.read_bytes() != manuscript_bytes or lineage_path.read_bytes() != lineage_bytes:
+        raise ValueError("stale manuscript or lineage state")
+    _commit_draft_and_lineage(
+        manuscript_path,
+        candidate_bytes,
+        lineage_path,
+        lineage_payload,
+        {manuscript_path: manuscript_bytes, lineage_path: lineage_bytes},
+    )
+    return {
+        "ok": True,
+        "project_id": project_id,
+        "section_id": section_id,
+        "manuscript_version": hashlib.sha256(candidate_bytes).hexdigest(),
+    }
 
 
 def export_project_docx(review_root: Path, project_id: str) -> dict[str, Any]:
@@ -1153,6 +1215,33 @@ def project_figures_payload(review_root: Path, project_id: str) -> dict[str, Any
     }
 
 
+def is_project_release_docx(path: Path, review_root: Path) -> bool:
+    resolved_path = path.resolve()
+    root = review_root.resolve()
+    if resolved_path.name != "final_draft.docx" or resolved_path.parent.name != "05_final_audit":
+        return False
+    project = resolved_path.parent.parent
+    if project == root:
+        return True
+    try:
+        relative = project.relative_to(root / "review-projects")
+    except ValueError:
+        return False
+    return len(relative.parts) == 1
+
+
+def project_release_docx_is_current(docx_path: Path) -> bool:
+    project = docx_path.resolve().parent.parent
+    authoritative = project / "04_first_draft" / "first_draft.md"
+    snapshot = project / "05_final_audit" / "final_draft.md"
+    return bool(
+        docx_path.is_file()
+        and authoritative.is_file()
+        and snapshot.is_file()
+        and authoritative.read_bytes() == snapshot.read_bytes()
+    )
+
+
 def project_final_payload(review_root: Path, project_id: str) -> dict[str, Any]:
     project = project_dir(review_root, project_id)
     stage = project / "05_final_audit"
@@ -1168,7 +1257,13 @@ def project_final_payload(review_root: Path, project_id: str) -> dict[str, Any]:
         and authoritative_path.is_file()
         and snapshot_path.read_bytes() == authoritative_path.read_bytes()
     )
-    release_status = quality_report.get("release_status") or quality_report.get("status") if snapshot_exists else "IN_PROGRESS"
+    current_docx_exists = snapshot_matches and docx_path.is_file()
+    if snapshot_exists and not snapshot_matches:
+        release_status = "RELEASE_OUTDATED"
+    elif snapshot_exists:
+        release_status = quality_report.get("release_status") or quality_report.get("status") or "IN_PROGRESS"
+    else:
+        release_status = "IN_PROGRESS"
     return {
         "project_id": project_id,
         "topic": infer_project_topic(project),
@@ -1179,7 +1274,7 @@ def project_final_payload(review_root: Path, project_id: str) -> dict[str, Any]:
         "release_snapshot": {
             "exists": snapshot_exists,
             "matches_authoritative": snapshot_matches,
-            "docx_exists": docx_path.is_file(),
+            "docx_exists": current_docx_exists,
         },
         "final_audit_report_md": read_text_if_exists(stage / "final_audit_report.md"),
         "quality_report_md": read_text_if_exists(stage / "quality_report.md"),
@@ -1188,8 +1283,8 @@ def project_final_payload(review_root: Path, project_id: str) -> dict[str, Any]:
         "checkpoint_log": read_json_if_exists(project / "checkpoint_log.json"),
         "final_audit_report": read_json_if_exists(stage / "final_audit_report.json"),
         "release_report_md": read_text_if_exists(stage / "release_report.md"),
-        "final_draft_docx_path": str(docx_path),
-        "final_draft_docx_exists": docx_path.exists(),
+        "final_draft_docx_path": str(docx_path) if current_docx_exists else "",
+        "final_draft_docx_exists": current_docx_exists,
         "paths": {"stage_dir": str(stage)},
     }
 
@@ -1200,7 +1295,8 @@ def project_draft_payload(review_root: Path, project_id: str) -> dict[str, Any]:
     manuscript_path = validate_project_file_path(
         project, Path("04_first_draft/first_draft.md"), "MANUSCRIPT_INVALID"
     )
-    first_draft_md = manuscript_path.read_text(encoding="utf-8")
+    manuscript_bytes = manuscript_path.read_bytes()
+    first_draft_md = manuscript_bytes.decode("utf-8")
     figures_manifest = read_json_if_exists(project / "03_figure_redraw" / "redrawn_figure_manifest.json") or {}
     draft_bundle = read_json_if_exists(stage_dir / "draft_bundle.json")
     section_drafts = read_json_if_exists(project / "02_section_drafting" / "section_drafts.json")
@@ -1213,6 +1309,7 @@ def project_draft_payload(review_root: Path, project_id: str) -> dict[str, Any]:
         "topic": infer_project_topic(project),
         "summary": next((p for p in list_review_projects(review_root) if p["project_id"] == project_id), None),
         "draft_bundle": draft_bundle,
+        "manuscript_version": hashlib.sha256(manuscript_bytes).hexdigest(),
         "sections": split_manuscript_sections(first_draft_md) if first_draft_md else [],
         "first_draft_md": first_draft_md,
         "merge_report_md": read_text_if_exists(stage_dir / "merge_report.md"),

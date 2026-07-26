@@ -16,6 +16,7 @@ import zipfile
 from html.parser import HTMLParser
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import quote
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -384,7 +385,7 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             self.assertIn('fetch(`/api/project/${encodeURIComponent(projectId)}/review-state`)', review_html)
             self.assertIn('<link rel="icon" href="data:,">', review_html)
 
-    def test_draft_route_edits_ordered_sections_in_one_authoritative_manuscript(self) -> None:
+    def test_draft_route_exposes_sections_and_rejects_whole_manuscript_payload(self) -> None:
         sys.path.insert(0, str(ROOT))
         from view import serve_review_dashboard as dashboard
 
@@ -408,6 +409,7 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             self.assertEqual(200, status)
             payload = json.loads(body)
             self.assertEqual(["synthetic-review", "results", "references"], [row["id"] for row in payload["sections"]])
+            self.assertRegex(payload["manuscript_version"], r"^[0-9a-f]{64}$")
             payload["sections"][1]["body"] = "Revised evidence-backed text [1]."
             request_body = json.dumps({"sections": payload["sections"]}).encode("utf-8")
             request = (
@@ -418,29 +420,9 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
                 + request_body
             )
             status, _, response = self._request(dashboard, review_root, request)
-            self.assertEqual(200, status, response.decode(errors="replace"))
-            rebuilt = manuscript_path.read_text(encoding="utf-8")
-            self.assertIn("## Results\n\nRevised evidence-backed text [1].", rebuilt)
-            self.assertEqual(1, rebuilt.count("## References"))
-            after = self._project_file_bytes(review_root)
-            self.assertEqual(
-                {key: value for key, value in before.items() if key != "04_first_draft/first_draft.md"},
-                {key: value for key, value in after.items() if key != "04_first_draft/first_draft.md"},
-            )
-
-            invalid_sections = list(payload["sections"])
-            invalid_sections[1] = {**invalid_sections[1], "id": invalid_sections[0]["id"]}
-            invalid_body = json.dumps({"sections": invalid_sections}).encode("utf-8")
-            invalid_request = (
-                b"PUT /api/project/synthetic-review/draft HTTP/1.1\r\n"
-                b"Host: localhost\r\nContent-Type: application/json\r\nContent-Length: "
-                + str(len(invalid_body)).encode()
-                + b"\r\n\r\n"
-                + invalid_body
-            )
-            status, _, _ = self._request(dashboard, review_root, invalid_request)
             self.assertEqual(400, status)
-            self.assertEqual(rebuilt, manuscript_path.read_text(encoding="utf-8"))
+            self.assertIn(b"section_id", response)
+            self.assertEqual(before, self._project_file_bytes(review_root))
 
     def test_draft_get_and_put_reject_symlinked_stage_without_touching_outside(self) -> None:
         sys.path.insert(0, str(ROOT))
@@ -457,8 +439,12 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             project = review_root / "review-projects" / "synthetic-review"
             stage = project / "04_first_draft"
             (stage / "first_draft.md").write_text(manuscript, encoding="utf-8")
-            sections = dashboard.project_draft_payload(review_root, "synthetic-review")["sections"]
-            sections[1]["body"] = "This write must not reach the outside target [1]."
+            draft = dashboard.project_draft_payload(review_root, "synthetic-review")
+            edit = {
+                "section_id": "results",
+                "body": "This write must not reach the outside target [1].",
+                "manuscript_version": draft["manuscript_version"],
+            }
 
             outside = temp / "outside-stage"
             stage.rename(outside)
@@ -476,7 +462,7 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             )
             self.assertEqual(400, get_status)
 
-            request_body = json.dumps({"sections": sections}).encode("utf-8")
+            request_body = json.dumps(edit).encode("utf-8")
             request = (
                 b"PUT /api/project/synthetic-review/draft HTTP/1.1\r\n"
                 b"Host: localhost\r\nContent-Type: application/json\r\nContent-Length: "
@@ -492,6 +478,113 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
                 if path.is_file()
             }
             self.assertEqual(before, after)
+
+    def test_stale_release_api_and_guessed_docx_download_fail_closed(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = self._copy_fixture(Path(temp_dir))
+            project = review_root / "review-projects" / "synthetic-review"
+            manuscript_path = project / "04_first_draft" / "first_draft.md"
+            snapshot_path = project / "05_final_audit" / "final_draft.md"
+            docx_path = project / "05_final_audit" / "final_draft.docx"
+            snapshot_path.write_bytes(manuscript_path.read_bytes())
+            docx_path.write_bytes(b"current-synthetic-docx")
+
+            status, _, body = self._request(
+                dashboard,
+                review_root,
+                b"GET /api/project/synthetic-review/final HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            )
+            self.assertEqual(200, status)
+            current = json.loads(body)
+            self.assertTrue(current["final_draft_docx_exists"])
+            self.assertEqual(str(docx_path), current["final_draft_docx_path"])
+            download = f"GET /file?path={quote(str(docx_path), safe='')} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode()
+            status, _, body = self._request(dashboard, review_root, download)
+            self.assertEqual(200, status)
+            self.assertEqual(b"current-synthetic-docx", body)
+
+            manuscript_path.write_bytes(manuscript_path.read_bytes() + b"\nScientist edit.\n")
+            status, _, body = self._request(
+                dashboard,
+                review_root,
+                b"GET /api/project/synthetic-review/final HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            )
+            self.assertEqual(200, status)
+            stale = json.loads(body)
+            self.assertFalse(stale["release_snapshot"]["docx_exists"])
+            self.assertFalse(stale["final_draft_docx_exists"])
+            self.assertEqual("", stale["final_draft_docx_path"])
+
+            status, _, _ = self._request(dashboard, review_root, download)
+            self.assertEqual(403, status)
+            ordinary = f"GET /file?path={quote(str(manuscript_path), safe='')} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode()
+            status, _, body = self._request(dashboard, review_root, ordinary)
+            self.assertEqual(200, status)
+            self.assertEqual(manuscript_path.read_bytes(), body)
+
+    def test_review_projects_symlink_escape_rejects_api_read_write_without_outside_changes(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            review_root = temp / "trusted-review-root"
+            review_root.mkdir()
+            outside = temp / "outside-projects"
+            shutil.copytree(FIXTURE / "review-projects", outside)
+            (review_root / "review-projects").symlink_to(outside, target_is_directory=True)
+            before = {
+                path.relative_to(outside).as_posix(): path.read_bytes()
+                for path in outside.rglob("*")
+                if path.is_file()
+            }
+
+            status, _, _ = self._request(
+                dashboard,
+                review_root,
+                b"GET /api/project/synthetic-review/draft HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            )
+            self.assertEqual(400, status)
+            edit = json.dumps(
+                {"section_id": "synthetic-review", "body": "outside write", "manuscript_version": "0" * 64}
+            ).encode()
+            request = (
+                b"PUT /api/project/synthetic-review/draft HTTP/1.1\r\n"
+                b"Host: localhost\r\nContent-Type: application/json\r\nContent-Length: "
+                + str(len(edit)).encode()
+                + b"\r\n\r\n"
+                + edit
+            )
+            status, _, _ = self._request(dashboard, review_root, request)
+            self.assertEqual(400, status)
+            after = {
+                path.relative_to(outside).as_posix(): path.read_bytes()
+                for path in outside.rglob("*")
+                if path.is_file()
+            }
+            self.assertEqual(before, after)
+
+    def test_explicit_review_root_is_trusted_when_its_parent_path_is_a_symlink(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            real_parent = temp / "real-parent"
+            review_root = self._copy_fixture(real_parent)
+            parent_link = temp / "parent-link"
+            parent_link.symlink_to(real_parent, target_is_directory=True)
+            supplied_root = parent_link / review_root.name
+
+            project = dashboard.project_dir(supplied_root, "synthetic-review")
+
+            self.assertEqual(
+                review_root / "review-projects" / "synthetic-review",
+                project,
+            )
 
     def test_docx_export_uses_project_release_and_browser_fields_are_bounded(self) -> None:
         sys.path.insert(0, str(ROOT))
@@ -528,6 +621,10 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
         final_html = (ROOT / "view" / "assets" / "dashboard" / "final.html").read_text(encoding="utf-8")
         self.assertIn("payload.sections", draft_html)
         self.assertIn('id="sectionEditor"', draft_html)
+        self.assertIn("section_id:selectedSectionId", draft_html)
+        self.assertIn("body:els.sectionEditor.value", draft_html)
+        self.assertIn("manuscript_version:payload.manuscript_version", draft_html)
+        self.assertNotIn("JSON.stringify({sections:", draft_html)
         self.assertNotIn("first_draft_md", draft_html)
         self.assertNotIn('id="draftEditor"', draft_html)
         self.assertIn("release_status", final_html)

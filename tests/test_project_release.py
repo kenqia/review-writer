@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -164,6 +165,132 @@ def _update_lineage(project: Path, **changes: object) -> None:
     _write_json(path, lineage)
 
 
+def _section_edit_payload(review_root: Path, section_id: str, body: str) -> dict[str, str]:
+    from view import serve_review_dashboard as dashboard
+
+    payload = dashboard.project_draft_payload(review_root, "synthetic-release")
+    return {
+        "section_id": section_id,
+        "body": body,
+        "manuscript_version": payload["manuscript_version"],
+    }
+
+
+def test_single_section_edit_preserves_non_target_raw_bytes(tmp_path: Path) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    project = make_release_ready_project(tmp_path / "review-projects")
+    manuscript_path = project / "04_first_draft" / "first_draft.md"
+    manuscript = manuscript_path.read_text(encoding="utf-8").replace(
+        "# Synthetic Review\n\n",
+        "# Synthetic Review\n\nOriginal editorial context.  \n\n",
+        1,
+    )
+    manuscript_path.write_bytes(manuscript.replace("\n", "\r\n").encode("utf-8"))
+    _update_lineage(
+        project,
+        manuscript_sha256=hashlib.sha256(manuscript_path.read_bytes()).hexdigest(),
+    )
+    before = manuscript_path.read_bytes()
+    non_target = before[before.index(b"## Results") :]
+    payload = _section_edit_payload(tmp_path, "synthetic-review", "Revised editorial context.\nSecond line.")
+
+    dashboard.write_project_draft_sections(tmp_path, "synthetic-release", payload)
+
+    after = manuscript_path.read_bytes()
+    assert after[after.index(b"## Results") :] == non_target
+    assert b"Revised editorial context.\r\nSecond line." in after
+
+
+def test_safe_editorial_edit_refreshes_lineage_and_releases(tmp_path: Path) -> None:
+    from review_writer.delivery.project_release import build_project_release
+    from view import serve_review_dashboard as dashboard
+
+    project = make_release_ready_project(tmp_path / "review-projects")
+    manuscript_path = project / "04_first_draft" / "first_draft.md"
+    lineage_path = project / "04_first_draft" / "manuscript_lineage.json"
+    before_lineage = json.loads(lineage_path.read_text(encoding="utf-8"))
+    payload = _section_edit_payload(tmp_path, "synthetic-review", "Scientist-reviewed editorial context.")
+
+    dashboard.write_project_draft_sections(tmp_path, "synthetic-release", payload)
+
+    after_lineage = json.loads(lineage_path.read_text(encoding="utf-8"))
+    assert after_lineage["manuscript_sha256"] == hashlib.sha256(manuscript_path.read_bytes()).hexdigest()
+    assert {key: value for key, value in after_lineage.items() if key != "manuscript_sha256"} == {
+        key: value for key, value in before_lineage.items() if key != "manuscript_sha256"
+    }
+    release = build_project_release(project)
+    assert Path(release["docx"]).is_file()
+
+
+def test_stale_single_section_edit_is_rejected_without_changes(tmp_path: Path) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    project = make_release_ready_project(tmp_path / "review-projects")
+    manuscript_path = project / "04_first_draft" / "first_draft.md"
+    lineage_path = project / "04_first_draft" / "manuscript_lineage.json"
+    stale_payload = _section_edit_payload(tmp_path, "synthetic-review", "Stale scientist edit.")
+    concurrent = manuscript_path.read_text(encoding="utf-8").replace(
+        "# Synthetic Review\n\n",
+        "# Synthetic Review\n\nConcurrent editorial change.\n\n",
+        1,
+    )
+    manuscript_path.write_text(concurrent, encoding="utf-8")
+    _update_lineage(project, manuscript_sha256=hashlib.sha256(concurrent.encode("utf-8")).hexdigest())
+    before = (manuscript_path.read_bytes(), lineage_path.read_bytes())
+
+    with pytest.raises(ValueError, match="stale"):
+        dashboard.write_project_draft_sections(tmp_path, "synthetic-release", stale_payload)
+
+    assert (manuscript_path.read_bytes(), lineage_path.read_bytes()) == before
+
+
+def test_claim_span_edit_is_rejected_with_manuscript_and_lineage_unchanged(tmp_path: Path) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    project = make_release_ready_project(tmp_path / "review-projects")
+    manuscript_path = project / "04_first_draft" / "first_draft.md"
+    lineage_path = project / "04_first_draft" / "manuscript_lineage.json"
+    draft = dashboard.project_draft_payload(tmp_path, "synthetic-release")
+    results = next(section for section in draft["sections"] if section["id"] == "results")
+    payload = {
+        "section_id": "results",
+        "body": results["body"].replace(APPROVED_CLAIM_TEXT, "The measured response changed under defined conditions"),
+        "manuscript_version": draft["manuscript_version"],
+    }
+    before = (manuscript_path.read_bytes(), lineage_path.read_bytes())
+
+    with pytest.raises(ValueError, match="LINEAGE"):
+        dashboard.write_project_draft_sections(tmp_path, "synthetic-release", payload)
+
+    assert (manuscript_path.read_bytes(), lineage_path.read_bytes()) == before
+
+
+def test_draft_two_file_write_failure_rolls_back_both_files(tmp_path: Path) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    project = make_release_ready_project(tmp_path / "review-projects")
+    manuscript_path = project / "04_first_draft" / "first_draft.md"
+    lineage_path = project / "04_first_draft" / "manuscript_lineage.json"
+    payload = _section_edit_payload(tmp_path, "synthetic-review", "Rollback-safe editorial change.")
+    before = (manuscript_path.read_bytes(), lineage_path.read_bytes())
+    real_atomic_write = dashboard._atomic_write_bytes
+    failed = False
+
+    def fail_lineage_once(path: Path, content: bytes) -> None:
+        nonlocal failed
+        if Path(path) == lineage_path and not failed:
+            failed = True
+            raise OSError("synthetic lineage commit failure")
+        real_atomic_write(path, content)
+
+    with patch.object(dashboard, "_atomic_write_bytes", side_effect=fail_lineage_once):
+        with pytest.raises(OSError, match="synthetic lineage commit failure"):
+            dashboard.write_project_draft_sections(tmp_path, "synthetic-release", payload)
+
+    assert (manuscript_path.read_bytes(), lineage_path.read_bytes()) == before
+
+
 def test_final_dashboard_marks_edited_snapshot_stale_until_release_is_rebuilt(tmp_path: Path) -> None:
     from review_writer.delivery.project_release import build_project_release
     from view import serve_review_dashboard as dashboard
@@ -186,8 +313,10 @@ def test_final_dashboard_marks_edited_snapshot_stale_until_release_is_rebuilt(tm
 
     stale = dashboard.project_final_payload(tmp_path, "synthetic-release")
     assert stale["release_snapshot"]["matches_authoritative"] is False
-    assert stale["release_snapshot"]["docx_exists"] is True
-    assert stale["release_status"] == "AI_REVIEWED_BENCHMARK"
+    assert stale["release_snapshot"]["docx_exists"] is False
+    assert stale["final_draft_docx_exists"] is False
+    assert stale["final_draft_docx_path"] == ""
+    assert stale["release_status"] == "RELEASE_OUTDATED"
 
     _update_lineage(
         project,
@@ -339,6 +468,25 @@ def test_release_validation_failures_leave_no_new_release(tmp_path: Path, failur
     assert not (project / "05_final_audit" / "final_draft.md").exists()
     assert not (project / "05_final_audit" / "final_draft.docx").exists()
     assert not (project / "05_final_audit" / "quality_report.json").exists()
+
+
+@pytest.mark.parametrize("suffix", ["?download=1", "#figure-1"])
+def test_release_rejects_image_query_or_fragment_before_docx_export(tmp_path: Path, suffix: str) -> None:
+    from review_writer.delivery.project_release import ProjectReleaseError, build_project_release
+
+    project = make_release_ready_project(tmp_path)
+    manuscript_path = project / "04_first_draft" / "first_draft.md"
+    manuscript = manuscript_path.read_text(encoding="utf-8").replace(
+        "../assets/tiny.png",
+        f"../assets/tiny.png{suffix}",
+    )
+    manuscript_path.write_text(manuscript, encoding="utf-8")
+    _update_lineage(project, manuscript_sha256=hashlib.sha256(manuscript.encode("utf-8")).hexdigest())
+
+    with pytest.raises(ProjectReleaseError, match="IMAGE_INVALID"):
+        build_project_release(project)
+
+    assert not (project / "05_final_audit" / "final_draft.docx").exists()
 
 
 def test_failed_export_restores_existing_valid_release(tmp_path: Path) -> None:
