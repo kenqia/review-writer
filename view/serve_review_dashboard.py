@@ -29,6 +29,7 @@ from review_writer.delivery.project_release import (  # noqa: E402
     build_project_release,
     render_manuscript_sections,
     split_manuscript_sections,
+    validate_project_file_path,
 )
 
 
@@ -276,7 +277,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not project.exists():
             self.send_error(HTTPStatus.NOT_FOUND, "project not found")
             return
-        self.send_json(project_draft_payload(self.review_root, project_id))
+        try:
+            payload = project_draft_payload(self.review_root, project_id)
+        except ValueError as exc:
+            self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+        self.send_json(payload)
 
     def handle_project_review_state_get(self, project_id: str) -> None:
         try:
@@ -1038,9 +1044,9 @@ def write_project_draft_sections(review_root: Path, project_id: str, data: Any) 
     if not isinstance(data, dict) or not isinstance(data.get("sections"), list):
         raise ValueError("draft payload requires sections")
     project = project_dir(review_root, project_id)
-    manuscript_path = project / "04_first_draft" / "first_draft.md"
-    if manuscript_path.is_symlink() or not manuscript_path.is_file():
-        raise ValueError("authoritative manuscript is unavailable")
+    manuscript_path = validate_project_file_path(
+        project, Path("04_first_draft/first_draft.md"), "MANUSCRIPT_INVALID"
+    )
     current_sections = split_manuscript_sections(manuscript_path.read_text(encoding="utf-8"))
     incoming = data["sections"]
     current_order = [(row["id"], row["heading"], row["level"]) for row in current_sections]
@@ -1053,6 +1059,9 @@ def write_project_draft_sections(review_root: Path, project_id: str, data: Any) 
     rebuilt = render_manuscript_sections(incoming)
     if sum(row["heading"].strip().casefold() == "references" for row in incoming) != 1:
         raise ValueError("draft requires exactly one References section")
+    manuscript_path = validate_project_file_path(
+        project, Path("04_first_draft/first_draft.md"), "MANUSCRIPT_INVALID"
+    )
     _atomic_write_bytes(manuscript_path, (rebuilt + "\n").encode("utf-8"))
     return {"ok": True, "project_id": project_id, "sections": incoming}
 
@@ -1188,6 +1197,10 @@ def project_final_payload(review_root: Path, project_id: str) -> dict[str, Any]:
 def project_draft_payload(review_root: Path, project_id: str) -> dict[str, Any]:
     project = project_dir(review_root, project_id)
     stage_dir = project / "04_first_draft"
+    manuscript_path = validate_project_file_path(
+        project, Path("04_first_draft/first_draft.md"), "MANUSCRIPT_INVALID"
+    )
+    first_draft_md = manuscript_path.read_text(encoding="utf-8")
     figures_manifest = read_json_if_exists(project / "03_figure_redraw" / "redrawn_figure_manifest.json") or {}
     draft_bundle = read_json_if_exists(stage_dir / "draft_bundle.json")
     section_drafts = read_json_if_exists(project / "02_section_drafting" / "section_drafts.json")
@@ -1195,7 +1208,6 @@ def project_draft_payload(review_root: Path, project_id: str) -> dict[str, Any]:
     for row in (figures_manifest.get("figures") or []):
         if isinstance(row, dict):
             redrawn.append(row)
-    first_draft_md = read_text_if_exists(stage_dir / "first_draft.md") or read_text_if_exists(stage_dir / "final_draft.md")
     return {
         "project_id": project_id,
         "topic": infer_project_topic(project),

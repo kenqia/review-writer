@@ -162,7 +162,8 @@ def _reject_reparse_components(project: Path, relatives: tuple[Path, ...]) -> No
                 raise ProjectReleaseError("PROJECT_PATH_INVALID", "release path contains a symlink or reparse point")
 
 
-def _project_file(project: Path, relative: Path, code: str) -> Path:
+def validate_project_file_path(project: Path, relative: Path, code: str) -> Path:
+    """Return a required project file after rejecting symlink/reparse components."""
     _reject_reparse_components(project, (relative,))
     candidate = project / relative
     if not candidate.is_file():
@@ -318,9 +319,15 @@ def validate_manuscript_lineage(project: Path, markdown: str) -> dict[str, Any]:
     except VerticalReviewError as exc:
         raise ProjectReleaseError(exc.code, "Task4 projection state is not release-ready") from exc
 
-    projection_path = _project_file(project_path, Path("02_claims/claim_projection.jsonl"), "PROJECTION_INVALID")
-    writer_path = _project_file(project_path, Path("02_claims/writer_packet.json"), "WRITER_PACKET_INVALID")
-    lineage_path = _project_file(project_path, Path("04_first_draft/manuscript_lineage.json"), "MANUSCRIPT_LINEAGE_INVALID")
+    projection_path = validate_project_file_path(
+        project_path, Path("02_claims/claim_projection.jsonl"), "PROJECTION_INVALID"
+    )
+    writer_path = validate_project_file_path(
+        project_path, Path("02_claims/writer_packet.json"), "WRITER_PACKET_INVALID"
+    )
+    lineage_path = validate_project_file_path(
+        project_path, Path("04_first_draft/manuscript_lineage.json"), "MANUSCRIPT_LINEAGE_INVALID"
+    )
     projection = _read_jsonl(projection_path, "PROJECTION_INVALID")
     writer_packet = _read_json(writer_path, "WRITER_PACKET_INVALID")
     lineage = _read_json(lineage_path, "MANUSCRIPT_LINEAGE_INVALID")
@@ -447,7 +454,9 @@ def build_project_release(
 ) -> dict[str, Any]:
     """Snapshot and export one validated authoritative manuscript without editing it."""
     project_path = Path(project)
-    source = _project_file(project_path, Path("04_first_draft/first_draft.md"), "MANUSCRIPT_INVALID")
+    source = validate_project_file_path(
+        project_path, Path("04_first_draft/first_draft.md"), "MANUSCRIPT_INVALID"
+    )
     try:
         manuscript_bytes = source.read_bytes()
         markdown = manuscript_bytes.decode("utf-8")

@@ -442,6 +442,57 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             self.assertEqual(400, status)
             self.assertEqual(rebuilt, manuscript_path.read_text(encoding="utf-8"))
 
+    def test_draft_get_and_put_reject_symlinked_stage_without_touching_outside(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        manuscript = (
+            "# Synthetic Review\n\nIntro.\n\n"
+            "## Results\n\nEvidence-backed text [1].\n\n"
+            "## References\n\n[1] Synthetic reference.\n"
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            review_root = self._copy_fixture(temp)
+            project = review_root / "review-projects" / "synthetic-review"
+            stage = project / "04_first_draft"
+            (stage / "first_draft.md").write_text(manuscript, encoding="utf-8")
+            sections = dashboard.project_draft_payload(review_root, "synthetic-review")["sections"]
+            sections[1]["body"] = "This write must not reach the outside target [1]."
+
+            outside = temp / "outside-stage"
+            stage.rename(outside)
+            stage.symlink_to(outside, target_is_directory=True)
+            before = {
+                path.relative_to(outside).as_posix(): path.read_bytes()
+                for path in outside.rglob("*")
+                if path.is_file()
+            }
+
+            get_status, _, _ = self._request(
+                dashboard,
+                review_root,
+                b"GET /api/project/synthetic-review/draft HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            )
+            self.assertEqual(400, get_status)
+
+            request_body = json.dumps({"sections": sections}).encode("utf-8")
+            request = (
+                b"PUT /api/project/synthetic-review/draft HTTP/1.1\r\n"
+                b"Host: localhost\r\nContent-Type: application/json\r\nContent-Length: "
+                + str(len(request_body)).encode()
+                + b"\r\n\r\n"
+                + request_body
+            )
+            put_status, _, _ = self._request(dashboard, review_root, request)
+            self.assertEqual(400, put_status)
+            after = {
+                path.relative_to(outside).as_posix(): path.read_bytes()
+                for path in outside.rglob("*")
+                if path.is_file()
+            }
+            self.assertEqual(before, after)
+
     def test_docx_export_uses_project_release_and_browser_fields_are_bounded(self) -> None:
         sys.path.insert(0, str(ROOT))
         from view import serve_review_dashboard as dashboard
