@@ -43,7 +43,7 @@ _RESEARCHER_SHA256_RE = re.compile(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{64}(?![0-9A-Fa-
 _RESEARCHER_PATH_TAIL = (
     r"(?:[^\r\n;,)\]}>`\"']*?\."
     r"(?:jsonl?|md|docx|pdf|png|jpe?g|svg|csv|tsv|txt)"
-    r"(?=$|[\s;,)\]}>`\"'])|[^\r\n;,)\]}>`\"']*)"
+    r"|[^\r\n;,)\]}>`\"']*)"
 )
 _RESEARCHER_WINDOWS_PATH_RE = re.compile(
     rf"(?im)(?<![A-Za-z0-9])(?:[A-Z]:[\\/]|\\\\[A-Za-z0-9._$-]+[\\/]){_RESEARCHER_PATH_TAIL}"

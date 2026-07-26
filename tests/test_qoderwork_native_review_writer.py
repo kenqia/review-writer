@@ -806,6 +806,26 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
                 self.assertNotIn("quality_report.json", safe)
                 self.assertNotIn("Research Team", safe)
 
+    def test_researcher_safe_artifact_suffix_preserves_following_sentence(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        scientific_sentence = ". The /m/z signal retained selectivity at substrate/catalyst = 2:1."
+        absolute_paths = (
+            r"C:\Users\Research Team\Review Project\quality_report.json",
+            r"\\wsl.localhost\Ubuntu\home\Research Team\quality_report.json",
+            "/home/scientist/Review Project/final audit/quality_report.json",
+        )
+        for absolute_path in absolute_paths:
+            with self.subTest(path=absolute_path):
+                safe = dashboard.researcher_safe_markdown(
+                    f"Internal artifact: {absolute_path}{scientific_sentence}"
+                )
+                self.assertIn(scientific_sentence, safe)
+                self.assertNotIn(absolute_path, safe)
+                self.assertNotIn("quality_report.json", safe)
+                self.assertNotIn("Research Team", safe)
+
     def test_evidence_and_risk_payloads_are_scientist_safe(self) -> None:
         sys.path.insert(0, str(ROOT))
         from view import serve_review_dashboard as dashboard
