@@ -773,6 +773,22 @@ def project_evidence_payload(review_root: Path, project_id: str) -> dict[str, An
     project = project_dir(review_root, project_id)
     metrics = benchmark_metrics(project)
     cards = read_jsonl_if_exists(project / "01_evidence" / "evidence_cards.jsonl")
+    projection = read_jsonl_if_exists(project / "02_claims" / "claim_projection.jsonl")
+    exception_queue = read_json_if_exists(project / "01_evidence" / "exception_queue.json") or {}
+    exceptions = exception_queue.get("exceptions") if isinstance(exception_queue, dict) else None
+    if not isinstance(exceptions, list) or not all(isinstance(row, dict) for row in exceptions):
+        raise ValueError("project evidence is unavailable")
+    blocked_studies = {
+        row.get("study_id")
+        for row in projection
+        if row.get("decision") == "BLOCKED" and isinstance(row.get("study_id"), str)
+    }
+    exception_studies = {
+        row.get("study_id")
+        for row in exceptions
+        if isinstance(row.get("study_id"), str)
+    }
+    blocked_exception_overlap = len(blocked_studies & exception_studies)
     visible_cards: list[dict[str, Any]] = []
     for card in cards:
         candidate = card.get("candidate") if isinstance(card.get("candidate"), dict) else {}
@@ -816,7 +832,11 @@ def project_evidence_payload(review_root: Path, project_id: str) -> dict[str, An
         "coverage": {
             "studies": metrics["registered_study_count"],
             "processable": metrics["approved_claim_count"] + metrics["human_required_claim_count"],
-            "blocked": metrics["blocked_claim_count"] + metrics["exception_count"],
+            "blocked": (
+                metrics["blocked_claim_count"]
+                + metrics["exception_count"]
+                - blocked_exception_overlap
+            ),
             "claims": metrics["projected_claim_count"],
         },
         "cards": visible_cards,

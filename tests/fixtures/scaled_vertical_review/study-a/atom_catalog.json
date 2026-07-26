@@ -1,0 +1,63 @@
+{
+  "atoms": [
+    {
+      "asset_path": null,
+      "asset_sha256": null,
+      "atom_id": "STUDY-A-MAIN:p1:t1",
+      "atom_sha256": "0e321b116e8eca23f0b98896fb70c8e8b998a030877ee0e71026d171b3c8381b",
+      "canonical_span": "This synthetic study evaluates a generic intervention under controlled conditions.",
+      "crop_manifest_path": null,
+      "crop_manifest_sha256": null,
+      "depiction_locator": null,
+      "evidence_mode": "TEXT_QUOTE",
+      "page": 1,
+      "r3_floor_categories": [],
+      "raw_source_span": "This synthetic study evaluates a generic intervention under controlled conditions.",
+      "renderer_contract": null,
+      "renderer_sha256": null,
+      "source_binary_sha256": null,
+      "source_id": "STUDY-A-MAIN"
+    },
+    {
+      "asset_path": null,
+      "asset_sha256": null,
+      "atom_id": "STUDY-A-MAIN:p1:t2",
+      "atom_sha256": "20e3b33d1bd988a30d316a3308cd9568f5bf9a6faa2e90d9fdfc61e5d7974c1b",
+      "canonical_span": "The measured response increased from baseline under the stated conditions.",
+      "crop_manifest_path": null,
+      "crop_manifest_sha256": null,
+      "depiction_locator": null,
+      "evidence_mode": "TEXT_QUOTE",
+      "page": 1,
+      "r3_floor_categories": [],
+      "raw_source_span": "The measured response increased from baseline under the stated conditions.\n",
+      "renderer_contract": null,
+      "renderer_sha256": null,
+      "source_binary_sha256": null,
+      "source_id": "STUDY-A-MAIN"
+    },
+    {
+      "asset_path": null,
+      "asset_sha256": null,
+      "atom_id": "STUDY-A-SI:p1:t1",
+      "atom_sha256": "4450ccf3ce8c53dc3e0be7710d186c1abad3d7d96666bb987c5f89b212fdd050",
+      "canonical_span": "The supporting layer records the predefined observation procedure.",
+      "crop_manifest_path": null,
+      "crop_manifest_sha256": null,
+      "depiction_locator": null,
+      "evidence_mode": "TEXT_QUOTE",
+      "page": 1,
+      "r3_floor_categories": [],
+      "raw_source_span": "The supporting layer records the predefined observation procedure.\n",
+      "renderer_contract": null,
+      "renderer_sha256": null,
+      "source_binary_sha256": null,
+      "source_id": "STUDY-A-SI"
+    }
+  ],
+  "catalog_sha256": "a84da10198abaab0a87d36798ffebef45b5b886ad0c92b5b4171435602f0ee13",
+  "job_id": "JOB-STUDY-A",
+  "job_sha256": "8a18b67aae6b95731920f48465bfcced504b6ae24ceefdda9c1cbb24bc2b301b",
+  "schema_version": "evidence-atom-catalog.v1",
+  "study_id": "STUDY-A"
+}

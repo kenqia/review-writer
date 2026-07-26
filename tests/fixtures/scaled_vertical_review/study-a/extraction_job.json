@@ -1,0 +1,33 @@
+{
+  "schema_version": "sealed-evidence-extraction-job.v2",
+  "job_id": "JOB-STUDY-A",
+  "mode": "EVIDENCE_ATOM_SEMANTIC_DECISION_V1",
+  "study": {
+    "study_id": "STUDY-A"
+  },
+  "source_files": [
+    {
+      "source_id": "STUDY-A-MAIN",
+      "document_role": "MAIN",
+      "source_binary_sha256": "980f320faa7a9b57679a3fc39df272f5ccf8bf33766d546a016655c2d22dffe1",
+      "reading_order_path": "sources/STUDY-A-MAIN.reading.txt",
+      "reading_order_sha256": "980f320faa7a9b57679a3fc39df272f5ccf8bf33766d546a016655c2d22dffe1",
+      "layout_path": "sources/STUDY-A-MAIN.layout.txt",
+      "layout_sha256": "4693417dedd51d1e9bded967c75706ae382e594e085a3b75e5fd38655669f1c5",
+      "page_count": 1,
+      "visual_evidence_allowed": false
+    },
+    {
+      "source_id": "STUDY-A-SI",
+      "document_role": "SI",
+      "source_binary_sha256": "cf86a12e2dfff822d67ce15469352979b90d2efe047f9cc5fc0fc7e53650bd20",
+      "reading_order_path": "sources/STUDY-A-SI.reading.txt",
+      "reading_order_sha256": "cf86a12e2dfff822d67ce15469352979b90d2efe047f9cc5fc0fc7e53650bd20",
+      "layout_path": "sources/STUDY-A-SI.layout.txt",
+      "layout_sha256": "b9afebd5f5582107bb25949b4d6033c612bfcd0eecd22a447b43323909360e29",
+      "page_count": 1,
+      "visual_evidence_allowed": false
+    }
+  ],
+  "visual_crops": []
+}

@@ -1,0 +1,3 @@
+This synthetic study evaluates a third generic intervention under controlled conditions.
+
+The measured response varied across repeated observations.

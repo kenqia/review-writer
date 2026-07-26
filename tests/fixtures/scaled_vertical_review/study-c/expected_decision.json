@@ -1,0 +1,6 @@
+{
+  "claim_id": "CLAIM-C",
+  "decision": "BLOCKED",
+  "exception_queued": true,
+  "study_id": "STUDY-C"
+}

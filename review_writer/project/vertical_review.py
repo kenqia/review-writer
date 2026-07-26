@@ -601,7 +601,16 @@ def register_study(
     _invalidate_writer_packet(project_path)
     _write_jsonl(cards_path, ordered_cards)
     _write_jsonl(project_path / "02_claims" / "claim_projection.jsonl", projection)
-    _clear_exception(project_path, card["study_id"])
+    if reviewer_copy["verdict"] != "SUPPORT":
+        _append_exception(
+            project_path,
+            study_id=card["study_id"],
+            error_code="REVIEWER_NOT_SUPPORT",
+            r0_status=r0_copy["status"],
+            reviewer_verdict=reviewer_copy["verdict"],
+        )
+    else:
+        _clear_exception(project_path, card["study_id"])
     return {"claim_projection": projection, "study_id": card["study_id"]}
 
 

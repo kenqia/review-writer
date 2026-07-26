@@ -1,0 +1,63 @@
+{
+  "atoms": [
+    {
+      "asset_path": null,
+      "asset_sha256": null,
+      "atom_id": "STUDY-C-MAIN:p1:t1",
+      "atom_sha256": "d2a72b1dd859df86ab41e5c27934ba02faadfec2b289eeda3301ae411def28f1",
+      "canonical_span": "This synthetic study evaluates a third generic intervention under controlled conditions.",
+      "crop_manifest_path": null,
+      "crop_manifest_sha256": null,
+      "depiction_locator": null,
+      "evidence_mode": "TEXT_QUOTE",
+      "page": 1,
+      "r3_floor_categories": [],
+      "raw_source_span": "This synthetic study evaluates a third generic intervention under controlled conditions.",
+      "renderer_contract": null,
+      "renderer_sha256": null,
+      "source_binary_sha256": null,
+      "source_id": "STUDY-C-MAIN"
+    },
+    {
+      "asset_path": null,
+      "asset_sha256": null,
+      "atom_id": "STUDY-C-MAIN:p1:t2",
+      "atom_sha256": "40c9dac8afc1a35d21a222ff938a65344c04cad1efc3196b67d6f61bba9afdf1",
+      "canonical_span": "The measured response varied across repeated observations.",
+      "crop_manifest_path": null,
+      "crop_manifest_sha256": null,
+      "depiction_locator": null,
+      "evidence_mode": "TEXT_QUOTE",
+      "page": 1,
+      "r3_floor_categories": [],
+      "raw_source_span": "The measured response varied across repeated observations.\n",
+      "renderer_contract": null,
+      "renderer_sha256": null,
+      "source_binary_sha256": null,
+      "source_id": "STUDY-C-MAIN"
+    },
+    {
+      "asset_path": null,
+      "asset_sha256": null,
+      "atom_id": "STUDY-C-SI:p1:t1",
+      "atom_sha256": "50920a81c5c6281896065ed3edf6f5406c5d93fd6b54a2305cf4dae7a117c069",
+      "canonical_span": "The supporting layer records the predefined repeat procedure.",
+      "crop_manifest_path": null,
+      "crop_manifest_sha256": null,
+      "depiction_locator": null,
+      "evidence_mode": "TEXT_QUOTE",
+      "page": 1,
+      "r3_floor_categories": [],
+      "raw_source_span": "The supporting layer records the predefined repeat procedure.\n",
+      "renderer_contract": null,
+      "renderer_sha256": null,
+      "source_binary_sha256": null,
+      "source_id": "STUDY-C-SI"
+    }
+  ],
+  "catalog_sha256": "6f2a2d851f3d63bc34d55fb86e3a85f1b29966c3921e3db5903e44775cfa409b",
+  "job_id": "JOB-STUDY-C",
+  "job_sha256": "1e2aa73856eb7e48abf57684a1f6ba46987134e2d7fb1861bdcdce7906ac0ac0",
+  "schema_version": "evidence-atom-catalog.v1",
+  "study_id": "STUDY-C"
+}

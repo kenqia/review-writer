@@ -28,6 +28,15 @@ evidence-grounding-check:
 scholarly-discovery-check:
 	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) -m pytest tests/test_scholarly_discovery.py -q
 
+.PHONY: scaled-review-check
+scaled-review-check:
+	$(MAKE) public-corpus-acquisition-check
+	$(MAKE) scholarly-discovery-check
+	$(MAKE) evidence-grounding-check
+	$(MAKE) vertical-review-projection-check
+	$(MAKE) qoderwork-native-review-check
+	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) -m pytest tests/test_project_release.py tests/test_scaled_vertical_review.py -q
+
 smoke:
 	$(PYTHON) tests/test_project_manifest_schema.py
 	$(PYTHON) tests/test_project_manifest_resolver.py
