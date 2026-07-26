@@ -15,6 +15,7 @@ from typing import Any
 
 PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 RISK_LEVELS = frozenset({"R0", "R1", "R2", "R3"})
+REVIEWER_VERDICTS = frozenset({"SUPPORT", "REJECT", "AMBIGUOUS"})
 AWAITING_BRIEF_CONFIRMATION = "AWAITING_BRIEF_CONFIRMATION"
 BRIEF_CONFIRMED = "BRIEF_CONFIRMED"
 _REVIEW_STATE_PATH = Path("00_brief/review_state.json")
@@ -462,6 +463,11 @@ def _validate_identity_bindings(
         or reviewer.get("study_id") != candidate["study_id"]
     ):
         _fail("REVIEWER_BINDING_INVALID", "reviewer does not bind the candidate job and study")
+    if reviewer["verdict"] not in REVIEWER_VERDICTS:
+        _fail(
+            "REVIEWER_VERDICT_INVALID",
+            "reviewer verdict must be SUPPORT, REJECT, or AMBIGUOUS",
+        )
 
 
 def _reduce_decision(card: dict[str, Any], claim: dict[str, Any]) -> tuple[str, str]:
@@ -659,6 +665,38 @@ def _invalidate_writer_packet(project: Path) -> None:
         ) from exc
 
 
+def _sync_evidence_review_state(project: Path, projection: list[dict[str, Any]]) -> None:
+    state = _project_state(project)
+    if state.get("status") == AWAITING_BRIEF_CONFIRMATION:
+        return
+    refs = [
+        ref
+        for row in projection
+        for ref in row.get("evidence_refs", [])
+        if isinstance(ref, dict)
+    ]
+    source_ids = {
+        ref["source_id"]
+        for ref in refs
+        if isinstance(ref.get("source_id"), str) and ref["source_id"]
+    }
+    synced = {
+        **state,
+        "counts": {
+            "claims": len(projection),
+            "evidence": len(refs),
+            "sources": len(source_ids),
+        },
+        "current_stage": "evidence_review",
+        "status": (
+            "needs_human_review"
+            if any(row.get("decision") == "HUMAN_REQUIRED" for row in projection)
+            else "in_progress"
+        ),
+    }
+    _write_json(project / _REVIEW_STATE_PATH, synced)
+
+
 def register_study(
     project: Path,
     candidate: dict,
@@ -712,6 +750,7 @@ def register_study(
         )
     else:
         _clear_exception(project_path, card["study_id"])
+    _sync_evidence_review_state(project_path, projection)
     return {"claim_projection": projection, "study_id": card["study_id"]}
 
 
@@ -725,6 +764,7 @@ def rebuild_projection(project: Path) -> list[dict]:
     )
     _invalidate_writer_packet(project_path)
     _write_jsonl(project_path / "02_claims" / "claim_projection.jsonl", projection)
+    _sync_evidence_review_state(project_path, projection)
     return projection
 
 
@@ -829,6 +869,7 @@ def apply_risk_decisions(project: Path, decisions: dict) -> list[dict]:
     _invalidate_writer_packet(project_path)
     _write_jsonl(project_path / "02_claims" / "claim_projection.jsonl", projected)
     _write_json(project_path / "03_review" / "risk_decisions.json", decision_payload)
+    _sync_evidence_review_state(project_path, projected)
     return projected
 
 

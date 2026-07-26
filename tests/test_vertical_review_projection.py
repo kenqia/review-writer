@@ -462,6 +462,76 @@ def test_r3_supported_claim_requires_human_review(tmp_path: Path) -> None:
     assert result["claim_projection"][0]["decision"] == "HUMAN_REQUIRED"
 
 
+def test_registration_updates_confirmed_project_state_from_canonical_projection(
+    tmp_path: Path,
+) -> None:
+    project = _initialize(tmp_path)
+    vertical_review.confirm_review_brief(project)
+
+    register_study(
+        project,
+        _candidate("STUDY-STATE-A", [_claim("CLAIM-STATE-A")]),
+        _r0("STUDY-STATE-A"),
+        _reviewer("STUDY-STATE-A"),
+    )
+    state = json.loads((project / "00_brief" / "review_state.json").read_text())
+    assert state["current_stage"] == "evidence_review"
+    assert state["status"] == "in_progress"
+    assert state["counts"] == {"claims": 1, "evidence": 1, "sources": 1}
+
+    register_study(
+        project,
+        _candidate("STUDY-STATE-B", [_claim("CLAIM-STATE-B", risk_level="R3")]),
+        _r0("STUDY-STATE-B"),
+        _reviewer("STUDY-STATE-B"),
+    )
+    state = json.loads((project / "00_brief" / "review_state.json").read_text())
+    assert state["current_stage"] == "evidence_review"
+    assert state["status"] == "needs_human_review"
+    assert state["counts"] == {"claims": 2, "evidence": 2, "sources": 2}
+
+
+def test_registration_state_write_failure_is_recoverable_and_keeps_exception(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _initialize(tmp_path)
+    vertical_review.confirm_review_brief(project)
+    state_path = project / "00_brief" / "review_state.json"
+    state_before = state_path.read_bytes()
+    candidate = _candidate("STUDY-STATE-RETRY", [_claim("CLAIM-STATE-RETRY")])
+    r0_report = _r0("STUDY-STATE-RETRY")
+    reviewer = _reviewer("STUDY-STATE-RETRY", verdict="AMBIGUOUS")
+    original_write_json = vertical_review._write_json
+
+    def fail_state(path: Path, value: object) -> None:
+        if path == state_path:
+            raise OSError("synthetic review-state write failure")
+        original_write_json(path, value)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(vertical_review, "_write_json", fail_state)
+        with pytest.raises(OSError):
+            register_study(project, candidate, r0_report, reviewer)
+
+    assert state_path.read_bytes() == state_before
+    queue = json.loads((project / "01_evidence" / "exception_queue.json").read_text())
+    assert queue["exceptions"] == [
+        {
+            "error_code": "REVIEWER_NOT_SUPPORT",
+            "r0_status": "R0_PASS",
+            "reviewer_verdict": "AMBIGUOUS",
+            "study_id": "STUDY-STATE-RETRY",
+        }
+    ]
+    assert benchmark_metrics(project)["registered_study_count"] == 1
+
+    register_study(project, candidate, r0_report, reviewer)
+    state = json.loads(state_path.read_text())
+    assert state["current_stage"] == "evidence_review"
+    assert state["counts"] == {"claims": 1, "evidence": 1, "sources": 1}
+
+
 def test_ambiguous_reviewer_blocks_low_risk_claim(tmp_path: Path) -> None:
     project = _initialize(tmp_path)
 
@@ -484,6 +554,7 @@ def test_ambiguous_reviewer_blocks_low_risk_claim(tmp_path: Path) -> None:
         ("reviewer_job", "REVIEWER_BINDING_INVALID"),
         ("reviewer_study", "REVIEWER_BINDING_INVALID"),
         ("reviewer_verdict", "REVIEWER_BINDING_INVALID"),
+        ("reviewer_verdict_unknown", "REVIEWER_VERDICT_INVALID"),
     ],
 )
 def test_registration_rejects_identity_mismatch_into_exception_queue(
@@ -505,8 +576,10 @@ def test_registration_rejects_identity_mismatch_into_exception_queue(
         reviewer["job_id"] = "JOB-OTHER"
     elif tamper == "reviewer_study":
         reviewer["study_id"] = "STUDY-OTHER"
-    else:
+    elif tamper == "reviewer_verdict":
         reviewer["verdict"] = ""
+    else:
+        reviewer["verdict"] = "ACCEPT_WITH_NOTES"
 
     with pytest.raises(VerticalReviewError) as error:
         register_study(project, candidate, r0_report, reviewer)
@@ -870,6 +943,36 @@ def test_apply_risk_decision_persists_current_review_target_digest(tmp_path: Pat
 
     stored = json.loads((project / "03_review" / "risk_decisions.json").read_text())
     assert stored["decisions"][0]["review_target_digest"] == digest
+
+
+def test_risk_decisions_refresh_confirmed_project_state(tmp_path: Path) -> None:
+    project = _initialize(tmp_path)
+    vertical_review.confirm_review_brief(project)
+    for suffix in ("A", "B"):
+        register_study(
+            project,
+            _candidate(f"STUDY-RISK-STATE-{suffix}", [_claim(f"CLAIM-RISK-STATE-{suffix}", risk_level="R3")]),
+            _r0(f"STUDY-RISK-STATE-{suffix}"),
+            _reviewer(f"STUDY-RISK-STATE-{suffix}"),
+        )
+
+    mixed = [
+        _bound_decision(project, "CLAIM-RISK-STATE-A", "APPROVE"),
+        _bound_decision(project, "CLAIM-RISK-STATE-B", "UNRESOLVED"),
+    ]
+    apply_risk_decisions(project, {"decisions": mixed})
+    state = json.loads((project / "00_brief" / "review_state.json").read_text())
+    assert state["status"] == "needs_human_review"
+
+    closed = [
+        _bound_decision(project, "CLAIM-RISK-STATE-A", "APPROVE"),
+        _bound_decision(project, "CLAIM-RISK-STATE-B", "EXCLUDE"),
+    ]
+    apply_risk_decisions(project, {"decisions": closed})
+    state = json.loads((project / "00_brief" / "review_state.json").read_text())
+    assert state["current_stage"] == "evidence_review"
+    assert state["status"] == "in_progress"
+    assert state["counts"] == {"claims": 2, "evidence": 2, "sources": 2}
 
 
 def test_risk_decision_commit_failure_stages_projection_and_retry_recovers(

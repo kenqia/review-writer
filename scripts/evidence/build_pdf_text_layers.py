@@ -23,6 +23,15 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def decode_pdftotext_utf8(raw: bytes) -> str:
+    """Decode UTF-8, losslessly normalizing paired CESU-8 surrogates when present."""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        surrogate_text = raw.decode("utf-8", errors="surrogatepass")
+        return surrogate_text.encode("utf-16-le", errors="surrogatepass").decode("utf-16-le")
+
+
 def page_count(path: Path) -> int:
     pages = path.read_text(encoding="utf-8").split("\f")
     if pages and not pages[-1].strip():
@@ -46,7 +55,10 @@ def run_pdftotext(executable: Path, source: Path, destination: Path, *, layout: 
         command.append("-layout")
     command.extend(["-enc", "UTF-8", str(source), str(destination)])
     subprocess.run(command, check=True, capture_output=True, text=True)
-    destination.read_text(encoding="utf-8")
+    raw = destination.read_bytes()
+    normalized = decode_pdftotext_utf8(raw).encode("utf-8")
+    if normalized != raw:
+        destination.write_bytes(normalized)
 
 
 def build_layers(

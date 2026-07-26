@@ -111,7 +111,7 @@ class NativeReviewWriterPluginTests(unittest.TestCase):
         manifest = json.loads((PLUGIN / ".qoder-plugin" / "plugin.json").read_text(encoding="utf-8"))
         self.assertEqual(MANIFEST_KEYS, set(manifest))
         self.assertEqual("research-review-writer", manifest["name"])
-        self.assertEqual("0.2.1", manifest["version"])
+        self.assertEqual("0.2.2", manifest["version"])
         self.assertEqual("科研综述专家", manifest["displayName"])
         self.assertTrue(manifest["description"].isascii())
         self.assertIn("科研综述", manifest["descriptionZh"])
@@ -227,7 +227,7 @@ class NativeReviewWriterPluginTests(unittest.TestCase):
             ),
             "ADVERSARIAL_EVIDENCE_REVIEWER": (
                 "Input: one assembled candidate + selected atoms",
-                "Output: SUPPORT | REJECT | AMBIGUOUS per target + concise reason",
+                "Output: one JSON object bound to `job_id` and `study_id`",
             ),
             "SYNTHESIS_MANUSCRIPT_WRITER": (
                 "Input: writer_packet.json only",
@@ -272,10 +272,23 @@ class NativeReviewWriterPluginTests(unittest.TestCase):
     def test_extractor_selects_existing_atoms_and_cannot_author_mechanical_fields(self) -> None:
         extractor = (PLUGIN / "agents" / "PER_STUDY_EVIDENCE_EXTRACTOR.md").read_text(encoding="utf-8")
         self.assertIn("Select existing atom_id only", extractor)
+        self.assertIn("consumer-first", extractor)
+        self.assertIn("minimum sufficient set", extractor)
+        self.assertIn("Unselected atoms are expected", extractor)
+        self.assertIn("Each selected atom_id must appear in at most one decision", extractor)
+        self.assertNotIn("every atom_id", extractor.lower())
         self.assertIn(
             "Do not write source_id, page, exact_quote, depiction, coverage, or self_check fields",
             extractor,
         )
+
+    def test_adversarial_reviewer_uses_canonical_registration_contract(self) -> None:
+        reviewer = (PLUGIN / "agents" / "ADVERSARIAL_EVIDENCE_REVIEWER.md").read_text(encoding="utf-8")
+        self.assertIn("SUPPORT | REJECT | AMBIGUOUS", reviewer)
+        self.assertIn("job_id", reviewer)
+        self.assertIn("study_id", reviewer)
+        self.assertIn("target_id", reviewer)
+        self.assertIn("ACCEPT_WITH_NOTES is invalid", reviewer)
 
     def test_writer_reads_only_approved_writer_packet(self) -> None:
         writer = (PLUGIN / "agents" / "SYNTHESIS_MANUSCRIPT_WRITER.md").read_text(encoding="utf-8")
