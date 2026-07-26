@@ -180,9 +180,15 @@ def _receipt_sources(project: Path, study: dict[str, Any]) -> list[dict[str, Any
         seen_paths.add(path)
         observed = sha256_file(path)
         expected = row.get("sha256", row.get("pdf_sha256"))
-        if expected is not None and expected != observed:
+        if (
+            not isinstance(expected, str)
+            or len(expected) != 64
+            or any(character not in "0123456789abcdefABCDEF" for character in expected)
+        ):
+            _prepare_block("ACQUISITION_SOURCE_HASH_INVALID")
+        if expected.lower() != observed:
             _prepare_block("ACQUISITION_SOURCE_HASH_MISMATCH")
-        sources.append({"document_role": role, "path": path, "pdf_sha256": observed})
+        sources.append({"document_role": role, "path": path, "pdf_sha256": expected.lower()})
     return sources
 
 
@@ -199,8 +205,13 @@ def _verify_source_identity(project: Path, doi: str) -> None:
     matches = [row for row in rows if normalize_doi(row.get("doi")) == doi]
     if not matches:
         _prepare_block("SOURCE_IDENTITY_BINDING_MISSING")
-    if any(str(row.get("verdict", "")).upper() == "QUARANTINE" for row in matches):
+    if len(matches) != 1:
+        _prepare_block("SOURCE_IDENTITY_AMBIGUOUS")
+    verdict = matches[0].get("verdict")
+    if verdict == "QUARANTINE":
         _prepare_block("SOURCE_IDENTITY_QUARANTINED")
+    if verdict != "PASS":
+        _prepare_block("SOURCE_IDENTITY_NOT_PASS")
 
 
 def _bind_source_layers(project: Path, sources: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -1693,6 +1693,8 @@ def test_prepare_study_builds_current_pre_provider_packet_without_reruns_and_is_
         ("ambiguous", "TEXT_LAYER_BINDING_AMBIGUOUS"),
         ("malformed_si", "ACQUISITION_SI_INVALID"),
         ("wrong_subtree", "TEXT_LAYER_BINDING_INVALID"),
+        ("identity_warn", "SOURCE_IDENTITY_NOT_PASS"),
+        ("missing_hash", "ACQUISITION_SOURCE_HASH_INVALID"),
     ),
 )
 def test_prepare_study_fails_closed_for_missing_or_ambiguous_bindings(
@@ -1702,11 +1704,19 @@ def test_prepare_study_fails_closed_for_missing_or_ambiguous_bindings(
 ) -> None:
     study_id = "STUDY-CANARY"
     project = _canonical_prepare_project(tmp_path, study_id=study_id)
-    if case == "malformed_si":
+    if case in {"malformed_si", "missing_hash"}:
         receipt_path = project / "00_sources/acquisition_final_receipt.json"
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-        receipt["studies"][0]["si_pdf"] = {"sha256": "0" * 64}
+        if case == "malformed_si":
+            receipt["studies"][0]["si_pdf"] = {"sha256": "0" * 64}
+        else:
+            receipt["studies"][0]["main_pdf"].pop("sha256")
         _write_prepare_json(receipt_path, receipt)
+    elif case == "identity_warn":
+        audit_path = project / "00_sources/source_identity_audit.json"
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        audit["results"][0]["verdict"] = "WARN"
+        _write_prepare_json(audit_path, audit)
     else:
         manifest_path = project / "01_evidence/text_layers/text_layers.manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
