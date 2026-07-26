@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,7 @@ _CLAIM_MARKER_RE = re.compile(
     r"(?:\[claim:([A-Za-z0-9._:-]+)\]|<!--\s*claim(?:_id)?\s*:\s*([A-Za-z0-9._:-]+)\s*-->)",
     flags=re.IGNORECASE,
 )
+PROJECT_RELEASE_LOCK = threading.RLock()
 
 
 class ProjectReleaseError(ValueError):
@@ -562,6 +564,14 @@ def build_project_release(
     python_executable: Path = Path(sys.executable),
 ) -> dict[str, Any]:
     """Snapshot and export one validated authoritative manuscript without editing it."""
+    with PROJECT_RELEASE_LOCK:
+        return _build_project_release_unlocked(project, python_executable)
+
+
+def _build_project_release_unlocked(
+    project: Path,
+    python_executable: Path,
+) -> dict[str, Any]:
     project_path = Path(project)
     source = validate_project_file_path(
         project_path, Path("04_first_draft/first_draft.md"), "MANUSCRIPT_INVALID"

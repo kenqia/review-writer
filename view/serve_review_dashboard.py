@@ -11,7 +11,6 @@ import re
 import shutil
 import sys
 import tempfile
-import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -29,6 +28,7 @@ from review_writer.project.vertical_review import (  # noqa: E402
     benchmark_metrics,
 )
 from review_writer.delivery.project_release import (  # noqa: E402
+    PROJECT_RELEASE_LOCK,
     build_project_release,
     is_reparse_component,
     refreshed_manuscript_lineage,
@@ -39,13 +39,13 @@ from review_writer.delivery.project_release import (  # noqa: E402
 )
 
 
-_DRAFT_WRITE_LOCK = threading.Lock()
 _RESEARCHER_SHA256_RE = re.compile(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{64}(?![0-9A-Fa-f])")
 _RESEARCHER_WINDOWS_PATH_RE = re.compile(
-    r"(?i)(?<![A-Za-z0-9])(?:[A-Z]:[\\/]|\\\\)[^\s<>()`]+"
+    r"(?im)(?<![A-Za-z0-9])(?:[A-Z]:[\\/]|\\\\[A-Za-z0-9._$-]+[\\/])[^\r\n]*"
 )
 _RESEARCHER_POSIX_PATH_RE = re.compile(
-    r"(?<![:/A-Za-z0-9])/(?:[^/\s<>()`]+/)+[^/\s<>()`]+"
+    r"(?m)(?<![:/A-Za-z0-9])/(?:home|tmp|var|mnt|opt|srv|root|Users|private|workspace|workspaces)"
+    r"(?:/|$)[^\r\n]*"
 )
 _RESEARCHER_INTERNAL_FILENAME_RE = re.compile(
     r"(?i)(?<![\w.-])(?:"
@@ -1122,7 +1122,7 @@ def _commit_draft_and_lineage(
 
 
 def write_project_draft_sections(review_root: Path, project_id: str, data: Any) -> dict[str, Any]:
-    with _DRAFT_WRITE_LOCK:
+    with PROJECT_RELEASE_LOCK:
         return _write_project_draft_sections_unlocked(review_root, project_id, data)
 
 
@@ -1361,6 +1361,7 @@ def project_final_payload(review_root: Path, project_id: str) -> dict[str, Any]:
     snapshot_matches = artifact_state["snapshot_matches"]
     integrity_valid = artifact_state["integrity_valid"]
     current_docx_exists = integrity_valid
+    use_release_snapshot = integrity_valid
     if snapshot_exists and not integrity_valid:
         release_status = "RELEASE_OUTDATED"
     elif snapshot_exists:
@@ -1394,8 +1395,8 @@ def project_final_payload(review_root: Path, project_id: str) -> dict[str, Any]:
         "project_id": project_id,
         "topic": infer_project_topic(project),
         "summary": project_summary(review_root, project_id),
-        "final_draft_md": read_text_if_exists(snapshot_path) if snapshot_exists else read_text_if_exists(authoritative_path),
-        "manuscript_source": "release_snapshot" if snapshot_exists else "authoritative_manuscript",
+        "final_draft_md": read_text_if_exists(snapshot_path) if use_release_snapshot else read_text_if_exists(authoritative_path),
+        "manuscript_source": "release_snapshot" if use_release_snapshot else "authoritative_manuscript",
         "release_status": release_status or "IN_PROGRESS",
         "release_snapshot": {
             "exists": snapshot_exists,

@@ -526,6 +526,8 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             tampered = json.loads(body)
             self.assertFalse(tampered["release_snapshot"]["integrity_valid"])
             self.assertFalse(tampered["final_draft_docx_exists"])
+            self.assertEqual("authoritative_manuscript", tampered["manuscript_source"])
+            self.assertEqual(manuscript_path.read_text(encoding="utf-8"), tampered["final_draft_md"])
             status, _, _ = self._request(dashboard, review_root, download)
             self.assertEqual(403, status)
 
@@ -736,8 +738,10 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
         from view import serve_review_dashboard as dashboard
 
         scientific_prose = "The catalyst retained selectivity under the measured conditions."
-        windows_path = r"C:\Users\Scientist\private\quality_report.json"
-        posix_path = "/home/scientist/private/release/final_draft.md"
+        scientific_slashes = "The /m/z 44/28 signal, DOI 10.1000/example/path, and A/B selectivity were retained."
+        windows_path = r"C:\Users\Research Team\Review Project\quality_report.json"
+        wsl_path = r"\\wsl.localhost\Ubuntu\home\Research Team\release_report.md"
+        posix_path = "/home/scientist/Review Project/final audit/final_draft.md"
         digest = "a3" * 32
         internal_names = (
             "merge_report.md",
@@ -746,8 +750,8 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             "release_report.md",
         )
         raw_report = (
-            f"# Scientific review\n\n{scientific_prose}\n\n"
-            f"Windows: {windows_path}\n\nPOSIX: {posix_path}\n\nDigest: {digest}\n\n"
+            f"# Scientific review\n\n{scientific_prose}\n\n{scientific_slashes}\n\n"
+            f"Windows: {windows_path}\n\nWSL: {wsl_path}\n\nPOSIX: {posix_path}\n\nDigest: {digest}\n\n"
             f"Artifacts: {', '.join(internal_names)}\n"
         )
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -774,8 +778,11 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             )
 
             self.assertIn(scientific_prose, report_text)
-            for hidden in (windows_path, posix_path, digest, *internal_names):
+            self.assertIn(scientific_slashes, report_text)
+            for hidden in (windows_path, wsl_path, posix_path, digest, *internal_names):
                 self.assertNotIn(hidden, report_text)
+            for leaked_fragment in ("Research Team", "Review Project", "wsl.localhost", "final audit"):
+                self.assertNotIn(leaked_fragment, report_text)
             self.assertTrue(all(not Path(path).is_absolute() for path in draft["paths"].values()))
             self.assertTrue(all(not Path(path).is_absolute() for path in final["paths"].values()))
 

@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import threading
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
@@ -406,6 +407,75 @@ def test_draft_two_file_write_failure_rolls_back_both_files(tmp_path: Path) -> N
     assert (manuscript_path.read_bytes(), lineage_path.read_bytes()) == before
 
 
+def test_draft_and_release_use_the_same_reentrant_lock() -> None:
+    from review_writer.delivery import project_release
+    from view import serve_review_dashboard as dashboard
+
+    assert dashboard.PROJECT_RELEASE_LOCK is project_release.PROJECT_RELEASE_LOCK
+    assert isinstance(project_release.PROJECT_RELEASE_LOCK, type(threading.RLock()))
+
+
+def test_failed_concurrent_release_rollback_cannot_overwrite_success(tmp_path: Path) -> None:
+    from review_writer.delivery import project_release
+    from review_writer.delivery.project_release import ProjectReleaseError, build_project_release
+
+    project = make_release_ready_project(tmp_path)
+    source_path = project / "04_first_draft" / "first_draft.md"
+    release_paths = (
+        project / "05_final_audit" / "final_draft.md",
+        project / "05_final_audit" / "final_draft.docx",
+        project / "05_final_audit" / "quality_report.json",
+    )
+    restore_entered = threading.Event()
+    release_restore = threading.Event()
+    successful_release_finished = threading.Event()
+    real_restore = project_release._restore_release
+
+    def blocking_restore(*args, **kwargs) -> None:
+        restore_entered.set()
+        if not release_restore.wait(timeout=5):
+            raise TimeoutError("concurrent release test did not release rollback")
+        real_restore(*args, **kwargs)
+
+    def fake_converter(command, **kwargs):
+        if command[0].endswith("missing-python"):
+            return project_release.subprocess.CompletedProcess(command, 1, "", "synthetic failure")
+        output_path = Path(command[command.index("--output") + 1])
+        with zipfile.ZipFile(output_path, "w") as archive:
+            archive.writestr("word/document.xml", "<document/>")
+        return project_release.subprocess.CompletedProcess(command, 0, "", "")
+
+    def successful_release() -> dict[str, object]:
+        try:
+            return build_project_release(project)
+        finally:
+            successful_release_finished.set()
+
+    with (
+        patch.object(project_release, "_restore_release", side_effect=blocking_restore),
+        patch.object(project_release.subprocess, "run", side_effect=fake_converter),
+        ThreadPoolExecutor(max_workers=2) as executor,
+    ):
+        failed = executor.submit(
+            build_project_release,
+            project,
+            project / "missing-python",
+        )
+        assert restore_entered.wait(timeout=5)
+        successful = executor.submit(successful_release)
+        successful_release_finished.wait(timeout=1)
+        release_restore.set()
+        with pytest.raises(ProjectReleaseError, match="DOCX_EXPORT_FAILED"):
+            failed.result(timeout=5)
+        successful.result(timeout=5)
+
+    assert release_paths[0].read_bytes() == source_path.read_bytes()
+    assert zipfile.is_zipfile(release_paths[1])
+    report = json.loads(release_paths[2].read_text(encoding="utf-8"))
+    assert report["manuscript_sha256"] == hashlib.sha256(source_path.read_bytes()).hexdigest()
+    assert report["docx_sha256"] == hashlib.sha256(release_paths[1].read_bytes()).hexdigest()
+
+
 def test_final_dashboard_marks_edited_snapshot_stale_until_release_is_rebuilt(tmp_path: Path) -> None:
     from review_writer.delivery.project_release import build_project_release
     from view import serve_review_dashboard as dashboard
@@ -417,6 +487,7 @@ def test_final_dashboard_marks_edited_snapshot_stale_until_release_is_rebuilt(tm
     assert ready["release_snapshot"]["matches_authoritative"] is True
     assert ready["release_snapshot"]["docx_exists"] is True
     assert ready["release_status"] == "AI_REVIEWED_BENCHMARK"
+    assert ready["manuscript_source"] == "release_snapshot"
 
     manuscript_path = project / "04_first_draft" / "first_draft.md"
     revised = manuscript_path.read_text(encoding="utf-8").replace(
@@ -432,6 +503,8 @@ def test_final_dashboard_marks_edited_snapshot_stale_until_release_is_rebuilt(tm
     assert stale["final_draft_docx_exists"] is False
     assert stale["final_draft_docx_path"] == ""
     assert stale["release_status"] == "RELEASE_OUTDATED"
+    assert stale["manuscript_source"] == "authoritative_manuscript"
+    assert stale["final_draft_md"] == revised
 
     _update_lineage(
         project,
@@ -442,6 +515,7 @@ def test_final_dashboard_marks_edited_snapshot_stale_until_release_is_rebuilt(tm
     assert rebuilt["release_snapshot"]["matches_authoritative"] is True
     assert rebuilt["release_snapshot"]["docx_exists"] is True
     assert rebuilt["release_status"] == "AI_REVIEWED_BENCHMARK"
+    assert rebuilt["manuscript_source"] == "release_snapshot"
 
     final_html = (
         Path(__file__).resolve().parents[1] / "view" / "assets" / "dashboard" / "final.html"
