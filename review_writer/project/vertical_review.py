@@ -205,6 +205,81 @@ def _project_state(project: Path) -> dict[str, Any]:
     return state
 
 
+def _validate_brief(brief: Any) -> dict[str, Any]:
+    brief_copy = _json_copy(brief, "BRIEF_INVALID")
+    if not isinstance(brief_copy, dict):
+        _fail("BRIEF_INVALID", "brief must be a JSON object")
+
+    string_fields = (
+        "topic",
+        "review_question",
+        "output_language",
+        "audience",
+        "scope",
+        "review_status",
+    )
+    for field in string_fields:
+        if field == "topic" or field in brief_copy:
+            value = brief_copy.get(field)
+            if not isinstance(value, str) or not value.strip():
+                _fail("BRIEF_INVALID", f"{field} must be a nonempty string")
+
+    has_from_year = "from_year" in brief_copy
+    has_to_year = "to_year" in brief_copy
+    if has_from_year != has_to_year:
+        _fail("BRIEF_INVALID", "from_year and to_year must be provided together")
+    if has_from_year:
+        from_year = brief_copy["from_year"]
+        to_year = brief_copy["to_year"]
+        if (
+            not isinstance(from_year, int)
+            or isinstance(from_year, bool)
+            or not 1 <= from_year <= 9999
+            or not isinstance(to_year, int)
+            or isinstance(to_year, bool)
+            or not 1 <= to_year <= 9999
+            or from_year > to_year
+        ):
+            _fail("BRIEF_INVALID", "year range must contain ordered years from 1 to 9999")
+
+    target = brief_copy.get("target_primary_studies")
+    if "target_primary_studies" in brief_copy and (
+        not isinstance(target, int) or isinstance(target, bool) or target <= 0
+    ):
+        _fail("BRIEF_INVALID", "target_primary_studies must be a positive integer")
+
+    acceptable_range = brief_copy.get("acceptable_core_range")
+    if "acceptable_core_range" in brief_copy:
+        if not isinstance(acceptable_range, list) or len(acceptable_range) != 2:
+            _fail("BRIEF_INVALID", "acceptable_core_range must contain two integers")
+        low, high = acceptable_range
+        if (
+            not isinstance(low, int)
+            or isinstance(low, bool)
+            or low <= 0
+            or not isinstance(high, int)
+            or isinstance(high, bool)
+            or high <= 0
+            or low > high
+        ):
+            _fail("BRIEF_INVALID", "acceptable_core_range must be positive and ordered")
+        if target is not None and not low <= target <= high:
+            _fail("BRIEF_INVALID", "target_primary_studies must be within the acceptable range")
+
+    for field in ("required_modes", "exclusions", "deliverables"):
+        if field not in brief_copy:
+            continue
+        values = brief_copy[field]
+        if (
+            not isinstance(values, list)
+            or any(not isinstance(value, str) or not value.strip() for value in values)
+            or len(values) != len(set(values))
+        ):
+            _fail("BRIEF_INVALID", f"{field} must contain unique nonempty strings")
+
+    return brief_copy
+
+
 def initialize_review(review_root: Path, project_id: str, brief: dict) -> Path:
     """Create one deterministic review project using only authorized objects."""
     root = Path(review_root)
@@ -214,9 +289,7 @@ def initialize_review(review_root: Path, project_id: str, brief: dict) -> Path:
         or PROJECT_ID_RE.fullmatch(project_id) is None
     ):
         _fail("PROJECT_ID_INVALID", "project_id must be a portable single path component")
-    brief_copy = _json_copy(brief, "BRIEF_INVALID")
-    if not isinstance(brief_copy, dict):
-        _fail("BRIEF_INVALID", "brief must be a JSON object")
+    brief_copy = _validate_brief(brief)
 
     project = root / project_id
     _validate_project_path_boundary(project, allow_missing=True)

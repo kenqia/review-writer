@@ -168,6 +168,125 @@ def test_confirm_review_brief_is_idempotent_and_preserves_scope(tmp_path: Path) 
     assert (project / "00_brief" / "review_state.json").read_bytes() == confirmed_bytes
 
 
+def _assert_brief_rejected_without_side_effects(tmp_path: Path, brief: object) -> None:
+    review_root = tmp_path / "review-projects"
+    try:
+        with pytest.raises(VerticalReviewError, match="BRIEF_INVALID"):
+            initialize_review(review_root, "invalid-review", brief)  # type: ignore[arg-type]
+    finally:
+        assert not review_root.exists()
+
+
+@pytest.mark.parametrize(
+    "brief",
+    (
+        {},
+        {"review_question": "Missing topic"},
+        {"topic": ""},
+        {"topic": "   "},
+        {"topic": 7},
+        {"topic": True},
+    ),
+)
+def test_initialize_rejects_missing_or_invalid_topic_without_side_effects(
+    tmp_path: Path,
+    brief: object,
+) -> None:
+    _assert_brief_rejected_without_side_effects(tmp_path, brief)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("review_question", "output_language", "audience", "scope", "review_status"),
+)
+@pytest.mark.parametrize("value", ("", "   ", 7, True))
+def test_initialize_rejects_invalid_known_optional_strings_without_side_effects(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    _assert_brief_rejected_without_side_effects(
+        tmp_path,
+        {"topic": "Synthetic review", field: value},
+    )
+
+
+@pytest.mark.parametrize(
+    "brief",
+    (
+        {"topic": "Synthetic review", "from_year": 2020},
+        {"topic": "Synthetic review", "to_year": 2020},
+        {"topic": "Synthetic review", "from_year": True, "to_year": 2020},
+        {"topic": "Synthetic review", "from_year": 0, "to_year": 2020},
+        {"topic": "Synthetic review", "from_year": 2020, "to_year": 10000},
+        {"topic": "Synthetic review", "from_year": 2021, "to_year": 2020},
+        {"topic": "Synthetic review", "target_primary_studies": True},
+        {"topic": "Synthetic review", "target_primary_studies": 0},
+        {"topic": "Synthetic review", "target_primary_studies": "24"},
+        {"topic": "Synthetic review", "acceptable_core_range": [20]},
+        {"topic": "Synthetic review", "acceptable_core_range": [True, 30]},
+        {"topic": "Synthetic review", "acceptable_core_range": [0, 30]},
+        {"topic": "Synthetic review", "acceptable_core_range": [30, 20]},
+        {
+            "topic": "Synthetic review",
+            "target_primary_studies": 31,
+            "acceptable_core_range": [20, 30],
+        },
+    ),
+)
+def test_initialize_rejects_invalid_year_and_study_ranges_without_side_effects(
+    tmp_path: Path,
+    brief: object,
+) -> None:
+    _assert_brief_rejected_without_side_effects(tmp_path, brief)
+
+
+@pytest.mark.parametrize("field", ("required_modes", "exclusions", "deliverables"))
+@pytest.mark.parametrize(
+    "value",
+    (
+        "not-an-array",
+        [""],
+        ["   "],
+        ["valid", 7],
+        ["duplicate", "duplicate"],
+    ),
+)
+def test_initialize_rejects_invalid_brief_arrays_without_side_effects(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    _assert_brief_rejected_without_side_effects(
+        tmp_path,
+        {"topic": "Synthetic review", field: value},
+    )
+
+
+def test_initialize_preserves_valid_unknown_brief_metadata(tmp_path: Path) -> None:
+    brief = {
+        "topic": "Synthetic review",
+        "review_question": "What differs?",
+        "output_language": "English",
+        "audience": "Synthetic chemists",
+        "scope": "A generic validation scope",
+        "review_status": "draft",
+        "from_year": 2001,
+        "to_year": 2025,
+        "target_primary_studies": 24,
+        "acceptable_core_range": [20, 30],
+        "required_modes": ["mode-a", "mode-b"],
+        "exclusions": ["out-of-scope"],
+        "deliverables": ["dynamic workbench", "editable DOCX"],
+        "future_metadata": {"nested": [1, {"flag": True}]},
+    }
+
+    project = initialize_review(tmp_path, "synthetic-review", brief)
+    state = json.loads((project / "00_brief" / "review_state.json").read_text())
+
+    assert state["brief"] == brief
+
+
 def test_initialize_repairs_state_only_project(tmp_path: Path) -> None:
     project = _initialize(tmp_path)
     state_path = project / "00_brief" / "review_state.json"
