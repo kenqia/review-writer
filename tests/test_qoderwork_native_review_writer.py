@@ -507,8 +507,11 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             self.assertEqual(200, status)
             current = json.loads(body)
             self.assertTrue(current["final_draft_docx_exists"])
-            self.assertEqual(str(docx_path), current["final_draft_docx_path"])
-            download = f"GET /file?path={quote(str(docx_path), safe='')} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode()
+            self.assertEqual(
+                "review-projects/synthetic-review/05_final_audit/final_draft.docx",
+                current["final_draft_docx_path"],
+            )
+            download = f"GET /file?path={quote(current['final_draft_docx_path'], safe='')} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode()
             status, _, body = self._request(dashboard, review_root, download)
             self.assertEqual(200, status)
             self.assertEqual(b"current-synthetic-docx", body)
@@ -725,6 +728,56 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
         self.assertNotIn("${d.file}", final_html)
         self.assertNotIn("manuscript_sha256", final_html)
         self.assertNotIn("docx_sha256", final_html)
+        self.assertNotIn("missing final_draft", final_html)
+        self.assertNotIn("missing release_report", final_html)
+
+    def test_draft_and_final_reports_hide_internal_details_but_keep_scientific_prose(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        scientific_prose = "The catalyst retained selectivity under the measured conditions."
+        windows_path = r"C:\Users\Scientist\private\quality_report.json"
+        posix_path = "/home/scientist/private/release/final_draft.md"
+        digest = "a3" * 32
+        internal_names = (
+            "merge_report.md",
+            "final_audit_report.md",
+            "quality_report.json",
+            "release_report.md",
+        )
+        raw_report = (
+            f"# Scientific review\n\n{scientific_prose}\n\n"
+            f"Windows: {windows_path}\n\nPOSIX: {posix_path}\n\nDigest: {digest}\n\n"
+            f"Artifacts: {', '.join(internal_names)}\n"
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = self._copy_fixture(Path(temp_dir))
+            project = review_root / "review-projects" / "synthetic-review"
+            draft_stage = project / "04_first_draft"
+            final_stage = project / "05_final_audit"
+            (draft_stage / "merge_report.md").write_text(raw_report, encoding="utf-8")
+            (draft_stage / "remaining_issues.md").write_text(raw_report, encoding="utf-8")
+            (final_stage / "final_audit_report.md").write_text(raw_report, encoding="utf-8")
+            (final_stage / "quality_report.md").write_text(raw_report, encoding="utf-8")
+            (final_stage / "release_report.md").write_text(raw_report, encoding="utf-8")
+
+            draft = dashboard.project_draft_payload(review_root, "synthetic-review")
+            final = dashboard.project_final_payload(review_root, "synthetic-review")
+            report_text = "\n".join(
+                [
+                    draft["merge_report_md"],
+                    draft["remaining_issues_md"],
+                    final["final_audit_report_md"],
+                    final["quality_report_md"],
+                    final["release_report_md"],
+                ]
+            )
+
+            self.assertIn(scientific_prose, report_text)
+            for hidden in (windows_path, posix_path, digest, *internal_names):
+                self.assertNotIn(hidden, report_text)
+            self.assertTrue(all(not Path(path).is_absolute() for path in draft["paths"].values()))
+            self.assertTrue(all(not Path(path).is_absolute() for path in final["paths"].values()))
 
     def test_evidence_and_risk_payloads_are_scientist_safe(self) -> None:
         sys.path.insert(0, str(ROOT))

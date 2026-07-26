@@ -359,6 +359,17 @@ def _lineage_entries(lineage: dict[str, Any]) -> list[dict[str, Any]]:
     return entries
 
 
+def _literal_occurrence_count(text: str, needle: str) -> int:
+    count = 0
+    offset = 0
+    while True:
+        index = text.find(needle, offset)
+        if index < 0:
+            return count
+        count += 1
+        offset = index + 1
+
+
 def _validate_manuscript_lineage(
     project: Path,
     markdown: str,
@@ -436,10 +447,10 @@ def _validate_manuscript_lineage(
             if not isinstance(text_span, str) or not text_span:
                 raise ProjectReleaseError("MANUSCRIPT_LINEAGE_DRIFT", "lineage text span is absent from the manuscript")
             bound_text = sections_by_id[section_id]["body"] if section_id is not None else markdown
-            if text_span not in bound_text:
+            if _literal_occurrence_count(bound_text, text_span) != 1:
                 raise ProjectReleaseError(
                     "MANUSCRIPT_LINEAGE_DRIFT",
-                    "lineage text span is absent from its bound manuscript section",
+                    "lineage text span must occur exactly once in its bound manuscript section",
                 )
         referenced.add(claim_id)
 

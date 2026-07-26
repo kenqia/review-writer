@@ -4,6 +4,8 @@ import base64
 import hashlib
 import json
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -264,6 +266,119 @@ def test_claim_span_edit_is_rejected_with_manuscript_and_lineage_unchanged(tmp_p
         dashboard.write_project_draft_sections(tmp_path, "synthetic-release", payload)
 
     assert (manuscript_path.read_bytes(), lineage_path.read_bytes()) == before
+
+
+def test_duplicate_claim_span_edit_is_rejected_with_both_files_unchanged(tmp_path: Path) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    project = make_release_ready_project(tmp_path / "review-projects")
+    manuscript_path = project / "04_first_draft" / "first_draft.md"
+    lineage_path = project / "04_first_draft" / "manuscript_lineage.json"
+    draft = dashboard.project_draft_payload(tmp_path, "synthetic-release")
+    results = next(section for section in draft["sections"] if section["id"] == "results")
+    payload = {
+        "section_id": "results",
+        "body": f"{results['body']}\n\n{APPROVED_CLAIM_TEXT} [1].",
+        "manuscript_version": draft["manuscript_version"],
+    }
+    before = (manuscript_path.read_bytes(), lineage_path.read_bytes())
+
+    with pytest.raises(ValueError, match="LINEAGE"):
+        dashboard.write_project_draft_sections(tmp_path, "synthetic-release", payload)
+
+    assert (manuscript_path.read_bytes(), lineage_path.read_bytes()) == before
+
+
+@pytest.mark.parametrize("section_bound", [True, False], ids=["declared-section", "whole-manuscript"])
+def test_release_rejects_ambiguous_duplicate_lineage_span(
+    tmp_path: Path,
+    section_bound: bool,
+) -> None:
+    from review_writer.delivery.project_release import ProjectReleaseError, build_project_release
+
+    project = make_release_ready_project(tmp_path)
+    manuscript_path = project / "04_first_draft" / "first_draft.md"
+    lineage_path = project / "04_first_draft" / "manuscript_lineage.json"
+    manuscript = manuscript_path.read_text(encoding="utf-8").replace(
+        f"{APPROVED_CLAIM_TEXT} [1].",
+        f"{APPROVED_CLAIM_TEXT} [1].\n\n{APPROVED_CLAIM_TEXT} [1].",
+    )
+    manuscript_path.write_text(manuscript, encoding="utf-8")
+    lineage = json.loads(lineage_path.read_text(encoding="utf-8"))
+    lineage["manuscript_sha256"] = hashlib.sha256(manuscript.encode("utf-8")).hexdigest()
+    if not section_bound:
+        lineage["claims"][0].pop("section_id")
+    _write_json(lineage_path, lineage)
+
+    with pytest.raises(ProjectReleaseError, match="MANUSCRIPT_LINEAGE_DRIFT"):
+        build_project_release(project)
+
+    assert not (project / "05_final_audit" / "final_draft.docx").exists()
+
+
+def test_concurrent_draft_edits_with_one_version_allow_exactly_one_commit(tmp_path: Path) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    project = make_release_ready_project(tmp_path / "review-projects")
+    manuscript_path = project / "04_first_draft" / "first_draft.md"
+    lineage_path = project / "04_first_draft" / "manuscript_lineage.json"
+    first_payload = _section_edit_payload(tmp_path, "synthetic-review", "First concurrent editorial change.")
+    second_payload = {**first_payload, "body": "Second concurrent editorial change."}
+    real_commit = dashboard._commit_draft_and_lineage
+    first_at_commit = threading.Event()
+    second_at_commit = threading.Event()
+    release_first = threading.Event()
+    call_guard = threading.Lock()
+    call_count = 0
+
+    def hold_first_commit(*args, **kwargs) -> None:
+        nonlocal call_count
+        with call_guard:
+            call_count += 1
+            ordinal = call_count
+        if ordinal == 1:
+            first_at_commit.set()
+            if not release_first.wait(timeout=5):
+                raise TimeoutError("concurrent edit test did not release first commit")
+        else:
+            second_at_commit.set()
+        real_commit(*args, **kwargs)
+
+    outcomes: list[object] = []
+    with patch.object(dashboard, "_commit_draft_and_lineage", side_effect=hold_first_commit):
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(
+                dashboard.write_project_draft_sections,
+                tmp_path,
+                "synthetic-release",
+                first_payload,
+            )
+            assert first_at_commit.wait(timeout=5)
+            second = executor.submit(
+                dashboard.write_project_draft_sections,
+                tmp_path,
+                "synthetic-release",
+                second_payload,
+            )
+            second_at_commit.wait(timeout=1)
+            release_first.set()
+            for future in (first, second):
+                try:
+                    outcomes.append(future.result(timeout=5))
+                except Exception as exc:  # noqa: BLE001 - outcomes are asserted below
+                    outcomes.append(exc)
+
+    successes = [outcome for outcome in outcomes if isinstance(outcome, dict)]
+    failures = [outcome for outcome in outcomes if isinstance(outcome, Exception)]
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert isinstance(failures[0], ValueError)
+    assert "stale" in str(failures[0])
+    manuscript_bytes = manuscript_path.read_bytes()
+    lineage = json.loads(lineage_path.read_text(encoding="utf-8"))
+    assert b"First concurrent editorial change." in manuscript_bytes
+    assert b"Second concurrent editorial change." not in manuscript_bytes
+    assert lineage["manuscript_sha256"] == hashlib.sha256(manuscript_bytes).hexdigest()
 
 
 def test_draft_two_file_write_failure_rolls_back_both_files(tmp_path: Path) -> None:

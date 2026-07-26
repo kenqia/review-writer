@@ -7,9 +7,11 @@ import json
 import mimetypes
 import os
 import posixpath
+import re
 import shutil
 import sys
 import tempfile
+import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -34,6 +36,23 @@ from review_writer.delivery.project_release import (  # noqa: E402
     split_manuscript_sections,
     validate_project_file_path,
     validate_project_path_components,
+)
+
+
+_DRAFT_WRITE_LOCK = threading.Lock()
+_RESEARCHER_SHA256_RE = re.compile(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{64}(?![0-9A-Fa-f])")
+_RESEARCHER_WINDOWS_PATH_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9])(?:[A-Z]:[\\/]|\\\\)[^\s<>()`]+"
+)
+_RESEARCHER_POSIX_PATH_RE = re.compile(
+    r"(?<![:/A-Za-z0-9])/(?:[^/\s<>()`]+/)+[^/\s<>()`]+"
+)
+_RESEARCHER_INTERNAL_FILENAME_RE = re.compile(
+    r"(?i)(?<![\w.-])(?:"
+    r"claim_projection\.jsonl|final_audit_report\.(?:json|md)|final_draft\.(?:docx|md)|"
+    r"first_draft\.md|manuscript_lineage\.json|merge_report\.md|quality_report\.(?:json|md)|"
+    r"release_report\.md|remaining_issues\.md|writer_packet\.json"
+    r")(?![\w.-])"
 )
 
 
@@ -658,6 +677,16 @@ def read_text_if_exists(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="ignore")
 
 
+def researcher_safe_markdown(markdown: str) -> str:
+    """Keep report prose while hiding local implementation details from researchers."""
+    if not isinstance(markdown, str):
+        return ""
+    safe = _RESEARCHER_WINDOWS_PATH_RE.sub("[internal detail hidden]", markdown)
+    safe = _RESEARCHER_POSIX_PATH_RE.sub("[internal detail hidden]", safe)
+    safe = _RESEARCHER_SHA256_RE.sub("[internal detail hidden]", safe)
+    return _RESEARCHER_INTERNAL_FILENAME_RE.sub("[project artifact]", safe)
+
+
 def read_json_if_exists(path: Path) -> Any:
     if not path.exists():
         return None
@@ -1093,6 +1122,15 @@ def _commit_draft_and_lineage(
 
 
 def write_project_draft_sections(review_root: Path, project_id: str, data: Any) -> dict[str, Any]:
+    with _DRAFT_WRITE_LOCK:
+        return _write_project_draft_sections_unlocked(review_root, project_id, data)
+
+
+def _write_project_draft_sections_unlocked(
+    review_root: Path,
+    project_id: str,
+    data: Any,
+) -> dict[str, Any]:
     required = {"section_id", "body", "manuscript_version"}
     if not isinstance(data, dict) or set(data) != required:
         raise ValueError("draft payload requires exactly section_id, body, and manuscript_version")
@@ -1312,10 +1350,12 @@ def project_release_docx_is_current(docx_path: Path) -> bool:
 def project_final_payload(review_root: Path, project_id: str) -> dict[str, Any]:
     project = project_dir(review_root, project_id)
     stage = project / "05_final_audit"
+    project_relative = project.relative_to(Path(review_root).resolve())
+    stage_relative = (project_relative / "05_final_audit").as_posix()
+    docx_relative = (project_relative / "05_final_audit" / "final_draft.docx").as_posix()
     artifact_state = _project_release_artifact_state(project)
     authoritative_path = artifact_state["authoritative_path"]
     snapshot_path = artifact_state["snapshot_path"]
-    docx_path = artifact_state["docx_path"]
     quality_report = artifact_state["quality_report"]
     snapshot_exists = artifact_state["snapshot_exists"]
     snapshot_matches = artifact_state["snapshot_matches"]
@@ -1327,6 +1367,29 @@ def project_final_payload(review_root: Path, project_id: str) -> dict[str, Any]:
         release_status = quality_report.get("release_status") or quality_report.get("status") or "IN_PROGRESS"
     else:
         release_status = "IN_PROGRESS"
+    visible_quality_report = {
+        "status": researcher_safe_markdown(str(quality_report.get("status") or "missing")),
+    }
+    for key in ("errors", "warnings", "llm_judge_tasks", "human_review_tasks"):
+        rows = quality_report.get(key)
+        visible_quality_report[key] = [
+            researcher_safe_markdown(row) if isinstance(row, str) else "Review item"
+            for row in (rows if isinstance(rows, list) else [])
+        ]
+    checkpoint_log = read_json_if_exists(project / "checkpoint_log.json")
+    visible_checkpoints: list[dict[str, Any]] = []
+    if isinstance(checkpoint_log, dict) and isinstance(checkpoint_log.get("checkpoints"), list):
+        for row in checkpoint_log["checkpoints"]:
+            if not isinstance(row, dict):
+                continue
+            visible_row: dict[str, Any] = {}
+            for key in ("index", "checkpoint", "name", "status"):
+                value = row.get(key)
+                if isinstance(value, str):
+                    visible_row[key] = researcher_safe_markdown(value)
+                elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                    visible_row[key] = value
+            visible_checkpoints.append(visible_row)
     return {
         "project_id": project_id,
         "topic": infer_project_topic(project),
@@ -1340,52 +1403,50 @@ def project_final_payload(review_root: Path, project_id: str) -> dict[str, Any]:
             "integrity_valid": integrity_valid,
             "docx_exists": current_docx_exists,
         },
-        "final_audit_report_md": read_text_if_exists(stage / "final_audit_report.md"),
-        "quality_report_md": read_text_if_exists(stage / "quality_report.md"),
-        "quality_report": quality_report,
-        "clean_3paper_review_pack": read_text_if_exists(stage / "clean_3paper_review_pack.md"),
-        "checkpoint_log": read_json_if_exists(project / "checkpoint_log.json"),
-        "final_audit_report": read_json_if_exists(stage / "final_audit_report.json"),
-        "release_report_md": read_text_if_exists(stage / "release_report.md"),
-        "final_draft_docx_path": str(docx_path) if current_docx_exists else "",
+        "final_audit_report_md": researcher_safe_markdown(read_text_if_exists(stage / "final_audit_report.md")),
+        "quality_report_md": researcher_safe_markdown(read_text_if_exists(stage / "quality_report.md")),
+        "quality_report": visible_quality_report,
+        "checkpoint_log": {"checkpoints": visible_checkpoints},
+        "release_report_md": researcher_safe_markdown(read_text_if_exists(stage / "release_report.md")),
+        "final_draft_docx_path": docx_relative if current_docx_exists else "",
         "final_draft_docx_exists": current_docx_exists,
-        "paths": {"stage_dir": str(stage)},
+        "paths": {"stage_dir": stage_relative},
     }
 
 
 def project_draft_payload(review_root: Path, project_id: str) -> dict[str, Any]:
     project = project_dir(review_root, project_id)
     stage_dir = project / "04_first_draft"
+    project_relative = project.relative_to(Path(review_root).resolve())
+    stage_relative = (project_relative / "04_first_draft").as_posix()
     manuscript_path = validate_project_file_path(
         project, Path("04_first_draft/first_draft.md"), "MANUSCRIPT_INVALID"
     )
     manuscript_bytes = manuscript_path.read_bytes()
     first_draft_md = manuscript_bytes.decode("utf-8")
     figures_manifest = read_json_if_exists(project / "03_figure_redraw" / "redrawn_figure_manifest.json") or {}
-    draft_bundle = read_json_if_exists(stage_dir / "draft_bundle.json")
-    section_drafts = read_json_if_exists(project / "02_section_drafting" / "section_drafts.json")
     redrawn = []
     for row in (figures_manifest.get("figures") or []):
         if isinstance(row, dict):
-            redrawn.append(row)
+            redrawn.append(
+                {
+                    key: researcher_safe_markdown(str(row[key]))
+                    for key in ("figure_id", "title", "caption", "status")
+                    if row.get(key) is not None
+                }
+            )
     return {
         "project_id": project_id,
         "topic": infer_project_topic(project),
         "summary": next((p for p in list_review_projects(review_root) if p["project_id"] == project_id), None),
-        "draft_bundle": draft_bundle,
         "manuscript_version": hashlib.sha256(manuscript_bytes).hexdigest(),
         "sections": split_manuscript_sections(first_draft_md) if first_draft_md else [],
-        "first_draft_md": first_draft_md,
-        "merge_report_md": read_text_if_exists(stage_dir / "merge_report.md"),
-        "remaining_issues_md": read_text_if_exists(stage_dir / "remaining_issues.md"),
-        "section_drafts": section_drafts,
+        "merge_report_md": researcher_safe_markdown(read_text_if_exists(stage_dir / "merge_report.md")),
+        "remaining_issues_md": researcher_safe_markdown(read_text_if_exists(stage_dir / "remaining_issues.md")),
         "redrawn_figures": redrawn,
         "paths": {
-            "stage_dir": str(stage_dir),
-            "first_draft_base_dir": str(stage_dir),
-            "first_draft": str(stage_dir / "first_draft.md"),
-            "merge_report": str(stage_dir / "merge_report.md"),
-            "remaining_issues": str(stage_dir / "remaining_issues.md"),
+            "stage_dir": stage_relative,
+            "first_draft_base_dir": stage_relative,
         },
     }
 
