@@ -13,13 +13,18 @@ description: 当科研用户要在 QoderWork 写作工作台中，以三次确�
 - 展示 human-readable brief；内部将待确认字段交给本地 product command `scripts/run_vertical_review.py` 的 `init` 子命令，由它写入状态为 `AWAITING_BRIEF_CONFIRMATION` 的 `00_brief/review_state.json`，不要求研究者操作内部状态。
 - 启动 `view/serve_review_dashboard.py` 的 localhost dashboard，并呈现该项目的 brief URL。
 - 此处只等待一次确认；留在同一个 QoderWork 任务中观察通用状态接口，直到状态为 `BRIEF_CONFIRMED` 且阶段为 `ready_for_discovery`。确认动作不得改写 brief，也不得自身触发检索、Provider 或网络操作。
+- Review Brief/job authorization 必须在上传前披露 full-PDF MinerU egress 并取得明确确认。不得在 chat 中读取或暴露 token 值；缺少该授权或 token 时合并为一个具体 blocker。
 - 未观察到 `BRIEF_CONFIRMED` 前不得委派 `DISCOVERY_ACQUISITION_PLANNER`，也不得生成 search plan 或运行 discovery/acquisition；确认后的 brief 是后续检索、证据和写作的唯一范围基线，同一任务随后自动继续。
 
 ### Automatic corpus/evidence（后台自动工作，不是 interaction）
 
-- `DISCOVERY_ACQUISITION_PLANNER` 根据 confirmed brief 与 candidate pool 生成 bounded scholarly-search-plan.v1、screening decisions 和 acquisition rows。只用 `scripts/discovery/discover_scholarly_corpus.py` 与 `scripts/acquisition/acquire_public_corpus.py` 执行 Task 1/2 的检索和合法获取；候选在验证前保持待核验。
+- `DISCOVERY_ACQUISITION_PLANNER` 根据 confirmed brief 与 candidate pool 生成 bounded scholarly-search-plan.v1、screening decisions 和覆盖每个 expected MAIN/SI 的 acquisition rows。只用 `scripts/discovery/discover_scholarly_corpus.py` 与 `scripts/acquisition/acquire_public_corpus.py` 执行一次确定性 public-direct 检索和合法获取；候选在验证前保持待核验。Qwen 不逐篇浏览或下载论文，也不启动浏览器机器人。
+- 剩余来源只显示一次 consolidated HTML queue。若仍有缺失，暂停进行一次必要来源交接：研究者从页面链接下载并上传一个 ZIP，不逐篇提问，也不要求编辑映射文件。这个条件性 ZIP 是至多一次 consolidated 输入 handoff，不是新的科学 decision；科学 checkpoints 仍只有 Brief、Risk Packet、Final Review。
+- 收到 ZIP 后运行 `scripts/acquisition/import_manual_archive.py`，再运行 `scripts/acquisition/acquire_public_corpus.py` 的 `--verify-only`；unmatched / ambiguous / missing rows 继续留在同一个 queue，绝不做模糊、内容或模型匹配。
+- 来源身份闭合后，严格调用仓库既有解析器 `skills/mineru-precise-parse-review-writer/scripts/parse_review_writer_pdfs.py`，输入项目 source directory，输出项目 parse directory，保持 incremental 默认；除非另行批准一次重跑，否则不得使用 `--force`。
+- MinerU 只提供 semantic Markdown/figures/tables；`pdftotext` reading/layout layers 对 exact page locators 与 verbatim quotes 保持 authoritative。Qwen 与 MinerU 都不得创作 locator/page/quote fields。
 - 先处理三篇 calibration，记录实测消耗并给出 credits forecast；未超过已确认预算后，自动按 4–6 篇 batch 继续。若缺少 job-level Qoder egress/credits 授权，必须停在任何 paid run 之前。
-- 每项研究先由 `scripts/evidence/build_pdf_text_layers.py` 与 `scripts/evidence/build_page_atom_catalog.py` 产生确定性 atom catalog，再以 fresh delegation contract 委派 `PER_STUDY_EVIDENCE_EXTRACTOR` 选择 atom，随后用 `scripts/evidence/assemble_evidence_candidate_from_atoms.py` 和 `scripts/evidence/validate_evidence_candidate.py` 组装、校验 candidate。
+- 解析完成后自动连续执行每项研究的 atom catalog → Qwen selector → deterministic assembly/R0 → fresh reviewer → registration：先由 `scripts/evidence/build_pdf_text_layers.py` 与 `scripts/evidence/build_page_atom_catalog.py` 产生确定性 atom catalog，再以 fresh delegation contract 委派 `PER_STUDY_EVIDENCE_EXTRACTOR` 选择 atom，随后用 `scripts/evidence/assemble_evidence_candidate_from_atoms.py` 和 `scripts/evidence/validate_evidence_candidate.py` 组装、校验 candidate。
 - 对每项 assembled candidate 重新委派 `ADVERSARIAL_EVIDENCE_REVIEWER` 做 fresh adversarial review，再运行 `scripts/run_vertical_review.py` 的 `register-study` 完成逐项 deterministic registration。失败项写入 `01_evidence/exception_queue.json`，其余研究继续；整个队列无需研究者按单项触发。
 - fresh delegation contract 只约束每次以最小、当前输入重新委派，不声称底层平台提供额外的上下文隔离能力。
 

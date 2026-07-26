@@ -32,7 +32,7 @@ PUBLIC_QUERY_KEYS = frozenset({
     "lang", "locale", "pdf", "view", "inline", "sequence", "isallowed",
 })
 MANUAL_STATUS = "MANUAL_OR_AUTHORIZED_ACCESS_REQUIRED"
-METADATA_FILENAMES = frozenset({"acquisition_receipt.json", "manual_acquisition.tsv", "manual_acquisition.html"})
+METADATA_FILENAMES = frozenset({"acquisition_receipt.json", "manual_acquisition.tsv", "manual_acquisition.html", "manual_import_receipt.json"})
 REDIRECT_STATUS_CODES = frozenset({301, 302, 303, 307, 308})
 MAX_REDIRECTS = 5
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
@@ -150,6 +150,13 @@ def _safe_target(output_root: Path, relative: str) -> tuple[Path, Path]:
     return target, resolved_target
 
 
+def _canonical_save_as(download_id: str, expected_format: str) -> str:
+    filename = f"{download_id}.{expected_format.lower()}"
+    if len(_portable_target_components(filename)) != 1:
+        raise ManifestError("download_id does not form a portable save_as filename")
+    return filename
+
+
 def _validate_target_parent(output_root: Path, target: Path) -> None:
     root = output_root.resolve()
     parent = target.parent.resolve()
@@ -200,6 +207,7 @@ def _preflight_manifest(manifest: dict[str, Any], output_root: Path) -> list[dic
             raise ManifestError("download_id values must be unique")
         seen_ids.add(normalized_id)
         expected_format = row["expected_format"]
+        save_as = _canonical_save_as(row["download_id"], expected_format)
         expected_sha256 = row.get("expected_sha256")
         if expected_sha256 is not None:
             if not isinstance(expected_sha256, str) or not SHA256_RE.fullmatch(expected_sha256):
@@ -219,7 +227,7 @@ def _preflight_manifest(manifest: dict[str, Any], output_root: Path) -> list[dic
                 _, _, landing_report_url = _safe_url(str(row["landing_page_url"]))
         except ValueError as exc:
             raise ManifestError("manifest contains an invalid URL") from exc
-        prepared.append({"row": row, "target": target, "expected_format": expected_format, "expected_sha256": expected_sha256, "allowed": allowed, "url_reason": url_reason, "report_url": report_url, "landing_report_url": landing_report_url})
+        prepared.append({"row": row, "target": target, "expected_format": expected_format, "expected_sha256": expected_sha256, "save_as": save_as, "allowed": allowed, "url_reason": url_reason, "report_url": report_url, "landing_report_url": landing_report_url})
     return prepared
 
 
@@ -558,7 +566,7 @@ def _stage_bytes(path: Path, content: bytes) -> Path:
 
 
 def _render_manual_queue(rows: list[dict[str, Any]]) -> tuple[str, str]:
-    fields = ["study_id", "doi", "document_role", "landing_page_url", "source_url", "target_path", "reason"]
+    fields = ["download_id", "save_as", "study_id", "doi", "document_role", "landing_page_url", "source_url", "target_path", "reason"]
     tsv = io.StringIO(newline="")
     writer = csv.DictWriter(tsv, fieldnames=fields, delimiter="\t", extrasaction="ignore")
     writer.writeheader()
@@ -644,7 +652,7 @@ def acquire_manifest(manifest_path: Path | str, output_root: Path | str, *, allo
         allowed = item["allowed"]
         url_reason = item["url_reason"]
         report_url = item["report_url"]
-        result = {"download_id": row["download_id"], "study_id": row["study_id"], "doi": row.get("doi"), "document_role": row["document_role"], "expected_format": expected_format, "target_path": row["target_path"], "source_url": report_url, "landing_page_url": item["landing_report_url"], "source_class": row["source_class"], "status": None, "reason": None, "sha256": None, "size_bytes": None, "http_status": None}
+        result = {"download_id": row["download_id"], "save_as": item["save_as"], "study_id": row["study_id"], "doi": row.get("doi"), "document_role": row["document_role"], "expected_format": expected_format, "target_path": row["target_path"], "source_url": report_url, "landing_page_url": item["landing_report_url"], "source_class": row["source_class"], "status": None, "reason": None, "sha256": None, "size_bytes": None, "http_status": None}
         _validate_existing_target_boundary(output_root, target)
         if target.is_file():
             _validate_existing_target_boundary(output_root, target)

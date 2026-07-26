@@ -1134,6 +1134,10 @@ Commit each generic calibration fix only after its failing regression test passe
 
 Repeat the commit step only for distinct, user-visible or scientific blockers; cosmetic and diagnostic-only changes wait.
 
+### Measured-runtime amendment before Task 11
+
+实测表明逐篇由模型驱动浏览器下载速度慢且 credits 成本高。规模化路线允许一次条件性的 consolidated source ZIP handoff：研究者从单一 queue 下载剩余来源并上传一个 ZIP，系统确定性导入；不做 model-driven browser download。语义解析复用既有 MinerU，exact page locator 与 verbatim quote 继续以 `pdftotext` reading/layout layers 为准。当前 Case 02 的 discovery、acquisition 与 MinerU assets 已存在，因此不得为当前 Case 02 重跑这些阶段。
+
 ### Task 11: Scale the same path to the complete eligible corpus
 
 **Why:** This is the benchmark’s central proof of real-scale use.

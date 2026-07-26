@@ -10,11 +10,14 @@ SEARCH_ROOT ?= $(abspath $(REPO_ROOT)/..)
 REAL_LITE_OUTPUT_ROOT ?= /tmp/review_writer_real_lite_e2e
 OUTPUT_ZIP ?= build/research-review-writer.qoder-plugin.zip
 
-.PHONY: public-corpus-acquisition-check
+.PHONY: public-corpus-acquisition-check manual-source-import-check
 
 public-corpus-acquisition-check:
 	PYTHONPATH=$(CURDIR) PYTHONDONTWRITEBYTECODE=1 $(PYTHON) tests/test_public_corpus_acquisition.py
 	PYTHONPATH=$(CURDIR) PYTHONDONTWRITEBYTECODE=1 $(PYTHON) tests/test_supplement_identity.py
+
+manual-source-import-check:
+	PYTHONPATH=$(CURDIR) PYTHONDONTWRITEBYTECODE=1 $(PYTHON) tests/test_manual_archive_import.py
 
 .PHONY: evidence-grounding-check
 
@@ -31,6 +34,7 @@ scholarly-discovery-check:
 .PHONY: scaled-review-check
 scaled-review-check:
 	$(MAKE) public-corpus-acquisition-check
+	$(MAKE) manual-source-import-check
 	$(MAKE) scholarly-discovery-check
 	$(MAKE) evidence-grounding-check
 	$(MAKE) vertical-review-projection-check

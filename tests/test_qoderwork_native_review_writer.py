@@ -46,6 +46,7 @@ EXPECTED_AGENT_TOOLS = {
 }
 ALLOWED_MAIN_COMMANDS = {
     "scripts/acquisition/acquire_public_corpus.py",
+    "scripts/acquisition/import_manual_archive.py",
     "scripts/discovery/discover_scholarly_corpus.py",
     "scripts/evidence/assemble_evidence_candidate_from_atoms.py",
     "scripts/evidence/build_page_atom_catalog.py",
@@ -55,6 +56,7 @@ ALLOWED_MAIN_COMMANDS = {
     "scripts/validators/validate_review_quality.py",
     "skills/review-export-docx/scripts/md2docx.py",
     "skills/review-final-audit-release/scripts/final_audit_scan.py",
+    "skills/mineru-precise-parse-review-writer/scripts/parse_review_writer_pdfs.py",
     "view/serve_review_dashboard.py",
 }
 
@@ -111,7 +113,7 @@ class NativeReviewWriterPluginTests(unittest.TestCase):
         manifest = json.loads((PLUGIN / ".qoder-plugin" / "plugin.json").read_text(encoding="utf-8"))
         self.assertEqual(MANIFEST_KEYS, set(manifest))
         self.assertEqual("research-review-writer", manifest["name"])
-        self.assertEqual("0.2.2", manifest["version"])
+        self.assertEqual("0.2.3", manifest["version"])
         self.assertEqual("科研综述专家", manifest["displayName"])
         self.assertTrue(manifest["description"].isascii())
         self.assertIn("科研综述", manifest["descriptionZh"])
@@ -210,6 +212,54 @@ class NativeReviewWriterPluginTests(unittest.TestCase):
             skill.index("BRIEF_CONFIRMED"),
             skill.index("DISCOVERY_ACQUISITION_PLANNER"),
         )
+
+    def test_source_handoff_uses_one_zip_then_the_existing_mineru_route(self) -> None:
+        skill = (PLUGIN / "skills" / "research-review-writer" / "SKILL.md").read_text(encoding="utf-8")
+        planner = (PLUGIN / "agents" / "DISCOVERY_ACQUISITION_PLANNER.md").read_text(encoding="utf-8")
+
+        for required in (
+            "Qwen 不逐篇浏览或下载论文",
+            "一次 consolidated HTML queue",
+            "一个 ZIP",
+            "不逐篇提问",
+            "scripts/acquisition/import_manual_archive.py",
+            "--verify-only",
+            "unmatched / ambiguous / missing",
+            "skills/mineru-precise-parse-review-writer/scripts/parse_review_writer_pdfs.py",
+            "incremental",
+            "不得使用 `--force`",
+            "MinerU",
+            "pdftotext",
+            "locator/page/quote",
+            "full-PDF MinerU egress",
+            "一个具体 blocker",
+            "atom catalog",
+            "Qwen selector",
+            "deterministic assembly/R0",
+            "fresh reviewer",
+            "registration",
+            "输入 handoff",
+        ):
+            self.assertIn(required, skill)
+        self.assertLess(
+            skill.index("scripts/acquisition/import_manual_archive.py"),
+            skill.index("skills/mineru-precise-parse-review-writer/scripts/parse_review_writer_pdfs.py"),
+        )
+        self.assertNotIn("browser automation", skill.casefold())
+
+        for required in (
+            "每个 expected MAIN/SI",
+            "target_path",
+            "download_id",
+            "scripts/discovery/discover_scholarly_corpus.py",
+            "scripts/acquisition/acquire_public_corpus.py",
+            "scripts/acquisition/import_manual_archive.py",
+            "不得使用浏览器自动化",
+            "archive_names",
+            "optional deterministic metadata",
+            "不要求研究者",
+        ):
+            self.assertIn(required, planner)
 
     def test_agent_contracts_and_tool_permissions_are_exact(self) -> None:
         contracts = {

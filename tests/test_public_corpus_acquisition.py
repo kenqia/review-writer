@@ -523,6 +523,12 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
 
             self.assertEqual(receipt["results"][0]["reason"], "NO_PUBLIC_DIRECT_PDF")
             self.assertEqual(FixtureHandler.pdf_requests, 0)
+            queue_tsv = (root / "acquired/manual_acquisition.tsv").read_text(encoding="utf-8")
+            queue_html = (root / "acquired/manual_acquisition.html").read_text(encoding="utf-8")
+            for rendered in (queue_tsv, queue_html):
+                self.assertIn("download_id", rendered)
+                self.assertIn("save_as", rendered)
+                self.assertIn("S007_MAIN.pdf", rendered)
 
     def test_downloads_explicit_docx_supplement_with_openxml_magic(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -544,6 +550,7 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
             "acquisition_receipt.json",
             "manual_acquisition.tsv",
             "manual_acquisition.html",
+            "manual_import_receipt.json",
             "nested/../manual_acquisition.tsv",
         ]
         for target_path in forbidden:
@@ -561,7 +568,7 @@ class PublicCorpusAcquisitionTests(unittest.TestCase):
                 self.assertFalse(output_root.exists())
 
     def test_reserved_metadata_prefixes_fail_preflight_before_earlier_download(self):
-        for index, reserved_name in enumerate(["acquisition_receipt.json", "manual_acquisition.tsv", "manual_acquisition.html"]):
+        for index, reserved_name in enumerate(["acquisition_receipt.json", "manual_acquisition.tsv", "manual_acquisition.html", "manual_import_receipt.json"]):
             with self.subTest(reserved_name=reserved_name), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 output_root = root / "acquired"
