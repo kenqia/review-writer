@@ -51,13 +51,25 @@ def _claim(
     }
 
 
-def _candidate(study_id: str, claims: list[dict]) -> dict:
-    return {
+def _reaction_unit(reaction_unit_id: str) -> dict:
+    return {"reaction_unit_id": reaction_unit_id}
+
+
+def _candidate(
+    study_id: str,
+    claims: list[dict],
+    *,
+    reaction_units: list[dict] | None = None,
+) -> dict:
+    candidate = {
         "schema_version": "evidence-candidate.v2",
         "job_id": f"JOB-{study_id}",
         "study_id": study_id,
         "claims": claims,
     }
+    if reaction_units is not None:
+        candidate["reaction_units"] = reaction_units
+    return candidate
 
 
 def _r0(study_id: str, status: str = "R0_PASS", **extra) -> dict:
@@ -77,6 +89,10 @@ def _reviewer(study_id: str, verdict: str = "SUPPORT", **extra) -> dict:
         "verdict": verdict,
         **extra,
     }
+
+
+def _finding(target_id: str, verdict: str = "SUPPORT", reason: str = "Grounded.") -> dict:
+    return {"target_id": target_id, "verdict": verdict, "reason": reason}
 
 
 def _initialize(tmp_path: Path) -> Path:
@@ -543,6 +559,176 @@ def test_ambiguous_reviewer_blocks_low_risk_claim(tmp_path: Path) -> None:
     )
 
     assert result["claim_projection"][0]["decision"] == "BLOCKED"
+
+
+def test_target_findings_do_not_block_supported_claim_when_study_root_is_reject(
+    tmp_path: Path,
+) -> None:
+    project = _initialize(tmp_path)
+    study_id = "STUDY-PARTIAL-REJECT"
+
+    result = register_study(
+        project,
+        _candidate(
+            study_id,
+            [_claim("CLAIM-PARTIAL-A"), _claim("CLAIM-PARTIAL-B")],
+            reaction_units=[_reaction_unit("REACTION-PARTIAL")],
+        ),
+        _r0(study_id),
+        _reviewer(
+            study_id,
+            verdict="REJECT",
+            findings=[
+                _finding("REACTION-PARTIAL"),
+                _finding("CLAIM-PARTIAL-A"),
+                _finding("CLAIM-PARTIAL-B", verdict="REJECT", reason="Not supported."),
+            ],
+        ),
+    )
+
+    by_id = {row["claim_id"]: row for row in result["claim_projection"]}
+    assert by_id["CLAIM-PARTIAL-A"]["decision"] == "APPROVED"
+    assert by_id["CLAIM-PARTIAL-B"]["decision"] == "BLOCKED"
+    queue = json.loads((project / "01_evidence" / "exception_queue.json").read_text())
+    assert queue["exceptions"] == [
+        {
+            "error_code": "REVIEWER_NOT_SUPPORT",
+            "r0_status": "R0_PASS",
+            "reviewer_verdict": "REJECT",
+            "study_id": study_id,
+        }
+    ]
+
+
+def test_target_findings_apply_high_risk_gate_after_claim_support(
+    tmp_path: Path,
+) -> None:
+    project = _initialize(tmp_path)
+    study_id = "STUDY-PARTIAL-AMBIGUOUS"
+
+    result = register_study(
+        project,
+        _candidate(
+            study_id,
+            [
+                _claim("CLAIM-PARTIAL-R3", risk_level="R3"),
+                _claim("CLAIM-PARTIAL-AMBIGUOUS"),
+            ],
+            reaction_units=[_reaction_unit("REACTION-PARTIAL-R3")],
+        ),
+        _r0(study_id),
+        _reviewer(
+            study_id,
+            verdict="AMBIGUOUS",
+            findings=[
+                _finding("REACTION-PARTIAL-R3"),
+                _finding("CLAIM-PARTIAL-R3"),
+                _finding(
+                    "CLAIM-PARTIAL-AMBIGUOUS",
+                    verdict="AMBIGUOUS",
+                    reason="Evidence is equivocal.",
+                ),
+            ],
+        ),
+    )
+
+    by_id = {row["claim_id"]: row for row in result["claim_projection"]}
+    assert by_id["CLAIM-PARTIAL-R3"]["decision"] == "HUMAN_REQUIRED"
+    assert by_id["CLAIM-PARTIAL-AMBIGUOUS"]["decision"] == "BLOCKED"
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    (
+        "not_list",
+        "empty",
+        "non_object",
+        "unknown_target",
+        "duplicate_target",
+        "missing_coverage",
+        "invalid_verdict",
+        "invalid_verdict_type",
+        "empty_reason",
+        "root_mismatch",
+    ),
+)
+def test_invalid_target_findings_fail_closed_into_exception_queue(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    project = _initialize(tmp_path)
+    study_id = f"STUDY-FINDINGS-{tamper.upper()}"
+    candidate = _candidate(
+        study_id,
+        [_claim("CLAIM-FINDINGS-A"), _claim("CLAIM-FINDINGS-B")],
+        reaction_units=[_reaction_unit("REACTION-FINDINGS")],
+    )
+    reviewer = _reviewer(
+        study_id,
+        findings=[
+            _finding("REACTION-FINDINGS"),
+            _finding("CLAIM-FINDINGS-A"),
+            _finding("CLAIM-FINDINGS-B"),
+        ],
+    )
+    if tamper == "not_list":
+        reviewer["findings"] = {"target_id": "REACTION-FINDINGS"}
+    elif tamper == "empty":
+        reviewer["findings"] = []
+    elif tamper == "non_object":
+        reviewer["findings"][0] = "not-an-object"
+    elif tamper == "unknown_target":
+        reviewer["findings"][0]["target_id"] = "UNKNOWN-TARGET"
+    elif tamper == "duplicate_target":
+        reviewer["findings"][2]["target_id"] = "CLAIM-FINDINGS-A"
+    elif tamper == "missing_coverage":
+        reviewer["findings"].pop()
+    elif tamper == "invalid_verdict":
+        reviewer["findings"][0]["verdict"] = "ACCEPT_WITH_NOTES"
+    elif tamper == "invalid_verdict_type":
+        reviewer["findings"][0]["verdict"] = ["SUPPORT"]
+    elif tamper == "empty_reason":
+        reviewer["findings"][0]["reason"] = "   "
+    else:
+        reviewer["verdict"] = "AMBIGUOUS"
+
+    with pytest.raises(VerticalReviewError) as error:
+        register_study(project, candidate, _r0(study_id), reviewer)
+
+    assert error.value.code == "REVIEWER_FINDINGS_INVALID"
+    assert (project / "01_evidence" / "evidence_cards.jsonl").read_text() == ""
+    assert (project / "02_claims" / "claim_projection.jsonl").read_text() == ""
+    queue = json.loads((project / "01_evidence" / "exception_queue.json").read_text())
+    assert queue["exceptions"] == [
+        {
+            "error_code": "REVIEWER_FINDINGS_INVALID",
+            "r0_status": "R0_PASS",
+            "reviewer_verdict": reviewer["verdict"],
+            "study_id": study_id,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("verdict", "expected_decision"),
+    (("SUPPORT", "APPROVED"), ("REJECT", "BLOCKED"), ("AMBIGUOUS", "BLOCKED")),
+)
+def test_reviewer_without_findings_keeps_root_only_reduction(
+    tmp_path: Path,
+    verdict: str,
+    expected_decision: str,
+) -> None:
+    project = _initialize(tmp_path)
+    study_id = f"STUDY-ROOT-ONLY-{verdict}"
+
+    result = register_study(
+        project,
+        _candidate(study_id, [_claim(f"CLAIM-ROOT-ONLY-{verdict}")]),
+        _r0(study_id),
+        _reviewer(study_id, verdict=verdict),
+    )
+
+    assert result["claim_projection"][0]["decision"] == expected_decision
 
 
 @pytest.mark.parametrize(

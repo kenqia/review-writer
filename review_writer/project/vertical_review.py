@@ -445,6 +445,87 @@ def _validate_candidate(candidate: Any) -> dict[str, Any]:
     return candidate
 
 
+def _validate_reviewer_findings(
+    candidate: dict[str, Any],
+    reviewer: dict[str, Any],
+) -> None:
+    if "findings" not in reviewer:
+        return
+    findings = reviewer["findings"]
+    if not isinstance(findings, list) or not findings:
+        _fail("REVIEWER_FINDINGS_INVALID", "findings must be a nonempty list")
+
+    target_ids = [claim["claim_id"] for claim in candidate["claims"]]
+    reaction_units = candidate.get("reaction_units", [])
+    if not isinstance(reaction_units, list):
+        _fail(
+            "REVIEWER_FINDINGS_INVALID",
+            "candidate reaction_units must expose review targets",
+        )
+    for reaction_unit in reaction_units:
+        if not isinstance(reaction_unit, dict):
+            _fail(
+                "REVIEWER_FINDINGS_INVALID",
+                "candidate reaction_units must expose review targets",
+            )
+        reaction_unit_id = reaction_unit.get("reaction_unit_id")
+        if not isinstance(reaction_unit_id, str) or not reaction_unit_id.strip():
+            _fail(
+                "REVIEWER_FINDINGS_INVALID",
+                "candidate reaction_units must expose review targets",
+            )
+        target_ids.append(reaction_unit_id)
+    expected_targets = set(target_ids)
+    if len(expected_targets) != len(target_ids):
+        _fail(
+            "REVIEWER_FINDINGS_INVALID",
+            "candidate review target ids must be unique",
+        )
+
+    seen_targets: set[str] = set()
+    target_verdicts: list[str] = []
+    for finding in findings:
+        if not isinstance(finding, dict):
+            _fail("REVIEWER_FINDINGS_INVALID", "findings must contain objects")
+        target_id = finding.get("target_id")
+        if not isinstance(target_id, str) or target_id not in expected_targets:
+            _fail(
+                "REVIEWER_FINDINGS_INVALID",
+                "finding target_id must identify a candidate reaction unit or claim",
+            )
+        if target_id in seen_targets:
+            _fail("REVIEWER_FINDINGS_INVALID", "finding target_id values must be unique")
+        verdict = finding.get("verdict")
+        if not isinstance(verdict, str) or verdict not in REVIEWER_VERDICTS:
+            _fail(
+                "REVIEWER_FINDINGS_INVALID",
+                "finding verdict must be SUPPORT, REJECT, or AMBIGUOUS",
+            )
+        reason = finding.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            _fail("REVIEWER_FINDINGS_INVALID", "finding reason must be a nonempty string")
+        seen_targets.add(target_id)
+        target_verdicts.append(verdict)
+
+    if seen_targets != expected_targets:
+        _fail(
+            "REVIEWER_FINDINGS_INVALID",
+            "findings must exactly cover candidate reaction units and claims",
+        )
+    reduced_verdict = (
+        "REJECT"
+        if "REJECT" in target_verdicts
+        else "AMBIGUOUS"
+        if "AMBIGUOUS" in target_verdicts
+        else "SUPPORT"
+    )
+    if reviewer["verdict"] != reduced_verdict:
+        _fail(
+            "REVIEWER_FINDINGS_INVALID",
+            "reviewer verdict is inconsistent with target findings",
+        )
+
+
 def _validate_identity_bindings(
     candidate: dict[str, Any],
     r0_report: Any,
@@ -468,12 +549,21 @@ def _validate_identity_bindings(
             "REVIEWER_VERDICT_INVALID",
             "reviewer verdict must be SUPPORT, REJECT, or AMBIGUOUS",
         )
+    _validate_reviewer_findings(candidate, reviewer)
 
 
 def _reduce_decision(card: dict[str, Any], claim: dict[str, Any]) -> tuple[str, str]:
     if card["r0_report"].get("status") != "R0_PASS":
         return "BLOCKED", "R0_NOT_PASS"
-    if card["reviewer"].get("verdict") != "SUPPORT":
+    reviewer = card["reviewer"]
+    reviewer_verdict = reviewer.get("verdict")
+    if "findings" in reviewer:
+        reviewer_verdict = next(
+            finding["verdict"]
+            for finding in reviewer["findings"]
+            if finding["target_id"] == claim["claim_id"]
+        )
+    if reviewer_verdict != "SUPPORT":
         return "BLOCKED", "REVIEWER_NOT_SUPPORT"
     if claim["risk_level"] == "R3" or set(claim["risk_categories"]) & HIGH_RISK_CATEGORIES:
         return "HUMAN_REQUIRED", "HIGH_RISK_REQUIRES_HUMAN"
