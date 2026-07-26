@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -205,7 +206,13 @@ def test_final_dashboard_marks_edited_snapshot_stale_until_release_is_rebuilt(tm
     assert "Release outdated" in final_html
     assert "Regenerate DOCX" in final_html
     assert "Current release ready" in final_html
-    assert "currentReleaseReady?fileUrl(payload.final_draft_docx_path):'#'" in final_html
+    conditional_download = re.search(
+        r'\$\{currentReleaseReady\?`(<a id="docxDownload"[\s\S]*?</a>)`:\'\'\}',
+        final_html,
+    )
+    assert conditional_download, "Download must be absent from the stale DOM, not rendered as a disabled link"
+    assert 'href="${fileUrl(payload.final_draft_docx_path)}"' in conditional_download.group(1)
+    assert "currentReleaseReady?fileUrl(payload.final_draft_docx_path):'#'" not in final_html
     assert "manuscript_sha256" not in final_html
     assert "docx_sha256" not in final_html
 
