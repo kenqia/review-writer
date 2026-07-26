@@ -29,15 +29,18 @@ from review_writer.project.vertical_review import (  # noqa: E402
     benchmark_metrics,
     confirm_review_brief,
 )
+from review_writer.acquisition.manifest_identity import normalize_doi  # noqa: E402
 from review_writer.delivery.project_release import (  # noqa: E402
     PROJECT_RELEASE_LOCK,
     build_project_release,
     is_reparse_component,
+    manuscript_lineage_entries,
     refreshed_manuscript_lineage,
     replace_manuscript_section_body,
     split_manuscript_sections,
     validate_project_file_path,
     validate_project_path_components,
+    validated_draft_manuscript_lineage,
 )
 
 
@@ -60,6 +63,32 @@ _RESEARCHER_INTERNAL_FILENAME_RE = re.compile(
     r"first_draft\.md|manuscript_lineage\.json|merge_report\.md|quality_report\.(?:json|md)|"
     r"release_report\.md|remaining_issues\.md|writer_packet\.json"
     r")(?![\w.-])"
+)
+_DOI_RE = re.compile(r"(?i)\b10\.\d{4,9}/[^\s\]\[()<>]+")
+_CITATION_RE = re.compile(r"\[[0-9][0-9,;\s\-–—]*\]")
+_NUMBER_RE = re.compile(r"(?<![\w.])[-+−]?\d+(?:\.\d+)?(?:\s*(?:%|percent))?", re.IGNORECASE)
+_SENTENCE_RE = re.compile(r".+?(?:[.!?。！？]+(?=\s|$)|$)", re.DOTALL)
+_SCIENTIFIC_UNIT_RE = re.compile(
+    r"(?i)^\s*(?:°\s*[CFK]|K|[ckmunµμ]?(?:mol|m|l|g|s|pa)|h(?:ours?|r)?|"
+    r"min(?:utes?)?|sec(?:onds?)?|eq(?:uiv)?\.?|bar|atm|compounds?)\b"
+)
+_DOCUMENT_META_RE = re.compile(
+    r"(?i)(?:\b(?:document|text|prose|section|paragraph|sentence|line|wording|readability|"
+    r"navigation|format(?:ting)?|style|title|heading|clarity|flow|editorial|overview|version|revision)\b|"
+    r"文档|文章|文字|文本|措辞|段落|句子|标题|章节|格式|样式|可读性|编辑|概述|版本|修订)"
+)
+_SCIENTIFIC_ASSERTION_RE = re.compile(
+    r"(?i)\b(?:show(?:s|ed)?|demonstrat(?:e|es|ed)|indicat(?:e|es|ed)|"
+    r"reveal(?:s|ed)?|establish(?:es|ed)?)\s+that\b"
+)
+_CHEMISTRY_TOKEN_RE = re.compile(
+    r"(?i)(?:\b(?:mechanis(?:m|tic)|intermediate|radical|electron[ -]transfer|transition[ -]state|"
+    r"oxidation|reduction|stereochem(?:istry|ical)|reaction[ -]pathway|molecular[ -]structure)\b|"
+    r"机制|(?:分子|化学|立体)结构|结构式)"
+)
+_CHEMICAL_STRUCTURE_RE = re.compile(
+    r"(?<!\w)(?:(?=[A-Za-z0-9]*\d)(?:[A-Z][a-z]?\d*){2,}|"
+    r"[A-Z][a-z]?\s*(?:[-=≡–—])\s*[A-Z][a-z]?)(?!\w)"
 )
 
 
@@ -120,6 +149,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.handle_discovery_projects()
         elif parsed.path == "/api/checkpoints":
             self.send_json(checkpoint_payload(self.review_root))
+        elif parsed.path.startswith("/api/project/") and parsed.path.endswith("/source"):
+            project_id = project_id_from_route(parsed.path, "source")
+            if project_id is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                return
+            self.handle_project_source_get(project_id, parse_qs(parsed.query).get("source_id", [""])[0])
         elif parsed.path.startswith("/api/project/") and parsed.path.endswith("/review-state"):
             project_id = project_id_from_route(parsed.path, "review-state")
             if project_id is None:
@@ -314,6 +349,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self.send_json(payload)
 
+    def handle_project_source_get(self, project_id: str, source_id: str) -> None:
+        try:
+            project = project_dir(self.review_root, project_id)
+        except ValueError as exc:
+            self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+        if not project.exists():
+            self.send_error(HTTPStatus.NOT_FOUND, "project not found")
+            return
+        if not source_id:
+            self.send_error(HTTPStatus.BAD_REQUEST, "source_id is required")
+            return
+        try:
+            source = project_source_pdf(project, source_id)
+        except (OSError, ValueError):
+            self.send_error(HTTPStatus.FORBIDDEN, "project source is unavailable")
+            return
+        if source is None:
+            self.send_error(HTTPStatus.NOT_FOUND, "project source not found")
+            return
+        self.send_file(source, "application/pdf")
+
     def handle_project_review_state_get(self, project_id: str) -> None:
         try:
             project = project_dir(self.review_root, project_id)
@@ -399,6 +456,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND, "project not found")
             return
         payloads = {
+            "cockpit": project_cockpit_payload,
             "evidence": project_evidence_payload,
             "risk-packet": project_risk_payload,
             "matrix": project_matrix_payload,
@@ -445,11 +503,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         try:
             data = json.loads(self.rfile.read(length).decode("utf-8"))
-            write_project_draft_sections(self.review_root, project_id, data)
+            result = write_project_draft_sections(self.review_root, project_id, data)
         except (ValueError, json.JSONDecodeError) as exc:
             self.send_error(HTTPStatus.BAD_REQUEST, f"invalid draft payload: {exc}")
             return
-        self.send_json({"ok": True, "project_id": project_id})
+        self.send_json(result)
 
     def discovery_path(self, project_id: str) -> Path:
         return project_dir(self.review_root, project_id) / "00_discovery" / "combined_results_by_keyword.json"
@@ -752,7 +810,253 @@ def visible_text_list(value: Any) -> list[str]:
     return [text] if text else []
 
 
-def scientist_locators(claims: list[dict[str, Any]]) -> list[dict[str, str]]:
+def _normalized_project_source_id(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.casefold())
+
+
+def _acquisition_source_relative_path(value: Any) -> Path | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    portable = value.strip().replace("\\", "/")
+    if portable.startswith("/") or re.match(r"^[A-Za-z]:/", portable):
+        return None
+    parts = portable.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        return None
+    if parts[0].casefold() in {"00_sources", "sources"}:
+        parts = parts[1:]
+    if not parts:
+        return None
+    relative = Path("00_sources", *parts)
+    return relative if relative.suffix.casefold() == ".pdf" else None
+
+
+def _acquisition_source_aliases(project: Path) -> list[tuple[set[str], Any]]:
+    aliases: list[tuple[set[str], Any]] = []
+    receipt = read_json_if_exists(project / "00_sources" / "acquisition_final_receipt.json")
+    studies = receipt.get("studies") if isinstance(receipt, dict) else None
+    for study in studies if isinstance(studies, list) else []:
+        if not isinstance(study, dict):
+            continue
+        doi = normalize_doi(visible_text(study.get("doi")))
+        for role, field in (("MAIN", "main_pdf"), ("SI", "si_pdf")):
+            pdf = study.get(field)
+            path = pdf.get("path") if isinstance(pdf, dict) else None
+            alias = _normalized_project_source_id(f"{doi}_{role}") if doi else ""
+            if alias:
+                aliases.append(({alias}, path))
+
+    for relative in (
+        Path("00_discovery/acquisition_manifest.json"),
+        Path("00_discovery/acquisition_manifest_converted.json"),
+    ):
+        manifest = read_json_if_exists(project / relative)
+        if not isinstance(manifest, dict):
+            continue
+        for collection in ("rows", "downloads"):
+            rows = manifest.get(collection)
+            for row in rows if isinstance(rows, list) else []:
+                if not isinstance(row, dict):
+                    continue
+                role = visible_text(row.get("document_role")).upper()
+                if role not in {"MAIN", "SI"}:
+                    continue
+                doi = normalize_doi(visible_text(row.get("doi")))
+                normalized_aliases = {
+                    alias
+                    for alias in (
+                        _normalized_project_source_id(visible_text(row.get("download_id"))),
+                        _normalized_project_source_id(f"{doi}_{role}") if doi else "",
+                    )
+                    if alias
+                }
+                if normalized_aliases:
+                    aliases.append((normalized_aliases, row.get("target_path")))
+    return aliases
+
+
+def build_project_source_index(
+    project: Path,
+    requested_source_ids: set[str],
+) -> dict[str, Path | None]:
+    """Index only requested, unique project-owned MAIN/SI PDFs for one request."""
+    project_path = Path(project)
+    sources = project_path / "00_sources"
+    validate_project_path_components(project_path, (Path("00_sources"),))
+    if not sources.is_dir():
+        return {}
+    requested = {
+        normalized
+        for source_id in requested_source_ids
+        if isinstance(source_id, str)
+        for normalized in (_normalized_project_source_id(source_id),)
+        if normalized
+    }
+    if not requested:
+        return {}
+    index: dict[str, Path | None] = {}
+    acquisition_declared: set[str] = set()
+    for aliases, target_path in _acquisition_source_aliases(project_path):
+        matched = aliases & requested
+        if not matched:
+            continue
+        acquisition_declared.update(matched)
+        relative = _acquisition_source_relative_path(target_path)
+        validated: Path | None = None
+        if relative is not None:
+            try:
+                validated = validate_project_file_path(
+                    project_path,
+                    relative,
+                    "PROJECT_SOURCE_INVALID",
+                )
+            except (OSError, ValueError):
+                pass
+        for source_id in matched:
+            if source_id in index and index[source_id] != validated:
+                index[source_id] = None
+            elif source_id not in index:
+                index[source_id] = validated
+
+    legacy_requested = requested - acquisition_declared
+    if not legacy_requested:
+        return index
+    for study_dir in sorted(sources.iterdir(), key=lambda path: path.name.casefold()):
+        requested_in_study = {
+            _normalized_project_source_id(f"{study_dir.name}_{stem}")
+            for stem in ("MAIN", "SI")
+        } & legacy_requested
+        if not requested_in_study:
+            continue
+        try:
+            candidates = sorted(study_dir.iterdir(), key=lambda path: path.name.casefold())
+        except OSError:
+            index.update({source_id: None for source_id in requested_in_study})
+            continue
+        for candidate in candidates:
+            if candidate.suffix.casefold() != ".pdf" or candidate.stem.casefold() not in {"main", "si"}:
+                continue
+            candidate_id = _normalized_project_source_id(f"{study_dir.name}_{candidate.stem}")
+            if candidate_id not in legacy_requested:
+                continue
+            relative = candidate.relative_to(project_path)
+            try:
+                validated = validate_project_file_path(
+                    project_path,
+                    relative,
+                    "PROJECT_SOURCE_INVALID",
+                )
+            except (OSError, ValueError):
+                validated = None
+            if candidate_id in index:
+                index[candidate_id] = None
+            else:
+                index[candidate_id] = validated
+    return index
+
+
+def project_source_pdf(
+    project: Path,
+    source_id: str,
+    *,
+    source_index: dict[str, Path | None] | None = None,
+) -> Path | None:
+    """Resolve one case-neutral source id to a unique project-owned MAIN/SI PDF."""
+    normalized = _normalized_project_source_id(source_id) if isinstance(source_id, str) else ""
+    if not normalized:
+        return None
+    index = source_index if source_index is not None else build_project_source_index(project, {source_id})
+    return index.get(normalized)
+
+
+def _evidence_locator_href(
+    project: Path,
+    project_id: str,
+    source_id: str,
+    page: int | None,
+    source_index: dict[str, Path | None],
+) -> str:
+    if source_id:
+        local_source = project_source_pdf(project, source_id, source_index=source_index)
+        if local_source is not None:
+            href = f"/api/project/{project_id}/source?{urlencode({'source_id': source_id})}"
+            return f"{href}#page={page}" if page is not None else href
+    return ""
+
+
+def _visible_evidence_ref(
+    project: Path,
+    project_id: str,
+    ref: dict[str, Any],
+    source_index: dict[str, Path | None],
+) -> dict[str, Any]:
+    source_id = visible_text(ref.get("source_id"))
+    raw_page = ref.get("page")
+    page = raw_page if isinstance(raw_page, int) and not isinstance(raw_page, bool) and raw_page > 0 else None
+    return {
+        "source_label": visible_text(ref.get("source_label")) or source_id or "Source record",
+        "excerpt": visible_text(ref.get("exact_quote")) or visible_text(ref.get("evidence_summary")),
+        "page": page,
+        "section": visible_text(ref.get("section_or_item")),
+        "locator": {
+            "href": _evidence_locator_href(project, project_id, source_id, page, source_index)
+        },
+    }
+
+
+def _visible_claim_detail(
+    project: Path,
+    project_id: str,
+    claim: dict[str, Any],
+    projected: dict[str, Any],
+    reviewer: dict[str, Any],
+    source_index: dict[str, Path | None],
+) -> dict[str, Any]:
+    claim_id = visible_text(projected.get("claim_id")) or visible_text(claim.get("claim_id"))
+    refs = projected.get("evidence_refs")
+    if not isinstance(refs, list):
+        refs = claim.get("evidence_refs") if isinstance(claim.get("evidence_refs"), list) else []
+    evidence = [
+        _visible_evidence_ref(project, project_id, ref, source_index)
+        for ref in refs
+        if isinstance(ref, dict)
+    ]
+    finding = next(
+        (
+            row
+            for row in (reviewer.get("findings") if isinstance(reviewer.get("findings"), list) else [])
+            if isinstance(row, dict)
+            and row.get("target_id") == claim_id
+        ),
+        {},
+    )
+    review_verdict = visible_text(finding.get("verdict"))
+    review_summary = (
+        visible_text(finding.get("reason"))
+        or visible_text(finding.get("summary"))
+    )
+    return {
+        "claim_id": claim_id,
+        "text": (
+            visible_text(projected.get("text"))
+            or visible_text(projected.get("original_text"))
+            or visible_text(claim.get("claim_text"))
+        ),
+        "decision": visible_text(projected.get("decision")),
+        "risk_level": visible_text(projected.get("risk_level")) or visible_text(claim.get("risk_level")),
+        "risk_categories": visible_text_list(projected.get("risk_categories") or claim.get("risk_categories")),
+        "evidence": evidence,
+        "review_verdict": review_verdict,
+        "review_summary": review_summary,
+    }
+
+
+def scientist_locators(
+    project: Path,
+    project_id: str,
+    claims: list[dict[str, Any]],
+    source_index: dict[str, Path | None],
+) -> list[dict[str, str]]:
     locators: list[dict[str, str]] = []
     seen: set[tuple[str, int | None, str]] = set()
     for claim in claims:
@@ -774,25 +1078,60 @@ def scientist_locators(claims: list[dict[str, Any]]) -> list[dict[str, str]]:
                 label_parts.append(f"p. {page}")
             if section:
                 label_parts.append(section)
-            query: dict[str, str | int] = {}
-            if source_id:
-                query["paper_id"] = source_id
-            if page is not None:
-                query["page"] = page
             locators.append(
                 {
                     "label": " · ".join(label_parts),
-                    "href": f"/library?{urlencode(query)}" if query else "/library",
+                    "href": _evidence_locator_href(
+                        project,
+                        project_id,
+                        source_id,
+                        page,
+                        source_index,
+                    ),
                 }
             )
     return locators
 
 
+def _claim_source_ids(claims: list[dict[str, Any]]) -> set[str]:
+    return {
+        source_id
+        for claim in claims
+        for ref in (claim.get("evidence_refs") if isinstance(claim.get("evidence_refs"), list) else [])
+        if isinstance(ref, dict)
+        for source_id in (visible_text(ref.get("source_id")),)
+        if source_id
+    }
+
+
 def project_evidence_payload(review_root: Path, project_id: str) -> dict[str, Any]:
     project = project_dir(review_root, project_id)
+    canonical_relatives = (
+        Path("01_evidence/evidence_cards.jsonl"),
+        Path("02_claims/claim_projection.jsonl"),
+        Path("01_evidence/exception_queue.json"),
+    )
+    validate_project_path_components(project, canonical_relatives)
+    if not any(os.path.lexists(project / relative) for relative in canonical_relatives):
+        return {
+            "project_id": project_id,
+            "coverage": {"studies": 0, "processable": 0, "blocked": 0, "claims": 0},
+            "cards": [],
+        }
     metrics = benchmark_metrics(project)
     cards = read_jsonl_if_exists(project / "01_evidence" / "evidence_cards.jsonl")
     projection = read_jsonl_if_exists(project / "02_claims" / "claim_projection.jsonl")
+    source_ids = _claim_source_ids(projection)
+    for card in cards:
+        candidate = card.get("candidate") if isinstance(card.get("candidate"), dict) else {}
+        claims = candidate.get("claims") if isinstance(candidate.get("claims"), list) else []
+        source_ids.update(_claim_source_ids([claim for claim in claims if isinstance(claim, dict)]))
+    source_index = build_project_source_index(project, source_ids)
+    projection_by_id = {
+        visible_text(row.get("claim_id")): row
+        for row in projection
+        if visible_text(row.get("claim_id"))
+    }
     exception_queue = read_json_if_exists(project / "01_evidence" / "exception_queue.json") or {}
     exceptions = exception_queue.get("exceptions") if isinstance(exception_queue, dict) else None
     if not isinstance(exceptions, list) or not all(isinstance(row, dict) for row in exceptions):
@@ -816,6 +1155,19 @@ def project_evidence_payload(review_root: Path, project_id: str) -> dict[str, An
             continue
         claims = candidate.get("claims") if isinstance(candidate.get("claims"), list) else []
         claim_rows = [claim for claim in claims if isinstance(claim, dict)]
+        reviewer = card.get("reviewer") if isinstance(card.get("reviewer"), dict) else {}
+        claim_details = [
+            _visible_claim_detail(
+                project,
+                project_id,
+                claim,
+                projection_by_id.get(visible_text(claim.get("claim_id")), {}),
+                reviewer,
+                source_index,
+            )
+            for claim in claim_rows
+            if visible_text(claim.get("claim_id"))
+        ]
         claim_texts = [
             text
             for text in (visible_text(claim.get("claim_text")) for claim in claim_rows)
@@ -842,7 +1194,13 @@ def project_evidence_payload(review_root: Path, project_id: str) -> dict[str, An
                 "limitations": visible_text_list(candidate.get("limitations")),
                 "claims": claim_texts,
                 "source_excerpt": excerpt,
-                "locators": scientist_locators(claim_rows),
+                "locators": scientist_locators(
+                    project,
+                    project_id,
+                    claim_rows,
+                    source_index,
+                ),
+                "claim_details": claim_details,
             }
         )
     visible_cards.sort(key=lambda card: card["study_id"])
@@ -862,17 +1220,217 @@ def project_evidence_payload(review_root: Path, project_id: str) -> dict[str, An
     }
 
 
+def _mode_coverage(
+    classifications: Any,
+    cards: list[dict[str, Any]],
+    included_studies: int,
+) -> list[dict[str, Any]]:
+    rows = classifications
+    if isinstance(classifications, dict):
+        rows = classifications.get("classifications") or classifications.get("studies")
+        if not isinstance(rows, list):
+            rows = [
+                {"doi": doi, "activation_mode": mode}
+                for doi, mode in classifications.items()
+                if isinstance(mode, str)
+            ]
+    if not isinstance(rows, list):
+        rows = []
+
+    doi_modes: dict[str, str] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        doi = normalize_doi(visible_text(row.get("doi")))
+        mode = visible_text(row.get("activation_mode"))
+        if doi and mode:
+            doi_modes[doi] = mode
+
+    included_by_mode: dict[str, int] = {}
+    reviewed_by_mode: dict[str, int] = {}
+    reviewed_ids: set[str] = set()
+    reviewed_dois: set[str] = set()
+    for index, card in enumerate(cards):
+        candidate = card.get("candidate") if isinstance(card.get("candidate"), dict) else {}
+        doi = normalize_doi(visible_text(candidate.get("doi")))
+        reviewed_id = visible_text(card.get("study_id")) or visible_text(candidate.get("study_id"))
+        reviewed_id = reviewed_id or doi or f"card-{index}"
+        if reviewed_id in reviewed_ids:
+            continue
+        reviewed_ids.add(reviewed_id)
+        if doi:
+            reviewed_dois.add(doi)
+        mode = doi_modes.get(doi) if doi else ""
+        if not mode:
+            mode = visible_text(candidate.get("activation_mode"))
+        if not mode:
+            mode = "Unclassified"
+        included_by_mode[mode] = included_by_mode.get(mode, 0) + 1
+        reviewed_by_mode[mode] = reviewed_by_mode.get(mode, 0) + 1
+
+    occupied = len(reviewed_ids)
+    for doi, mode in sorted(doi_modes.items()):
+        if occupied >= included_studies:
+            break
+        if doi in reviewed_dois:
+            continue
+        included_by_mode[mode] = included_by_mode.get(mode, 0) + 1
+        occupied += 1
+
+    unclassified = included_studies - occupied
+    if unclassified > 0:
+        included_by_mode["Unclassified"] = (
+            included_by_mode.get("Unclassified", 0) + unclassified
+        )
+    modes = sorted(set(included_by_mode) | set(reviewed_by_mode), key=str.casefold)
+    return [
+        {
+            "activation_mode": mode,
+            "included_studies": included_by_mode.get(mode, 0),
+            "reviewed_studies": reviewed_by_mode.get(mode, 0),
+        }
+        for mode in modes
+    ]
+
+
+def _open_scientific_risk_count(packet: Any, decision_payload: Any) -> int:
+    targets = packet.get("targets") if isinstance(packet, dict) else None
+    if not isinstance(targets, list):
+        raw_count = packet.get("target_count") if isinstance(packet, dict) else 0
+        return raw_count if isinstance(raw_count, int) and not isinstance(raw_count, bool) and raw_count >= 0 else 0
+    decisions = decision_payload.get("decisions") if isinstance(decision_payload, dict) else None
+    closed = {
+        (visible_text(row.get("claim_id")), visible_text(row.get("review_target_digest")))
+        for row in (decisions if isinstance(decisions, list) else [])
+        if isinstance(row, dict)
+        and visible_text(row.get("action")).upper() in {"APPROVE", "REWORD", "EXCLUDE"}
+    }
+    return sum(
+        isinstance(target, dict)
+        and (
+            visible_text(target.get("claim_id")),
+            visible_text(target.get("review_target_digest")),
+        )
+        not in closed
+        for target in targets
+    )
+
+
+def project_cockpit_payload(review_root: Path, project_id: str) -> dict[str, Any]:
+    project = project_dir(review_root, project_id)
+    state = read_json_if_exists(project / "00_brief" / "review_state.json") or {}
+    screening = read_json_if_exists(project / "00_discovery" / "screening_decisions.json") or {}
+    decisions = screening.get("decisions") if isinstance(screening, dict) else None
+    included_studies: int | None = None
+    if isinstance(decisions, list):
+        included_studies = sum(
+            isinstance(row, dict) and row.get("disposition") == "INCLUDE_FOR_FULL_TEXT"
+            for row in decisions
+        )
+
+    acquisition = read_json_if_exists(project / "00_sources" / "acquisition_final_receipt.json") or {}
+    acquisition_studies = acquisition.get("studies") if isinstance(acquisition, dict) else None
+    if included_studies is None and isinstance(acquisition, dict):
+        total = acquisition.get("total_studies")
+        if isinstance(total, int) and not isinstance(total, bool) and total >= 0:
+            included_studies = total
+
+    cards = read_jsonl_if_exists(project / "01_evidence" / "evidence_cards.jsonl")
+    reviewed_ids = {
+        visible_text(card.get("study_id"))
+        or visible_text(card.get("candidate", {}).get("study_id"))
+        for card in cards
+        if isinstance(card, dict)
+    }
+    reviewed_ids.discard("")
+    reviewed_studies = len(reviewed_ids) if reviewed_ids else len(cards)
+    if included_studies is None:
+        included_studies = reviewed_studies
+
+    full_text_main_coverage: int | None = None
+    if isinstance(acquisition_studies, list):
+        full_text_main_coverage = sum(
+            isinstance(row, dict) and bool(row.get("main_pdf"))
+            for row in acquisition_studies
+        )
+    if full_text_main_coverage is None and isinstance(acquisition, dict):
+        acquired = acquisition.get("full_text_acquired")
+        if isinstance(acquired, int) and not isinstance(acquired, bool) and acquired >= 0:
+            full_text_main_coverage = acquired
+    if full_text_main_coverage is None:
+        sources = project / "00_sources"
+        full_text_main_coverage = 0
+        if sources.is_dir() and not is_reparse_component(sources):
+            full_text_main_coverage = sum(
+                any(
+                    child.is_file()
+                    and not is_reparse_component(child)
+                    and child.name.casefold() == "main.pdf"
+                    for child in study.iterdir()
+                )
+                for study in sources.iterdir()
+                if study.is_dir() and not is_reparse_component(study)
+            )
+
+    risk_packet = read_json_if_exists(project / "03_review" / "risk_packet.json") or {}
+    risk_decisions = read_json_if_exists(project / "03_review" / "risk_decisions.json") or {}
+    scientific_risks = _open_scientific_risk_count(risk_packet, risk_decisions)
+
+    classifications = read_json_if_exists(project / "01_evidence" / "pilot_mode_classification.json")
+    if reviewed_studies < included_studies:
+        recommended_next = "继续处理下一批证据"
+    elif full_text_main_coverage < included_studies:
+        recommended_next = "补齐缺失的全文证据"
+    elif scientific_risks:
+        recommended_next = "复核集中科学风险"
+    elif not project_regular_file_exists(project, Path("04_first_draft/first_draft.md")):
+        recommended_next = "开始撰写证据约束的综述正文"
+    else:
+        recommended_next = "继续完善综述正文"
+    return {
+        "project_id": project_id,
+        "current_stage": visible_text(state.get("current_stage")) or "not_started",
+        "metrics": {
+            "included_studies": included_studies,
+            "full_text_main_coverage": full_text_main_coverage,
+            "reviewed_studies": reviewed_studies,
+            "scientific_risks": scientific_risks,
+        },
+        "recommended_next": recommended_next,
+        "mode_coverage": _mode_coverage(classifications, cards, included_studies),
+    }
+
+
 def project_risk_payload(review_root: Path, project_id: str) -> dict[str, Any]:
     project = project_dir(review_root, project_id)
-    benchmark_metrics(project)
-    packet = read_json_if_exists(project / "03_review" / "risk_packet.json") or {}
-    decision_payload = read_json_if_exists(project / "03_review" / "risk_decisions.json") or {}
-    raw_targets = packet.get("targets") if isinstance(packet, dict) else []
-    raw_decisions = decision_payload.get("decisions") if isinstance(decision_payload, dict) else []
+    packet_relative = Path("03_review/risk_packet.json")
+    decisions_relative = Path("03_review/risk_decisions.json")
+    validate_project_path_components(project, (packet_relative, decisions_relative))
+    packet_path = project / packet_relative
+    decisions_path = project / decisions_relative
+    packet_exists = os.path.lexists(packet_path)
+    decisions_exists = os.path.lexists(decisions_path)
+    if decisions_exists:
+        decision_payload = read_json_if_exists(decisions_path)
+        raw_decisions = decision_payload.get("decisions") if isinstance(decision_payload, dict) else None
+        if not isinstance(raw_decisions, list) or not all(isinstance(row, dict) for row in raw_decisions):
+            raise ValueError("project risk review is unavailable")
+    else:
+        decision_payload = {}
+        raw_decisions = []
+    if not packet_exists:
+        if raw_decisions:
+            raise ValueError("project risk review is unavailable")
+        return {
+            "project_id": project_id,
+            "coverage": {"targets": 0, "human_required": 0, "low_risk_audit": 0},
+            "targets": [],
+        }
+    packet = read_json_if_exists(packet_path)
+    raw_targets = packet.get("targets") if isinstance(packet, dict) else None
     if not isinstance(raw_targets, list) or not all(isinstance(row, dict) for row in raw_targets):
         raise ValueError("project risk review is unavailable")
-    if not isinstance(raw_decisions, list) or not all(isinstance(row, dict) for row in raw_decisions):
-        raise ValueError("project risk review is unavailable")
+    benchmark_metrics(project)
     existing: dict[str, dict[str, Any]] = {}
     for row in raw_decisions:
         claim_id = visible_text(row.get("claim_id"))
@@ -1030,6 +1588,55 @@ def project_dir(review_root: Path, project_id: str) -> Path:
     return nested
 
 
+def project_regular_file_exists(project: Path, relative: Path) -> bool:
+    try:
+        validate_project_file_path(project, relative, "PROJECT_FILE_UNAVAILABLE")
+    except ValueError:
+        return False
+    return True
+
+
+def project_nonblank_text_file_bytes(project: Path, relative: Path) -> bytes | None:
+    try:
+        path = validate_project_file_path(project, relative, "PROJECT_FILE_UNAVAILABLE")
+        payload = path.read_bytes()
+        return payload if payload.decode("utf-8").strip() else None
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+
+
+def has_review_product_data(project: Path) -> bool:
+    regular_artifacts = (
+        "00_brief/review_state.json",
+        "00_discovery/combined_results_by_keyword.json",
+        "00_discovery/discovery_candidates.json",
+        "00_discovery/screening_decisions.json",
+        "01_evidence/evidence_cards.jsonl",
+        "01_matrix_outline/literature_matrix.json",
+        "01_matrix_outline/section_blueprint.json",
+        "section_blueprint.json",
+        "02_claims/claim_projection.jsonl",
+        "02_section_drafting/section_drafts.md",
+        "02_section_drafting/section_1.md",
+        "03_review/risk_packet.json",
+        "03_figure_redraw/redrawn_figure_manifest.json",
+        "03_figure_redraw/figure_manifest.json",
+        "05_final_audit/final_draft.md",
+    )
+    if any(
+        project_regular_file_exists(project, Path(relative))
+        for relative in regular_artifacts
+    ):
+        return True
+    return any(
+        project_nonblank_text_file_bytes(project, Path(relative)) is not None
+        for relative in (
+            "04_first_draft/first_draft.md",
+            "04_first_draft/final_draft.md",
+        )
+    )
+
+
 def list_review_projects(review_root: Path) -> list[dict[str, Any]]:
     if is_direct_output_root(review_root):
         project_id = direct_project_id(review_root)
@@ -1044,7 +1651,10 @@ def list_review_projects(review_root: Path) -> list[dict[str, Any]]:
                 or (review_root / "01_matrix_outline" / "section_blueprint.json").exists(),
                 "has_section_drafting": (review_root / "02_section_drafting" / "section_1.md").exists(),
                 "has_figure_redraw": (review_root / "03_figure_redraw" / "figure_manifest.json").exists(),
-                "has_first_draft": (review_root / "04_first_draft" / "final_draft.md").exists(),
+                "has_first_draft": project_nonblank_text_file_bytes(
+                    review_root,
+                    Path("04_first_draft/final_draft.md"),
+                ) is not None,
                 "has_final_audit": (review_root / "05_final_audit" / "final_draft.md").exists(),
             }
         ]
@@ -1052,7 +1662,9 @@ def list_review_projects(review_root: Path) -> list[dict[str, Any]]:
     projects: list[dict[str, Any]] = []
     if not base.exists():
         return projects
-    for project in sorted(p for p in base.iterdir() if p.is_dir()):
+    for project in sorted(
+        p for p in base.iterdir() if p.is_dir() and has_review_product_data(p)
+    ):
         discovery_state = read_json_if_exists(project / "00_discovery" / "human_check_state.json") or {}
         projects.append(
             {
@@ -1064,7 +1676,10 @@ def list_review_projects(review_root: Path) -> list[dict[str, Any]]:
                 "has_blueprint": (project / "01_matrix_outline" / "section_blueprint.json").exists(),
                 "has_section_drafting": (project / "02_section_drafting" / "section_drafts.md").exists(),
                 "has_figure_redraw": (project / "03_figure_redraw" / "redrawn_figure_manifest.json").exists(),
-                "has_first_draft": (project / "04_first_draft" / "first_draft.md").exists(),
+                "has_first_draft": project_nonblank_text_file_bytes(
+                    project,
+                    Path("04_first_draft/first_draft.md"),
+                ) is not None,
                 "has_final_audit": (project / "05_final_audit" / "final_draft.md").exists(),
             }
         )
@@ -1079,15 +1694,32 @@ def review_state_path(review_root: Path, project_id: str) -> Path:
     return project_dir(review_root, project_id) / "00_brief" / "review_state.json"
 
 
+def select_default_workspace(
+    review_state: dict[str, Any],
+    *,
+    first_draft_exists: bool,
+) -> str:
+    """Choose a researcher workspace without presenting a stage-only phantom manuscript."""
+    stage = review_state.get("current_stage") if isinstance(review_state, dict) else None
+    return (
+        "manuscript"
+        if first_draft_exists and stage in {"drafting", "final_review", "complete"}
+        else "cockpit"
+    )
+
+
 def project_review_state_payload(review_root: Path, project_id: str) -> dict[str, Any]:
     project = project_dir(review_root, project_id)
     state = read_json_if_exists(review_state_path(review_root, project_id)) or {}
     if not isinstance(state, dict):
         state = {}
     final_stage = project / "05_final_audit"
-    first_draft = project / "04_first_draft" / "first_draft.md"
     final_draft = final_stage / "final_draft.md"
     counts = state.get("counts") if isinstance(state.get("counts"), dict) else {}
+    first_draft_exists = project_nonblank_text_file_bytes(
+        project,
+        Path("04_first_draft/first_draft.md"),
+    ) is not None
     return {
         "project_id": project_id,
         "brief": state.get("brief") if isinstance(state.get("brief"), dict) else {"topic": infer_project_topic(project)},
@@ -1096,7 +1728,11 @@ def project_review_state_payload(review_root: Path, project_id: str) -> dict[str
         "blockers": state.get("blockers") if isinstance(state.get("blockers"), list) else [],
         "counts": {key: int(counts.get(key) or 0) for key in ("sources", "evidence", "claims")},
         "updated_at": state.get("updated_at"),
-        "draft": {"first_draft_exists": first_draft.exists(), "final_draft_exists": final_draft.exists(), "docx_exists": (final_stage / "final_draft.docx").exists()},
+        "default_workspace": select_default_workspace(
+            state,
+            first_draft_exists=first_draft_exists,
+        ),
+        "draft": {"first_draft_exists": first_draft_exists, "final_draft_exists": final_draft.exists(), "docx_exists": (final_stage / "final_draft.docx").exists()},
         "summary": project_summary(review_root, project_id),
     }
 
@@ -1174,6 +1810,137 @@ def _commit_draft_and_lineage(
         raise
 
 
+def _sentences(text: str) -> list[str]:
+    return [match.group(0).strip() for match in _SENTENCE_RE.finditer(text) if match.group(0).strip()]
+
+
+def _citation_signatures(text: str) -> list[tuple[str, ...]]:
+    signatures: list[tuple[str, ...]] = []
+    for sentence in _sentences(text):
+        tokens = sorted(
+            [
+                (match.start(), match.group(0).casefold().rstrip(".,;"))
+                for pattern in (_DOI_RE, _CITATION_RE)
+                for match in pattern.finditer(sentence)
+            ],
+            key=lambda row: row[0],
+        )
+        if tokens:
+            signatures.append(tuple(token for _, token in tokens))
+    return signatures
+
+
+def _scientific_number_signatures(
+    text: str,
+    lineage_spans: list[str],
+) -> list[tuple[str, ...]]:
+    signatures: list[tuple[str, ...]] = []
+    for sentence in _sentences(text):
+        without_citations = _CITATION_RE.sub("", _DOI_RE.sub("", sentence))
+        lineage_context = any(span in sentence for span in lineage_spans)
+        scientific_context = lineage_context or not _DOCUMENT_META_RE.search(without_citations)
+        tokens: list[str] = []
+        for match in _NUMBER_RE.finditer(without_citations):
+            token = re.sub(r"\s+", "", match.group(0).casefold())
+            has_scientific_marker = (
+                token.startswith(("-", "+", "−"))
+                or "%" in token
+                or "percent" in token
+                or bool(_SCIENTIFIC_UNIT_RE.match(without_citations[match.end() :]))
+            )
+            if scientific_context or has_scientific_marker:
+                tokens.append(token)
+        if tokens:
+            signatures.append(tuple(tokens))
+    return signatures
+
+
+def _term_signatures(text: str) -> list[tuple[str, ...]]:
+    signatures: list[tuple[str, ...]] = []
+    for sentence in _sentences(text):
+        token_rows = [
+            (match.start(), match.group(0).casefold())
+            for pattern in (_CHEMISTRY_TOKEN_RE, _CHEMICAL_STRUCTURE_RE)
+            for match in pattern.finditer(sentence)
+            if (
+                pattern is _CHEMICAL_STRUCTURE_RE
+                or any("\u4e00" <= character <= "\u9fff" for character in match.group(0))
+                or not _DOCUMENT_META_RE.search(sentence)
+            )
+        ]
+        tokens = tuple(token for _, token in sorted(token_rows))
+        if tokens:
+            signatures.append(tokens)
+    return signatures
+
+
+def _reviewable_statement_signatures(text: str) -> list[str]:
+    return [
+        re.sub(r"\s+", " ", sentence).strip().casefold()
+        for sentence in _sentences(text)
+        if not _DOCUMENT_META_RE.search(sentence) or _SCIENTIFIC_ASSERTION_RE.search(sentence)
+    ]
+
+
+def _scientific_edit_reasons(
+    section_id: str,
+    verified_body: str,
+    candidate_body: str,
+    lineage: dict[str, Any],
+) -> list[str]:
+    """Classify an edit under a deliberately small, general scientific contract.
+
+    Lineage-bound spans, sentence-bound citation/DOI or scientific-number changes,
+    and chemistry-token/structural-formula changes are scientific. After those
+    rules, any added or rewritten non-meta statement is conservatively scientific.
+    Only prose explicitly about document wording, structure, navigation, style, or
+    versioning is editorial. This avoids domain vocabulary as a safety boundary.
+    """
+    reasons: list[str] = []
+    lineage_spans: list[str] = []
+    verified_claim_order: list[tuple[int, str]] = []
+    candidate_claim_order: list[tuple[int, str]] = []
+    for entry in manuscript_lineage_entries(lineage):
+        if not isinstance(entry, dict):
+            continue
+        bound_section = entry.get("section_id")
+        if bound_section is not None and bound_section != section_id:
+            continue
+        text_span = entry.get("text_span") or entry.get("manuscript_text") or entry.get("text")
+        if isinstance(text_span, str) and text_span:
+            verified_count = verified_body.count(text_span)
+            candidate_count = candidate_body.count(text_span)
+            if verified_count != candidate_count:
+                reasons.append("修改了证据绑定主张")
+                break
+            if verified_count == candidate_count == 1:
+                claim_id = visible_text(entry.get("claim_id")) or text_span
+                lineage_spans.append(text_span)
+                verified_claim_order.append((verified_body.index(text_span), claim_id))
+                candidate_claim_order.append((candidate_body.index(text_span), claim_id))
+    if not reasons and [row[1] for row in sorted(verified_claim_order)] != [
+        row[1] for row in sorted(candidate_claim_order)
+    ]:
+        reasons.append("修改了证据绑定主张")
+
+    if _scientific_number_signatures(verified_body, lineage_spans) != _scientific_number_signatures(
+        candidate_body,
+        lineage_spans,
+    ):
+        reasons.append("改变了数字或百分比")
+    if _citation_signatures(verified_body) != _citation_signatures(candidate_body):
+        reasons.append("改变了文献引用或 DOI")
+    if (
+        not reasons
+        and _reviewable_statement_signatures(candidate_body)
+        != _reviewable_statement_signatures(verified_body)
+    ):
+        reasons.append("新增了未经验证的科研结论")
+    if _term_signatures(verified_body) != _term_signatures(candidate_body):
+        reasons.append("改变了结构或机制术语")
+    return list(dict.fromkeys(reasons))
+
+
 def write_project_draft_sections(review_root: Path, project_id: str, data: Any) -> dict[str, Any]:
     with PROJECT_RELEASE_LOCK:
         return _write_project_draft_sections_unlocked(review_root, project_id, data)
@@ -1218,7 +1985,55 @@ def _write_project_draft_sections_unlocked(
     candidate_order = [(row["id"], row["heading"], row["level"]) for row in candidate_sections]
     if candidate_order != current_order:
         raise ValueError("section edit must preserve ordered ids and headings")
-    updated_lineage = refreshed_manuscript_lineage(project, current_markdown, candidate)
+    try:
+        lineage = json.loads(lineage_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("authoritative manuscript lineage is invalid") from exc
+    if not isinstance(lineage, dict):
+        raise ValueError("authoritative manuscript lineage is invalid")
+    current_section = next(row for row in current_sections if row["id"] == section_id)
+    candidate_section = next(row for row in candidate_sections if row["id"] == section_id)
+    pending_rows = lineage.get("pending_scientific_edits", [])
+    if not isinstance(pending_rows, list):
+        raise ValueError("authoritative manuscript lineage is invalid")
+    existing_pending = next(
+        (
+            row
+            for row in pending_rows
+            if isinstance(row, dict) and row.get("section_id") == section_id
+        ),
+        None,
+    )
+    verified_body = (
+        existing_pending.get("verified_body")
+        if isinstance(existing_pending, dict) and isinstance(existing_pending.get("verified_body"), str)
+        else current_section["body"]
+    )
+    restored = existing_pending is not None and candidate_section["body"] == verified_body
+    reasons = [] if restored else _scientific_edit_reasons(
+        section_id,
+        verified_body,
+        candidate_section["body"],
+        lineage,
+    )
+    if existing_pending is not None and not restored:
+        existing_reasons = existing_pending.get("reasons")
+        if isinstance(existing_reasons, list):
+            reasons = list(
+                dict.fromkeys(
+                    [
+                        *[reason for reason in existing_reasons if isinstance(reason, str) and reason],
+                        *reasons,
+                    ]
+                )
+            )
+    updated_lineage = refreshed_manuscript_lineage(
+        project,
+        current_markdown,
+        candidate,
+        section_id=section_id,
+        scientific_reasons=reasons,
+    )
     candidate_bytes = candidate.encode("utf-8")
     lineage_payload = (
         json.dumps(updated_lineage, ensure_ascii=False, allow_nan=False, indent=2) + "\n"
@@ -1243,6 +2058,9 @@ def _write_project_draft_sections_unlocked(
         "project_id": project_id,
         "section_id": section_id,
         "manuscript_version": hashlib.sha256(candidate_bytes).hexdigest(),
+        "edit_classification": "restored" if restored else "scientific" if reasons else "editorial",
+        "needs_evidence_review": bool(updated_lineage.get("pending_scientific_edits")),
+        "reasons": reasons,
     }
 
 
@@ -1468,16 +2286,132 @@ def project_final_payload(review_root: Path, project_id: str) -> dict[str, Any]:
     }
 
 
+def _project_claim_detail_index(
+    project: Path,
+    project_id: str,
+    claim_ids: set[str],
+) -> dict[str, dict[str, Any]]:
+    projection = read_jsonl_if_exists(project / "02_claims" / "claim_projection.jsonl")
+    projection_by_id = {
+        visible_text(row.get("claim_id")): row
+        for row in projection
+        if visible_text(row.get("claim_id")) in claim_ids
+    }
+    card_claims: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+    source_ids = _claim_source_ids(list(projection_by_id.values()))
+    cards = read_jsonl_if_exists(project / "01_evidence" / "evidence_cards.jsonl")
+    for card in cards:
+        candidate = card.get("candidate") if isinstance(card.get("candidate"), dict) else {}
+        reviewer = card.get("reviewer") if isinstance(card.get("reviewer"), dict) else {}
+        claims = candidate.get("claims") if isinstance(candidate.get("claims"), list) else []
+        selected = [
+            claim
+            for claim in claims
+            if isinstance(claim, dict) and visible_text(claim.get("claim_id")) in claim_ids
+        ]
+        if selected:
+            card_claims.append((reviewer, selected))
+            source_ids.update(_claim_source_ids(selected))
+    source_index = build_project_source_index(project, source_ids)
+    details: dict[str, dict[str, Any]] = {}
+    for reviewer, claims in card_claims:
+        for claim in claims:
+            claim_id = visible_text(claim.get("claim_id"))
+            if claim_id:
+                details[claim_id] = _visible_claim_detail(
+                    project,
+                    project_id,
+                    claim,
+                    projection_by_id.get(claim_id, {}),
+                    reviewer,
+                    source_index,
+                )
+    for claim_id, projected in projection_by_id.items():
+        details.setdefault(
+            claim_id,
+            _visible_claim_detail(project, project_id, {}, projected, {}, source_index),
+        )
+    return details
+
+
+def _draft_claim_lineage(
+    project: Path,
+    project_id: str,
+    lineage: dict[str, Any],
+) -> list[dict[str, Any]]:
+    entries = [entry for entry in manuscript_lineage_entries(lineage) if isinstance(entry, dict)]
+    claim_ids = {
+        claim_id
+        for entry in entries
+        for claim_id in (visible_text(entry.get("claim_id")),)
+        if claim_id
+    }
+    details = _project_claim_detail_index(project, project_id, claim_ids)
+    rows: list[dict[str, Any]] = []
+    for entry in entries:
+        claim_id = visible_text(entry.get("claim_id"))
+        if not claim_id:
+            continue
+        detail = details.get(claim_id, {"claim_id": claim_id})
+        row = dict(detail)
+        row["section_id"] = visible_text(entry.get("section_id"))
+        row["text_span"] = visible_text(
+            entry.get("text_span") or entry.get("manuscript_text") or entry.get("text")
+        )
+        rows.append(row)
+    return rows
+
+
+def _draft_revision_status(lineage: dict[str, Any]) -> dict[str, Any]:
+    raw_pending = lineage.get("pending_scientific_edits", [])
+    pending: list[dict[str, Any]] = []
+    if not isinstance(raw_pending, list):
+        raise ValueError("pending_scientific_edits must be a list")
+    for row in raw_pending:
+        if not isinstance(row, dict):
+            raise ValueError("pending_scientific_edits rows must be objects")
+        section_id = row.get("section_id")
+        verified_body = row.get("verified_body")
+        raw_reasons = row.get("reasons")
+        if (
+            not isinstance(section_id, str)
+            or not section_id.strip()
+            or not isinstance(verified_body, str)
+            or not isinstance(raw_reasons, list)
+            or not raw_reasons
+            or not all(isinstance(reason, str) and reason.strip() for reason in raw_reasons)
+        ):
+            raise ValueError("pending_scientific_edits row is invalid")
+        pending.append(
+            {
+                "section_id": section_id.strip(),
+                "verified_body": verified_body,
+                "reasons": [reason.strip() for reason in raw_reasons],
+            }
+        )
+    return {
+        "needs_evidence_review": bool(pending),
+        "pending_scientific_edits": pending,
+    }
+
+
 def project_draft_payload(review_root: Path, project_id: str) -> dict[str, Any]:
     project = project_dir(review_root, project_id)
     stage_dir = project / "04_first_draft"
     project_relative = project.relative_to(Path(review_root).resolve())
     stage_relative = (project_relative / "04_first_draft").as_posix()
-    manuscript_path = validate_project_file_path(
-        project, Path("04_first_draft/first_draft.md"), "MANUSCRIPT_INVALID"
+    manuscript_relative = Path("04_first_draft/first_draft.md")
+    lineage_relative = Path("04_first_draft/manuscript_lineage.json")
+    validate_project_path_components(project, (manuscript_relative, lineage_relative))
+    manuscript_bytes = project_nonblank_text_file_bytes(project, manuscript_relative)
+    manuscript_available = manuscript_bytes is not None
+    manuscript_bytes = manuscript_bytes or b""
+    first_draft_md = manuscript_bytes.decode("utf-8") if manuscript_available else ""
+    lineage = (
+        validated_draft_manuscript_lineage(project, first_draft_md)
+        if manuscript_available
+        else {}
     )
-    manuscript_bytes = manuscript_path.read_bytes()
-    first_draft_md = manuscript_bytes.decode("utf-8")
     figures_manifest = read_json_if_exists(project / "03_figure_redraw" / "redrawn_figure_manifest.json") or {}
     redrawn = []
     for row in (figures_manifest.get("figures") or []):
@@ -1493,8 +2427,14 @@ def project_draft_payload(review_root: Path, project_id: str) -> dict[str, Any]:
         "project_id": project_id,
         "topic": infer_project_topic(project),
         "summary": next((p for p in list_review_projects(review_root) if p["project_id"] == project_id), None),
-        "manuscript_version": hashlib.sha256(manuscript_bytes).hexdigest(),
+        "available": manuscript_available,
+        "manuscript_version": hashlib.sha256(manuscript_bytes).hexdigest() if manuscript_available else "",
         "sections": split_manuscript_sections(first_draft_md) if first_draft_md else [],
+        "claim_lineage": _draft_claim_lineage(project, project_id, lineage) if manuscript_available else [],
+        "revision_status": _draft_revision_status(lineage) if manuscript_available else {
+            "needs_evidence_review": False,
+            "pending_scientific_edits": [],
+        },
         "merge_report_md": researcher_safe_markdown(read_text_if_exists(stage_dir / "merge_report.md")),
         "remaining_issues_md": researcher_safe_markdown(read_text_if_exists(stage_dir / "remaining_issues.md")),
         "redrawn_figures": redrawn,

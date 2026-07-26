@@ -70,6 +70,7 @@ VISIBLE_EVIDENCE_CARD_FIELDS = {
     "claims",
     "source_excerpt",
     "locators",
+    "claim_details",
 }
 VISIBLE_RISK_TARGET_FIELDS = {
     "target_id",
@@ -83,6 +84,26 @@ VISIBLE_RISK_TARGET_FIELDS = {
     "existing_decision",
     "decision_token",
 }
+
+
+def payload_field_names(value: object) -> set[str]:
+    if isinstance(value, dict):
+        return set(value) | {
+            key
+            for child in value.values()
+            for key in payload_field_names(child)
+        }
+    if isinstance(value, list):
+        return {key for child in value for key in payload_field_names(child)}
+    return set()
+
+
+def payload_string_values(value: object) -> list[str]:
+    if isinstance(value, dict):
+        return [text for child in value.values() for text in payload_string_values(child)]
+    if isinstance(value, list):
+        return [text for child in value for text in payload_string_values(child)]
+    return [value] if isinstance(value, str) else []
 
 
 class VisibleTextParser(HTMLParser):
@@ -405,9 +426,56 @@ class NativeReviewWriterPluginTests(unittest.TestCase):
 
 class NativeReviewWriterDashboardTests(unittest.TestCase):
     @staticmethod
+    def _bind_authoritative_fixture_draft(
+        project: Path,
+        *,
+        manuscript: str | None = None,
+        claims: list[dict[str, object]] | None = None,
+    ) -> None:
+        projection_path = project / "02_claims" / "claim_projection.jsonl"
+        projection = [
+            json.loads(line)
+            for line in projection_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        projection_bytes = json.dumps(
+            projection,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        projection_sha256 = hashlib.sha256(projection_bytes).hexdigest()
+        manuscript_path = project / "04_first_draft" / "first_draft.md"
+        if manuscript is None:
+            manuscript = manuscript_path.read_text(encoding="utf-8")
+            if not any(
+                section.strip().casefold() == "references"
+                for section in re.findall(r"^##\s+(.+)$", manuscript, flags=re.MULTILINE)
+            ):
+                manuscript = manuscript.rstrip() + "\n\n## References\n\n[1] Synthetic reference.\n"
+        manuscript_path.write_text(manuscript, encoding="utf-8")
+        writer_packet = {
+            "projection_sha256": projection_sha256,
+            "claims": [row for row in projection if row.get("decision") == "APPROVED"],
+        }
+        writer_path = project / "02_claims" / "writer_packet.json"
+        writer_path.write_text(json.dumps(writer_packet, ensure_ascii=False) + "\n", encoding="utf-8")
+        lineage = {
+            "manuscript_sha256": hashlib.sha256(manuscript.encode("utf-8")).hexdigest(),
+            "projection_sha256": projection_sha256,
+            "claims": claims or [],
+        }
+        lineage_path = project / "04_first_draft" / "manuscript_lineage.json"
+        lineage_path.write_text(json.dumps(lineage, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    @staticmethod
     def _copy_fixture(destination: Path) -> Path:
         review_root = destination / "review-root"
         shutil.copytree(FIXTURE, review_root)
+        NativeReviewWriterDashboardTests._bind_authoritative_fixture_draft(
+            review_root / "review-projects" / "synthetic-review"
+        )
         return review_root
 
     @staticmethod
@@ -458,6 +526,7 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             self.assertEqual("evidence_review", json.loads(body)["current_stage"])
             state = dashboard.project_review_state_payload(review_root, "synthetic-review")
             self.assertEqual("evidence_review", state["current_stage"])
+            self.assertEqual("cockpit", state["default_workspace"])
             self.assertEqual(2, state["counts"]["evidence"])
             updated = {**state, "current_stage": "drafting", "status": "in_progress", "blockers": []}
             dashboard.write_project_review_state(review_root, "synthetic-review", updated)
@@ -480,8 +549,292 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             export.assert_called_once_with(review_root, "synthetic-review")
             self.assertIn('self.send_header("Location", "/review")', SERVER.read_text(encoding="utf-8"))
             review_html = (ROOT / "view" / "assets" / "dashboard" / "review.html").read_text(encoding="utf-8")
-            self.assertIn('fetch(`/api/project/${encodeURIComponent(projectId)}/review-state`)', review_html)
+            self.assertIn('getPayload(`/api/project/${encoded}/review-state`)', review_html)
             self.assertIn('<link rel="icon" href="data:,">', review_html)
+
+    def test_projects_api_filters_directories_without_review_product_data(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir) / "review-root"
+            projects = review_root / "review-projects"
+            state_project = projects / "state-project" / "00_brief"
+            state_project.mkdir(parents=True)
+            (state_project / "review_state.json").write_text("{}\n", encoding="utf-8")
+            stage_project = projects / "stage-project" / "01_evidence"
+            stage_project.mkdir(parents=True)
+            (stage_project / "evidence_cards.jsonl").write_text("\n", encoding="utf-8")
+            non_project = projects / "prepared-material" / "inputs"
+            non_project.mkdir(parents=True)
+            (non_project / "notes.txt").write_text("not a review project\n", encoding="utf-8")
+            legacy_artifacts = {
+                "root-blueprint": "section_blueprint.json",
+                "section-one": "02_section_drafting/section_1.md",
+                "legacy-figure": "03_figure_redraw/figure_manifest.json",
+                "legacy-draft": "04_first_draft/final_draft.md",
+            }
+            for project_id, relative in legacy_artifacts.items():
+                artifact = projects / project_id / relative
+                artifact.parent.mkdir(parents=True)
+                artifact.write_text("legacy review product\n", encoding="utf-8")
+
+            listed = dashboard.list_review_projects(review_root)
+
+            self.assertEqual(
+                [
+                    "legacy-draft",
+                    "legacy-figure",
+                    "root-blueprint",
+                    "section-one",
+                    "stage-project",
+                    "state-project",
+                ],
+                [row["project_id"] for row in listed],
+            )
+            status, _, body = self._request(
+                dashboard,
+                review_root,
+                b"GET /api/projects HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            )
+            self.assertEqual(200, status)
+            self.assertEqual(listed, json.loads(body))
+
+    def test_default_workspace_requires_a_real_manuscript_for_manuscript_stages(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        cases = (
+            ("evidence_review", False, "cockpit"),
+            ("evidence_review", True, "cockpit"),
+            ("drafting", False, "cockpit"),
+            ("drafting", True, "manuscript"),
+            ("final_review", True, "manuscript"),
+            ("complete", True, "manuscript"),
+            ("complete", False, "cockpit"),
+        )
+        for current_stage, first_draft_exists, expected in cases:
+            with self.subTest(current_stage=current_stage, first_draft_exists=first_draft_exists):
+                self.assertEqual(
+                    expected,
+                    dashboard.select_default_workspace(
+                        {"current_stage": current_stage},
+                        first_draft_exists=first_draft_exists,
+                    ),
+                )
+
+    def test_case02_like_cockpit_prioritizes_unreviewed_evidence_corpus(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir) / "review-root"
+            project = review_root / "review-projects" / "case-like"
+
+            def write_json(relative: str, value: object) -> None:
+                path = project / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(value, ensure_ascii=False) + "\n", encoding="utf-8")
+
+            write_json(
+                "00_brief/review_state.json",
+                {
+                    "project_id": "case-like",
+                    "brief": {"topic": "Case-neutral evidence review"},
+                    "current_stage": "evidence_review",
+                    "status": "NEEDS_HUMAN_REVIEW",
+                    "blockers": [],
+                    "counts": {"sources": 26, "evidence": 4, "claims": 6},
+                },
+            )
+            write_json(
+                "00_discovery/screening_decisions.json",
+                {
+                    "decisions": [
+                        {"candidate_id": f"candidate-{index:02d}", "disposition": "INCLUDE_FOR_FULL_TEXT"}
+                        for index in range(26)
+                    ]
+                },
+            )
+            write_json(
+                "00_sources/acquisition_final_receipt.json",
+                {
+                    "full_text_acquired": 25,
+                    "total_studies": 26,
+                    "studies": [
+                        {"status": "ACQUIRED", "main_pdf": {"bytes": 100}}
+                        for _ in range(25)
+                    ]
+                    + [{"status": "MISSING", "main_pdf": None}],
+                },
+            )
+            classifications = [
+                {
+                    "doi": f"10.1000/case-{index:02d}",
+                    "activation_mode": "Photochemical" if index < 13 else "Electrochemical",
+                }
+                for index in range(26)
+            ]
+            write_json("01_evidence/pilot_mode_classification.json", classifications)
+            cards_path = project / "01_evidence" / "evidence_cards.jsonl"
+            cards_path.parent.mkdir(parents=True, exist_ok=True)
+            cards = [
+                {
+                    "study_id": f"study-{index:02d}",
+                    "candidate": {
+                        "study_id": f"study-{index:02d}",
+                        "doi": f"https://doi.org/10.1000/case-{index:02d}",
+                        "claims": [],
+                    },
+                    "reviewer": {"verdict": "SUPPORT"},
+                }
+                for index in range(4)
+            ]
+            cards_path.write_text(
+                "".join(json.dumps(card, ensure_ascii=False) + "\n" for card in cards),
+                encoding="utf-8",
+            )
+            write_json("03_review/risk_packet.json", {"targets": [{"claim_id": f"risk-{index}"} for index in range(4)]})
+
+            payload = dashboard.project_cockpit_payload(review_root, "case-like")
+
+            self.assertEqual(
+                {
+                    "included_studies": 26,
+                    "full_text_main_coverage": 25,
+                    "reviewed_studies": 4,
+                    "scientific_risks": 4,
+                },
+                payload["metrics"],
+            )
+            self.assertEqual("继续处理下一批证据", payload["recommended_next"])
+            self.assertEqual(
+                [
+                    {"activation_mode": "Electrochemical", "included_studies": 13, "reviewed_studies": 0},
+                    {"activation_mode": "Photochemical", "included_studies": 13, "reviewed_studies": 4},
+                ],
+                payload["mode_coverage"],
+            )
+            self.assertEqual("evidence_review", payload["current_stage"])
+            self.assertEqual("cockpit", dashboard.project_review_state_payload(review_root, "case-like")["default_workspace"])
+            self.assertTrue(
+                {"path", "hash", "prompt", "job", "provider", "git", "receipt"}.isdisjoint(
+                    payload_field_names(payload)
+                )
+            )
+
+            status, _, body = self._request(
+                dashboard,
+                review_root,
+                b"GET /api/project/case-like/cockpit HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            )
+            self.assertEqual(200, status)
+            self.assertEqual(payload, json.loads(body))
+
+    def test_mode_coverage_keeps_included_total_when_classification_is_missing_or_partial(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        cards = [
+            {"candidate": {"doi": "10.1000/a", "activation_mode": "Photochemical"}},
+            {"candidate": {"doi": "10.1000/b", "activation_mode": "Electrochemical"}},
+        ]
+        cases = (
+            (
+                None,
+                4,
+                [
+                    {"activation_mode": "Electrochemical", "included_studies": 1, "reviewed_studies": 1},
+                    {"activation_mode": "Photochemical", "included_studies": 1, "reviewed_studies": 1},
+                    {"activation_mode": "Unclassified", "included_studies": 2, "reviewed_studies": 0},
+                ],
+            ),
+            (
+                [{"doi": "10.1000/a", "activation_mode": "Photochemical"}],
+                4,
+                [
+                    {"activation_mode": "Electrochemical", "included_studies": 1, "reviewed_studies": 1},
+                    {"activation_mode": "Photochemical", "included_studies": 1, "reviewed_studies": 1},
+                    {"activation_mode": "Unclassified", "included_studies": 2, "reviewed_studies": 0},
+                ],
+            ),
+        )
+        for classifications, included, expected in cases:
+            with self.subTest(classifications=classifications):
+                coverage = dashboard._mode_coverage(classifications, cards, included)
+                self.assertEqual(expected, coverage)
+                self.assertEqual(included, sum(row["included_studies"] for row in coverage))
+                self.assertEqual(2, sum(row["reviewed_studies"] for row in coverage))
+                self.assertTrue(all(row["included_studies"] >= row["reviewed_studies"] for row in coverage))
+
+    def test_cockpit_counts_only_current_unclosed_scientific_risks(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir) / "review-root"
+            project = review_root / "review-projects" / "risk-closure"
+
+            def write_json(relative: str, value: object) -> None:
+                path = project / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(value, ensure_ascii=False) + "\n", encoding="utf-8")
+
+            write_json("00_brief/review_state.json", {"current_stage": "evidence_review"})
+            write_json(
+                "00_discovery/screening_decisions.json",
+                {"decisions": [{"disposition": "INCLUDE_FOR_FULL_TEXT"}]},
+            )
+            write_json(
+                "00_sources/acquisition_final_receipt.json",
+                {"studies": [{"main_pdf": {"path": "study/MAIN.pdf"}}]},
+            )
+            cards = project / "01_evidence" / "evidence_cards.jsonl"
+            cards.parent.mkdir(parents=True)
+            cards.write_text(
+                json.dumps({"study_id": "study-1", "candidate": {"study_id": "study-1", "claims": []}})
+                + "\n",
+                encoding="utf-8",
+            )
+            targets = [
+                {"claim_id": f"claim-{index}", "review_target_digest": f"digest-{index}"}
+                for index in range(1, 5)
+            ]
+            write_json("03_review/risk_packet.json", {"targets": targets})
+            write_json(
+                "03_review/risk_decisions.json",
+                {
+                    "decisions": [
+                        {"claim_id": "claim-1", "review_target_digest": "digest-1", "action": "APPROVE"},
+                        {"claim_id": "claim-2", "review_target_digest": "stale", "action": "REWORD"},
+                        {"claim_id": "claim-3", "review_target_digest": "digest-3", "action": "UNRESOLVED"},
+                    ]
+                },
+            )
+
+            open_payload = dashboard.project_cockpit_payload(review_root, "risk-closure")
+
+            self.assertEqual(3, open_payload["metrics"]["scientific_risks"])
+            self.assertEqual("复核集中科学风险", open_payload["recommended_next"])
+
+            write_json(
+                "03_review/risk_decisions.json",
+                {
+                    "decisions": [
+                        {
+                            "claim_id": target["claim_id"],
+                            "review_target_digest": target["review_target_digest"],
+                            "action": ("APPROVE", "REWORD", "EXCLUDE")[index % 3],
+                        }
+                        for index, target in enumerate(targets)
+                    ]
+                },
+            )
+
+            closed_payload = dashboard.project_cockpit_payload(review_root, "risk-closure")
+
+            self.assertEqual(0, closed_payload["metrics"]["scientific_risks"])
+            self.assertEqual("开始撰写证据约束的综述正文", closed_payload["recommended_next"])
 
     def test_brief_confirmation_endpoint_is_idempotent_and_rejects_scope_mutation(self) -> None:
         sys.path.insert(0, str(ROOT))
@@ -606,7 +959,7 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             review_root = self._copy_fixture(Path(temp_dir))
             project = review_root / "review-projects" / "synthetic-review"
             manuscript_path = project / "04_first_draft" / "first_draft.md"
-            manuscript_path.write_text(manuscript, encoding="utf-8")
+            self._bind_authoritative_fixture_draft(project, manuscript=manuscript)
             before = self._project_file_bytes(review_root)
 
             status, _, body = self._request(
@@ -632,6 +985,93 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             self.assertIn(b"section_id", response)
             self.assertEqual(before, self._project_file_bytes(review_root))
 
+    def test_draft_route_returns_a_real_empty_state_when_first_draft_is_absent(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = self._copy_fixture(Path(temp_dir))
+            project = review_root / "review-projects" / "synthetic-review"
+            (project / "04_first_draft" / "first_draft.md").unlink()
+
+            status, _, body = self._request(
+                dashboard,
+                review_root,
+                b"GET /api/project/synthetic-review/draft HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            )
+
+            self.assertEqual(200, status)
+            payload = json.loads(body)
+            self.assertFalse(payload["available"])
+            self.assertEqual([], payload["sections"])
+            self.assertEqual([], payload["claim_lineage"])
+            self.assertEqual(
+                {"needs_evidence_review": False, "pending_scientific_edits": []},
+                payload["revision_status"],
+            )
+
+    def test_draft_payload_rejects_malformed_pending_scientific_edits(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = self._copy_fixture(Path(temp_dir))
+            lineage_path = (
+                review_root
+                / "review-projects"
+                / "synthetic-review"
+                / "04_first_draft"
+                / "manuscript_lineage.json"
+            )
+            lineage = {
+                "pending_scientific_edits": [
+                    {"section_id": "results", "verified_body": 42, "reasons": []}
+                ]
+            }
+            lineage_path.write_text(json.dumps(lineage) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "pending_scientific_edits"):
+                dashboard.project_draft_payload(review_root, "synthetic-review")
+
+    def test_review_state_and_draft_require_first_draft_to_be_a_project_regular_file(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        for invalid_kind in ("directory", "symlink", "empty", "whitespace"):
+            with self.subTest(invalid_kind=invalid_kind), tempfile.TemporaryDirectory() as temp_dir:
+                temp = Path(temp_dir)
+                review_root = self._copy_fixture(temp)
+                project = review_root / "review-projects" / "synthetic-review"
+                state_path = project / "00_brief" / "review_state.json"
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                state["current_stage"] = "drafting"
+                state_path.write_text(json.dumps(state) + "\n", encoding="utf-8")
+                manuscript = project / "04_first_draft" / "first_draft.md"
+                manuscript.unlink()
+                if invalid_kind == "directory":
+                    manuscript.mkdir()
+                elif invalid_kind == "symlink":
+                    outside = temp / "outside.md"
+                    outside.write_text("# Outside\n", encoding="utf-8")
+                    manuscript.symlink_to(outside)
+                elif invalid_kind == "empty":
+                    manuscript.write_bytes(b"")
+                else:
+                    manuscript.write_text(" \n\t\n", encoding="utf-8")
+
+                review_state = dashboard.project_review_state_payload(review_root, "synthetic-review")
+
+                self.assertFalse(review_state["draft"]["first_draft_exists"])
+                self.assertEqual("cockpit", review_state["default_workspace"])
+                self.assertFalse(review_state["summary"]["has_first_draft"])
+                if invalid_kind != "symlink":
+                    draft = dashboard.project_draft_payload(review_root, "synthetic-review")
+                    self.assertFalse(draft["available"])
+                    self.assertEqual([], draft["sections"])
+                else:
+                    with self.assertRaises(ValueError):
+                        dashboard.project_draft_payload(review_root, "synthetic-review")
+
     def test_draft_get_and_put_reject_symlinked_stage_without_touching_outside(self) -> None:
         sys.path.insert(0, str(ROOT))
         from view import serve_review_dashboard as dashboard
@@ -646,7 +1086,7 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             review_root = self._copy_fixture(temp)
             project = review_root / "review-projects" / "synthetic-review"
             stage = project / "04_first_draft"
-            (stage / "first_draft.md").write_text(manuscript, encoding="utf-8")
+            self._bind_authoritative_fixture_draft(project, manuscript=manuscript)
             draft = dashboard.project_draft_payload(review_root, "synthetic-review")
             edit = {
                 "section_id": "results",
@@ -1040,10 +1480,54 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             review_root = self._copy_fixture(Path(temp_dir))
+            project = review_root / "review-projects" / "synthetic-review"
+            cards_path = project / "01_evidence" / "evidence_cards.jsonl"
+            original_cards = cards_path.read_bytes()
+            card_row = json.loads(cards_path.read_text(encoding="utf-8"))
+            second_ref = {
+                "exact_quote": "A second bounded observation was reported.",
+                "page": 4,
+                "section_or_item": "Supporting result",
+                "source_id": "synthetic-study-02",
+                "source_label": "Synthetic study, supporting result",
+            }
+            card_row["candidate"]["claims"][0]["evidence_refs"].append(second_ref)
+            card_row["reviewer"].update(
+                {
+                    "verdict": "REJECT",
+                    "summary": "Root reviewer summary.",
+                    "findings": [
+                        {
+                            "claim_id": "claim-neutral-01",
+                            "target_id": "different-target",
+                            "verdict": "SUPPORT",
+                            "reason": "This non-target row must not override the root verdict.",
+                        },
+                        {
+                            "target_id": "claim-neutral-01",
+                            "verdict": "AMBIGUOUS",
+                            "reason": "The wording exceeds the directly quoted observation.",
+                        }
+                    ],
+                }
+            )
+            cards_path.write_text(json.dumps(card_row, ensure_ascii=False) + "\n", encoding="utf-8")
+            projection_path = project / "02_claims" / "claim_projection.jsonl"
+            original_projection = projection_path.read_bytes()
+            projection_row = json.loads(projection_path.read_text(encoding="utf-8"))
+            projection_row["evidence_refs"].append(second_ref)
+            projection_path.write_text(json.dumps(projection_row, ensure_ascii=False) + "\n", encoding="utf-8")
             with patch.object(
                 dashboard,
                 "benchmark_metrics",
-                wraps=dashboard.benchmark_metrics,
+                return_value={
+                    "registered_study_count": 1,
+                    "approved_claim_count": 0,
+                    "human_required_claim_count": 1,
+                    "blocked_claim_count": 0,
+                    "exception_count": 0,
+                    "projected_claim_count": 1,
+                },
             ) as metrics:
                 evidence = dashboard.project_evidence_payload(review_root, "synthetic-review")
             metrics.assert_called_once_with(
@@ -1058,8 +1542,27 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             self.assertEqual(VISIBLE_EVIDENCE_CARD_FIELDS, set(card))
             self.assertEqual(["A defined synthetic intervention was associated with a measured response under the reported conditions."], card["claims"])
             self.assertEqual("Synthetic study, Results · p. 3 · Results, measured response", card["locators"][0]["label"])
-            self.assertTrue(card["locators"][0]["href"].startswith("/library?"))
+            self.assertEqual("", card["locators"][0]["href"])
+            self.assertEqual(2, len(card["locators"]), "card locators retain all unique claim evidence")
+            detail = card["claim_details"][0]
+            self.assertEqual("claim-neutral-01", detail["claim_id"])
+            self.assertEqual("HUMAN_REQUIRED", detail["decision"])
+            self.assertEqual("R3", detail["risk_level"])
+            self.assertEqual(["MECHANISM_CAUSALITY"], detail["risk_categories"])
+            self.assertEqual(2, len(detail["evidence"]))
+            self.assertEqual(
+                {"source_label", "excerpt", "page", "section", "locator"},
+                set(detail["evidence"][0]),
+            )
+            self.assertEqual("", detail["evidence"][0]["locator"]["href"])
+            self.assertEqual("AMBIGUOUS", detail["review_verdict"])
+            self.assertEqual(
+                "The wording exceeds the directly quoted observation.",
+                detail["review_summary"],
+            )
 
+            cards_path.write_bytes(original_cards)
+            projection_path.write_bytes(original_projection)
             risk = dashboard.project_risk_payload(review_root, "synthetic-review")
             self.assertEqual(1, risk["coverage"]["targets"])
             self.assertEqual(VISIBLE_RISK_TARGET_FIELDS, set(risk["targets"][0]))
@@ -1069,19 +1572,365 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
                 risk["targets"][0]["decision_token"],
             )
 
-            visible_payload = json.dumps({"evidence": evidence, "risk": risk}, ensure_ascii=False)
-            for hidden in (
-                "schema_version",
-                "job_id",
-                "sha256",
-                "self_check",
-                "prompt",
-                "absolute_source_path",
-                "review_target_digest",
-                "/synthetic-fixture/",
+            visible_payload = {"evidence": evidence, "risk": risk}
+            self.assertTrue(
+                {
+                    "schema_version",
+                    "job_id",
+                    "sha256",
+                    "self_check",
+                    "prompt",
+                    "absolute_source_path",
+                    "review_target_digest",
+                }.isdisjoint(payload_field_names(visible_payload))
+            )
+            visible_values = payload_string_values(visible_payload)
+            for hidden_value in (
+                "/synthetic-fixture/not-for-display/source.md",
                 "internal fixture marker",
+                "internal-fixture-digest",
             ):
-                self.assertNotIn(hidden, visible_payload)
+                self.assertNotIn(hidden_value, visible_values)
+
+    def test_claim_details_require_a_claim_specific_reviewer_finding(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = self._copy_fixture(Path(temp_dir))
+            project = review_root / "review-projects" / "synthetic-review"
+            cards_path = project / "01_evidence" / "evidence_cards.jsonl"
+            card = json.loads(cards_path.read_text(encoding="utf-8"))
+            first_claim = card["candidate"]["claims"][0]
+            second_claim = json.loads(json.dumps(first_claim))
+            second_claim["claim_id"] = "claim-neutral-02"
+            second_claim["claim_text"] = "A second claim has no claim-specific reviewer finding."
+            card["candidate"]["claims"] = [first_claim, second_claim]
+            card["reviewer"] = {
+                "verdict": "REJECT",
+                "summary": "Study-level reviewer text must not be attached to every claim.",
+                "findings": [
+                    {
+                        "target_id": first_claim["claim_id"],
+                        "verdict": "SUPPORT",
+                        "reason": "The first claim has a matching finding.",
+                    },
+                    {
+                        "claim_id": second_claim["claim_id"],
+                        "verdict": "AMBIGUOUS",
+                        "reason": "A claim_id-only row is not claim-specific.",
+                    },
+                ],
+            }
+            cards_path.write_text(json.dumps(card, ensure_ascii=False) + "\n", encoding="utf-8")
+
+            projection_path = project / "02_claims" / "claim_projection.jsonl"
+            first_projection = json.loads(projection_path.read_text(encoding="utf-8"))
+            second_projection = dict(first_projection)
+            second_projection["claim_id"] = second_claim["claim_id"]
+            second_projection["text"] = second_claim["claim_text"]
+            projection_path.write_text(
+                "\n".join(json.dumps(row, ensure_ascii=False) for row in (first_projection, second_projection))
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                dashboard,
+                "benchmark_metrics",
+                return_value={
+                    "registered_study_count": 1,
+                    "approved_claim_count": 1,
+                    "human_required_claim_count": 1,
+                    "blocked_claim_count": 0,
+                    "exception_count": 0,
+                    "projected_claim_count": 2,
+                },
+            ):
+                payload = dashboard.project_evidence_payload(review_root, "synthetic-review")
+
+            details = {
+                detail["claim_id"]: detail
+                for detail in payload["cards"][0]["claim_details"]
+            }
+            self.assertEqual("SUPPORT", details[first_claim["claim_id"]]["review_verdict"])
+            self.assertEqual(
+                "The first claim has a matching finding.",
+                details[first_claim["claim_id"]]["review_summary"],
+            )
+            self.assertEqual("", details[second_claim["claim_id"]]["review_verdict"])
+            self.assertEqual("", details[second_claim["claim_id"]]["review_summary"])
+
+    def test_evidence_locator_opens_a_uniquely_matched_project_pdf_page_and_fails_closed(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from review_writer.delivery import project_release
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            review_root = self._copy_fixture(temp)
+            project = review_root / "review-projects" / "synthetic-review"
+            source_id = "10_1234_Test_DOI_main"
+            source_dir = project / "00_sources" / "10.1234_test-doi"
+            source_dir.mkdir(parents=True)
+            pdf_bytes = b"%PDF-1.4\nsynthetic project source\n%%EOF\n"
+            (source_dir / "MAIN.pdf").write_bytes(pdf_bytes)
+            for index in range(20):
+                unrelated = project / "00_sources" / f"unrelated-{index:02d}"
+                unrelated.mkdir()
+                (unrelated / "MAIN.pdf").write_bytes(b"%PDF-1.4\nunrelated\n%%EOF\n")
+            unrelated_outside = temp / "unrelated-outside.pdf"
+            unrelated_outside.write_bytes(b"unrelated-outside-must-not-be-read")
+            unrelated_bad = project / "00_sources" / "unrelated-bad"
+            unrelated_bad.mkdir()
+            (unrelated_bad / "MAIN.pdf").symlink_to(unrelated_outside)
+
+            cards_path = project / "01_evidence" / "evidence_cards.jsonl"
+            card = json.loads(cards_path.read_text(encoding="utf-8"))
+            refs = [
+                {
+                    **card["candidate"]["claims"][0]["evidence_refs"][0],
+                    "source_id": source_id,
+                    "page": page,
+                    "section_or_item": f"Measured result {page}",
+                }
+                for page in range(1, 171)
+            ]
+            card["candidate"]["claims"][0]["evidence_refs"] = refs
+            cards_path.write_text(json.dumps(card, ensure_ascii=False) + "\n", encoding="utf-8")
+            projection_path = project / "02_claims" / "claim_projection.jsonl"
+            projection = json.loads(projection_path.read_text(encoding="utf-8"))
+            projection["evidence_refs"] = refs
+            projection["decision"] = "APPROVED"
+            projection_path.write_text(json.dumps(projection, ensure_ascii=False) + "\n", encoding="utf-8")
+            claim_text = projection.get("text", "Synthetic claim")
+            self._bind_authoritative_fixture_draft(
+                project,
+                manuscript=(
+                    "# Synthetic Review\n\n"
+                    "## Results\n\n"
+                    f"{claim_text} [1].\n\n"
+                    "## References\n\n"
+                    "[1] Synthetic reference.\n"
+                ),
+                claims=[
+                    {
+                        "claim_id": projection["claim_id"],
+                        "section_id": "results",
+                        "text_span": claim_text,
+                    }
+                ],
+            )
+
+            with (
+                patch.object(
+                    dashboard,
+                    "benchmark_metrics",
+                    return_value={
+                        "registered_study_count": 1,
+                        "approved_claim_count": 0,
+                        "human_required_claim_count": 1,
+                        "blocked_claim_count": 0,
+                        "exception_count": 0,
+                        "projected_claim_count": 1,
+                    },
+                ),
+                patch.object(
+                    dashboard,
+                    "build_project_source_index",
+                    wraps=dashboard.build_project_source_index,
+                ) as build_source_index,
+                patch.object(
+                    dashboard,
+                    "validate_project_file_path",
+                    wraps=dashboard.validate_project_file_path,
+                ) as validate_source_path,
+            ):
+                evidence = dashboard.project_evidence_payload(review_root, "synthetic-review")
+            self.assertEqual(1, build_source_index.call_count)
+            build_source_index.assert_called_once_with(project, {source_id})
+            validate_source_path.assert_called_once_with(
+                project,
+                Path("00_sources/10.1234_test-doi/MAIN.pdf"),
+                "PROJECT_SOURCE_INVALID",
+            )
+            self.assertEqual(170, len(evidence["cards"][0]["locators"]))
+            self.assertEqual(170, len(evidence["cards"][0]["claim_details"][0]["evidence"]))
+            href = evidence["cards"][0]["claim_details"][0]["evidence"][0]["locator"]["href"]
+            self.assertTrue(href.startswith("/api/project/synthetic-review/source?source_id="))
+            self.assertTrue(href.endswith("#page=1"))
+            with (
+                patch.object(
+                    project_release,
+                    "benchmark_metrics",
+                    return_value={"project_id": "synthetic-review"},
+                ),
+                patch.object(
+                    dashboard,
+                    "build_project_source_index",
+                    wraps=dashboard.build_project_source_index,
+                ) as draft_source_index,
+            ):
+                draft = dashboard.project_draft_payload(review_root, "synthetic-review")
+            draft_source_index.assert_called_once_with(project, {source_id})
+            self.assertEqual(
+                href,
+                draft["claim_lineage"][0]["evidence"][0]["locator"]["href"],
+            )
+            request_target = href.split("#", 1)[0]
+            with patch.object(
+                dashboard,
+                "build_project_source_index",
+                wraps=dashboard.build_project_source_index,
+            ) as route_source_index:
+                status, headers, body = self._request(
+                    dashboard,
+                    review_root,
+                    f"GET {request_target} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode(),
+                )
+            route_source_index.assert_called_once_with(project, {source_id})
+            self.assertEqual(200, status)
+            self.assertEqual("application/pdf", headers["Content-Type"])
+            self.assertEqual(pdf_bytes, body)
+            self.assertNotIn("00_sources", href)
+
+            (source_dir / "MAIN.pdf").unlink()
+            outside = temp / "outside.pdf"
+            outside.write_bytes(b"outside-pdf-must-not-be-read")
+            (source_dir / "MAIN.pdf").symlink_to(outside)
+            status, _, body = self._request(
+                dashboard,
+                review_root,
+                f"GET {request_target} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode(),
+            )
+            self.assertNotEqual(200, status)
+            self.assertNotIn(outside.read_bytes(), body)
+            with patch.object(
+                dashboard,
+                "benchmark_metrics",
+                return_value={
+                    "registered_study_count": 1,
+                    "approved_claim_count": 0,
+                    "human_required_claim_count": 1,
+                    "blocked_claim_count": 0,
+                    "exception_count": 0,
+                    "projected_claim_count": 1,
+                },
+            ):
+                fallback = dashboard.project_evidence_payload(review_root, "synthetic-review")
+            fallback_href = fallback["cards"][0]["claim_details"][0]["evidence"][0]["locator"]["href"]
+            self.assertEqual("", fallback_href)
+
+    def test_acquisition_manifest_maps_nested_pdf_aliases_with_portable_separators(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        for collection, separator in (("rows", "\\"), ("downloads", "/")):
+            with self.subTest(collection=collection), tempfile.TemporaryDirectory() as temp_dir:
+                review_root = self._copy_fixture(Path(temp_dir))
+                project = review_root / "review-projects" / "synthetic-review"
+                target = project / "00_sources" / "custom" / "nested" / "article.pdf"
+                target.parent.mkdir(parents=True)
+                pdf_bytes = b"%PDF-1.4\nnested mapped source\n%%EOF\n"
+                target.write_bytes(pdf_bytes)
+                source_id = f"CUSTOM_{collection.upper()}_MAIN"
+                doi = f"10.1234/{collection}-custom"
+                manifest_path = project / "00_discovery" / (
+                    "acquisition_manifest.json"
+                    if collection == "rows"
+                    else "acquisition_manifest_converted.json"
+                )
+                manifest_path.parent.mkdir(parents=True, exist_ok=True)
+                manifest_path.write_text(
+                    json.dumps(
+                        {
+                            collection: [
+                                {
+                                    "download_id": source_id,
+                                    "doi": doi,
+                                    "document_role": "MAIN",
+                                    "target_path": separator.join(("custom", "nested", "article.pdf")),
+                                }
+                            ]
+                        }
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+
+                index = dashboard.build_project_source_index(project, {source_id, f"{doi}_MAIN"})
+
+                self.assertEqual(target, index[dashboard._normalized_project_source_id(source_id)])
+                self.assertEqual(
+                    target,
+                    index[dashboard._normalized_project_source_id(f"{doi}_MAIN")],
+                )
+                href = dashboard._evidence_locator_href(
+                    project,
+                    "synthetic-review",
+                    source_id,
+                    7,
+                    index,
+                )
+                self.assertTrue(href.startswith("/api/project/synthetic-review/source?"))
+                self.assertTrue(href.endswith("#page=7"))
+
+    def test_acquisition_manifest_mapping_rejects_unsafe_or_symlink_targets(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            review_root = self._copy_fixture(temp)
+            project = review_root / "review-projects" / "synthetic-review"
+            manifest_path = project / "00_discovery" / "acquisition_manifest_converted.json"
+            manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            outside = temp / "outside.pdf"
+            outside.write_bytes(b"outside")
+            alias = "UNSAFE_MAIN"
+
+            for target_path in ("/absolute.pdf", r"C:\absolute.pdf", "../escape.pdf"):
+                with self.subTest(target_path=target_path):
+                    manifest_path.write_text(
+                        json.dumps(
+                            {
+                                "downloads": [
+                                    {
+                                        "download_id": alias,
+                                        "doi": "10.1234/unsafe",
+                                        "document_role": "MAIN",
+                                        "target_path": target_path,
+                                    }
+                                ]
+                            }
+                        )
+                        + "\n",
+                        encoding="utf-8",
+                    )
+                    index = dashboard.build_project_source_index(project, {alias})
+                    self.assertIsNone(index.get(dashboard._normalized_project_source_id(alias)))
+
+            symlink = project / "00_sources" / "custom" / "nested" / "article.pdf"
+            symlink.parent.mkdir(parents=True)
+            symlink.symlink_to(outside)
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "downloads": [
+                            {
+                                "download_id": alias,
+                                "doi": "10.1234/unsafe",
+                                "document_role": "MAIN",
+                                "target_path": "custom/nested/article.pdf",
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            index = dashboard.build_project_source_index(project, {alias})
+            self.assertIsNone(index.get(dashboard._normalized_project_source_id(alias)))
 
     def test_risk_decision_write_maps_to_task4_and_fails_closed(self) -> None:
         sys.path.insert(0, str(ROOT))
@@ -1233,27 +2082,248 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             self.assertEqual(200, status)
             self.assertEqual("saved", json.loads(body)["status"])
 
-    def test_review_workbench_has_four_accessible_tabs_and_no_internal_visible_text(self) -> None:
+    def test_early_stage_routes_return_explicit_empty_evidence_and_risk_payloads(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir) / "review-root"
+            project = review_root / "review-projects" / "brief-only"
+            state_path = project / "00_brief" / "review_state.json"
+            state_path.parent.mkdir(parents=True)
+            state_path.write_text(
+                json.dumps({"project_id": "brief-only", "current_stage": "review_brief"}) + "\n",
+                encoding="utf-8",
+            )
+            decisions_path = project / "03_review" / "risk_decisions.json"
+            decisions_path.parent.mkdir(parents=True)
+            decisions_path.write_text('{"decisions":[]}\n', encoding="utf-8")
+
+            expected = {
+                "evidence": {
+                    "project_id": "brief-only",
+                    "coverage": {"studies": 0, "processable": 0, "blocked": 0, "claims": 0},
+                    "cards": [],
+                },
+                "risk-packet": {
+                    "project_id": "brief-only",
+                    "coverage": {"targets": 0, "human_required": 0, "low_risk_audit": 0},
+                    "targets": [],
+                },
+            }
+            for route, payload in expected.items():
+                with self.subTest(route=route):
+                    status, _, body = self._request(
+                        dashboard,
+                        review_root,
+                        f"GET /api/project/brief-only/{route} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode(),
+                    )
+                    self.assertEqual(200, status)
+                    self.assertEqual(payload, json.loads(body))
+
+    def test_early_stage_routes_do_not_mask_existing_malformed_canonical_state(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        cases = (
+            ("evidence", "01_evidence/evidence_cards.jsonl", "{"),
+            ("risk-packet", "03_review/risk_packet.json", "{}\n"),
+            ("risk-packet", "03_review/risk_decisions.json", "{"),
+        )
+        for route, relative, content in cases:
+            with self.subTest(route=route, relative=relative), tempfile.TemporaryDirectory() as temp_dir:
+                review_root = self._copy_fixture(Path(temp_dir))
+                canonical = review_root / "review-projects" / "synthetic-review" / relative
+                canonical.parent.mkdir(parents=True, exist_ok=True)
+                canonical.write_text(content, encoding="utf-8")
+
+                status, _, _ = self._request(
+                    dashboard,
+                    review_root,
+                    f"GET /api/project/synthetic-review/{route} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode(),
+                )
+
+                self.assertEqual(400, status)
+
+    def test_review_workbench_binds_default_workspace_and_real_cockpit_fields(self) -> None:
         review_html = (ROOT / "view" / "assets" / "dashboard" / "review.html").read_text(encoding="utf-8")
-        self.assertEqual(4, len(re.findall(r'<button[^>]+role="tab"', review_html)))
-        for tab in ("Overview", "Evidence", "Decisions", "Manuscript"):
-            self.assertRegex(review_html, rf">\s*{tab}\s*<")
-        for control in ("ArrowLeft", "ArrowRight", "Home", "End"):
-            self.assertIn(control, review_html)
-        for link in ('href="/sections"', 'href="/final"'):
-            self.assertIn(link, review_html)
-        for decision in ("approve", "reword", "exclude", "unresolved"):
-            self.assertRegex(review_html, rf"\b{decision}:'[^']+'")
-        self.assertIn('data-decision="${value}"', review_html)
-        self.assertIn('type="text"', review_html)
-        self.assertIn("decision_token", review_html)
-        self.assertNotRegex(review_html, r"(?:textContent|innerHTML)\s*=\s*[^;\n]*decision_token")
+        for element_id in (
+            "cockpit-workspace",
+            "manuscript-workspace",
+            "metric-included",
+            "metric-main-coverage",
+            "metric-reviewed",
+            "metric-scientific-risks",
+            "mode-coverage",
+            "recommended-next",
+            "cockpit-context",
+        ):
+            self.assertIn(f'id="{element_id}"', review_html)
+        for binding in (
+            "projectState.default_workspace",
+            "setWorkspace(projectState.default_workspace)",
+            "cockpitPayload.metrics.included_studies",
+            "cockpitPayload.metrics.full_text_main_coverage",
+            "cockpitPayload.metrics.reviewed_studies",
+            "cockpitPayload.metrics.scientific_risks",
+            "cockpitPayload.mode_coverage",
+            "cockpitPayload.recommended_next",
+            "/cockpit`",
+        ):
+            self.assertIn(binding, review_html)
+        self.assertNotIn('role="tab"', review_html)
+
+    def test_review_workbench_binds_manuscript_lineage_pending_restore_and_empty_state(self) -> None:
+        review_html = (ROOT / "view" / "assets" / "dashboard" / "review.html").read_text(encoding="utf-8")
+        review_css = (ROOT / "view" / "assets" / "dashboard" / "review-ui.css").read_text(encoding="utf-8")
+        for element_id in (
+            "section-outline",
+            "section-reading",
+            "section-editor",
+            "evidence-inspector",
+            "pending-review-banner",
+            "restore-verified",
+            "manuscript-empty",
+        ):
+            self.assertIn(f'id="{element_id}"', review_html)
+        for binding in (
+            "draftPayload.available",
+            "draftPayload.claim_lineage",
+            "pending_scientific_edits",
+            "pending.verified_body",
+            "saveDraftBody(pending.verified_body)",
+            "edit_classification",
+            "needs_evidence_review",
+            "detail.review_verdict",
+            "detail.review_summary",
+            "detail.decision",
+            "evidence.locator.href",
+            "data-claim-id",
+            "claim-mark",
+            "method:'PUT'",
+        ):
+            self.assertIn(binding, review_html)
+        for copy in (
+            "尚无 claim-specific 复核结论",
+            "原文文件暂不可用",
+            "恢复本节已验证版本",
+            "将替换当前未复核编辑",
+        ):
+            self.assertIn(copy, review_html)
+        for draft_guard in (
+            "let editorDirty = false",
+            "confirmDiscardDraftChanges",
+            "window.confirm",
+            "beforeunload",
+            "submittedProjectId",
+            "submittedSectionId",
+            "submittedBody",
+            "submittedVersion",
+            "editorUnchanged",
+            "setEditorBusy(true)",
+            "$('section-editor').disabled = busy",
+            "$('project').disabled = busy",
+            "document.querySelectorAll('[data-workspace], .outline-section')",
+        ):
+            self.assertIn(draft_guard, review_html)
+        self.assertRegex(
+            review_html,
+            r"JSON\.stringify\(\{section_id:submittedSectionId,body:submittedBody,manuscript_version:submittedVersion\}\)",
+        )
+        self.assertIn("@media (max-width: 1100px)", review_css)
+        self.assertIn("@media (max-width: 640px)", review_css)
+        self.assertIn("overflow-wrap: anywhere", review_css)
 
         parser = VisibleTextParser()
         parser.feed(review_html)
         visible = parser.text.casefold()
-        for forbidden in ("json", "hash", "path", "agent", "prompt", "git", "provider", "decision_token"):
+        for forbidden in (
+            "json",
+            "hash",
+            "path",
+            "agent",
+            "prompt",
+            "git",
+            "provider",
+            "receipt",
+            "decision_token",
+        ):
             self.assertNotIn(forbidden, visible)
+
+    def test_cockpit_context_preview_clamps_excerpt_without_clamping_manuscript_quotes(self) -> None:
+        review_css = (ROOT / "view" / "assets" / "dashboard" / "review-ui.css").read_text(encoding="utf-8")
+
+        preview_rule = re.search(
+            r"#cockpit-context \.context-item > p\s*\{(?P<body>[^}]*)\}",
+            review_css,
+        )
+        self.assertIsNotNone(preview_rule)
+        for declaration in (
+            "display: -webkit-box",
+            "-webkit-box-orient: vertical",
+            "-webkit-line-clamp: 7",
+            "line-clamp: 7",
+            "overflow: hidden",
+        ):
+            self.assertIn(declaration, preview_rule.group("body"))
+
+        manuscript_quote_rule = re.search(
+            r"\.chain-node blockquote\s*\{(?P<body>[^}]*)\}",
+            review_css,
+        )
+        self.assertIsNotNone(manuscript_quote_rule)
+        self.assertNotIn("line-clamp", manuscript_quote_rule.group("body"))
+
+    def test_review_workbench_guards_async_project_loads_and_inline_js_compiles(self) -> None:
+        review_html = (ROOT / "view" / "assets" / "dashboard" / "review.html").read_text(encoding="utf-8")
+        load_match = re.search(
+            r"async function loadProject\(\) \{(?P<body>[\s\S]*?)\n    \}\n\n    async function loadProjects",
+            review_html,
+        )
+        self.assertIsNotNone(load_match)
+        load_body = load_match.group("body")
+        for guard in (
+            "let projectLoadGeneration = 0",
+            "let projectLoadBusy = false",
+            "const requestedProjectId = projectId",
+            "const generation = ++projectLoadGeneration",
+            "setProjectLoadBusy(true)",
+            "generation !== projectLoadGeneration",
+            "projectId !== requestedProjectId",
+            "return 'stale'",
+            "return 'loaded'",
+            "const [nextProjectState, nextCockpitPayload, nextDraftPayload, nextEvidencePayload, nextRiskPayload]",
+            "projectState = nextProjectState",
+            "cockpitPayload = nextCockpitPayload",
+            "draftPayload = nextDraftPayload",
+            "evidencePayload = nextEvidencePayload",
+            "riskPayload = nextRiskPayload",
+            "if (generation === projectLoadGeneration) setProjectLoadBusy(false)",
+            "applyWorkbenchBusyState(editorBusy || projectLoadBusy)",
+            "button.disabled = editorBusy || projectLoadBusy",
+        ):
+            self.assertIn(guard, review_html)
+        self.assertLess(
+            load_body.index("const [nextProjectState"),
+            load_body.index("projectState = nextProjectState"),
+        )
+        self.assertLess(
+            load_body.index("generation !== projectLoadGeneration"),
+            load_body.index("editorDirty = false"),
+        )
+        self.assertGreaterEqual(review_html.count("if (loadResult === 'stale') return"), 3)
+
+        script_match = re.search(r"<script>(?P<script>[\s\S]*?)</script>", review_html)
+        self.assertIsNotNone(script_match)
+        node = shutil.which("node")
+        self.assertIsNotNone(node)
+        completed = subprocess.run(
+            [node, "-e", f"new Function({json.dumps(script_match.group('script'))});"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
 
     def test_dashboard_accepts_qoderwork_native_project_root_without_library_metadata(self) -> None:
         sys.path.insert(0, str(ROOT))

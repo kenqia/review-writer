@@ -339,7 +339,8 @@ def _validated_image(project: Path, relative_url: str) -> Path:
     return resolved_by_stage[0]
 
 
-def _lineage_entries(lineage: dict[str, Any]) -> list[dict[str, Any]]:
+def manuscript_lineage_entries(lineage: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return claim-lineage rows across supported manuscript lineage layouts."""
     for key in ("claims", "claim_lineage", "manuscript_claims", "lineage"):
         value = lineage.get(key)
         if isinstance(value, list):
@@ -360,6 +361,48 @@ def _lineage_entries(lineage: dict[str, Any]) -> list[dict[str, Any]]:
     return entries
 
 
+def _pending_scientific_edits(lineage: dict[str, Any]) -> list[dict[str, Any]]:
+    pending = lineage.get("pending_scientific_edits", [])
+    if not isinstance(pending, list):
+        raise ProjectReleaseError(
+            "MANUSCRIPT_LINEAGE_INVALID",
+            "pending_scientific_edits must be a list",
+        )
+    normalized: list[dict[str, Any]] = []
+    section_ids: set[str] = set()
+    for row in pending:
+        if not isinstance(row, dict):
+            raise ProjectReleaseError(
+                "MANUSCRIPT_LINEAGE_INVALID",
+                "pending_scientific_edits must contain objects",
+            )
+        section_id = row.get("section_id")
+        verified_body = row.get("verified_body")
+        reasons = row.get("reasons")
+        if (
+            not isinstance(section_id, str)
+            or not section_id
+            or section_id in section_ids
+            or not isinstance(verified_body, str)
+            or not isinstance(reasons, list)
+            or not reasons
+            or not all(isinstance(reason, str) and reason for reason in reasons)
+        ):
+            raise ProjectReleaseError(
+                "MANUSCRIPT_LINEAGE_INVALID",
+                "pending_scientific_edits require unique sections, verified text, and reasons",
+            )
+        section_ids.add(section_id)
+        normalized.append(
+            {
+                "section_id": section_id,
+                "verified_body": verified_body,
+                "reasons": list(reasons),
+            }
+        )
+    return normalized
+
+
 def _literal_occurrence_count(text: str, needle: str) -> int:
     count = 0
     offset = 0
@@ -376,6 +419,8 @@ def _validate_manuscript_lineage(
     markdown: str,
     *,
     lineage_override: dict[str, Any] | None = None,
+    allow_pending_scientific_edits: bool = False,
+    allow_pending_text_span_drift: bool = False,
 ) -> dict[str, Any]:
     project_path = Path(project)
     if not isinstance(markdown, str):
@@ -401,6 +446,12 @@ def _validate_manuscript_lineage(
     )
     if not isinstance(writer_packet, dict) or not isinstance(lineage, dict):
         raise ProjectReleaseError("RELEASE_STATE_INVALID", "writer packet and lineage must be objects")
+    pending = _pending_scientific_edits(lineage)
+    if pending and not allow_pending_scientific_edits:
+        raise ProjectReleaseError(
+            "MANUSCRIPT_NEEDS_EVIDENCE_REVIEW",
+            "pending scientific edits must be evidence-reviewed before release",
+        )
 
     claim_ids = [row.get("claim_id") for row in projection]
     if any(not isinstance(claim_id, str) or not claim_id for claim_id in claim_ids) or len(claim_ids) != len(set(claim_ids)):
@@ -426,8 +477,14 @@ def _validate_manuscript_lineage(
     sections = split_manuscript_sections(markdown)
     sections_by_id = {section["id"]: section for section in sections}
     section_ids = set(sections_by_id)
+    pending_section_ids = {row["section_id"] for row in pending}
+    if not pending_section_ids <= section_ids:
+        raise ProjectReleaseError(
+            "MANUSCRIPT_LINEAGE_DRIFT",
+            "pending scientific edits reference an unknown manuscript section",
+        )
     reference_count = _validate_references(sections)
-    entries = _lineage_entries(lineage)
+    entries = manuscript_lineage_entries(lineage)
     if not all(isinstance(entry, dict) for entry in entries):
         raise ProjectReleaseError("MANUSCRIPT_LINEAGE_INVALID", "lineage claim entries must be objects")
     referenced: set[str] = set()
@@ -448,7 +505,12 @@ def _validate_manuscript_lineage(
             if not isinstance(text_span, str) or not text_span:
                 raise ProjectReleaseError("MANUSCRIPT_LINEAGE_DRIFT", "lineage text span is absent from the manuscript")
             bound_text = sections_by_id[section_id]["body"] if section_id is not None else markdown
-            if _literal_occurrence_count(bound_text, text_span) != 1:
+            span_may_drift = (
+                allow_pending_text_span_drift
+                and section_id is not None
+                and section_id in pending_section_ids
+            )
+            if not span_may_drift and _literal_occurrence_count(bound_text, text_span) != 1:
                 raise ProjectReleaseError(
                     "MANUSCRIPT_LINEAGE_DRIFT",
                     "lineage text span must occur exactly once in its bound manuscript section",
@@ -490,23 +552,112 @@ def validate_manuscript_lineage(project: Path, markdown: str) -> dict[str, Any]:
     return _validate_manuscript_lineage(project, markdown)
 
 
+def validated_draft_manuscript_lineage(project: Path, markdown: str) -> dict[str, Any]:
+    """Read and validate authoritative lineage for the researcher draft view.
+
+    Pending scientific edits may temporarily invalidate text-span placement only in
+    their bound sections. Manuscript/projection hashes, writer-packet binding, the
+    claim whitelist, references, section bindings, and images remain mandatory.
+    """
+    project_path = Path(project)
+    lineage_path = validate_project_file_path(
+        project_path,
+        Path("04_first_draft/manuscript_lineage.json"),
+        "MANUSCRIPT_LINEAGE_INVALID",
+    )
+    lineage = _read_json(lineage_path, "MANUSCRIPT_LINEAGE_INVALID")
+    if not isinstance(lineage, dict):
+        raise ProjectReleaseError("MANUSCRIPT_LINEAGE_INVALID", "lineage must be an object")
+    pending = _pending_scientific_edits(lineage)
+    if not pending:
+        validate_manuscript_lineage(project_path, markdown)
+        return lineage
+    _validate_manuscript_lineage(
+        project_path,
+        markdown,
+        lineage_override=lineage,
+        allow_pending_scientific_edits=True,
+        allow_pending_text_span_drift=True,
+    )
+    return lineage
+
+
 def refreshed_manuscript_lineage(
     project: Path,
     current_markdown: str,
     candidate_markdown: str,
+    *,
+    section_id: str | None = None,
+    scientific_reasons: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Return lineage with only its manuscript hash refreshed after full candidate validation."""
+    """Refresh lineage, retaining scientific edits as release-blocking pending revisions."""
     project_path = Path(project)
-    validate_manuscript_lineage(project_path, current_markdown)
     lineage_path = validate_project_file_path(
         project_path, Path("04_first_draft/manuscript_lineage.json"), "MANUSCRIPT_LINEAGE_INVALID"
     )
     lineage = _read_json(lineage_path, "MANUSCRIPT_LINEAGE_INVALID")
     if not isinstance(lineage, dict):
         raise ProjectReleaseError("MANUSCRIPT_LINEAGE_INVALID", "lineage must be an object")
+    pending = _pending_scientific_edits(lineage)
+    current_sha256 = _sha256_bytes(current_markdown.encode("utf-8"))
+    if lineage.get("manuscript_sha256") != current_sha256:
+        raise ProjectReleaseError(
+            "MANUSCRIPT_LINEAGE_DRIFT",
+            "lineage does not bind the current authoritative manuscript",
+        )
+    if not pending:
+        validate_manuscript_lineage(project_path, current_markdown)
+
     updated = dict(lineage)
     updated["manuscript_sha256"] = _sha256_bytes(candidate_markdown.encode("utf-8"))
-    _validate_manuscript_lineage(project_path, candidate_markdown, lineage_override=updated)
+    reasons = list(dict.fromkeys(scientific_reasons or []))
+    if any(not isinstance(reason, str) or not reason for reason in reasons):
+        raise ProjectReleaseError(
+            "MANUSCRIPT_LINEAGE_INVALID",
+            "scientific edit reasons must be nonempty text",
+        )
+    if reasons and not section_id:
+        raise ProjectReleaseError(
+            "MANUSCRIPT_LINEAGE_INVALID",
+            "scientific edits require a manuscript section",
+        )
+
+    touched_pending = False
+    if section_id is not None:
+        current_sections = {row["id"]: row for row in split_manuscript_sections(current_markdown)}
+        candidate_sections = {row["id"]: row for row in split_manuscript_sections(candidate_markdown)}
+        if section_id not in current_sections or section_id not in candidate_sections:
+            raise ProjectReleaseError(
+                "MANUSCRIPT_SECTIONS_INVALID",
+                "scientific edit section is missing",
+            )
+        existing = next((row for row in pending if row["section_id"] == section_id), None)
+        candidate_body = candidate_sections[section_id]["body"]
+        if existing is not None and candidate_body == existing["verified_body"]:
+            pending = [row for row in pending if row["section_id"] != section_id]
+            touched_pending = True
+        elif reasons:
+            if existing is None:
+                pending.append(
+                    {
+                        "section_id": section_id,
+                        "verified_body": current_sections[section_id]["body"],
+                        "reasons": reasons,
+                    }
+                )
+            else:
+                existing["reasons"] = list(dict.fromkeys([*existing["reasons"], *reasons]))
+            touched_pending = True
+
+    pending.sort(key=lambda row: row["section_id"])
+    if pending:
+        updated["pending_scientific_edits"] = pending
+    elif "pending_scientific_edits" in lineage or touched_pending:
+        updated["pending_scientific_edits"] = []
+    else:
+        updated.pop("pending_scientific_edits", None)
+    if not pending:
+        _validate_manuscript_lineage(project_path, candidate_markdown, lineage_override=updated)
     return updated
 
 

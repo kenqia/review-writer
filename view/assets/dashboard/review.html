@@ -3,110 +3,239 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>科研综述工作台</title>
+  <title>动态科研综述工作台</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/assets/dashboard/review-ui.css">
 </head>
 <body class="page-review">
-  <main class="workbench-shell">
-    <header class="workbench-mast">
-      <div>
-        <div class="workbench-kicker">动态科研工作台</div>
-        <h1>科研综述专家</h1>
-        <p>从证据到集中决策，再到可交付稿件。</p>
+  <a class="skip-link" href="#primary-workspace">跳到主要工作区</a>
+  <main id="primary-workspace" class="review-shell">
+    <header class="review-masthead">
+      <div class="review-identity">
+        <span class="review-seal" aria-hidden="true">R</span>
+        <div>
+          <p class="review-kicker">Dynamic research review</p>
+          <h1 id="project-title">动态科研综述工作台</h1>
+        </div>
       </div>
-      <label class="project-picker">当前项目<select id="project" aria-label="选择综述项目"></select></label>
+      <div class="review-project-tools">
+        <label for="project">当前项目</label>
+        <select id="project" aria-label="选择综述项目"></select>
+      </div>
+      <div class="review-state-line" aria-live="polite">
+        <span id="stage-badge" class="state-badge">读取中</span>
+        <span id="status-badge">正在读取项目状态…</span>
+      </div>
     </header>
 
-    <nav class="workbench-tabs" role="tablist" aria-label="工作台页面">
-      <button id="tab-overview" role="tab" aria-selected="true" aria-controls="panel-overview" tabindex="0">Overview</button>
-      <button id="tab-evidence" role="tab" aria-selected="false" aria-controls="panel-evidence" tabindex="-1">Evidence</button>
-      <button id="tab-decisions" role="tab" aria-selected="false" aria-controls="panel-decisions" tabindex="-1">Decisions</button>
-      <button id="tab-manuscript" role="tab" aria-selected="false" aria-controls="panel-manuscript" tabindex="-1">Manuscript</button>
+    <nav class="workspace-switcher" aria-label="项目工作区">
+      <button type="button" data-workspace="cockpit" aria-pressed="true" aria-controls="cockpit-workspace">
+        项目驾驶舱
+      </button>
+      <button type="button" data-workspace="manuscript" aria-pressed="false" aria-controls="manuscript-workspace">
+        正文工作室
+      </button>
     </nav>
 
-    <section id="panel-overview" class="workbench-panel" role="tabpanel" aria-labelledby="tab-overview">
-      <div class="overview-grid">
-        <article class="workbench-card overview-brief">
-          <div class="workbench-label">综述简报</div>
-          <h2 id="topic">正在读取项目…</h2>
-          <p id="brief" class="workbench-lede"></p>
-          <dl class="stage-summary">
-            <div><dt>研究问题</dt><dd id="review-question">—</dd></div>
-            <div><dt>年份范围</dt><dd id="review-years">—</dd></div>
-            <div><dt>目标研究数</dt><dd id="review-target">—</dd></div>
-            <div><dt>必需激活方式</dt><dd id="required-modes">—</dd></div>
-            <div><dt>排除范围</dt><dd id="review-exclusions">—</dd></div>
-            <div><dt>输出语言</dt><dd id="output-language">—</dd></div>
-            <div><dt>交付物</dt><dd id="review-deliverables">—</dd></div>
-          </dl>
-          <dl class="stage-summary">
-            <div><dt>当前阶段</dt><dd id="stage">—</dd></div>
-            <div><dt>进展状态</dt><dd id="status">—</dd></div>
-          </dl>
-          <button id="confirm-brief" class="workbench-button primary" type="button">确认综述简报</button>
-          <p id="brief-confirmation-message" class="workbench-message" role="status" aria-live="polite"></p>
-        </article>
-        <aside class="workbench-card coverage-card">
-          <div class="workbench-label">证据覆盖</div>
-          <div id="coverage" class="metric-grid" aria-live="polite"></div>
+    <section id="cockpit-workspace" class="product-workspace" aria-labelledby="cockpit-heading">
+      <div class="cockpit-layout">
+        <aside class="research-rail" aria-label="项目阶段与证据健康">
+          <div class="rail-heading">
+            <p class="section-label">Project course</p>
+            <h2 id="cockpit-heading">项目阶段</h2>
+          </div>
+          <ol id="stage-list" class="stage-list"></ol>
+          <section class="rail-health" aria-labelledby="health-heading">
+            <p class="section-label">Evidence health</p>
+            <h3 id="health-heading">证据健康</h3>
+            <div id="cockpit-health"></div>
+            <p id="draft-availability-note" class="rail-note"></p>
+          </section>
+          <details class="brief-disclosure">
+            <summary>查看综述简报</summary>
+            <dl class="brief-facts">
+              <div><dt>研究问题</dt><dd id="review-question">—</dd></div>
+              <div><dt>年份范围</dt><dd id="review-years">—</dd></div>
+              <div><dt>目标研究数</dt><dd id="review-target">—</dd></div>
+              <div><dt>必需激活方式</dt><dd id="required-modes">—</dd></div>
+              <div><dt>排除范围</dt><dd id="review-exclusions">—</dd></div>
+              <div><dt>输出语言</dt><dd id="output-language">—</dd></div>
+              <div><dt>交付物</dt><dd id="review-deliverables">—</dd></div>
+            </dl>
+            <button id="confirm-brief" class="quiet-action" type="button" hidden>确认综述简报</button>
+            <p id="brief-confirmation-message" class="inline-message" role="status" aria-live="polite"></p>
+          </details>
+        </aside>
+
+        <div class="cockpit-main">
+          <header class="workspace-heading">
+            <div>
+              <p class="section-label">Research cockpit</p>
+              <h2>证据进度与下一步</h2>
+            </div>
+            <p id="cockpit-stage-summary" class="workspace-summary">—</p>
+          </header>
+
+          <section class="next-action" aria-labelledby="next-action-label">
+            <p id="next-action-label">建议下一步</p>
+            <strong id="recommended-next">正在计算当前最必要的工作…</strong>
+            <span>基于当前纳入研究、全文覆盖与已复核证据。</span>
+          </section>
+
+          <section class="metric-ledger" aria-label="项目关键指标">
+            <article>
+              <span>纳入研究</span>
+              <strong id="metric-included">—</strong>
+              <small>进入全文复核的研究</small>
+            </article>
+            <article>
+              <span>MAIN 全文</span>
+              <strong id="metric-main-coverage">—</strong>
+              <small>已具备主文全文</small>
+            </article>
+            <article>
+              <span>已复核研究</span>
+              <strong id="metric-reviewed">—</strong>
+              <small>已有证据卡片</small>
+            </article>
+            <article>
+              <span>科学风险</span>
+              <strong id="metric-scientific-risks">—</strong>
+              <small>需要集中核对的主张</small>
+            </article>
+          </section>
+
+          <section class="mode-section" aria-labelledby="mode-heading">
+            <div class="section-heading-line">
+              <div>
+                <p class="section-label">Activation modes</p>
+                <h3 id="mode-heading">激活方式覆盖</h3>
+              </div>
+              <span>纳入 / 已复核</span>
+            </div>
+            <div class="mode-table-wrap">
+              <table>
+                <thead><tr><th scope="col">激活方式</th><th scope="col">纳入</th><th scope="col">已复核</th><th scope="col">覆盖</th></tr></thead>
+                <tbody id="mode-coverage"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <aside class="context-column" aria-labelledby="context-heading">
+          <header>
+            <p class="section-label">Current context</p>
+            <h2 id="context-heading">当前证据与风险</h2>
+          </header>
+          <div id="cockpit-context" class="context-feed" aria-live="polite"></div>
         </aside>
       </div>
     </section>
 
-    <section id="panel-evidence" class="workbench-panel" role="tabpanel" aria-labelledby="tab-evidence" hidden>
-      <header class="panel-heading">
-        <div><div class="workbench-label">可追溯证据</div><h2>逐项核对研究依据</h2></div>
-        <div class="evidence-filters">
-          <label>研究<select id="study-filter"><option value="">全部研究</option></select></label>
-          <label>激活方式<select id="activation-filter"><option value="">全部方式</option></select></label>
+    <section id="manuscript-workspace" class="product-workspace" aria-labelledby="manuscript-heading" hidden>
+      <section id="manuscript-empty" class="manuscript-empty" hidden>
+        <p class="section-label">Authoritative manuscript</p>
+        <h2>当前还没有综述正文</h2>
+        <p>项目仍处于证据复核阶段。工作台不会用占位内容伪装正文；请按照驾驶舱中的建议继续推进。</p>
+        <button type="button" data-workspace="cockpit">返回项目驾驶舱</button>
+      </section>
+
+      <div id="manuscript-layout" class="manuscript-layout">
+        <aside class="manuscript-outline" aria-labelledby="outline-heading">
+          <header>
+            <p class="section-label">Manuscript</p>
+            <h2 id="outline-heading">章节与证据健康</h2>
+          </header>
+          <nav id="section-outline" aria-label="正文章节"></nav>
+          <div id="revision-summary" class="revision-summary"></div>
+        </aside>
+
+        <div class="manuscript-center">
+          <section id="pending-review-banner" class="pending-review-banner" aria-live="polite" hidden>
+            <div>
+              <p class="section-label">Scientific review required</p>
+              <h2>需要证据复核</h2>
+              <ul id="pending-reasons"></ul>
+              <p>恢复本节已验证版本将替换当前未复核编辑。</p>
+            </div>
+            <button id="restore-verified" type="button">恢复本节已验证版本</button>
+          </section>
+
+          <article class="manuscript-paper">
+            <header class="paper-heading">
+              <p class="section-label">Authoritative section</p>
+              <h2 id="manuscript-heading">选择一个章节</h2>
+              <p>绿色标记为可追溯主张；点击后在右侧核对完整证据链。</p>
+            </header>
+            <div id="section-reading" class="section-reading" aria-label="可追溯正文视图"></div>
+            <div class="editor-rule" aria-hidden="true"><span>编辑本节正文</span></div>
+            <label class="section-editor-label" for="section-editor">章节正文</label>
+            <textarea id="section-editor" rows="16" spellcheck="true"></textarea>
+            <footer class="editor-footer">
+              <p id="save-message" class="inline-message" role="status" aria-live="polite"></p>
+              <button id="save-section" type="button">保存本节</button>
+            </footer>
+          </article>
         </div>
-      </header>
-      <div id="evidence-list" class="evidence-list" aria-live="polite"></div>
-    </section>
 
-    <section id="panel-decisions" class="workbench-panel" role="tabpanel" aria-labelledby="tab-decisions" hidden>
-      <header class="panel-heading">
-        <div><div class="workbench-label">集中决策</div><h2>一次完成科学风险复核</h2><p>每项选择一种处置；改写时填写可直接用于稿件的表述。</p></div>
-        <button id="save-decisions" class="workbench-button primary" type="button">保存全部决策</button>
-      </header>
-      <div id="decision-list" class="decision-list"></div>
-      <p id="decision-message" class="workbench-message" role="status" aria-live="polite"></p>
-    </section>
-
-    <section id="panel-manuscript" class="workbench-panel" role="tabpanel" aria-labelledby="tab-manuscript" hidden>
-      <div class="manuscript-grid">
-        <article class="workbench-card">
-          <div class="workbench-label">稿件编排</div>
-          <h2>继续编辑章节</h2>
-          <p>查看各章节当前内容，完成结构与措辞调整。</p>
-          <a class="workbench-button primary" href="/sections">打开章节编辑器</a>
-        </article>
-        <article class="workbench-card">
-          <div class="workbench-label">当前文稿</div>
-          <h2 id="docx-state">正在检查 DOCX…</h2>
-          <p>在终稿页面打开当前 DOCX，或生成最新版本。</p>
-          <div class="manuscript-actions">
-            <a class="workbench-button" href="/final">打开当前 DOCX</a>
-            <button id="export" class="workbench-button primary" type="button">生成最新 DOCX</button>
+        <aside id="evidence-inspector" class="evidence-inspector" aria-labelledby="inspector-heading" tabindex="-1">
+          <header>
+            <p class="section-label">Claim lineage</p>
+            <h2 id="inspector-heading">证据链核对</h2>
+          </header>
+          <div id="inspector-empty" class="inspector-empty">
+            <p>点击正文中的绿色主张，查看研究、原文摘录、定位、复核结论与投影决策。</p>
           </div>
-          <p id="export-message" class="workbench-message" role="status" aria-live="polite"></p>
-        </article>
+          <div id="inspector-content" hidden></div>
+        </aside>
       </div>
     </section>
+
+    <p id="workbench-message" class="workbench-message" role="status" aria-live="polite"></p>
   </main>
 
   <script>
     const $ = id => document.getElementById(id);
-    const esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[character]));
-    const decisionLabels = {approve:'采纳', reword:'改写', exclude:'排除', unresolved:'待定'};
-    const stageLabels = {not_started:'尚未开始', review_brief:'综述简报确认', ready_for_discovery:'可开始文献发现', evidence_review:'证据复核', drafting:'稿件撰写', final_review:'终稿审查', complete:'已完成'};
-    const statusLabels = {not_started:'尚未开始', AWAITING_BRIEF_CONFIRMATION:'等待确认综述简报', BRIEF_CONFIRMED:'综述简报已确认', needs_human_review:'需要复核', in_progress:'进行中', complete:'已完成'};
+    const stageLabels = {
+      not_started:'尚未开始', review_brief:'综述简报', ready_for_discovery:'文献发现',
+      evidence_review:'证据复核', drafting:'正文撰写', final_review:'终稿审查', complete:'已完成'
+    };
+    const statusLabels = {
+      not_started:'尚未开始', AWAITING_BRIEF_CONFIRMATION:'等待确认综述简报',
+      BRIEF_CONFIRMED:'综述简报已确认', needs_human_review:'需要人工复核',
+      in_progress:'进行中', complete:'已完成'
+    };
+    const decisionLabels = {
+      APPROVED:'已纳入正文', HUMAN_REQUIRED:'需要复核', BLOCKED:'暂不采用',
+      approve:'已采纳', reword:'已改写', exclude:'已排除', unresolved:'待定'
+    };
+    const verdictLabels = {
+      SUPPORT:'支持', SUPPORTED:'支持', AMBIGUOUS:'证据有限', CONTRADICT:'存在冲突',
+      REJECT:'不支持', NEEDS_HUMAN_REVIEW:'需要人工复核'
+    };
+    const stageFlow = [
+      ['review_brief','确认研究范围'],
+      ['ready_for_discovery','发现并筛选研究'],
+      ['evidence_review','复核全文证据'],
+      ['drafting','撰写证据约束正文'],
+      ['final_review','完成终稿核对'],
+      ['complete','形成可交付综述']
+    ];
+
+    let projects = [];
     let projectId = '';
     let projectState = {};
-    let evidencePayload = {coverage:{}, cards:[]};
-    let riskPayload = {coverage:{}, targets:[]};
-    const decisionState = new Map();
+    let cockpitPayload = {metrics:{}, mode_coverage:[]};
+    let draftPayload = {available:false, sections:[], claim_lineage:[], revision_status:{pending_scientific_edits:[]}};
+    let evidencePayload = {cards:[]};
+    let riskPayload = {targets:[]};
+    let activeSectionId = '';
+    let selectedClaimId = '';
+    let editorDirty = false;
+    let editorBusy = false;
+    let projectLoadGeneration = 0;
+    let projectLoadBusy = false;
+    let activeWorkspace = 'cockpit';
 
     async function getPayload(url, options) {
       const response = await fetch(url, options);
@@ -114,155 +243,407 @@
       return response.json();
     }
 
-    function activateTab(tab, moveFocus = true) {
-      document.querySelectorAll('[role="tab"]').forEach(item => {
-        const active = item === tab;
-        item.setAttribute('aria-selected', String(active));
-        item.tabIndex = active ? 0 : -1;
-        $(item.getAttribute('aria-controls')).hidden = !active;
-      });
-      if (moveFocus) tab.focus();
+    async function optionalPayload(url, fallback) {
+      try { return await getPayload(url); } catch (error) { return fallback; }
     }
 
-    const tabs = [...document.querySelectorAll('[role="tab"]')];
-    tabs.forEach((tab, index) => {
-      tab.addEventListener('click', () => activateTab(tab, false));
-      tab.addEventListener('keydown', event => {
-        let next = index;
-        if (event.key === 'ArrowRight') next = (index + 1) % tabs.length;
-        else if (event.key === 'ArrowLeft') next = (index - 1 + tabs.length) % tabs.length;
-        else if (event.key === 'Home') next = 0;
-        else if (event.key === 'End') next = tabs.length - 1;
-        else return;
-        event.preventDefault();
-        activateTab(tabs[next]);
-      });
-    });
+    function clear(node) {
+      while (node.firstChild) node.removeChild(node.firstChild);
+    }
 
-    function renderOverview() {
+    function textElement(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      node.textContent = text ?? '—';
+      return node;
+    }
+
+    function confirmDiscardDraftChanges() {
+      if (!editorDirty) return true;
+      if (!window.confirm('当前章节有未保存修改。确定要丢弃这些修改吗？')) return false;
+      editorDirty = false;
+      return true;
+    }
+
+    function applyWorkbenchBusyState(busy) {
+      $('section-editor').disabled = busy;
+      $('project').disabled = busy;
+      $('save-section').disabled = busy;
+      $('restore-verified').disabled = busy;
+      document.querySelectorAll('[data-workspace], .outline-section').forEach(button => {
+        button.disabled = busy;
+      });
+    }
+
+    function setEditorBusy(busy) {
+      editorBusy = busy;
+      applyWorkbenchBusyState(editorBusy || projectLoadBusy);
+    }
+
+    function setProjectLoadBusy(busy) {
+      projectLoadBusy = busy;
+      applyWorkbenchBusyState(editorBusy || projectLoadBusy);
+    }
+
+    function setWorkspace(workspace) {
+      const selected = workspace === 'manuscript' ? 'manuscript' : 'cockpit';
+      const changed = selected !== activeWorkspace;
+      activeWorkspace = selected;
+      $('cockpit-workspace').hidden = selected !== 'cockpit';
+      $('manuscript-workspace').hidden = selected !== 'manuscript';
+      document.querySelectorAll('[data-workspace]').forEach(button => {
+        if (button.closest('#manuscript-empty')) return;
+        button.setAttribute('aria-pressed', String(button.dataset.workspace === selected));
+      });
+      if (selected === 'manuscript' && changed) renderDraft();
+    }
+
+    function listText(value) {
+      return Array.isArray(value) && value.length ? value.join('、') : '—';
+    }
+
+    function renderProjectHeader() {
       const brief = projectState.brief || {};
-      const coverage = evidencePayload.coverage || {};
-      const listText = value => Array.isArray(value) && value.length ? value.join('、') : '—';
-      $('topic').textContent = brief.topic || '未填写主题';
-      $('brief').textContent = [brief.audience && `面向：${brief.audience}`, brief.scope && `范围：${brief.scope}`].filter(Boolean).join('　');
+      $('project-title').textContent = brief.topic || cockpitPayload.topic || '未命名综述项目';
+      $('stage-badge').textContent = stageLabels[projectState.current_stage] || '进行中';
+      $('status-badge').textContent = statusLabels[projectState.status] || '状态待核对';
+      $('cockpit-stage-summary').textContent = `${stageLabels[projectState.current_stage] || '进行中'} · ${statusLabels[projectState.status] || '状态待核对'}`;
       $('review-question').textContent = brief.review_question || '—';
       $('review-years').textContent = Number.isInteger(brief.from_year) && Number.isInteger(brief.to_year) ? `${brief.from_year}–${brief.to_year}` : '—';
-      const range = Array.isArray(brief.acceptable_core_range) && brief.acceptable_core_range.length === 2 ? `（可接受 ${brief.acceptable_core_range[0]}–${brief.acceptable_core_range[1]}）` : '';
-      $('review-target').textContent = Number.isInteger(brief.target_primary_studies) ? `${brief.target_primary_studies}${range}` : '—';
+      $('review-target').textContent = Number.isInteger(brief.target_primary_studies) ? String(brief.target_primary_studies) : '—';
       $('required-modes').textContent = listText(brief.required_modes);
       $('review-exclusions').textContent = listText(brief.exclusions);
       $('output-language').textContent = brief.output_language || '—';
       $('review-deliverables').textContent = listText(brief.deliverables);
-      $('stage').textContent = stageLabels[projectState.current_stage] || '进行中';
-      $('status').textContent = statusLabels[projectState.status] || '进行中';
-      const awaitingConfirmation = projectState.status === 'AWAITING_BRIEF_CONFIRMATION';
-      $('confirm-brief').hidden = !awaitingConfirmation;
-      $('confirm-brief').disabled = !awaitingConfirmation;
-      $('brief-confirmation-message').textContent = projectState.status === 'BRIEF_CONFIRMED' ? '综述简报已确认，可以开始文献发现。' : '';
-      const metrics = [
-        ['研究', coverage.studies || 0],
-        ['可处理', coverage.processable || 0],
-        ['受阻', coverage.blocked || 0],
-        ['主张', coverage.claims || 0],
+      const awaiting = projectState.status === 'AWAITING_BRIEF_CONFIRMATION';
+      $('confirm-brief').hidden = !awaiting;
+      $('confirm-brief').disabled = !awaiting;
+      $('brief-confirmation-message').textContent = projectState.status === 'BRIEF_CONFIRMED' ? '综述简报已确认。' : '';
+      $('draft-availability-note').textContent = draftPayload.available ? '正文已建立，可进入正文工作室。' : '正文尚未建立；当前以证据复核为主。';
+    }
+
+    function renderStages() {
+      clear($('stage-list'));
+      const activeIndex = Math.max(0, stageFlow.findIndex(([stage]) => stage === projectState.current_stage));
+      stageFlow.forEach(([stage, label], index) => {
+        const item = document.createElement('li');
+        item.className = index < activeIndex ? 'complete' : index === activeIndex ? 'current' : '';
+        item.append(textElement('span', 'stage-index', String(index + 1).padStart(2, '0')));
+        const copy = document.createElement('span');
+        copy.append(textElement('strong', '', label));
+        copy.append(textElement('small', '', index < activeIndex ? '已完成' : index === activeIndex ? '当前阶段' : '待推进'));
+        item.append(copy);
+        $('stage-list').append(item);
+      });
+    }
+
+    function renderHealth() {
+      const metrics = cockpitPayload.metrics || {};
+      const included = Number(metrics.included_studies) || 0;
+      const rows = [
+        ['MAIN 全文覆盖', Number(metrics.full_text_main_coverage) || 0],
+        ['已完成证据复核', Number(metrics.reviewed_studies) || 0]
       ];
-      $('coverage').innerHTML = metrics.map(([label, value]) => `<div class="metric"><strong>${esc(value)}</strong><span>${label}</span></div>`).join('');
+      clear($('cockpit-health'));
+      rows.forEach(([label, value]) => {
+        const block = document.createElement('div');
+        block.className = 'health-row';
+        const line = document.createElement('div');
+        line.append(textElement('span', '', label), textElement('strong', '', `${value} / ${included}`));
+        const progress = document.createElement('progress');
+        progress.max = Math.max(included, 1);
+        progress.value = Math.min(value, progress.max);
+        progress.setAttribute('aria-label', label);
+        block.append(line, progress);
+        $('cockpit-health').append(block);
+      });
     }
 
-    function fillEvidenceFilters() {
+    function renderModeCoverage() {
+      clear($('mode-coverage'));
+      const rows = cockpitPayload.mode_coverage || [];
+      if (!rows.length) {
+        const row = document.createElement('tr');
+        const cell = document.createElement('td');
+        cell.colSpan = 4;
+        cell.textContent = '尚无激活方式分类。';
+        row.append(cell);
+        $('mode-coverage').append(row);
+        return;
+      }
+      rows.forEach(mode => {
+        const row = document.createElement('tr');
+        const included = Number(mode.included_studies) || 0;
+        const reviewed = Number(mode.reviewed_studies) || 0;
+        row.append(
+          textElement('th', '', mode.activation_mode || '未分类'),
+          textElement('td', '', String(included)),
+          textElement('td', '', String(reviewed))
+        );
+        row.firstChild.scope = 'row';
+        const meterCell = document.createElement('td');
+        const meter = document.createElement('progress');
+        meter.max = Math.max(included, 1);
+        meter.value = Math.min(reviewed, meter.max);
+        meter.setAttribute('aria-label', `${mode.activation_mode || '未分类'}复核覆盖`);
+        meterCell.append(meter);
+        row.append(meterCell);
+        $('mode-coverage').append(row);
+      });
+    }
+
+    function renderCockpitContext() {
+      const target = $('cockpit-context');
+      clear(target);
+      const risks = riskPayload.targets || [];
       const cards = evidencePayload.cards || [];
-      const studies = [...new Set(cards.map(card => card.study_id).filter(Boolean))].sort();
-      const modes = [...new Set(cards.map(card => card.activation_mode).filter(Boolean))].sort();
-      $('study-filter').innerHTML = '<option value="">全部研究</option>' + studies.map(value => `<option value="${esc(value)}">${esc(value)}</option>`).join('');
-      $('activation-filter').innerHTML = '<option value="">全部方式</option>' + modes.map(value => `<option value="${esc(value)}">${esc(value)}</option>`).join('');
-    }
-
-    function renderEvidence() {
-      const study = $('study-filter').value;
-      const mode = $('activation-filter').value;
-      const cards = (evidencePayload.cards || []).filter(card => (!study || card.study_id === study) && (!mode || card.activation_mode === mode));
-      if (!cards.length) {
-        $('evidence-list').innerHTML = '<p class="empty-state">当前筛选下没有证据卡片。</p>';
+      if (!risks.length && !cards.length) {
+        target.append(textElement('p', 'context-empty', '当前还没有可展示的证据上下文。'));
         return;
       }
-      $('evidence-list').innerHTML = cards.map(card => {
-        const observations = (card.observations || []).map(item => `<li>${esc(item)}</li>`).join('');
-        const limitations = (card.limitations || []).map(item => `<li>${esc(item)}</li>`).join('');
-        const claims = (card.claims || []).map(item => `<li>${esc(item)}</li>`).join('');
-        const locators = (card.locators || []).map(locator => `<a href="${esc(locator.href)}">${esc(locator.label)}</a>`).join('');
-        return `<details class="evidence-card"><summary><span><strong>${esc(card.citation || card.study_id)}</strong><small>${esc(card.activation_mode || '未标注激活方式')} · ${esc(card.reaction_class || '未标注反应类型')}</small></span><span class="expand-label">展开证据</span></summary><div class="evidence-body"><div><h3>观察</h3><ul>${observations || '<li>未记录</li>'}</ul></div><div><h3>限制</h3><ul>${limitations || '<li>未记录</li>'}</ul></div><div class="wide"><h3>支持的主张</h3><ul>${claims || '<li>未记录</li>'}</ul></div><blockquote class="wide">${esc(card.source_excerpt || '未提供原文摘录')}</blockquote><nav class="locator-links wide" aria-label="证据定位">${locators || '<span>未提供定位链接</span>'}</nav></div></details>`;
-      }).join('');
-    }
-
-    function resetDecisionState() {
-      decisionState.clear();
-      (riskPayload.targets || []).forEach(target => {
-        const selected = Object.hasOwn(decisionLabels, target.existing_decision) ? target.existing_decision : 'unresolved';
-        decisionState.set(target.target_id, {decision:selected, approved_text:'', decision_token:target.decision_token});
+      risks.slice(0, 3).forEach(risk => {
+        const article = document.createElement('article');
+        article.className = 'context-item risk-context';
+        article.append(textElement('span', 'context-type', '需要复核'));
+        article.append(textElement('h3', '', risk.claim_text || '待复核主张'));
+        article.append(textElement('p', '', risk.source_excerpt || risk.evidence_summary || '证据摘要待补充'));
+        target.append(article);
+      });
+      cards.slice(0, 2).forEach(card => {
+        const article = document.createElement('article');
+        article.className = 'context-item evidence-context';
+        article.append(textElement('span', 'context-type', '已复核研究'));
+        article.append(textElement('h3', '', card.citation || card.study_id || '研究记录'));
+        article.append(textElement('p', '', card.source_excerpt || '原文摘录已记录'));
+        target.append(article);
       });
     }
 
-    function renderDecisions() {
-      const targets = riskPayload.targets || [];
-      if (!targets.length) {
-        $('decision-list').innerHTML = '<p class="empty-state">当前没有需要集中复核的主张。</p>';
-        $('save-decisions').disabled = true;
-        return;
-      }
-      $('save-decisions').disabled = false;
-      $('decision-list').innerHTML = targets.map(target => {
-        const current = decisionState.get(target.target_id) || {decision:'unresolved', approved_text:''};
-        const categories = (target.risk_categories || []).map(value => `<span>${esc(value.replaceAll('_', ' ').toLowerCase())}</span>`).join('');
-        const buttons = Object.entries(decisionLabels).map(([value, label]) => `<button type="button" data-target="${esc(target.target_id)}" data-decision="${value}" aria-pressed="${current.decision === value}">${label}</button>`).join('');
-        const disabled = current.decision === 'reword' ? '' : 'disabled';
-        return `<article class="decision-card"><div class="decision-copy"><div class="risk-categories">${categories}</div><h3>${esc(target.claim_text)}</h3><p>${esc(target.evidence_summary)}</p><blockquote>${esc(target.source_excerpt || '未提供原文摘录')}</blockquote><small>${esc(target.proposed_action)}</small></div><div class="decision-controls" role="group" aria-label="主张处置">${buttons}</div><label class="reword-field">改写文本<input type="text" data-reword-target="${esc(target.target_id)}" value="${esc(current.approved_text)}" ${disabled}></label></article>`;
-      }).join('');
+    function renderCockpit() {
+      const metrics = cockpitPayload.metrics || {};
+      $('metric-included').textContent = cockpitPayload.metrics.included_studies ?? 0;
+      $('metric-main-coverage').textContent = cockpitPayload.metrics.full_text_main_coverage ?? 0;
+      $('metric-reviewed').textContent = cockpitPayload.metrics.reviewed_studies ?? 0;
+      $('metric-scientific-risks').textContent = cockpitPayload.metrics.scientific_risks ?? 0;
+      $('recommended-next').textContent = cockpitPayload.recommended_next || '继续核对当前研究证据';
+      void metrics;
+      renderStages();
+      renderHealth();
+      renderModeCoverage();
+      renderCockpitContext();
     }
 
-    $('decision-list').addEventListener('click', event => {
-      const button = event.target.closest('button[data-decision]');
-      if (!button) return;
-      const state = decisionState.get(button.dataset.target);
-      if (!state) return;
-      state.decision = button.dataset.decision;
-      renderDecisions();
-    });
-    $('decision-list').addEventListener('input', event => {
-      const targetId = event.target.dataset.rewordTarget;
-      if (targetId && decisionState.has(targetId)) decisionState.get(targetId).approved_text = event.target.value;
-    });
-    $('study-filter').addEventListener('change', renderEvidence);
-    $('activation-filter').addEventListener('change', renderEvidence);
+    function sectionLineage(sectionId) {
+      return (draftPayload.claim_lineage || []).filter(claim => claim.section_id === sectionId);
+    }
 
-    async function saveDecisions() {
-      const decisions = (riskPayload.targets || []).map(target => {
-        const state = decisionState.get(target.target_id);
-        return {
-          target_id: target.target_id,
-          decision: state.decision,
-          ...(state.decision === 'reword' ? {approved_text: state.approved_text} : {}),
-          decision_token: state.decision_token,
-        };
+    function pendingForSection(sectionId) {
+      return (draftPayload.revision_status?.pending_scientific_edits || []).find(row => row.section_id === sectionId);
+    }
+
+    function getActiveSection() {
+      return (draftPayload.sections || []).find(section => section.id === activeSectionId) || null;
+    }
+
+    function renderOutline() {
+      clear($('section-outline'));
+      (draftPayload.sections || []).forEach((section, index) => {
+        const claims = sectionLineage(section.id);
+        const pending = pendingForSection(section.id);
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `outline-section${section.id === activeSectionId ? ' active' : ''}${pending ? ' pending' : ''}`;
+        button.setAttribute('aria-current', section.id === activeSectionId ? 'true' : 'false');
+        button.append(textElement('span', 'outline-number', String(index + 1).padStart(2, '0')));
+        const copy = document.createElement('span');
+        copy.append(textElement('strong', '', section.heading));
+        copy.append(textElement('small', '', pending ? '需要证据复核' : `${claims.length} 条可追溯主张`));
+        button.append(copy, textElement('i', pending ? 'health-dot warning' : claims.length ? 'health-dot' : 'health-dot quiet', ''));
+        button.disabled = editorBusy || projectLoadBusy;
+        button.addEventListener('click', () => {
+          if (section.id === activeSectionId) return;
+          if (!confirmDiscardDraftChanges()) return;
+          activeSectionId = section.id;
+          selectedClaimId = '';
+          renderDraft();
+        });
+        $('section-outline').append(button);
       });
-      if (decisions.some(row => row.decision === 'reword' && !row.approved_text.trim())) {
-        $('decision-message').textContent = '请先填写所有改写文本。';
+      const totalPending = draftPayload.revision_status?.pending_scientific_edits?.length || 0;
+      $('revision-summary').textContent = totalPending ? `${totalPending} 个章节等待证据复核` : '正文证据状态正常';
+      $('revision-summary').classList.toggle('warning', Boolean(totalPending));
+    }
+
+    function appendClaimButton(container, claim, text) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = `claim-mark${claim.claim_id === selectedClaimId ? ' active' : ''}`;
+      button.setAttribute('data-claim-id', claim.claim_id);
+      button.setAttribute('aria-label', `查看主张证据：${text}`);
+      button.textContent = text;
+      button.addEventListener('click', () => selectClaim(claim.claim_id, true));
+      container.append(button);
+    }
+
+    function renderSectionReading(body) {
+      const reading = $('section-reading');
+      clear(reading);
+      if (!body) {
+        reading.append(textElement('p', 'reading-empty', '本节正文为空。'));
         return;
       }
-      $('save-decisions').disabled = true;
-      $('decision-message').textContent = '正在保存…';
+      const claims = sectionLineage(activeSectionId)
+        .map(claim => ({claim, start:body.indexOf(claim.text_span || '')}))
+        .filter(item => item.claim.text_span && item.start >= 0)
+        .sort((a, b) => a.start - b.start);
+      let cursor = 0;
+      claims.forEach(({claim, start}) => {
+        if (start < cursor) return;
+        reading.append(document.createTextNode(body.slice(cursor, start)));
+        appendClaimButton(reading, claim, claim.text_span);
+        cursor = start + claim.text_span.length;
+      });
+      reading.append(document.createTextNode(body.slice(cursor)));
+      const unmatched = sectionLineage(activeSectionId).filter(claim => !claim.text_span || !body.includes(claim.text_span));
+      if (unmatched.length) {
+        const list = document.createElement('div');
+        list.className = 'unmatched-claims';
+        list.append(textElement('span', '', '原已绑定主张'));
+        unmatched.forEach(claim => appendClaimButton(list, claim, claim.text || claim.claim_id));
+        reading.append(list);
+      }
+    }
+
+    function evidenceContextFor(claimId) {
+      for (const card of evidencePayload.cards || []) {
+        const detail = (card.claim_details || []).find(row => row.claim_id === claimId);
+        if (detail) return {card, detail};
+      }
+      return {card:{}, detail:(draftPayload.claim_lineage || []).find(row => row.claim_id === claimId) || {}};
+    }
+
+    function selectClaim(claimId, focusInspector = false) {
+      selectedClaimId = claimId;
+      renderSectionReading($('section-editor').value);
+      const claim = (draftPayload.claim_lineage || []).find(row => row.claim_id === claimId) || {};
+      const context = evidenceContextFor(claimId);
+      const card = context.card;
+      const detail = context.detail;
+      const inspector = $('inspector-content');
+      clear(inspector);
+      inspector.append(textElement('p', 'inspector-label', '正文主张'));
+      inspector.append(textElement('h3', 'inspector-claim', claim.text || detail.text || claim.text_span || '主张文字待核对'));
+
+      const study = document.createElement('section');
+      study.className = 'chain-node';
+      study.append(textElement('span', 'chain-step', '01 · 研究'));
+      study.append(textElement('h4', '', card.citation || card.study_id || '研究记录'));
+      inspector.append(study);
+
+      const evidenceList = detail.evidence || claim.evidence || [];
+      evidenceList.forEach((evidence, index) => {
+        const node = document.createElement('section');
+        node.className = 'chain-node evidence-node';
+        node.append(textElement('span', 'chain-step', `0${index + 2} · 原文证据`));
+        node.append(textElement('h4', '', evidence.source_label || '原文记录'));
+        node.append(textElement('blockquote', '', evidence.excerpt || '未提供原文摘录'));
+        const location = [evidence.page ? `第 ${evidence.page} 页` : '', evidence.section || ''].filter(Boolean).join(' · ');
+        node.append(textElement('p', 'source-location', location || '定位信息待补充'));
+        if (evidence.locator && evidence.locator.href) {
+          const link = document.createElement('a');
+          link.href = evidence.locator.href;
+          link.target = '_blank';
+          link.rel = 'noopener';
+          link.textContent = '打开原文位置 ↗';
+          node.append(link);
+        } else {
+          node.append(textElement('p', 'source-unavailable', '原文文件暂不可用'));
+        }
+        inspector.append(node);
+      });
+
+      const review = document.createElement('section');
+      review.className = 'chain-node review-node';
+      review.append(textElement('span', 'chain-step', '复核与投影'));
+      review.append(textElement('h4', '', verdictLabels[detail.review_verdict] || detail.review_verdict || '尚无 claim-specific 复核结论'));
+      review.append(textElement('p', '', detail.review_summary || '尚无 claim-specific 复核说明'));
+      review.append(textElement('p', 'projection-decision', `正文决策：${decisionLabels[detail.decision] || detail.decision || '待定'}`));
+      inspector.append(review);
+      $('inspector-empty').hidden = true;
+      inspector.hidden = false;
+      if (focusInspector) $('evidence-inspector').focus({preventScroll:true});
+    }
+
+    function renderPending() {
+      const pending = pendingForSection(activeSectionId);
+      $('pending-review-banner').hidden = !pending;
+      $('restore-verified').hidden = !pending;
+      clear($('pending-reasons'));
+      if (pending) (pending.reasons || []).forEach(reason => $('pending-reasons').append(textElement('li', '', reason)));
+    }
+
+    function renderDraft() {
+      const available = Boolean(draftPayload.available);
+      $('manuscript-empty').hidden = available;
+      $('manuscript-layout').hidden = !available;
+      if (!available) return;
+      if (!(draftPayload.sections || []).some(section => section.id === activeSectionId)) {
+        activeSectionId = draftPayload.sections?.[0]?.id || '';
+      }
+      const section = getActiveSection();
+      renderOutline();
+      renderPending();
+      if (!section) return;
+      $('manuscript-heading').textContent = section.heading;
+      $('section-editor').value = section.body || '';
+      renderSectionReading(section.body || '');
+      if (selectedClaimId) selectClaim(selectedClaimId);
+      else {
+        $('inspector-empty').hidden = false;
+        $('inspector-content').hidden = true;
+      }
+    }
+
+    async function saveDraftBody(body) {
+      const activeSection = getActiveSection();
+      if (!activeSection) return;
+      const submittedProjectId = projectId;
+      const submittedSectionId = activeSection.id;
+      const submittedBody = body;
+      const submittedVersion = draftPayload.manuscript_version;
+      setEditorBusy(true);
+      $('save-message').textContent = '正在保存并核对证据状态…';
       try {
-        await getPayload(`/api/project/${encodeURIComponent(projectId)}/risk-decisions`, {
+        const result = await getPayload(`/api/project/${encodeURIComponent(submittedProjectId)}/draft`, {
           method:'PUT',
           headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({decisions}),
+          body:JSON.stringify({section_id:submittedSectionId,body:submittedBody,manuscript_version:submittedVersion}),
         });
-        riskPayload = await getPayload(`/api/project/${encodeURIComponent(projectId)}/risk-packet`);
-        resetDecisionState();
-        renderDecisions();
-        $('decision-message').textContent = '全部决策已保存。';
+        const editorUnchanged = (
+          projectId === submittedProjectId
+          && activeSectionId === submittedSectionId
+          && $('section-editor').value === submittedBody
+        );
+        if (!editorUnchanged) return;
+        const classification = result.edit_classification;
+        const reasons = result.reasons || [];
+        $('save-message').textContent = result.needs_evidence_review
+          ? `已保存；需要证据复核。${reasons.join('；')}`
+          : classification === 'restored' ? '已恢复已验证表述。' : '已保存；证据状态正常。';
+        const refreshedDraft = await getPayload(`/api/project/${encodeURIComponent(submittedProjectId)}/draft`);
+        if (
+          projectId !== submittedProjectId
+          || activeSectionId !== submittedSectionId
+          || $('section-editor').value !== submittedBody
+        ) return;
+        draftPayload = refreshedDraft;
+        activeSectionId = result.section_id;
+        editorDirty = false;
+        renderDraft();
       } catch (error) {
-        $('decision-message').textContent = '保存失败；请刷新后重新核对。';
+        $('save-message').textContent = '保存失败。请重新读取项目后再试。';
       } finally {
-        $('save-decisions').disabled = false;
+        setEditorBusy(false);
       }
     }
 
@@ -275,53 +656,121 @@
           headers:{'Content-Type':'application/json'},
           body:JSON.stringify({action:'confirm_brief',project_id:projectId}),
         });
-        projectState = await getPayload(`/api/project/${encodeURIComponent(projectId)}/review-state`);
-        renderOverview();
+        const loadResult = await loadProject();
+        if (loadResult === 'stale') return;
       } catch (error) {
-        $('brief-confirmation-message').textContent = '确认失败；简报范围未更改。';
+        $('brief-confirmation-message').textContent = '确认失败；研究范围未更改。';
         $('confirm-brief').disabled = false;
       }
     }
 
-    async function loadState() {
-      projectState = await (await fetch(`/api/project/${encodeURIComponent(projectId)}/review-state`)).json();
-      [evidencePayload, riskPayload] = await Promise.all([
-        getPayload(`/api/project/${encodeURIComponent(projectId)}/evidence`),
-        getPayload(`/api/project/${encodeURIComponent(projectId)}/risk-packet`),
-      ]);
-      fillEvidenceFilters();
-      renderOverview();
-      renderEvidence();
-      resetDecisionState();
-      renderDecisions();
-      $('docx-state').textContent = projectState.draft?.docx_exists ? '当前 DOCX 已可用' : '当前 DOCX 尚未生成';
+    async function loadProject() {
+      const requestedProjectId = projectId;
+      if (!requestedProjectId) return 'empty';
+      const generation = ++projectLoadGeneration;
+      setProjectLoadBusy(true);
+      $('workbench-message').textContent = '正在读取项目…';
+      const encoded = encodeURIComponent(requestedProjectId);
+      try {
+        const [nextProjectState, nextCockpitPayload, nextDraftPayload, nextEvidencePayload, nextRiskPayload] = await Promise.all([
+          getPayload(`/api/project/${encoded}/review-state`),
+          getPayload(`/api/project/${encoded}/cockpit`),
+          getPayload(`/api/project/${encoded}/draft`),
+          optionalPayload(`/api/project/${encoded}/evidence`, {cards:[]}),
+          optionalPayload(`/api/project/${encoded}/risk-packet`, {targets:[]}),
+        ]);
+        if (
+          generation !== projectLoadGeneration
+          || projectId !== requestedProjectId
+        ) return 'stale';
+        projectState = nextProjectState;
+        cockpitPayload = nextCockpitPayload;
+        draftPayload = nextDraftPayload;
+        evidencePayload = nextEvidencePayload;
+        riskPayload = nextRiskPayload;
+        editorDirty = false;
+        activeSectionId = draftPayload.sections?.[0]?.id || '';
+        selectedClaimId = '';
+        renderProjectHeader();
+        renderCockpit();
+        renderDraft();
+        setWorkspace(projectState.default_workspace);
+        $('workbench-message').textContent = '';
+        return 'loaded';
+      } catch (error) {
+        if (
+          generation !== projectLoadGeneration
+          || projectId !== requestedProjectId
+        ) return 'stale';
+        throw error;
+      } finally {
+        if (generation === projectLoadGeneration) setProjectLoadBusy(false);
+      }
     }
 
     async function loadProjects() {
-      const projects = await getPayload('/api/projects');
-      $('project').innerHTML = projects.map(project => `<option value="${esc(project.project_id)}">${esc(project.project_id)}</option>`).join('');
+      projects = await getPayload('/api/projects');
+      clear($('project'));
+      projects.forEach(project => {
+        const option = document.createElement('option');
+        option.value = project.project_id;
+        option.textContent = project.topic || project.project_id;
+        $('project').append(option);
+      });
       projectId = projects[0]?.project_id || '';
-      if (projectId) await loadState();
+      if (!projectId) {
+        $('workbench-message').textContent = '没有可打开的综述项目。';
+        return;
+      }
+      const loadResult = await loadProject();
+      if (loadResult === 'stale') return;
     }
 
-    $('project').addEventListener('change', async event => {
-      projectId = event.target.value;
-      await loadState();
+    document.querySelectorAll('[data-workspace]').forEach(button => {
+      button.addEventListener('click', () => {
+        const nextWorkspace = button.dataset.workspace === 'manuscript' ? 'manuscript' : 'cockpit';
+        if (nextWorkspace === activeWorkspace) return;
+        if (activeWorkspace === 'manuscript' && !confirmDiscardDraftChanges()) return;
+        setWorkspace(nextWorkspace);
+      });
     });
-    $('confirm-brief').addEventListener('click', confirmBrief);
-    $('save-decisions').addEventListener('click', saveDecisions);
-    $('export').addEventListener('click', async () => {
-      $('export-message').textContent = '正在生成…';
+    $('project').addEventListener('change', async event => {
+      const nextProjectId = event.target.value;
+      if (nextProjectId === projectId) return;
+      if (!confirmDiscardDraftChanges()) {
+        event.target.value = projectId;
+        return;
+      }
+      projectId = nextProjectId;
       try {
-        const result = await getPayload(`/api/project/${encodeURIComponent(projectId)}/export-docx`, {method:'POST'});
-        $('export-message').textContent = result.ok ? '最新 DOCX 已生成。' : '生成失败。';
-        if (result.ok) await loadState();
+        const loadResult = await loadProject();
+        if (loadResult === 'stale') return;
       } catch (error) {
-        $('export-message').textContent = '生成失败；请检查终稿状态。';
+        $('workbench-message').textContent = '项目暂时无法读取。';
       }
     });
+    $('confirm-brief').addEventListener('click', confirmBrief);
+    $('save-section').addEventListener('click', () => saveDraftBody($('section-editor').value));
+    $('section-editor').addEventListener('input', event => {
+      editorDirty = true;
+      renderSectionReading(event.target.value);
+    });
+    $('restore-verified').addEventListener('click', async () => {
+      const pending = pendingForSection(activeSectionId);
+      if (pending) {
+        $('section-editor').value = pending.verified_body;
+        editorDirty = true;
+        renderSectionReading(pending.verified_body);
+        await saveDraftBody(pending.verified_body);
+      }
+    });
+    window.addEventListener('beforeunload', event => {
+      if (!editorDirty) return;
+      event.preventDefault();
+      event.returnValue = '';
+    });
     loadProjects().catch(() => {
-      $('topic').textContent = '项目暂时无法读取';
+      $('workbench-message').textContent = '项目暂时无法读取。';
     });
   </script>
 </body>

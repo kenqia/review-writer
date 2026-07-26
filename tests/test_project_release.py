@@ -179,6 +179,25 @@ def _section_edit_payload(review_root: Path, section_id: str, body: str) -> dict
     }
 
 
+def _set_title_body(project: Path, body: str) -> None:
+    manuscript_path = project / "04_first_draft" / "first_draft.md"
+    manuscript = manuscript_path.read_text(encoding="utf-8").replace(
+        "# Synthetic Review\n\n",
+        f"# Synthetic Review\n\n{body}\n\n",
+        1,
+    )
+    if "[2]" in body and "[2] Synthetic second reference entry." not in manuscript:
+        manuscript = manuscript.replace(
+            "[1] Synthetic reference entry.\n",
+            "[1] Synthetic reference entry.\n\n[2] Synthetic second reference entry.\n",
+        )
+    manuscript_path.write_text(manuscript, encoding="utf-8")
+    _update_lineage(
+        project,
+        manuscript_sha256=hashlib.sha256(manuscript.encode("utf-8")).hexdigest(),
+    )
+
+
 def test_single_section_edit_preserves_non_target_raw_bytes(tmp_path: Path) -> None:
     from view import serve_review_dashboard as dashboard
 
@@ -215,13 +234,16 @@ def test_safe_editorial_edit_refreshes_lineage_and_releases(tmp_path: Path) -> N
     before_lineage = json.loads(lineage_path.read_text(encoding="utf-8"))
     payload = _section_edit_payload(tmp_path, "synthetic-review", "Scientist-reviewed editorial context.")
 
-    dashboard.write_project_draft_sections(tmp_path, "synthetic-release", payload)
+    result = dashboard.write_project_draft_sections(tmp_path, "synthetic-release", payload)
 
     after_lineage = json.loads(lineage_path.read_text(encoding="utf-8"))
     assert after_lineage["manuscript_sha256"] == hashlib.sha256(manuscript_path.read_bytes()).hexdigest()
     assert {key: value for key, value in after_lineage.items() if key != "manuscript_sha256"} == {
         key: value for key, value in before_lineage.items() if key != "manuscript_sha256"
     }
+    assert result["edit_classification"] == "editorial"
+    assert result["needs_evidence_review"] is False
+    assert after_lineage.get("pending_scientific_edits", []) == []
     release = build_project_release(project)
     assert Path(release["docx"]).is_file()
 
@@ -248,7 +270,8 @@ def test_stale_single_section_edit_is_rejected_without_changes(tmp_path: Path) -
     assert (manuscript_path.read_bytes(), lineage_path.read_bytes()) == before
 
 
-def test_claim_span_edit_is_rejected_with_manuscript_and_lineage_unchanged(tmp_path: Path) -> None:
+def test_claim_span_edit_is_saved_pending_and_blocks_release(tmp_path: Path) -> None:
+    from review_writer.delivery.project_release import ProjectReleaseError, build_project_release
     from view import serve_review_dashboard as dashboard
 
     project = make_release_ready_project(tmp_path / "review-projects")
@@ -261,33 +284,473 @@ def test_claim_span_edit_is_rejected_with_manuscript_and_lineage_unchanged(tmp_p
         "body": results["body"].replace(APPROVED_CLAIM_TEXT, "The measured response changed under defined conditions"),
         "manuscript_version": draft["manuscript_version"],
     }
-    before = (manuscript_path.read_bytes(), lineage_path.read_bytes())
+    verified_body = results["body"]
 
-    with pytest.raises(ValueError, match="LINEAGE"):
-        dashboard.write_project_draft_sections(tmp_path, "synthetic-release", payload)
+    result = dashboard.write_project_draft_sections(tmp_path, "synthetic-release", payload)
 
-    assert (manuscript_path.read_bytes(), lineage_path.read_bytes()) == before
+    assert b"The measured response changed under defined conditions" in manuscript_path.read_bytes()
+    lineage = json.loads(lineage_path.read_text(encoding="utf-8"))
+    assert lineage["manuscript_sha256"] == hashlib.sha256(manuscript_path.read_bytes()).hexdigest()
+    assert lineage["pending_scientific_edits"] == [
+        {
+            "section_id": "results",
+            "verified_body": verified_body,
+            "reasons": ["修改了证据绑定主张"],
+        }
+    ]
+    assert result["edit_classification"] == "scientific"
+    assert result["needs_evidence_review"] is True
+    assert result["reasons"] == ["修改了证据绑定主张"]
+    with pytest.raises(ProjectReleaseError) as error:
+        build_project_release(project)
+    assert error.value.code == "MANUSCRIPT_NEEDS_EVIDENCE_REVIEW"
+    assert not (project / "05_final_audit" / "final_draft.docx").exists()
 
 
-def test_duplicate_claim_span_edit_is_rejected_with_both_files_unchanged(tmp_path: Path) -> None:
+def test_restoring_verified_body_clears_pending_and_releases(tmp_path: Path) -> None:
+    from review_writer.delivery.project_release import build_project_release
     from view import serve_review_dashboard as dashboard
 
     project = make_release_ready_project(tmp_path / "review-projects")
-    manuscript_path = project / "04_first_draft" / "first_draft.md"
     lineage_path = project / "04_first_draft" / "manuscript_lineage.json"
     draft = dashboard.project_draft_payload(tmp_path, "synthetic-release")
     results = next(section for section in draft["sections"] if section["id"] == "results")
-    payload = {
+    scientific = {
         "section_id": "results",
-        "body": f"{results['body']}\n\n{APPROVED_CLAIM_TEXT} [1].",
+        "body": results["body"].replace(APPROVED_CLAIM_TEXT, "The measured response changed under defined conditions"),
         "manuscript_version": draft["manuscript_version"],
     }
-    before = (manuscript_path.read_bytes(), lineage_path.read_bytes())
+    dashboard.write_project_draft_sections(tmp_path, "synthetic-release", scientific)
+    pending_draft = dashboard.project_draft_payload(tmp_path, "synthetic-release")
+    pending = pending_draft["revision_status"]["pending_scientific_edits"]
 
-    with pytest.raises(ValueError, match="LINEAGE"):
-        dashboard.write_project_draft_sections(tmp_path, "synthetic-release", payload)
+    restored = dashboard.write_project_draft_sections(
+        tmp_path,
+        "synthetic-release",
+        {
+            "section_id": "results",
+            "body": pending[0]["verified_body"],
+            "manuscript_version": pending_draft["manuscript_version"],
+        },
+    )
 
-    assert (manuscript_path.read_bytes(), lineage_path.read_bytes()) == before
+    lineage = json.loads(lineage_path.read_text(encoding="utf-8"))
+    assert lineage["pending_scientific_edits"] == []
+    assert restored["edit_classification"] == "restored"
+    assert restored["needs_evidence_review"] is False
+    release = build_project_release(project)
+    assert Path(release["docx"]).is_file()
+
+
+def test_citation_edit_outside_claim_span_is_saved_pending(tmp_path: Path) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    project = make_release_ready_project(tmp_path / "review-projects")
+    lineage_path = project / "04_first_draft" / "manuscript_lineage.json"
+    draft = dashboard.project_draft_payload(tmp_path, "synthetic-release")
+
+    result = dashboard.write_project_draft_sections(
+        tmp_path,
+        "synthetic-release",
+        {
+            "section_id": "synthetic-review",
+            "body": "Editorial context cites the reported result [1].",
+            "manuscript_version": draft["manuscript_version"],
+        },
+    )
+
+    lineage = json.loads(lineage_path.read_text(encoding="utf-8"))
+    assert result["edit_classification"] == "scientific"
+    assert result["reasons"] == ["改变了文献引用或 DOI"]
+    assert lineage["pending_scientific_edits"][0]["verified_body"] == ""
+
+
+@pytest.mark.parametrize(
+    ("verified_body", "candidate_body"),
+    [
+        (
+            "The primary condition was supported [1]. The comparison condition was supported [2].",
+            "The primary condition was supported [2]. The comparison condition was supported [1].",
+        ),
+        (
+            "The primary condition follows DOI 10.1000/alpha. The comparison follows DOI 10.1000/beta.",
+            "The primary condition follows DOI 10.1000/beta. The comparison follows DOI 10.1000/alpha.",
+        ),
+    ],
+    ids=["citation-sentence-swap", "doi-sentence-swap"],
+)
+def test_citation_or_doi_swap_between_sentences_is_saved_pending(
+    tmp_path: Path,
+    verified_body: str,
+    candidate_body: str,
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    project = make_release_ready_project(tmp_path / "review-projects")
+    _set_title_body(project, verified_body)
+    draft = dashboard.project_draft_payload(tmp_path, "synthetic-release")
+
+    result = dashboard.write_project_draft_sections(
+        tmp_path,
+        "synthetic-release",
+        {
+            "section_id": "synthetic-review",
+            "body": candidate_body,
+            "manuscript_version": draft["manuscript_version"],
+        },
+    )
+
+    assert result["edit_classification"] == "scientific"
+    assert "改变了文献引用或 DOI" in result["reasons"]
+    assert result["needs_evidence_review"] is True
+
+
+def test_scientific_numbers_swapped_between_conditions_are_saved_pending(tmp_path: Path) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    project = make_release_ready_project(tmp_path / "review-projects")
+    _set_title_body(project, "Condition A gave a 20% response. Condition B gave an 80% response.")
+    draft = dashboard.project_draft_payload(tmp_path, "synthetic-release")
+
+    result = dashboard.write_project_draft_sections(
+        tmp_path,
+        "synthetic-release",
+        {
+            "section_id": "synthetic-review",
+            "body": "Condition A gave an 80% response. Condition B gave a 20% response.",
+            "manuscript_version": draft["manuscript_version"],
+        },
+    )
+
+    assert result["edit_classification"] == "scientific"
+    assert "改变了数字或百分比" in result["reasons"]
+
+
+def test_new_scientific_conclusion_is_saved_pending(tmp_path: Path) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    make_release_ready_project(tmp_path / "review-projects")
+    draft = dashboard.project_draft_payload(tmp_path, "synthetic-release")
+
+    result = dashboard.write_project_draft_sections(
+        tmp_path,
+        "synthetic-release",
+        {
+            "section_id": "synthetic-review",
+            "body": "The intervention improved the measured response.",
+            "manuscript_version": draft["manuscript_version"],
+        },
+    )
+
+    assert result["edit_classification"] == "scientific"
+    assert "新增了未经验证的科研结论" in result["reasons"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "The product formed cleanly under irradiation.",
+        "-20 → +20 °C",
+        "20 → 80 compounds",
+        "The material remained stable in air.",
+        "产物在光照下保持稳定。",
+    ],
+    ids=[
+        "domain-result",
+        "signed-temperature",
+        "scientific-count",
+        "unknown-english-statement",
+        "unknown-chinese-statement",
+    ],
+)
+def test_general_scientific_statements_are_saved_pending(tmp_path: Path, body: str) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    make_release_ready_project(tmp_path / "review-projects")
+    draft = dashboard.project_draft_payload(tmp_path, "synthetic-release")
+
+    result = dashboard.write_project_draft_sections(
+        tmp_path,
+        "synthetic-release",
+        {
+            "section_id": "synthetic-review",
+            "body": body,
+            "manuscript_version": draft["manuscript_version"],
+        },
+    )
+
+    assert result["edit_classification"] == "scientific"
+    assert result["needs_evidence_review"] is True
+
+
+def test_document_meta_prose_with_domain_topic_stays_editorial(tmp_path: Path) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    make_release_ready_project(tmp_path / "review-projects")
+    draft = dashboard.project_draft_payload(tmp_path, "synthetic-release")
+
+    result = dashboard.write_project_draft_sections(
+        tmp_path,
+        "synthetic-release",
+        {
+            "section_id": "synthetic-review",
+            "body": "The catalyst section improved readability/navigation.",
+            "manuscript_version": draft["manuscript_version"],
+        },
+    )
+
+    assert result["edit_classification"] == "editorial"
+    assert result["needs_evidence_review"] is False
+    assert result["reasons"] == []
+
+
+def test_bare_editorial_version_number_does_not_create_pending(tmp_path: Path) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    make_release_ready_project(tmp_path / "review-projects")
+    draft = dashboard.project_draft_payload(tmp_path, "synthetic-release")
+
+    result = dashboard.write_project_draft_sections(
+        tmp_path,
+        "synthetic-release",
+        {
+            "section_id": "synthetic-review",
+            "body": "Editorial overview version 2.",
+            "manuscript_version": draft["manuscript_version"],
+        },
+    )
+
+    assert result["edit_classification"] == "editorial"
+    assert result["needs_evidence_review"] is False
+    assert result["reasons"] == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "本节文字与措辞已经修订，以提升可读性。",
+        "文档标题和章节概述采用新的编辑格式与样式。",
+        "调整章节结构与行文措辞。",
+        "调整文章结构。",
+    ],
+    ids=["wording-readability", "document-format", "section-structure", "article-structure"],
+)
+def test_chinese_document_meta_prose_stays_editorial(tmp_path: Path, body: str) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    make_release_ready_project(tmp_path / "review-projects")
+    draft = dashboard.project_draft_payload(tmp_path, "synthetic-release")
+
+    result = dashboard.write_project_draft_sections(
+        tmp_path,
+        "synthetic-release",
+        {
+            "section_id": "synthetic-review",
+            "body": body,
+            "manuscript_version": draft["manuscript_version"],
+        },
+    )
+
+    assert result["edit_classification"] == "editorial"
+    assert result["needs_evidence_review"] is False
+    assert result["reasons"] == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "本节文字引用了该结论 [1]。",
+        "本节文字将温度修订为 20 °C。",
+        "本节文字修订了分子结构与反应机制。",
+        "本节文字修订了化学结构。",
+        "本节文字修订了立体结构。",
+        "本节文字修订了结构式。",
+    ],
+    ids=[
+        "citation",
+        "scientific-number",
+        "molecular-structure",
+        "chemical-structure",
+        "stereostructure",
+        "structural-formula",
+    ],
+)
+def test_chinese_meta_context_does_not_hide_scientific_changes(tmp_path: Path, body: str) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    make_release_ready_project(tmp_path / "review-projects")
+    draft = dashboard.project_draft_payload(tmp_path, "synthetic-release")
+
+    result = dashboard.write_project_draft_sections(
+        tmp_path,
+        "synthetic-release",
+        {
+            "section_id": "synthetic-review",
+            "body": body,
+            "manuscript_version": draft["manuscript_version"],
+        },
+    )
+
+    assert result["edit_classification"] == "scientific"
+    assert result["needs_evidence_review"] is True
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "This section shows that the catalyst improved yield.",
+        "This paragraph demonstrates that the treatment improved survival.",
+    ],
+    ids=["section-scientific-assertion", "paragraph-scientific-assertion"],
+)
+def test_mixed_document_meta_and_scientific_assertions_stay_scientific(
+    tmp_path: Path,
+    body: str,
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    make_release_ready_project(tmp_path / "review-projects")
+    draft = dashboard.project_draft_payload(tmp_path, "synthetic-release")
+
+    result = dashboard.write_project_draft_sections(
+        tmp_path,
+        "synthetic-release",
+        {
+            "section_id": "synthetic-review",
+            "body": body,
+            "manuscript_version": draft["manuscript_version"],
+        },
+    )
+
+    assert result["edit_classification"] == "scientific"
+    assert result["needs_evidence_review"] is True
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "missing",
+        "malformed",
+        "non-object",
+        "manuscript-hash",
+        "projection-hash",
+        "writer-binding",
+        "claim-whitelist",
+    ],
+)
+def test_draft_payload_fails_closed_on_invalid_authoritative_lineage(
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    project = make_release_ready_project(tmp_path / "review-projects")
+    lineage_path = project / "04_first_draft" / "manuscript_lineage.json"
+    if failure == "missing":
+        lineage_path.unlink()
+    elif failure == "malformed":
+        lineage_path.write_text("{", encoding="utf-8")
+    elif failure == "non-object":
+        _write_json(lineage_path, [])
+    elif failure in {"manuscript-hash", "projection-hash", "claim-whitelist"}:
+        lineage = json.loads(lineage_path.read_text(encoding="utf-8"))
+        if failure == "manuscript-hash":
+            lineage["manuscript_sha256"] = "stale-manuscript-binding"
+        elif failure == "projection-hash":
+            lineage["projection_sha256"] = "stale-projection-binding"
+        else:
+            lineage["claims"][0]["claim_id"] = "claim-outside-writer-whitelist"
+        _write_json(lineage_path, lineage)
+    else:
+        packet_path = project / "02_claims" / "writer_packet.json"
+        packet = json.loads(packet_path.read_text(encoding="utf-8"))
+        packet["projection_sha256"] = "stale-writer-binding"
+        _write_json(packet_path, packet)
+
+    with pytest.raises(ValueError):
+        dashboard.project_draft_payload(tmp_path, "synthetic-release")
+
+
+def test_draft_payload_accepts_valid_pending_lineage_with_text_span_drift(tmp_path: Path) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    make_release_ready_project(tmp_path / "review-projects")
+    draft = dashboard.project_draft_payload(tmp_path, "synthetic-release")
+    results = next(section for section in draft["sections"] if section["id"] == "results")
+    dashboard.write_project_draft_sections(
+        tmp_path,
+        "synthetic-release",
+        {
+            "section_id": "results",
+            "body": results["body"].replace(
+                APPROVED_CLAIM_TEXT,
+                "The measured response changed under defined conditions",
+            ),
+            "manuscript_version": draft["manuscript_version"],
+        },
+    )
+
+    pending = dashboard.project_draft_payload(tmp_path, "synthetic-release")
+
+    assert pending["available"] is True
+    assert pending["revision_status"]["needs_evidence_review"] is True
+    assert pending["revision_status"]["pending_scientific_edits"][0]["section_id"] == "results"
+
+
+def test_chinese_edit_of_lineage_bound_claim_stays_scientific(tmp_path: Path) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    make_release_ready_project(tmp_path / "review-projects")
+    draft = dashboard.project_draft_payload(tmp_path, "synthetic-release")
+    results = next(section for section in draft["sections"] if section["id"] == "results")
+
+    result = dashboard.write_project_draft_sections(
+        tmp_path,
+        "synthetic-release",
+        {
+            "section_id": "results",
+            "body": results["body"].replace(APPROVED_CLAIM_TEXT, "本句文字已完成编辑修订"),
+            "manuscript_version": draft["manuscript_version"],
+        },
+    )
+
+    assert result["edit_classification"] == "scientific"
+    assert "修改了证据绑定主张" in result["reasons"]
+    assert result["needs_evidence_review"] is True
+
+
+def test_consecutive_scientific_edits_keep_one_pending_verified_baseline(tmp_path: Path) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    project = make_release_ready_project(tmp_path / "review-projects")
+    first_draft = dashboard.project_draft_payload(tmp_path, "synthetic-release")
+    original = next(row for row in first_draft["sections"] if row["id"] == "results")["body"]
+    first = original.replace(APPROVED_CLAIM_TEXT, "The measured response changed under defined conditions")
+    dashboard.write_project_draft_sections(
+        tmp_path,
+        "synthetic-release",
+        {"section_id": "results", "body": first, "manuscript_version": first_draft["manuscript_version"]},
+    )
+    second_draft = dashboard.project_draft_payload(tmp_path, "synthetic-release")
+    second = next(row for row in second_draft["sections"] if row["id"] == "results")["body"].replace(
+        "changed",
+        "decreased",
+    )
+
+    result = dashboard.write_project_draft_sections(
+        tmp_path,
+        "synthetic-release",
+        {"section_id": "results", "body": second, "manuscript_version": second_draft["manuscript_version"]},
+    )
+
+    lineage = json.loads(
+        (project / "04_first_draft" / "manuscript_lineage.json").read_text(encoding="utf-8")
+    )
+    assert result["edit_classification"] == "scientific"
+    assert result["needs_evidence_review"] is True
+    assert len(lineage["pending_scientific_edits"]) == 1
+    assert lineage["pending_scientific_edits"][0]["verified_body"] == original
+    assert "decreased" in (project / "04_first_draft" / "first_draft.md").read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("section_bound", [True, False], ids=["declared-section", "whole-manuscript"])
