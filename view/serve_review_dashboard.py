@@ -33,6 +33,7 @@ from review_writer.delivery.project_release import (  # noqa: E402
     replace_manuscript_section_body,
     split_manuscript_sections,
     validate_project_file_path,
+    validate_project_path_components,
 )
 
 
@@ -455,6 +456,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not raw_path:
             self.send_error(HTTPStatus.BAD_REQUEST, "missing path")
             return
+        requested_path = Path(posixpath.normpath(unquote(raw_path))).expanduser()
+        release_candidate = requested_path if requested_path.is_absolute() else self.review_root / requested_path
         path = safe_abs_path(raw_path)
         if not path:
             self.send_error(HTTPStatus.BAD_REQUEST, "invalid path")
@@ -484,9 +487,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not path.exists() or not path.is_file():
             self.send_error(HTTPStatus.NOT_FOUND, "file not found")
             return
-        if is_project_release_docx(path, self.review_root) and not project_release_docx_is_current(path):
-            self.send_error(HTTPStatus.FORBIDDEN, "release DOCX is outdated")
-            return
+        if is_project_release_docx(release_candidate, self.review_root):
+            try:
+                current = project_release_docx_is_current(release_candidate)
+            except ValueError:
+                current = False
+            if not current:
+                self.send_error(HTTPStatus.FORBIDDEN, "release DOCX is outdated")
+                return
         ctype = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
         self.send_file(path, ctype)
 
@@ -1216,11 +1224,11 @@ def project_figures_payload(review_root: Path, project_id: str) -> dict[str, Any
 
 
 def is_project_release_docx(path: Path, review_root: Path) -> bool:
-    resolved_path = path.resolve()
+    candidate = path if path.is_absolute() else review_root / path
     root = review_root.resolve()
-    if resolved_path.name != "final_draft.docx" or resolved_path.parent.name != "05_final_audit":
+    if candidate.name != "final_draft.docx" or candidate.parent.name != "05_final_audit":
         return False
-    project = resolved_path.parent.parent
+    project = candidate.parent.parent.resolve()
     if project == root:
         return True
     try:
@@ -1230,35 +1238,71 @@ def is_project_release_docx(path: Path, review_root: Path) -> bool:
     return len(relative.parts) == 1
 
 
+def _project_release_artifact_state(project: Path) -> dict[str, Any]:
+    project_path = Path(project)
+    authoritative_relative = Path("04_first_draft/first_draft.md")
+    snapshot_relative = Path("05_final_audit/final_draft.md")
+    docx_relative = Path("05_final_audit/final_draft.docx")
+    quality_relative = Path("05_final_audit/quality_report.json")
+    validate_project_path_components(
+        project_path,
+        (authoritative_relative, snapshot_relative, docx_relative, quality_relative),
+    )
+    authoritative_path = validate_project_file_path(
+        project_path, authoritative_relative, "MANUSCRIPT_INVALID"
+    )
+    snapshot_path = project_path / snapshot_relative
+    docx_path = project_path / docx_relative
+    quality_path = project_path / quality_relative
+    authoritative_bytes = authoritative_path.read_bytes()
+    snapshot_exists = snapshot_path.is_file()
+    snapshot_bytes = snapshot_path.read_bytes() if snapshot_exists else b""
+    docx_exists = docx_path.is_file()
+    docx_bytes = docx_path.read_bytes() if docx_exists else b""
+    quality_report = read_json_if_exists(quality_path)
+    if not isinstance(quality_report, dict):
+        quality_report = {}
+    snapshot_matches = snapshot_exists and snapshot_bytes == authoritative_bytes
+    integrity_valid = bool(
+        snapshot_matches
+        and docx_exists
+        and quality_report.get("manuscript_sha256") == hashlib.sha256(authoritative_bytes).hexdigest()
+        and quality_report.get("docx_sha256") == hashlib.sha256(docx_bytes).hexdigest()
+    )
+    return {
+        "authoritative_path": authoritative_path,
+        "snapshot_path": snapshot_path,
+        "docx_path": docx_path,
+        "quality_report": quality_report,
+        "snapshot_exists": snapshot_exists,
+        "snapshot_matches": snapshot_matches,
+        "integrity_valid": integrity_valid,
+    }
+
+
 def project_release_docx_is_current(docx_path: Path) -> bool:
-    project = docx_path.resolve().parent.parent
-    authoritative = project / "04_first_draft" / "first_draft.md"
-    snapshot = project / "05_final_audit" / "final_draft.md"
+    candidate = Path(docx_path)
+    project = candidate.parent.parent.resolve()
+    state = _project_release_artifact_state(project)
     return bool(
-        docx_path.is_file()
-        and authoritative.is_file()
-        and snapshot.is_file()
-        and authoritative.read_bytes() == snapshot.read_bytes()
+        state["integrity_valid"]
+        and state["docx_path"].resolve() == candidate.resolve()
     )
 
 
 def project_final_payload(review_root: Path, project_id: str) -> dict[str, Any]:
     project = project_dir(review_root, project_id)
     stage = project / "05_final_audit"
-    authoritative_path = project / "04_first_draft" / "first_draft.md"
-    snapshot_path = stage / "final_draft.md"
-    docx_path = stage / "final_draft.docx"
-    quality_report = read_json_if_exists(stage / "quality_report.json")
-    if not isinstance(quality_report, dict):
-        quality_report = {}
-    snapshot_exists = snapshot_path.is_file()
-    snapshot_matches = bool(
-        snapshot_exists
-        and authoritative_path.is_file()
-        and snapshot_path.read_bytes() == authoritative_path.read_bytes()
-    )
-    current_docx_exists = snapshot_matches and docx_path.is_file()
-    if snapshot_exists and not snapshot_matches:
+    artifact_state = _project_release_artifact_state(project)
+    authoritative_path = artifact_state["authoritative_path"]
+    snapshot_path = artifact_state["snapshot_path"]
+    docx_path = artifact_state["docx_path"]
+    quality_report = artifact_state["quality_report"]
+    snapshot_exists = artifact_state["snapshot_exists"]
+    snapshot_matches = artifact_state["snapshot_matches"]
+    integrity_valid = artifact_state["integrity_valid"]
+    current_docx_exists = integrity_valid
+    if snapshot_exists and not integrity_valid:
         release_status = "RELEASE_OUTDATED"
     elif snapshot_exists:
         release_status = quality_report.get("release_status") or quality_report.get("status") or "IN_PROGRESS"
@@ -1274,6 +1318,7 @@ def project_final_payload(review_root: Path, project_id: str) -> dict[str, Any]:
         "release_snapshot": {
             "exists": snapshot_exists,
             "matches_authoritative": snapshot_matches,
+            "integrity_valid": integrity_valid,
             "docx_exists": current_docx_exists,
         },
         "final_audit_report_md": read_text_if_exists(stage / "final_audit_report.md"),

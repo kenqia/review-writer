@@ -489,8 +489,15 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             manuscript_path = project / "04_first_draft" / "first_draft.md"
             snapshot_path = project / "05_final_audit" / "final_draft.md"
             docx_path = project / "05_final_audit" / "final_draft.docx"
+            quality_path = project / "05_final_audit" / "quality_report.json"
             snapshot_path.write_bytes(manuscript_path.read_bytes())
             docx_path.write_bytes(b"current-synthetic-docx")
+            valid_report = {
+                "release_status": "AI_REVIEWED_BENCHMARK",
+                "manuscript_sha256": hashlib.sha256(manuscript_path.read_bytes()).hexdigest(),
+                "docx_sha256": hashlib.sha256(docx_path.read_bytes()).hexdigest(),
+            }
+            quality_path.write_text(json.dumps(valid_report) + "\n", encoding="utf-8")
 
             status, _, body = self._request(
                 dashboard,
@@ -506,6 +513,44 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             self.assertEqual(200, status)
             self.assertEqual(b"current-synthetic-docx", body)
 
+            docx_path.write_bytes(b"tampered-docx-replacement")
+            status, _, body = self._request(
+                dashboard,
+                review_root,
+                b"GET /api/project/synthetic-review/final HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            )
+            self.assertEqual(200, status)
+            tampered = json.loads(body)
+            self.assertFalse(tampered["release_snapshot"]["integrity_valid"])
+            self.assertFalse(tampered["final_draft_docx_exists"])
+            status, _, _ = self._request(dashboard, review_root, download)
+            self.assertEqual(403, status)
+
+            docx_path.write_bytes(b"current-synthetic-docx")
+            for name, report in (
+                ("missing report", None),
+                ("malformed report", []),
+                ("missing manuscript hash", {"docx_sha256": valid_report["docx_sha256"]}),
+                ("missing docx hash", {"manuscript_sha256": valid_report["manuscript_sha256"]}),
+            ):
+                with self.subTest(name=name):
+                    if report is None:
+                        quality_path.unlink(missing_ok=True)
+                    else:
+                        quality_path.write_text(json.dumps(report) + "\n", encoding="utf-8")
+                    status, _, body = self._request(
+                        dashboard,
+                        review_root,
+                        b"GET /api/project/synthetic-review/final HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                    )
+                    self.assertEqual(200, status)
+                    unavailable = json.loads(body)
+                    self.assertFalse(unavailable["release_snapshot"]["integrity_valid"])
+                    self.assertFalse(unavailable["final_draft_docx_exists"])
+                    status, _, _ = self._request(dashboard, review_root, download)
+                    self.assertEqual(403, status)
+
+            quality_path.write_text(json.dumps(valid_report) + "\n", encoding="utf-8")
             manuscript_path.write_bytes(manuscript_path.read_bytes() + b"\nScientist edit.\n")
             status, _, body = self._request(
                 dashboard,
@@ -625,9 +670,15 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
         self.assertIn("body:els.sectionEditor.value", draft_html)
         self.assertIn("manuscript_version:payload.manuscript_version", draft_html)
         self.assertNotIn("JSON.stringify({sections:", draft_html)
+        self.assertIn("Authoritative project manuscript", draft_html)
+        self.assertNotIn("Draft Files", draft_html)
+        self.assertNotIn("${esc(payload?.paths?.stage_dir", draft_html)
         self.assertNotIn("first_draft_md", draft_html)
         self.assertNotIn('id="draftEditor"', draft_html)
         self.assertIn("release_status", final_html)
+        self.assertIn("Current project manuscript", final_html)
+        self.assertNotIn("file:'final_draft.md'", final_html)
+        self.assertNotIn("${d.file}", final_html)
         self.assertNotIn("manuscript_sha256", final_html)
         self.assertNotIn("docx_sha256", final_html)
 

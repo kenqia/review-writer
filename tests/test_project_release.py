@@ -346,12 +346,85 @@ def test_final_dashboard_marks_edited_snapshot_stale_until_release_is_rebuilt(tm
     assert "docx_sha256" not in final_html
 
 
+@pytest.mark.parametrize(
+    "integrity_failure",
+    [
+        "missing_report",
+        "malformed_report",
+        "missing_manuscript_hash",
+        "missing_docx_hash",
+        "manuscript_hash_mismatch",
+        "docx_hash_mismatch",
+        "docx_tampered",
+    ],
+)
+def test_final_payload_requires_snapshot_and_reported_artifact_hash_integrity(
+    tmp_path: Path,
+    integrity_failure: str,
+) -> None:
+    from review_writer.delivery.project_release import build_project_release
+    from view import serve_review_dashboard as dashboard
+
+    project = make_release_ready_project(tmp_path / "review-projects")
+    build_project_release(project)
+    quality_path = project / "05_final_audit" / "quality_report.json"
+    docx_path = project / "05_final_audit" / "final_draft.docx"
+    if integrity_failure == "missing_report":
+        quality_path.unlink()
+    elif integrity_failure == "malformed_report":
+        quality_path.write_text("[]\n", encoding="utf-8")
+    elif integrity_failure == "docx_tampered":
+        docx_path.write_bytes(b"replacement-docx-bytes")
+    else:
+        report = json.loads(quality_path.read_text(encoding="utf-8"))
+        if integrity_failure == "missing_manuscript_hash":
+            report.pop("manuscript_sha256")
+        elif integrity_failure == "missing_docx_hash":
+            report.pop("docx_sha256")
+        elif integrity_failure == "manuscript_hash_mismatch":
+            report["manuscript_sha256"] = "0" * 64
+        elif integrity_failure == "docx_hash_mismatch":
+            report["docx_sha256"] = "0" * 64
+        _write_json(quality_path, report)
+
+    payload = dashboard.project_final_payload(tmp_path, "synthetic-release")
+
+    assert payload["release_snapshot"]["matches_authoritative"] is True
+    assert payload["release_snapshot"]["integrity_valid"] is False
+    assert payload["release_snapshot"]["docx_exists"] is False
+    assert payload["final_draft_docx_exists"] is False
+    assert payload["final_draft_docx_path"] == ""
+    assert payload["release_status"] == "RELEASE_OUTDATED"
+
+
 def _tree_bytes(root: Path) -> dict[str, bytes]:
     return {
         path.relative_to(root).as_posix(): path.read_bytes()
         for path in root.rglob("*")
         if not path.is_symlink() and path.is_file()
     }
+
+
+@pytest.mark.parametrize("stage_name", ["04_first_draft", "05_final_audit"])
+def test_final_payload_rejects_symlinked_release_stage_without_reading_outside(
+    tmp_path: Path,
+    stage_name: str,
+) -> None:
+    from review_writer.delivery.project_release import build_project_release
+    from view import serve_review_dashboard as dashboard
+
+    project = make_release_ready_project(tmp_path / "review-projects")
+    build_project_release(project)
+    stage = project / stage_name
+    outside = tmp_path / f"outside-{stage_name}"
+    stage.rename(outside)
+    stage.symlink_to(outside, target_is_directory=True)
+    before = _tree_bytes(outside)
+
+    with pytest.raises(ValueError, match="PROJECT_PATH_INVALID"):
+        dashboard.project_final_payload(tmp_path, "synthetic-release")
+
+    assert _tree_bytes(outside) == before
 
 
 @pytest.mark.parametrize(
@@ -479,6 +552,36 @@ def test_release_rejects_image_query_or_fragment_before_docx_export(tmp_path: Pa
     manuscript = manuscript_path.read_text(encoding="utf-8").replace(
         "../assets/tiny.png",
         f"../assets/tiny.png{suffix}",
+    )
+    manuscript_path.write_text(manuscript, encoding="utf-8")
+    _update_lineage(project, manuscript_sha256=hashlib.sha256(manuscript.encode("utf-8")).hexdigest())
+
+    with pytest.raises(ProjectReleaseError, match="IMAGE_INVALID"):
+        build_project_release(project)
+
+    assert not (project / "05_final_audit" / "final_draft.docx").exists()
+
+
+@pytest.mark.parametrize(
+    "unsupported_image",
+    [
+        "![Synthetic one-pixel figure](<../assets/tiny.png>)",
+        '![Synthetic one-pixel figure](../assets/tiny.png "figure title")',
+        "![Synthetic one-pixel figure][tiny-figure]",
+    ],
+    ids=["angle-bracket-url", "optional-title", "reference-form"],
+)
+def test_release_rejects_every_unsupported_markdown_image_token(
+    tmp_path: Path,
+    unsupported_image: str,
+) -> None:
+    from review_writer.delivery.project_release import ProjectReleaseError, build_project_release
+
+    project = make_release_ready_project(tmp_path)
+    manuscript_path = project / "04_first_draft" / "first_draft.md"
+    manuscript = manuscript_path.read_text(encoding="utf-8").replace(
+        "![Synthetic one-pixel figure](../assets/tiny.png)",
+        unsupported_image,
     )
     manuscript_path.write_text(manuscript, encoding="utf-8")
     _update_lineage(project, manuscript_sha256=hashlib.sha256(manuscript.encode("utf-8")).hexdigest())

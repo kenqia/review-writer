@@ -19,7 +19,8 @@ from review_writer.project.vertical_review import VerticalReviewError, benchmark
 
 _ATX_HEADING_RE = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
 _FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
-_IMAGE_RE = re.compile(r"!\[[^\]]*\]\((?:<([^>]+)>|([^\s)]+))(?:\s+['\"][^'\"]*['\"])?\)")
+_IMAGE_MARKER_RE = re.compile(r"!\[")
+_CANONICAL_IMAGE_RE = re.compile(r"^!\[([^\]\r\n]*)\]\(([^\s()<>\"']+)\)[ \t]*$")
 _REFERENCE_RE = re.compile(r"^\s*(?:\[(\d+)\]|(\d+)[.)])\s+\S")
 _CITATION_RE = re.compile(r"(?<!!)\[([0-9][0-9,;\s\-–—]*)\]")
 _CLAIM_MARKER_RE = re.compile(
@@ -198,9 +199,14 @@ def _reject_reparse_components(project: Path, relatives: tuple[Path, ...]) -> No
                 raise ProjectReleaseError("PROJECT_PATH_INVALID", "release path contains a symlink or reparse point")
 
 
+def validate_project_path_components(project: Path, relatives: tuple[Path, ...]) -> None:
+    """Reject symlink/reparse components across project-relative paths, including optional files."""
+    _reject_reparse_components(Path(project), relatives)
+
+
 def validate_project_file_path(project: Path, relative: Path, code: str) -> Path:
     """Return a required project file after rejecting symlink/reparse components."""
-    _reject_reparse_components(project, (relative,))
+    validate_project_path_components(project, (relative,))
     candidate = project / relative
     if not candidate.is_file():
         raise ProjectReleaseError(code, "required release input is missing")
@@ -442,7 +448,17 @@ def _validate_manuscript_lineage(
         raise ProjectReleaseError("MANUSCRIPT_LINEAGE_DRIFT", "manuscript claim markers are absent from lineage")
 
     visible_markdown = _without_fenced_blocks(markdown)
-    image_paths = [match.group(1) or match.group(2) for match in _IMAGE_RE.finditer(visible_markdown)]
+    image_paths: list[str] = []
+    for line in visible_markdown.splitlines():
+        if not _IMAGE_MARKER_RE.search(line):
+            continue
+        image_match = _CANONICAL_IMAGE_RE.fullmatch(line)
+        if image_match is None:
+            raise ProjectReleaseError(
+                "IMAGE_INVALID",
+                "release images must use standalone ![alt](project-relative-path) syntax without titles",
+            )
+        image_paths.append(image_match.group(2))
     for image_path in image_paths:
         _validated_image(project_path, image_path)
 
