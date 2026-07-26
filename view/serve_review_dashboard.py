@@ -456,8 +456,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not raw_path:
             self.send_error(HTTPStatus.BAD_REQUEST, "missing path")
             return
-        requested_path = Path(posixpath.normpath(unquote(raw_path))).expanduser()
+        requested_path = Path(unquote(raw_path)).expanduser()
         release_candidate = requested_path if requested_path.is_absolute() else self.review_root / requested_path
+        try:
+            validate_file_request_path_components(self.review_root, requested_path)
+        except (OSError, ValueError):
+            self.send_error(HTTPStatus.FORBIDDEN, "file path contains a symlink or reparse point")
+            return
         path = safe_abs_path(raw_path)
         if not path:
             self.send_error(HTTPStatus.BAD_REQUEST, "invalid path")
@@ -541,6 +546,20 @@ def safe_abs_path(raw: str) -> Path | None:
     # Keep spaces and unicode; only normalize separators.
     raw = posixpath.normpath(raw)
     return Path(raw).expanduser().resolve() if raw.startswith("/") else Path(raw)
+
+
+def validate_file_request_path_components(review_root: Path, requested_path: Path) -> None:
+    """Reject lexical symlink/reparse aliases below the trusted review root."""
+    trusted_root = review_root.resolve(strict=True)
+    lexical_root = Path(os.path.abspath(os.fspath(review_root)))
+    candidate = requested_path if requested_path.is_absolute() else lexical_root / requested_path
+    for root in (lexical_root, trusted_root):
+        try:
+            relative = candidate.relative_to(root)
+        except ValueError:
+            continue
+        validate_project_path_components(trusted_root, (relative,))
+        return
 
 
 def project_id_from_route(path: str, action: str) -> str | None:

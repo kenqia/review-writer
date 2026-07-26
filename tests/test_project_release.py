@@ -562,6 +562,25 @@ def test_release_rejects_image_query_or_fragment_before_docx_export(tmp_path: Pa
     assert not (project / "05_final_audit" / "final_draft.docx").exists()
 
 
+def test_release_uses_literal_percent_encoded_image_path(tmp_path: Path) -> None:
+    from review_writer.delivery.project_release import ProjectReleaseError, build_project_release
+
+    project = make_release_ready_project(tmp_path)
+    build_project_release(project)
+    assert (project / "05_final_audit" / "final_draft.docx").is_file()
+
+    manuscript_path = project / "04_first_draft" / "first_draft.md"
+    manuscript = manuscript_path.read_text(encoding="utf-8").replace(
+        "../assets/tiny.png",
+        "../assets/tiny%2Epng",
+    )
+    manuscript_path.write_text(manuscript, encoding="utf-8")
+    _update_lineage(project, manuscript_sha256=hashlib.sha256(manuscript.encode("utf-8")).hexdigest())
+
+    with pytest.raises(ProjectReleaseError, match="IMAGE_INVALID"):
+        build_project_release(project)
+
+
 @pytest.mark.parametrize(
     "unsupported_image",
     [

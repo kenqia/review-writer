@@ -12,7 +12,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
 
 from review_writer.project.vertical_review import VerticalReviewError, benchmark_metrics
 
@@ -296,7 +296,7 @@ def _validate_references(sections: list[dict[str, Any]]) -> int:
 
 
 def _validated_image(project: Path, relative_url: str) -> Path:
-    raw = unquote(relative_url.strip())
+    raw = relative_url.strip()
     parsed = urlparse(raw)
     if (
         not raw

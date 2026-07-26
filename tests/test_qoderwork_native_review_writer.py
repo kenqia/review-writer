@@ -570,6 +570,50 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             self.assertEqual(200, status)
             self.assertEqual(manuscript_path.read_bytes(), body)
 
+    def test_file_route_rejects_symlink_alias_to_stale_release_docx(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = self._copy_fixture(Path(temp_dir))
+            project = review_root / "review-projects" / "synthetic-review"
+            manuscript_path = project / "04_first_draft" / "first_draft.md"
+            snapshot_path = project / "05_final_audit" / "final_draft.md"
+            docx_path = project / "05_final_audit" / "final_draft.docx"
+            quality_path = project / "05_final_audit" / "quality_report.json"
+            snapshot_path.write_bytes(manuscript_path.read_bytes())
+            docx_path.write_bytes(b"current-synthetic-docx")
+            quality_path.write_text(
+                json.dumps(
+                    {
+                        "release_status": "AI_REVIEWED_BENCHMARK",
+                        "manuscript_sha256": hashlib.sha256(manuscript_path.read_bytes()).hexdigest(),
+                        "docx_sha256": hashlib.sha256(docx_path.read_bytes()).hexdigest(),
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            direct = f"GET /file?path={quote(str(docx_path), safe='')} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode()
+            status, _, body = self._request(dashboard, review_root, direct)
+            self.assertEqual(200, status)
+            self.assertEqual(b"current-synthetic-docx", body)
+
+            ordinary_path = project / "assets" / "ordinary.txt"
+            ordinary_path.parent.mkdir(parents=True, exist_ok=True)
+            ordinary_path.write_bytes(b"ordinary-project-asset")
+            ordinary = f"GET /file?path={quote(str(ordinary_path), safe='')} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode()
+            status, _, body = self._request(dashboard, review_root, ordinary)
+            self.assertEqual(200, status)
+            self.assertEqual(b"ordinary-project-asset", body)
+
+            alias_path = project / "alias.docx"
+            alias_path.symlink_to(docx_path)
+            docx_path.write_bytes(b"tampered-stale-docx")
+            alias = f"GET /file?path={quote(str(alias_path), safe='')} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode()
+            status, _, _ = self._request(dashboard, review_root, alias)
+            self.assertEqual(403, status)
+
     def test_review_projects_symlink_escape_rejects_api_read_write_without_outside_changes(self) -> None:
         sys.path.insert(0, str(ROOT))
         from view import serve_review_dashboard as dashboard
