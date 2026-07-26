@@ -40,12 +40,17 @@ from review_writer.delivery.project_release import (  # noqa: E402
 
 
 _RESEARCHER_SHA256_RE = re.compile(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{64}(?![0-9A-Fa-f])")
+_RESEARCHER_PATH_TAIL = (
+    r"(?:[^\r\n;,)\]}>`\"']*?\."
+    r"(?:jsonl?|md|docx|pdf|png|jpe?g|svg|csv|tsv|txt)"
+    r"(?=$|[\s;,)\]}>`\"'])|[^\r\n;,)\]}>`\"']*)"
+)
 _RESEARCHER_WINDOWS_PATH_RE = re.compile(
-    r"(?im)(?<![A-Za-z0-9])(?:[A-Z]:[\\/]|\\\\[A-Za-z0-9._$-]+[\\/])[^\r\n]*"
+    rf"(?im)(?<![A-Za-z0-9])(?:[A-Z]:[\\/]|\\\\[A-Za-z0-9._$-]+[\\/]){_RESEARCHER_PATH_TAIL}"
 )
 _RESEARCHER_POSIX_PATH_RE = re.compile(
     r"(?m)(?<![:/A-Za-z0-9])/(?:home|tmp|var|mnt|opt|srv|root|Users|private|workspace|workspaces)"
-    r"(?:/|$)[^\r\n]*"
+    rf"(?:/|$){_RESEARCHER_PATH_TAIL}"
 )
 _RESEARCHER_INTERNAL_FILENAME_RE = re.compile(
     r"(?i)(?<![\w.-])(?:"
