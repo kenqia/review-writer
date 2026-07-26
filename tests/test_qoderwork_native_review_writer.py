@@ -368,7 +368,12 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             status, _, body = self._request(dashboard, review_root, request)
             self.assertEqual(200, status)
             self.assertTrue(json.loads(body)["ok"])
-            export_result = {"ok": True, "path": "05_final_audit/final_draft.docx", "size": 1}
+            export_result = {
+                "ok": True,
+                "filename": "final_draft.docx",
+                "size": 1,
+                "release_status": "AI_REVIEWED_BENCHMARK",
+            }
             with patch.object(dashboard, "export_project_docx", return_value=export_result) as export:
                 status, _, body = self._request(dashboard, review_root, b"POST /api/project/synthetic-review/export-docx HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n")
             self.assertEqual(200, status)
@@ -378,6 +383,105 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             review_html = (ROOT / "view" / "assets" / "dashboard" / "review.html").read_text(encoding="utf-8")
             self.assertIn('fetch(`/api/project/${encodeURIComponent(projectId)}/review-state`)', review_html)
             self.assertIn('<link rel="icon" href="data:,">', review_html)
+
+    def test_draft_route_edits_ordered_sections_in_one_authoritative_manuscript(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        manuscript = (
+            "# Synthetic Review\n\nIntro.\n\n"
+            "## Results\n\nEvidence-backed text [1].\n\n"
+            "## References\n\n[1] Synthetic reference.\n"
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = self._copy_fixture(Path(temp_dir))
+            project = review_root / "review-projects" / "synthetic-review"
+            manuscript_path = project / "04_first_draft" / "first_draft.md"
+            manuscript_path.write_text(manuscript, encoding="utf-8")
+            before = self._project_file_bytes(review_root)
+
+            status, _, body = self._request(
+                dashboard,
+                review_root,
+                b"GET /api/project/synthetic-review/draft HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            )
+            self.assertEqual(200, status)
+            payload = json.loads(body)
+            self.assertEqual(["synthetic-review", "results", "references"], [row["id"] for row in payload["sections"]])
+            payload["sections"][1]["body"] = "Revised evidence-backed text [1]."
+            request_body = json.dumps({"sections": payload["sections"]}).encode("utf-8")
+            request = (
+                b"PUT /api/project/synthetic-review/draft HTTP/1.1\r\n"
+                b"Host: localhost\r\nContent-Type: application/json\r\nContent-Length: "
+                + str(len(request_body)).encode()
+                + b"\r\n\r\n"
+                + request_body
+            )
+            status, _, response = self._request(dashboard, review_root, request)
+            self.assertEqual(200, status, response.decode(errors="replace"))
+            rebuilt = manuscript_path.read_text(encoding="utf-8")
+            self.assertIn("## Results\n\nRevised evidence-backed text [1].", rebuilt)
+            self.assertEqual(1, rebuilt.count("## References"))
+            after = self._project_file_bytes(review_root)
+            self.assertEqual(
+                {key: value for key, value in before.items() if key != "04_first_draft/first_draft.md"},
+                {key: value for key, value in after.items() if key != "04_first_draft/first_draft.md"},
+            )
+
+            invalid_sections = list(payload["sections"])
+            invalid_sections[1] = {**invalid_sections[1], "id": invalid_sections[0]["id"]}
+            invalid_body = json.dumps({"sections": invalid_sections}).encode("utf-8")
+            invalid_request = (
+                b"PUT /api/project/synthetic-review/draft HTTP/1.1\r\n"
+                b"Host: localhost\r\nContent-Type: application/json\r\nContent-Length: "
+                + str(len(invalid_body)).encode()
+                + b"\r\n\r\n"
+                + invalid_body
+            )
+            status, _, _ = self._request(dashboard, review_root, invalid_request)
+            self.assertEqual(400, status)
+            self.assertEqual(rebuilt, manuscript_path.read_text(encoding="utf-8"))
+
+    def test_docx_export_uses_project_release_and_browser_fields_are_bounded(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = self._copy_fixture(Path(temp_dir))
+            project = review_root / "review-projects" / "synthetic-review"
+            docx = project / "05_final_audit" / "final_draft.docx"
+            docx.write_bytes(b"synthetic-docx")
+            release = {
+                "status": "AI_REVIEWED_BENCHMARK",
+                "manuscript_sha256": "hidden-manuscript-hash",
+                "docx_sha256": "hidden-docx-hash",
+                "docx": docx,
+            }
+            with patch.object(dashboard, "build_project_release", return_value=release) as build:
+                result = dashboard.export_project_docx(review_root, "synthetic-review")
+
+            build.assert_called_once_with(project)
+            self.assertEqual(
+                {
+                    "ok": True,
+                    "filename": "final_draft.docx",
+                    "size": len(b"synthetic-docx"),
+                    "release_status": "AI_REVIEWED_BENCHMARK",
+                },
+                result,
+            )
+            self.assertNotIn("hash", json.dumps(result).casefold())
+
+    def test_draft_and_final_pages_use_sections_and_release_status_without_hash_values(self) -> None:
+        draft_html = (ROOT / "view" / "assets" / "dashboard" / "draft.html").read_text(encoding="utf-8")
+        final_html = (ROOT / "view" / "assets" / "dashboard" / "final.html").read_text(encoding="utf-8")
+        self.assertIn("payload.sections", draft_html)
+        self.assertIn('id="sectionEditor"', draft_html)
+        self.assertNotIn("first_draft_md", draft_html)
+        self.assertNotIn('id="draftEditor"', draft_html)
+        self.assertIn("release_status", final_html)
+        self.assertNotIn("manuscript_sha256", final_html)
+        self.assertNotIn("docx_sha256", final_html)
 
     def test_evidence_and_risk_payloads_are_scientist_safe(self) -> None:
         sys.path.insert(0, str(ROOT))

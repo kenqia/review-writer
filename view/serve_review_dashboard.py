@@ -4,10 +4,11 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import os
 import posixpath
 import shutil
-import subprocess
 import sys
+import tempfile
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -23,6 +24,11 @@ from review_writer.project.vertical_review import (  # noqa: E402
     VerticalReviewError,
     apply_risk_decisions,
     benchmark_metrics,
+)
+from review_writer.delivery.project_release import (  # noqa: E402
+    build_project_release,
+    render_manuscript_sections,
+    split_manuscript_sections,
 )
 
 
@@ -386,19 +392,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         try:
             data = json.loads(self.rfile.read(length).decode("utf-8"))
-        except Exception as exc:
+            write_project_draft_sections(self.review_root, project_id, data)
+        except (ValueError, json.JSONDecodeError) as exc:
             self.send_error(HTTPStatus.BAD_REQUEST, f"invalid draft payload: {exc}")
             return
-        stage_dir = project / "04_first_draft"
-        stage_dir.mkdir(parents=True, exist_ok=True)
-        if "first_draft_md" in data:
-            (stage_dir / "first_draft.md").write_text(str(data.get("first_draft_md") or ""), encoding="utf-8")
-        if "merge_report_md" in data:
-            (stage_dir / "merge_report.md").write_text(str(data.get("merge_report_md") or ""), encoding="utf-8")
-        if "remaining_issues_md" in data:
-            (stage_dir / "remaining_issues.md").write_text(str(data.get("remaining_issues_md") or ""), encoding="utf-8")
-        if "draft_bundle" in data and isinstance(data.get("draft_bundle"), dict):
-            write_json(stage_dir / "draft_bundle.json", data["draft_bundle"])
         self.send_json({"ok": True, "project_id": project_id})
 
     def discovery_path(self, project_id: str) -> Path:
@@ -1015,23 +1012,61 @@ def write_project_review_state(review_root: Path, project_id: str, data: Any) ->
     return state
 
 
+def _atomic_write_bytes(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def write_project_draft_sections(review_root: Path, project_id: str, data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict) or not isinstance(data.get("sections"), list):
+        raise ValueError("draft payload requires sections")
+    project = project_dir(review_root, project_id)
+    manuscript_path = project / "04_first_draft" / "first_draft.md"
+    if manuscript_path.is_symlink() or not manuscript_path.is_file():
+        raise ValueError("authoritative manuscript is unavailable")
+    current_sections = split_manuscript_sections(manuscript_path.read_text(encoding="utf-8"))
+    incoming = data["sections"]
+    current_order = [(row["id"], row["heading"], row["level"]) for row in current_sections]
+    try:
+        incoming_order = [(row["id"], row["heading"], row["level"]) for row in incoming]
+    except (KeyError, TypeError) as exc:
+        raise ValueError("sections must preserve ordered ids and headings") from exc
+    if incoming_order != current_order:
+        raise ValueError("sections must preserve ordered ids and headings")
+    rebuilt = render_manuscript_sections(incoming)
+    if sum(row["heading"].strip().casefold() == "references" for row in incoming) != 1:
+        raise ValueError("draft requires exactly one References section")
+    _atomic_write_bytes(manuscript_path, (rebuilt + "\n").encode("utf-8"))
+    return {"ok": True, "project_id": project_id, "sections": incoming}
+
+
 def export_project_docx(review_root: Path, project_id: str) -> dict[str, Any]:
     project = project_dir(review_root, project_id)
-    stage = project / "05_final_audit"
-    md_path, docx_path = stage / "final_draft.md", stage / "final_draft.docx"
-    if not md_path.exists():
-        return {"http_status": int(HTTPStatus.BAD_REQUEST), "error": "final_draft.md not found"}
-    script = Path(__file__).resolve().parents[1] / "skills" / "review-export-docx" / "scripts" / "md2docx.py"
-    if not script.exists():
-        return {"http_status": int(HTTPStatus.INTERNAL_SERVER_ERROR), "error": "md2docx.py not found"}
-    try:
-        result = subprocess.run([sys.executable, str(script), "--input", str(md_path), "--output", str(docx_path)], capture_output=True, text=True, timeout=180)
-    except subprocess.TimeoutExpired:
-        return {"http_status": int(HTTPStatus.GATEWAY_TIMEOUT), "error": "docx export timeout"}
-    if result.returncode != 0 or not docx_path.exists():
-        tail = (result.stderr or result.stdout or "").strip().splitlines()[-20:]
-        return {"ok": False, "returncode": result.returncode, "error": "\n".join(tail) or "md2docx.py failed"}
-    return {"ok": True, "path": str(docx_path), "size": docx_path.stat().st_size}
+    release = build_project_release(project)
+    docx_path = Path(release["docx"])
+    return {
+        "ok": True,
+        "filename": docx_path.name,
+        "size": docx_path.stat().st_size,
+        "release_status": release["status"],
+    }
 
 
 def project_matrix_payload(review_root: Path, project_id: str) -> dict[str, Any]:
@@ -1112,15 +1147,34 @@ def project_figures_payload(review_root: Path, project_id: str) -> dict[str, Any
 def project_final_payload(review_root: Path, project_id: str) -> dict[str, Any]:
     project = project_dir(review_root, project_id)
     stage = project / "05_final_audit"
+    authoritative_path = project / "04_first_draft" / "first_draft.md"
+    snapshot_path = stage / "final_draft.md"
     docx_path = stage / "final_draft.docx"
+    quality_report = read_json_if_exists(stage / "quality_report.json")
+    if not isinstance(quality_report, dict):
+        quality_report = {}
+    snapshot_exists = snapshot_path.is_file()
+    snapshot_matches = bool(
+        snapshot_exists
+        and authoritative_path.is_file()
+        and snapshot_path.read_bytes() == authoritative_path.read_bytes()
+    )
+    release_status = quality_report.get("release_status") or quality_report.get("status") if snapshot_exists else "IN_PROGRESS"
     return {
         "project_id": project_id,
         "topic": infer_project_topic(project),
         "summary": project_summary(review_root, project_id),
-        "final_draft_md": read_text_if_exists(stage / "final_draft.md"),
+        "final_draft_md": read_text_if_exists(snapshot_path) if snapshot_exists else read_text_if_exists(authoritative_path),
+        "manuscript_source": "release_snapshot" if snapshot_exists else "authoritative_manuscript",
+        "release_status": release_status or "IN_PROGRESS",
+        "release_snapshot": {
+            "exists": snapshot_exists,
+            "matches_authoritative": snapshot_matches,
+            "docx_exists": docx_path.is_file(),
+        },
         "final_audit_report_md": read_text_if_exists(stage / "final_audit_report.md"),
         "quality_report_md": read_text_if_exists(stage / "quality_report.md"),
-        "quality_report": read_json_if_exists(stage / "quality_report.json"),
+        "quality_report": quality_report,
         "clean_3paper_review_pack": read_text_if_exists(stage / "clean_3paper_review_pack.md"),
         "checkpoint_log": read_json_if_exists(project / "checkpoint_log.json"),
         "final_audit_report": read_json_if_exists(stage / "final_audit_report.json"),
@@ -1141,13 +1195,14 @@ def project_draft_payload(review_root: Path, project_id: str) -> dict[str, Any]:
     for row in (figures_manifest.get("figures") or []):
         if isinstance(row, dict):
             redrawn.append(row)
+    first_draft_md = read_text_if_exists(stage_dir / "first_draft.md") or read_text_if_exists(stage_dir / "final_draft.md")
     return {
         "project_id": project_id,
         "topic": infer_project_topic(project),
         "summary": next((p for p in list_review_projects(review_root) if p["project_id"] == project_id), None),
         "draft_bundle": draft_bundle,
-        "first_draft_md": read_text_if_exists(stage_dir / "first_draft.md")
-        or read_text_if_exists(stage_dir / "final_draft.md"),
+        "sections": split_manuscript_sections(first_draft_md) if first_draft_md else [],
+        "first_draft_md": first_draft_md,
         "merge_report_md": read_text_if_exists(stage_dir / "merge_report.md"),
         "remaining_issues_md": read_text_if_exists(stage_dir / "remaining_issues.md"),
         "section_drafts": section_drafts,

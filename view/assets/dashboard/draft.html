@@ -272,7 +272,7 @@
       <div class="detail-body">
         <div id="preview" class="draft-view"></div>
         <div id="edit" style="display:none; height:100%">
-          <textarea id="draftEditor" class="editor" spellcheck="false"></textarea>
+          <textarea id="sectionEditor" class="editor" spellcheck="false" aria-label="Selected section body"></textarea>
         </div>
         <div id="report" class="markdown" style="display:none"></div>
         <div id="issues" class="markdown" style="display:none"></div>
@@ -294,7 +294,7 @@
     let projects = [];
     let selectedProject = '';
     let payload = null;
-    let selectedItem = 'first_draft';
+    let selectedSectionId = '';
     const els = {
       projectSelect: document.getElementById('projectSelect'),
       projectInfo: document.getElementById('projectInfo'),
@@ -302,7 +302,7 @@
       detailTitle: document.getElementById('detailTitle'),
       detailMeta: document.getElementById('detailMeta'),
       preview: document.getElementById('preview'),
-      draftEditor: document.getElementById('draftEditor'),
+      sectionEditor: document.getElementById('sectionEditor'),
       report: document.getElementById('report'),
       issues: document.getElementById('issues'),
       summaryBox: document.getElementById('summaryBox'),
@@ -416,22 +416,20 @@
     async function loadProject(projectId) {
       selectedProject = projectId;
       payload = await (await fetch(`/api/project/${encodeURIComponent(projectId)}/draft`)).json();
-      els.draftEditor.value = payload.first_draft_md || '';
+      const sections = payload.sections || [];
+      if (!sections.some(section => section.id === selectedSectionId)) selectedSectionId = sections[0]?.id || '';
+      els.sectionEditor.value = sections.find(section => section.id === selectedSectionId)?.body || '';
       renderLeft();
       renderSummary();
       renderCurrent();
     }
     function renderLeft() {
-      const items = [
-        {id:'first_draft', title:'First Draft', meta:'Unified manuscript preview and editable source'},
-        {id:'merge_report', title:'Merge Report', meta:'Section merge notes and normalization report'},
-        {id:'remaining_issues', title:'Remaining Issues', meta:'Open risks that still need human check'}
-      ];
-      els.leftList.innerHTML = items.map(item => `
-        <button class="item ${selectedItem===item.id?'active':''}" data-id="${item.id}">
-          <div class="item-title">${esc(item.title)}</div>
-          <div class="item-meta">${esc(item.meta)}</div>
-          ${item.id==='first_draft' && payload?.summary?.has_figure_redraw ? '<span class="pill">figures ready</span>' : ''}
+      const sections = payload.sections || [];
+      els.leftList.innerHTML = sections.map(section => `
+        <button class="item ${selectedSectionId===section.id?'active':''}" data-id="${esc(section.id)}">
+          <div class="item-title">${esc(section.heading)}</div>
+          <div class="item-meta">Level ${esc(section.level)} · editable manuscript section</div>
+          ${payload?.summary?.has_figure_redraw ? '<span class="pill">source-bound figures</span>' : ''}
         </button>
       `).join('');
       els.projectInfo.textContent = `${selectedProject} · ${payload?.topic || ''}`;
@@ -454,33 +452,20 @@
       `;
     }
     function renderCurrent() {
-      if (selectedItem === 'first_draft') {
-        els.detailTitle.textContent = 'First Draft';
-        els.detailMeta.textContent = 'Unified manuscript preview for the selected project.';
-        els.preview.innerHTML = renderMarkdown(els.draftEditor.value || '', payload?.paths?.first_draft_base_dir || payload?.paths?.stage_dir || '');
-        els.report.innerHTML = renderMarkdown(payload?.merge_report_md || '', payload?.paths?.stage_dir || '');
-        els.issues.innerHTML = renderMarkdown(payload?.remaining_issues_md || '', payload?.paths?.stage_dir || '');
-      } else if (selectedItem === 'merge_report') {
-        els.detailTitle.textContent = 'Merge Report';
-        els.detailMeta.textContent = 'Section merge and normalization notes.';
-        els.report.innerHTML = renderMarkdown(payload?.merge_report_md || '', payload?.paths?.stage_dir || '');
-      } else {
-        els.detailTitle.textContent = 'Remaining Issues';
-        els.detailMeta.textContent = 'Open issues requiring review.';
-        els.issues.innerHTML = renderMarkdown(payload?.remaining_issues_md || '', payload?.paths?.stage_dir || '');
-      }
+      const section = (payload.sections || []).find(row => row.id === selectedSectionId);
+      if (!section) return;
+      els.detailTitle.textContent = section.heading;
+      els.detailMeta.textContent = `Level ${section.level} · authoritative manuscript section`;
+      els.preview.innerHTML = renderMarkdown(`${'#'.repeat(section.level)} ${section.heading}\n\n${section.body || ''}`, payload?.paths?.first_draft_base_dir || payload?.paths?.stage_dir || '');
+      els.report.innerHTML = renderMarkdown(payload?.merge_report_md || '', payload?.paths?.stage_dir || '');
+      els.issues.innerHTML = renderMarkdown(payload?.remaining_issues_md || '', payload?.paths?.stage_dir || '');
     }
     async function saveDraft() {
       if (!selectedProject) return;
       const res = await fetch(`/api/project/${encodeURIComponent(selectedProject)}/draft`, {
         method: 'PUT',
         headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({
-          first_draft_md: els.draftEditor.value,
-          merge_report_md: payload?.merge_report_md || '',
-          remaining_issues_md: payload?.remaining_issues_md || '',
-          draft_bundle: payload?.draft_bundle || {}
-        })
+        body: JSON.stringify({sections: payload.sections || []})
       });
       if (!res.ok) { msg(await res.text()); return; }
       msg('Draft saved');
@@ -497,8 +482,14 @@
     els.leftList.addEventListener('click', e => {
       const item = e.target.closest('[data-id]');
       if (!item) return;
-      selectedItem = item.dataset.id;
+      selectedSectionId = item.dataset.id;
+      els.sectionEditor.value = (payload.sections || []).find(section => section.id === selectedSectionId)?.body || '';
       renderLeft();
+      renderCurrent();
+    });
+    els.sectionEditor.addEventListener('input', () => {
+      const section = (payload?.sections || []).find(row => row.id === selectedSectionId);
+      if (section) section.body = els.sectionEditor.value;
       renderCurrent();
     });
     els.projectSelect.addEventListener('change', e => loadProject(e.target.value));
