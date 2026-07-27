@@ -2506,9 +2506,6 @@ def run(args: argparse.Namespace) -> int:
         final_app_path,
         review_app_path,
     ) = dashboard_assets(view_root)
-    if not has_dashboard_data(review_root):
-        print("ERROR: no review project state or review-library metadata found.", file=sys.stderr)
-        return 2
     DashboardHandler.review_root = review_root
     DashboardHandler.library_app_path = library_app_path
     DashboardHandler.discovery_app_path = discovery_app_path

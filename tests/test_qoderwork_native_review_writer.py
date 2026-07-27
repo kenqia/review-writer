@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import io
 import json
@@ -599,6 +600,48 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             )
             self.assertEqual(200, status)
             self.assertEqual(listed, json.loads(body))
+
+    def test_projects_api_returns_empty_list_for_empty_review_root(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir) / "empty-review-root"
+
+            status, _, body = self._request(
+                dashboard,
+                review_root,
+                b"GET /api/projects HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            )
+
+            self.assertEqual(200, status)
+            self.assertEqual([], json.loads(body))
+
+    def test_dashboard_run_keeps_serving_when_review_root_is_empty(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            dashboard,
+            "ThreadingHTTPServer",
+        ) as server_factory:
+            server = server_factory.return_value
+            server.serve_forever.side_effect = KeyboardInterrupt
+            args = argparse.Namespace(
+                review_root=Path(temp_dir) / "empty-review-root",
+                host="127.0.0.1",
+                port=0,
+            )
+
+            result = dashboard.run(args)
+
+            self.assertEqual(0, result)
+            server_factory.assert_called_once_with(
+                ("127.0.0.1", 0),
+                dashboard.DashboardHandler,
+            )
+            server.serve_forever.assert_called_once_with()
+            server.server_close.assert_called_once_with()
 
     def test_default_workspace_requires_a_real_manuscript_for_manuscript_stages(self) -> None:
         sys.path.insert(0, str(ROOT))
@@ -2172,6 +2215,16 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
         ):
             self.assertIn(binding, review_html)
         self.assertNotIn('role="tab"', review_html)
+
+    def test_review_workbench_waits_for_qoderwork_projects_and_polls(self) -> None:
+        review_html = (ROOT / "view" / "assets" / "dashboard" / "review.html").read_text(encoding="utf-8")
+        parser = VisibleTextParser()
+        parser.feed(review_html)
+
+        self.assertIn('id="empty-project-workspace"', review_html)
+        self.assertIn("等待 QoderWork 创建科研综述", parser.text)
+        self.assertIn("async function refreshProjects()", review_html)
+        self.assertIn("setInterval(refreshProjects, 3000)", review_html)
 
     def test_review_workbench_binds_manuscript_lineage_pending_restore_and_empty_state(self) -> None:
         review_html = (ROOT / "view" / "assets" / "dashboard" / "review.html").read_text(encoding="utf-8")

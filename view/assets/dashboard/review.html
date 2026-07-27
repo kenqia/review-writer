@@ -18,11 +18,11 @@
           <h1 id="project-title">动态科研综述工作台</h1>
         </div>
       </div>
-      <div class="review-project-tools">
+      <div id="project-tools" class="review-project-tools" hidden>
         <label for="project">当前项目</label>
         <select id="project" aria-label="选择综述项目"></select>
       </div>
-      <div class="review-state-line" aria-live="polite">
+      <div id="project-state-line" class="review-state-line" aria-live="polite" hidden>
         <span id="stage-badge" class="state-badge">读取中</span>
         <span id="status-badge">正在读取项目状态…</span>
         <button id="export-docx" class="review-export-button" type="button">导出 DOCX</button>
@@ -30,7 +30,14 @@
       </div>
     </header>
 
-    <nav class="workspace-switcher" aria-label="项目工作区">
+    <section id="empty-project-workspace" class="manuscript-empty" aria-labelledby="empty-project-heading">
+      <p class="section-label">QoderWork research review</p>
+      <h2 id="empty-project-heading">等待 QoderWork 创建科研综述</h2>
+      <p>请在 QoderWork 中创建科研综述。工作台会保持运行，并在项目就绪后自动打开。</p>
+      <p id="project-waiting-message" role="status" aria-live="polite">正在等待新项目…</p>
+    </section>
+
+    <nav id="workspace-switcher" class="workspace-switcher" aria-label="项目工作区" hidden>
       <button type="button" data-workspace="cockpit" aria-pressed="true" aria-controls="cockpit-workspace">
         项目驾驶舱
       </button>
@@ -39,7 +46,7 @@
       </button>
     </nav>
 
-    <section id="cockpit-workspace" class="product-workspace" aria-labelledby="cockpit-heading">
+    <section id="cockpit-workspace" class="product-workspace" aria-labelledby="cockpit-heading" hidden>
       <div class="cockpit-layout">
         <aside class="research-rail" aria-label="项目阶段与证据健康">
           <div class="rail-heading">
@@ -237,6 +244,8 @@
     let editorBusy = false;
     let projectLoadGeneration = 0;
     let projectLoadBusy = false;
+    let projectsRefreshTimer = null;
+    let projectsRefreshBusy = false;
     let activeWorkspace = 'cockpit';
 
     async function getPayload(url, options) {
@@ -285,6 +294,17 @@
     function setProjectLoadBusy(busy) {
       projectLoadBusy = busy;
       applyWorkbenchBusyState(editorBusy || projectLoadBusy);
+    }
+
+    function setEmptyProjectWorkspace(empty) {
+      $('empty-project-workspace').hidden = !empty;
+      $('project-tools').hidden = empty;
+      $('project-state-line').hidden = empty;
+      $('workspace-switcher').hidden = empty;
+      if (!empty) return;
+      $('cockpit-workspace').hidden = true;
+      $('manuscript-workspace').hidden = true;
+      $('project-title').textContent = '动态科研综述工作台';
     }
 
     function setWorkspace(workspace) {
@@ -721,6 +741,7 @@
         renderProjectHeader();
         renderCockpit();
         renderDraft();
+        setEmptyProjectWorkspace(false);
         setWorkspace(projectState.default_workspace);
         $('workbench-message').textContent = '';
         return 'loaded';
@@ -736,21 +757,50 @@
     }
 
     async function loadProjects() {
-      projects = await getPayload('/api/projects');
-      clear($('project'));
-      projects.forEach(project => {
-        const option = document.createElement('option');
-        option.value = project.project_id;
-        option.textContent = project.topic || project.project_id;
-        $('project').append(option);
-      });
-      projectId = projects[0]?.project_id || '';
-      if (!projectId) {
-        $('workbench-message').textContent = '没有可打开的综述项目。';
-        return;
+      return refreshProjects();
+    }
+
+    async function refreshProjects() {
+      if (projectsRefreshBusy) return 'busy';
+      projectsRefreshBusy = true;
+      try {
+        projects = await getPayload('/api/projects');
+        clear($('project'));
+        projects.forEach(project => {
+          const option = document.createElement('option');
+          option.value = project.project_id;
+          option.textContent = project.topic || project.project_id;
+          $('project').append(option);
+        });
+        if (!projects.length) {
+          setEmptyProjectWorkspace(true);
+          $('project-waiting-message').textContent = '正在等待新项目…';
+          $('workbench-message').textContent = '';
+          return 'empty';
+        }
+        if (projectId) {
+          $('project').value = projectId;
+          setEmptyProjectWorkspace(false);
+          setWorkspace(activeWorkspace);
+          return 'unchanged';
+        }
+        projectId = projects[0].project_id;
+        $('project').value = projectId;
+        const loadResult = await loadProject();
+        if (loadResult === 'stale') return 'stale';
+        return loadResult;
+      } catch (error) {
+        if (!projectId) setEmptyProjectWorkspace(true);
+        $('project-waiting-message').textContent = '暂时无法检查新项目，工作台将继续等待。';
+        return 'error';
+      } finally {
+        projectsRefreshBusy = false;
       }
-      const loadResult = await loadProject();
-      if (loadResult === 'stale') return;
+    }
+
+    function startProjectsRefresh() {
+      if (projectsRefreshTimer !== null) return;
+      projectsRefreshTimer = setInterval(refreshProjects, 3000);
     }
 
     document.querySelectorAll('[data-workspace]').forEach(button => {
@@ -800,6 +850,7 @@
     loadProjects().catch(() => {
       $('workbench-message').textContent = '项目暂时无法读取。';
     });
+    startProjectsRefresh();
   </script>
 </body>
 </html>
