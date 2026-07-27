@@ -407,7 +407,7 @@ git add view/assets/dashboard/review.html view/assets/dashboard/review-ui.css \
 git commit -m "feat(review): complete scientific risk decisions in workbench"
 ```
 
-### Task 5: Expert Kit inbox handoff and complete local verification
+### Task 5: Expert Kit inbox handoff and complete WSL-local verification
 
 **Files:**
 - Modify: `qoderwork/plugins/research-review-writer/skills/research-review-writer/SKILL.md`
@@ -473,13 +473,13 @@ python3 -m zipfile -t dist/research-review-writer-0.2.3.zip
 
 Expected: plugin package build exits 0 and ZIP test reports `Done testing`.
 
-- [ ] **Step 6: Start a clean localhost engineering smoke environment**
+- [ ] **Step 6: Start a clean WSL-local engineering smoke environment**
 
-Use a fresh ignored Windows-native directory with no project data. Start:
+Use a fresh WSL directory with no project data. Do not access `/mnt/c` during implementation or engineering smoke. Start:
 
 ```bash
 python3 view/serve_review_dashboard.py \
-  --review-root /mnt/c/Users/26960/QW-RW-E2E-V1/review-writer \
+  --review-root /tmp/review-writer-e2e-smoke \
   --host 127.0.0.1 --port 44061
 ```
 
@@ -497,7 +497,7 @@ git add qoderwork/plugins/research-review-writer/skills/research-review-writer/S
 git commit -m "feat(review): connect expert kit to source inbox"
 ```
 
-### Task 6: Prepare, but do not perform, the human E2E
+### Task 6: Freeze the WSL build before later Windows migration
 
 **Files:**
 - No tracked file changes.
@@ -514,16 +514,16 @@ sha256sum dist/research-review-writer-0.2.3.zip
 
 Expected: clean tracked worktree; only ignored E2E data/build artifacts may exist.
 
-- [ ] **Step 2: Stop before impersonating the user**
+- [ ] **Step 2: Stop before migration or impersonating the user**
 
 Report exactly:
 
-- QoderWork clean working directory;
-- current Expert Kit ZIP;
-- localhost URL;
-- the first single UI action: create the new project in QoderWork with `/research-review-writer` and a natural-language topic.
+- WSL development worktree and commit;
+- current Expert Kit ZIP and checksum;
+- WSL localhost engineering-smoke result;
+- migration status `WINDOWS_NATIVE_MIGRATION=NOT_STARTED`.
 
-Do not create the QoderWork task, send the scientific request, confirm Brief, upload ZIP, decide Risk Packet, edit manuscript, or export DOCX for the user.
+Do not copy to `/mnt/c`, create the QoderWork task, send the scientific request, confirm Brief, upload ZIP, decide Risk Packet, edit manuscript, or export DOCX for the user. Windows-native migration and human E2E preparation are a later, explicitly separated stage after the WSL implementation is frozen.
 
 The final status remains:
 
