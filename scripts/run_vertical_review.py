@@ -25,7 +25,6 @@ if str(REPO_ROOT) not in sys.path:
 from review_writer.acquisition.manifest_identity import normalize_doi  # noqa: E402
 from review_writer.project.vertical_review import (  # noqa: E402
     VerticalReviewError,
-    apply_risk_decisions,
     benchmark_metrics,
     build_risk_packet,
     build_writer_packet,
@@ -621,10 +620,6 @@ def _parser() -> argparse.ArgumentParser:
     risk = commands.add_parser("build-risk-packet")
     risk.add_argument("--project-dir", type=Path, required=True)
 
-    apply = commands.add_parser("apply-risk-decisions")
-    apply.add_argument("--project-dir", type=Path, required=True)
-    apply.add_argument("--decisions", type=Path, required=True)
-
     writer = commands.add_parser("build-writer-packet")
     writer.add_argument("--project-dir", type=Path, required=True)
 
@@ -722,16 +717,6 @@ def _run(args: argparse.Namespace) -> int:
                 "low_risk_sample_count": packet["low_risk_sample_count"],
                 "status": "BUILT",
                 "target_count": packet["target_count"],
-            }
-        )
-        return 0
-    if args.command == "apply-risk-decisions":
-        projection = apply_risk_decisions(args.project_dir, _load_json(args.decisions))
-        _print_summary(
-            {
-                "command": "apply-risk-decisions",
-                "status": "APPLIED",
-                **_decision_counts(projection),
             }
         )
         return 0

@@ -256,6 +256,33 @@ def _bound_decision(project: Path, claim_id: str, action: str, **extra) -> dict:
     }
 
 
+def _packet_bound(project: Path, decisions: list[dict]) -> dict:
+    packet = json.loads((project / "03_review" / "risk_packet.json").read_text())
+    return {"packet_digest": packet["packet_digest"], "decisions": decisions}
+
+
+def _complete_risk_review(
+    project: Path,
+    *,
+    actions: dict[str, str] | None = None,
+) -> dict:
+    state = json.loads((project / "00_brief" / "review_state.json").read_text())
+    if state.get("status") == vertical_review.AWAITING_BRIEF_CONFIRMATION:
+        vertical_review.confirm_review_brief(project)
+    packet = build_risk_packet(project)
+    if packet["targets"]:
+        decisions = [
+            _bound_decision(
+                project,
+                target["claim_id"],
+                (actions or {}).get(target["claim_id"], "APPROVE"),
+            )
+            for target in packet["targets"]
+        ]
+        apply_risk_decisions(project, _packet_bound(project, decisions))
+    return packet
+
+
 def test_initialize_awaits_brief_confirmation_without_discovery_side_effects(
     tmp_path: Path,
 ) -> None:
@@ -905,13 +932,14 @@ def test_writer_packet_is_an_approved_only_whitelist(tmp_path: Path) -> None:
         _reviewer("STUDY-BLOCKED", verdict="AMBIGUOUS"),
     )
 
+    _complete_risk_review(project, actions={"CLAIM-HUMAN": "EXCLUDE"})
     packet = build_writer_packet(project)
 
     assert [claim["claim_id"] for claim in packet["claims"]] == ["CLAIM-APPROVED"]
     assert all(claim["decision"] == "APPROVED" for claim in packet["claims"])
     assert packet["approved_claim_count"] == 1
-    assert packet["human_required_count"] == 1
-    assert packet["blocked_count"] == 1
+    assert packet["human_required_count"] == 0
+    assert packet["blocked_count"] == 2
     assert packet["known_exclusions"]
     assert {row["claim_id"] for row in packet["known_exclusions"]} == {
         "CLAIM-BLOCKED",
@@ -933,6 +961,7 @@ def test_writer_packet_builds_one_original_comparative_evidence_figure(tmp_path:
         )
         register_study(project, candidate, _r0(study_id), _reviewer(study_id))
 
+    _complete_risk_review(project)
     packet = build_writer_packet(project)
 
     assert len(packet["figures"]) == 1
@@ -962,16 +991,22 @@ def test_writer_packet_requires_explicit_rebuild_after_projection_or_decision_ch
         _reviewer("STUDY-FRESHNESS"),
     )
     writer_path = project / "02_claims" / "writer_packet.json"
+    _complete_risk_review(project)
     build_writer_packet(project)
     assert writer_path.is_file()
 
     rebuild_projection(project)
     assert not writer_path.exists()
 
+    _complete_risk_review(project)
     build_writer_packet(project)
+    packet = build_risk_packet(project)
     apply_risk_decisions(
         project,
-        {"decisions": [_bound_decision(project, "CLAIM-FRESHNESS", "EXCLUDE")]},
+        {
+            "packet_digest": packet["packet_digest"],
+            "decisions": [_bound_decision(project, "CLAIM-FRESHNESS", "EXCLUDE")],
+        },
     )
     assert not writer_path.exists()
     rebuilt = build_writer_packet(project)
@@ -991,6 +1026,7 @@ def test_register_replacement_invalidates_writer_packet_until_explicit_rebuild(
         _reviewer(study_id),
     )
     writer_path = project / "02_claims" / "writer_packet.json"
+    _complete_risk_review(project)
     build_writer_packet(project)
     assert writer_path.is_file()
 
@@ -1002,6 +1038,7 @@ def test_register_replacement_invalidates_writer_packet_until_explicit_rebuild(
     )
 
     assert not writer_path.exists()
+    _complete_risk_review(project)
     rebuilt = build_writer_packet(project)
     assert rebuilt["claims"][0]["text"] == "Replacement text."
 
@@ -1014,9 +1051,15 @@ def test_writer_packet_records_current_projection_digest(tmp_path: Path) -> None
         _r0("STUDY-PACKET-DIGEST"),
         _reviewer("STUDY-PACKET-DIGEST"),
     )
+    _complete_risk_review(project)
+    current_projection = [
+        json.loads(line)
+        for line in (project / "02_claims/claim_projection.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
     expected = hashlib.sha256(
         json.dumps(
-            result["claim_projection"],
+            current_projection,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -1176,11 +1219,12 @@ def test_risk_decisions_reduce_to_consumer_text_and_status_only(tmp_path: Path) 
     )
     cards_path = project / "01_evidence" / "evidence_cards.jsonl"
     evidence_bytes = cards_path.read_bytes()
-    build_risk_packet(project)
+    packet = build_risk_packet(project)
 
     projection = apply_risk_decisions(
         project,
         {
+            "packet_digest": packet["packet_digest"],
             "decisions": [
                 _bound_decision(project, "CLAIM-APPROVE", "APPROVE"),
                 _bound_decision(
@@ -1243,6 +1287,116 @@ def test_projection_and_risk_packet_bind_canonical_review_target_digest(
     assert packet["targets"][0]["review_target_digest"] == expected
 
 
+def test_new_risk_packet_invalidates_prior_decisions_and_writer_packet(tmp_path: Path) -> None:
+    project = _initialize(tmp_path)
+    vertical_review.confirm_review_brief(project)
+    register_study(
+        project,
+        _candidate("STUDY-PACKET-REFRESH", [_claim("CLAIM-PACKET-REFRESH", risk_level="R3")]),
+        _r0("STUDY-PACKET-REFRESH"),
+        _reviewer("STUDY-PACKET-REFRESH"),
+    )
+    first_packet = build_risk_packet(project)
+    decision = _bound_decision(project, "CLAIM-PACKET-REFRESH", "APPROVE")
+    apply_risk_decisions(
+        project,
+        {"packet_digest": first_packet["packet_digest"], "decisions": [decision]},
+    )
+    assert build_writer_packet(project)["approved_claim_count"] == 1
+
+    second_packet = build_risk_packet(project)
+
+    assert second_packet["packet_digest"] != first_packet["packet_digest"]
+    stored = json.loads((project / "03_review" / "risk_decisions.json").read_text())
+    assert stored == {
+        "schema_version": "vertical-review-risk-decisions.v2",
+        "project_id": "synthetic-review",
+        "packet_digest": second_packet["packet_digest"],
+        "decisions": [],
+    }
+    with pytest.raises(VerticalReviewError) as error:
+        build_writer_packet(project)
+    assert error.value.code == "RISK_REVIEW_INCOMPLETE"
+
+
+def test_risk_decisions_must_cover_current_packet_and_close_every_target(tmp_path: Path) -> None:
+    project = _initialize(tmp_path)
+    vertical_review.confirm_review_brief(project)
+    register_study(
+        project,
+        _candidate(
+            "STUDY-PACKET-COVERAGE",
+            [
+                _claim("CLAIM-PACKET-A", risk_level="R3"),
+                _claim("CLAIM-PACKET-B", risk_level="R3"),
+            ],
+        ),
+        _r0("STUDY-PACKET-COVERAGE"),
+        _reviewer("STUDY-PACKET-COVERAGE"),
+    )
+    packet = build_risk_packet(project)
+
+    with pytest.raises(VerticalReviewError) as missing:
+        apply_risk_decisions(
+            project,
+            {
+                "packet_digest": packet["packet_digest"],
+                "decisions": [_bound_decision(project, "CLAIM-PACKET-A", "APPROVE")],
+            },
+        )
+    assert missing.value.code == "RISK_REVIEW_INCOMPLETE"
+
+    apply_risk_decisions(
+        project,
+        {
+            "packet_digest": packet["packet_digest"],
+            "decisions": [
+                _bound_decision(project, "CLAIM-PACKET-A", "APPROVE"),
+                _bound_decision(project, "CLAIM-PACKET-B", "UNRESOLVED"),
+            ],
+        },
+    )
+
+    state = json.loads((project / "00_brief" / "review_state.json").read_text())
+    assert state["status"] == "awaiting_risk_decisions"
+    assert state["current_stage"] == "risk_review"
+    with pytest.raises(VerticalReviewError) as blocked_writer:
+        build_writer_packet(project)
+    assert blocked_writer.value.code == "RISK_REVIEW_INCOMPLETE"
+
+
+def test_writer_packet_requires_current_completed_risk_checkpoint(tmp_path: Path) -> None:
+    project = _initialize(tmp_path)
+    vertical_review.confirm_review_brief(project)
+    register_study(
+        project,
+        _candidate("STUDY-WRITER-GATE", [_claim("CLAIM-WRITER-GATE", risk_level="R3")]),
+        _r0("STUDY-WRITER-GATE"),
+        _reviewer("STUDY-WRITER-GATE"),
+    )
+
+    with pytest.raises(VerticalReviewError) as missing_packet:
+        build_writer_packet(project)
+    assert missing_packet.value.code == "RISK_REVIEW_INCOMPLETE"
+
+    packet = build_risk_packet(project)
+    with pytest.raises(VerticalReviewError) as pending:
+        build_writer_packet(project)
+    assert pending.value.code == "RISK_REVIEW_INCOMPLETE"
+
+    apply_risk_decisions(
+        project,
+        {
+            "packet_digest": packet["packet_digest"],
+            "decisions": [_bound_decision(project, "CLAIM-WRITER-GATE", "APPROVE")],
+        },
+    )
+    state = json.loads((project / "00_brief" / "review_state.json").read_text())
+    assert state["status"] == "risk_decisions_applied"
+    assert state["current_stage"] == "ready_for_writing"
+    assert build_writer_packet(project)["approved_claim_count"] == 1
+
+
 def test_apply_risk_decision_persists_current_review_target_digest(tmp_path: Path) -> None:
     project = _initialize(tmp_path)
     result = register_study(
@@ -1251,11 +1405,13 @@ def test_apply_risk_decision_persists_current_review_target_digest(tmp_path: Pat
         _r0("STUDY-DECISION-DIGEST"),
         _reviewer("STUDY-DECISION-DIGEST"),
     )
+    packet = build_risk_packet(project)
     digest = result["claim_projection"][0]["review_target_digest"]
 
     apply_risk_decisions(
         project,
         {
+            "packet_digest": packet["packet_digest"],
             "decisions": [
                 {
                     "claim_id": "CLAIM-DECISION-DIGEST",
@@ -1281,22 +1437,24 @@ def test_risk_decisions_refresh_confirmed_project_state(tmp_path: Path) -> None:
             _reviewer(f"STUDY-RISK-STATE-{suffix}"),
         )
 
+    packet = build_risk_packet(project)
     mixed = [
         _bound_decision(project, "CLAIM-RISK-STATE-A", "APPROVE"),
         _bound_decision(project, "CLAIM-RISK-STATE-B", "UNRESOLVED"),
     ]
-    apply_risk_decisions(project, {"decisions": mixed})
+    apply_risk_decisions(project, {"packet_digest": packet["packet_digest"], "decisions": mixed})
     state = json.loads((project / "00_brief" / "review_state.json").read_text())
-    assert state["status"] == "needs_human_review"
+    assert state["status"] == "awaiting_risk_decisions"
+    assert state["current_stage"] == "risk_review"
 
     closed = [
         _bound_decision(project, "CLAIM-RISK-STATE-A", "APPROVE"),
         _bound_decision(project, "CLAIM-RISK-STATE-B", "EXCLUDE"),
     ]
-    apply_risk_decisions(project, {"decisions": closed})
+    apply_risk_decisions(project, {"packet_digest": packet["packet_digest"], "decisions": closed})
     state = json.loads((project / "00_brief" / "review_state.json").read_text())
-    assert state["current_stage"] == "evidence_review"
-    assert state["status"] == "in_progress"
+    assert state["current_stage"] == "ready_for_writing"
+    assert state["status"] == "risk_decisions_applied"
     assert state["counts"] == {"claims": 2, "evidence": 2, "sources": 2}
 
 
@@ -1311,11 +1469,11 @@ def test_risk_decision_commit_failure_stages_projection_and_retry_recovers(
         _r0("STUDY-COMMIT-FAILURE"),
         _reviewer("STUDY-COMMIT-FAILURE"),
     )
+    packet = build_risk_packet(project)
     decision = _bound_decision(project, "CLAIM-COMMIT-FAILURE", "APPROVE")
     writer_path = project / "02_claims" / "writer_packet.json"
     projection_path = project / "02_claims" / "claim_projection.jsonl"
     decisions_path = project / "03_review" / "risk_decisions.json"
-    build_writer_packet(project)
     projection_before = projection_path.read_bytes()
     decisions_before = decisions_path.read_bytes()
     original_write_json = vertical_review._write_json
@@ -1328,7 +1486,10 @@ def test_risk_decision_commit_failure_stages_projection_and_retry_recovers(
     with monkeypatch.context() as patch:
         patch.setattr(vertical_review, "_write_json", fail_commit_record)
         with pytest.raises(OSError):
-            apply_risk_decisions(project, {"decisions": [decision]})
+            apply_risk_decisions(
+                project,
+                {"packet_digest": packet["packet_digest"], "decisions": [decision]},
+            )
 
     assert decisions_path.read_bytes() == decisions_before
     assert projection_path.read_bytes() != projection_before
@@ -1340,7 +1501,10 @@ def test_risk_decision_commit_failure_stages_projection_and_retry_recovers(
             consumer(project)
         assert error.value.code == "PROJECTION_INVALID"
 
-    recovered = apply_risk_decisions(project, {"decisions": [decision]})
+    recovered = apply_risk_decisions(
+        project,
+        {"packet_digest": packet["packet_digest"], "decisions": [decision]},
+    )
 
     assert recovered[0]["decision"] == "APPROVED"
     stored = json.loads(decisions_path.read_text())
@@ -1364,9 +1528,10 @@ def test_old_risk_approval_is_ignored_after_claim_target_changes(tmp_path: Path)
         "action": "APPROVE",
         "review_target_digest": old_digest,
     }
+    first_packet = build_risk_packet(project)
     apply_risk_decisions(
         project,
-        {"decisions": [old_decision]},
+        {"packet_digest": first_packet["packet_digest"], "decisions": [old_decision]},
     )
 
     changed_claim = _claim(claim_id, text="Changed wording.", risk_level="R3")
@@ -1383,14 +1548,17 @@ def test_old_risk_approval_is_ignored_after_claim_target_changes(tmp_path: Path)
     row = result["claim_projection"][0]
     assert row["review_target_digest"] != old_digest
     assert row["decision"] == "HUMAN_REQUIRED"
-    packet = build_writer_packet(project)
-    assert packet["claims"] == []
-    assert packet["human_required_count"] == 1
-    build_risk_packet(project)
+    with pytest.raises(VerticalReviewError) as writer_error:
+        build_writer_packet(project)
+    assert writer_error.value.code == "RISK_REVIEW_INCOMPLETE"
+    refreshed_packet = build_risk_packet(project)
     before = _authoritative_bytes(project)
 
     with pytest.raises(VerticalReviewError) as error:
-        apply_risk_decisions(project, {"decisions": [old_decision]})
+        apply_risk_decisions(
+            project,
+            {"packet_digest": refreshed_packet["packet_digest"], "decisions": [old_decision]},
+        )
 
     assert error.value.code == "RISK_TARGET_STALE"
     assert _authoritative_bytes(project) == before
@@ -1404,14 +1572,16 @@ def test_missing_risk_target_digest_is_rejected_without_state_change(tmp_path: P
         _r0("STUDY-MISSING-DIGEST"),
         _reviewer("STUDY-MISSING-DIGEST"),
     )
-    build_risk_packet(project)
-    build_writer_packet(project)
+    packet = build_risk_packet(project)
     before = _authoritative_bytes(project)
 
     with pytest.raises(VerticalReviewError) as error:
         apply_risk_decisions(
             project,
-            {"decisions": [{"claim_id": "CLAIM-MISSING-DIGEST", "action": "APPROVE"}]},
+            {
+                "packet_digest": packet["packet_digest"],
+                "decisions": [{"claim_id": "CLAIM-MISSING-DIGEST", "action": "APPROVE"}],
+            },
         )
 
     assert error.value.code == "RISK_TARGET_STALE"
@@ -1450,6 +1620,8 @@ def test_invalid_risk_decisions_fail_closed(tmp_path: Path, decisions: dict, cod
     )
     projection_path = project / "02_claims" / "claim_projection.jsonl"
     projection_bytes = projection_path.read_bytes()
+    packet = build_risk_packet(project)
+    projection_bytes = projection_path.read_bytes()
     current_digest = _bound_decision(project, "CLAIM-RISK", "APPROVE")[
         "review_target_digest"
     ]
@@ -1460,7 +1632,10 @@ def test_invalid_risk_decisions_fail_closed(tmp_path: Path, decisions: dict, cod
         )
 
     with pytest.raises(VerticalReviewError) as error:
-        apply_risk_decisions(project, bound_decisions)
+        apply_risk_decisions(
+            project,
+            {"packet_digest": packet["packet_digest"], **bound_decisions},
+        )
 
     assert error.value.code == code
     assert projection_path.read_bytes() == projection_bytes
@@ -1504,8 +1679,10 @@ def test_risk_packet_sampling_is_sha256_stable_and_deduplicated(tmp_path: Path) 
     assert sampled == expected_sample
     assert target_ids.count("CLAIM-HIGH") == 1
     assert len(target_ids) == len(set(target_ids))
-    assert second == first
-    assert risk_path.read_bytes() == first_bytes
+    assert second["targets"] == first["targets"]
+    assert second["generation"] == first["generation"] + 1
+    assert second["packet_digest"] != first["packet_digest"]
+    assert risk_path.read_bytes() != first_bytes
 
 
 def test_register_and_risk_application_never_mutate_input_fixtures(tmp_path: Path) -> None:
@@ -1533,10 +1710,13 @@ def test_register_and_risk_application_never_mutate_input_fixtures(tmp_path: Pat
     loaded_before = copy.deepcopy(loaded)
 
     register_study(project, loaded["candidate"], loaded["r0"], loaded["reviewer"])
-    build_risk_packet(project)
+    packet = build_risk_packet(project)
     apply_risk_decisions(
         project,
-        {"decisions": [_bound_decision(project, "CLAIM-IMMUTABLE", "APPROVE")]},
+        {
+            "packet_digest": packet["packet_digest"],
+            "decisions": [_bound_decision(project, "CLAIM-IMMUTABLE", "APPROVE")],
+        },
     )
 
     assert loaded == loaded_before
@@ -1598,12 +1778,12 @@ def test_cli_exposes_required_subcommands_and_prepare_creates_no_state(tmp_path:
         "prepare-batch",
         "register-study",
         "build-risk-packet",
-        "apply-risk-decisions",
         "build-writer-packet",
         "bind-draft",
         "metrics",
     ):
         assert command in help_result.stdout
+    assert "apply-risk-decisions" not in help_result.stdout
 
     project = _initialize(tmp_path)
     before = {

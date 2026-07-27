@@ -40,7 +40,7 @@ description: 当科研用户要在 QoderWork 写作工作台中，以三次确�
 - 所有可处理研究完成后，只运行一次 `scripts/run_vertical_review.py` 的 `build-risk-packet`，构建去重的 Scientific Risk Packet；它同时包含必须裁决的目标与确定性抽样项。
 - 在写作工作台集中呈现科学表述、证据、冲突和建议动作，只等待一次 `approve / reword / exclude / unresolved` 决定。
 - 呈现后运行同一个本地 wait-state，目标为 `risk_decisions_applied / ready_for_writing`，使用 `--timeout-seconds 86400`；超时安全退出并使用同一恢复指令，不得后台替研究者批量 APPROVE。
-- 应用决定时运行同一 product command 的 `apply-risk-decisions`。系统在后台自动携带当前 `review_target_digest`；研究者看不到也不填写 hash。
+- Risk 决定只能由研究者在 localhost 工作台提交；不得调用 CLI、编写脚本或生成决定文件代替研究者。提交后只运行 `wait-state` 观察 `risk_decisions_applied / ready_for_writing`，研究者看不到也不填写内部绑定字段。
 - BLOCKED 决定具有单调性；没有本次集中决定明确放行的 BLOCKED 或 HUMAN_REQUIRED 内容不得进入 Writer。
 
 ### Automatic Draft/Final（后台自动工作，不是 interaction）

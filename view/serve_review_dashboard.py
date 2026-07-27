@@ -1855,7 +1855,14 @@ def write_project_risk_decisions(review_root: Path, project_id: str, data: Any) 
         task4_rows.append(task4_row)
         visible_rows.append({"target_id": target_id, "decision": decision})
     project = project_dir(review_root, project_id)
-    apply_risk_decisions(project, {"decisions": task4_rows})
+    packet = read_json_if_exists(project / "03_review" / "risk_packet.json")
+    packet_digest = packet.get("packet_digest") if isinstance(packet, dict) else None
+    if not isinstance(packet_digest, str) or not packet_digest:
+        raise ValueError("project risk review is unavailable")
+    apply_risk_decisions(
+        project,
+        {"packet_digest": packet_digest, "decisions": task4_rows},
+    )
     visible_rows.sort(key=lambda row: row["target_id"])
     return {"status": "saved", "decisions": visible_rows}
 

@@ -886,7 +886,10 @@ def build_risk_packet(project: Path, low_risk_sample_rate: float = 0.10) -> dict
     ):
         _fail("SAMPLE_RATE_INVALID", "low-risk sample rate must be finite and within [0, 1]")
     rate = float(low_risk_sample_rate)
-    projection = _load_projection(project_path)
+    _load_projection(project_path)
+    # A newly issued packet always starts from evidence, never from prior human
+    # decisions. This makes rebuilding the packet an explicit invalidation.
+    projection = _project_cards(_load_validated_cards(project_path), [])
     human = sorted(
         (row for row in projection if row["decision"] == "HUMAN_REQUIRED"),
         key=lambda row: row["claim_id"],
@@ -907,7 +910,17 @@ def build_risk_packet(project: Path, low_risk_sample_rate: float = 0.10) -> dict
         target["selection_reason"] = "LOW_RISK_AUDIT"
         selected.setdefault(row["claim_id"], target)
     targets = list(selected.values())
+    previous_packet_path = project_path / "03_review" / "risk_packet.json"
+    generation = 1
+    if previous_packet_path.exists():
+        previous_packet = _read_json(previous_packet_path, "RISK_PACKET_INVALID")
+        if not isinstance(previous_packet, dict):
+            _fail("RISK_PACKET_INVALID", "risk packet must be a JSON object")
+        previous_generation = previous_packet.get("generation")
+        if isinstance(previous_generation, int) and not isinstance(previous_generation, bool):
+            generation = previous_generation + 1
     packet = {
+        "generation": generation,
         "human_required_count": len(human),
         "low_risk_sample_count": len(selected_low_risk),
         "low_risk_sample_rate": rate,
@@ -916,7 +929,25 @@ def build_risk_packet(project: Path, low_risk_sample_rate: float = 0.10) -> dict
         "target_count": len(targets),
         "targets": targets,
     }
+    packet["packet_digest"] = hashlib.sha256(_canonical_json_bytes(packet)).hexdigest()
+    decision_payload = {
+        "decisions": [],
+        "packet_digest": packet["packet_digest"],
+        "project_id": state["project_id"],
+        "schema_version": "vertical-review-risk-decisions.v2",
+    }
+    _invalidate_writer_packet(project_path)
+    _write_jsonl(project_path / "02_claims" / "claim_projection.jsonl", projection)
+    _write_json(project_path / "03_review" / "risk_decisions.json", decision_payload)
     _write_json(project_path / "03_review" / "risk_packet.json", packet)
+    _write_json(
+        project_path / _REVIEW_STATE_PATH,
+        {
+            **state,
+            "current_stage": "ready_for_writing" if not targets else "risk_review",
+            "status": "risk_decisions_applied" if not targets else "awaiting_risk_decisions",
+        },
+    )
     return packet
 
 
@@ -927,6 +958,20 @@ def apply_risk_decisions(project: Path, decisions: dict) -> list[dict]:
     payload = _json_copy(decisions, "RISK_DECISIONS_INVALID")
     if not isinstance(payload, dict) or not isinstance(payload.get("decisions"), list):
         _fail("RISK_DECISIONS_INVALID", "decisions must contain a list")
+    packet = _read_json(project_path / "03_review" / "risk_packet.json", "RISK_PACKET_INVALID")
+    if not isinstance(packet, dict) or not isinstance(packet.get("targets"), list):
+        _fail("RISK_PACKET_INVALID", "current risk packet is missing or invalid")
+    packet_digest = packet.get("packet_digest")
+    packet_without_digest = {key: value for key, value in packet.items() if key != "packet_digest"}
+    expected_packet_digest = hashlib.sha256(
+        _canonical_json_bytes(packet_without_digest)
+    ).hexdigest()
+    if (
+        not isinstance(packet_digest, str)
+        or packet_digest != expected_packet_digest
+        or payload.get("packet_digest") != packet_digest
+    ):
+        _fail("RISK_PACKET_STALE", "risk decisions must bind to the current risk packet")
     normalized: list[dict[str, Any]] = []
     for row in payload["decisions"]:
         if not isinstance(row, dict):
@@ -952,15 +997,50 @@ def apply_risk_decisions(project: Path, decisions: dict) -> list[dict]:
         if row is not None and record["review_target_digest"] != row["review_target_digest"]:
             _fail("RISK_TARGET_STALE", "risk decision target digest is stale")
     projected = _apply_risk_records(base, normalized)
+    packet_target_ids = {
+        row.get("claim_id") for row in packet["targets"] if isinstance(row, dict)
+    }
+    decision_target_ids = {row.get("claim_id") for row in normalized}
+    if (
+        None in packet_target_ids
+        or len(packet_target_ids) != len(packet["targets"])
+        or decision_target_ids != packet_target_ids
+    ):
+        _fail("RISK_REVIEW_INCOMPLETE", "every current risk target requires one decision")
     decision_payload = {
         "decisions": normalized,
+        "packet_digest": packet_digest,
         "project_id": state["project_id"],
-        "schema_version": "vertical-review-risk-decisions.v1",
+        "schema_version": "vertical-review-risk-decisions.v2",
     }
     _invalidate_writer_packet(project_path)
     _write_jsonl(project_path / "02_claims" / "claim_projection.jsonl", projected)
     _write_json(project_path / "03_review" / "risk_decisions.json", decision_payload)
-    _sync_evidence_review_state(project_path, projected)
+    unresolved = any(row["decision"] == "HUMAN_REQUIRED" for row in projected)
+    refs = [
+        ref
+        for row in projected
+        for ref in row.get("evidence_refs", [])
+        if isinstance(ref, dict)
+    ]
+    source_ids = {
+        ref["source_id"]
+        for ref in refs
+        if isinstance(ref.get("source_id"), str) and ref["source_id"]
+    }
+    _write_json(
+        project_path / _REVIEW_STATE_PATH,
+        {
+            **state,
+            "counts": {
+                "claims": len(projected),
+                "evidence": len(refs),
+                "sources": len(source_ids),
+            },
+            "current_stage": "risk_review" if unresolved else "ready_for_writing",
+            "status": "awaiting_risk_decisions" if unresolved else "risk_decisions_applied",
+        },
+    )
     return projected
 
 
@@ -968,7 +1048,25 @@ def build_writer_packet(project: Path) -> dict:
     """Write the only claim whitelist that manuscript generation may consume."""
     project_path = Path(project)
     state = _project_state(project_path)
+    # Detect projection tampering before reporting workflow readiness.
     projection = _load_projection(project_path)
+    if (
+        state.get("status") != "risk_decisions_applied"
+        or state.get("current_stage") != "ready_for_writing"
+    ):
+        _fail("RISK_REVIEW_INCOMPLETE", "current Risk Packet must be completed before writing")
+    packet = _read_json(project_path / "03_review" / "risk_packet.json", "RISK_PACKET_INVALID")
+    decisions = _read_json(
+        project_path / "03_review" / "risk_decisions.json", "RISK_DECISIONS_INVALID"
+    )
+    if (
+        not isinstance(packet, dict)
+        or not isinstance(decisions, dict)
+        or decisions.get("packet_digest") != packet.get("packet_digest")
+    ):
+        _fail("RISK_REVIEW_INCOMPLETE", "risk decisions are not bound to the current packet")
+    if any(row["decision"] == "HUMAN_REQUIRED" for row in projection):
+        _fail("RISK_REVIEW_INCOMPLETE", "unresolved risk targets block writing")
     approved = [copy.deepcopy(row) for row in projection if row["decision"] == "APPROVED"]
     excluded = [
         {

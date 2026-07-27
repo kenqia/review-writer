@@ -291,6 +291,13 @@ class NativeReviewWriterPluginTests(unittest.TestCase):
             skill.index("DISCOVERY_ACQUISITION_PLANNER"),
         )
 
+    def test_main_skill_keeps_risk_decisions_in_the_researcher_ui(self) -> None:
+        skill = (PLUGIN / "skills" / "research-review-writer" / "SKILL.md").read_text(encoding="utf-8")
+
+        self.assertIn("Risk 决定只能由研究者在 localhost 工作台提交", skill)
+        self.assertIn("不得调用 CLI、编写脚本或生成决定文件代替研究者", skill)
+        self.assertNotIn("product command 的 `apply-risk-decisions`", skill)
+
     def test_main_skill_initializes_project_and_opens_gui_before_brief_confirmation(self) -> None:
         skill = (PLUGIN / "skills" / "research-review-writer" / "SKILL.md").read_text(encoding="utf-8")
 
@@ -580,6 +587,9 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
     def _copy_fixture(destination: Path) -> Path:
         review_root = destination / "review-root"
         shutil.copytree(FIXTURE, review_root)
+        from review_writer.project.vertical_review import build_risk_packet
+
+        build_risk_packet(review_root / "review-projects" / "synthetic-review")
         NativeReviewWriterDashboardTests._bind_authoritative_fixture_draft(
             review_root / "review-projects" / "synthetic-review"
         )
