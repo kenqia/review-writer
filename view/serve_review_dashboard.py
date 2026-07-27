@@ -1526,6 +1526,11 @@ def write_project_risk_decisions(review_root: Path, project_id: str, data: Any) 
 
 
 def infer_project_topic(project: Path) -> str:
+    review_state = read_json_if_exists(project / "00_brief" / "review_state.json")
+    if isinstance(review_state, dict):
+        brief = review_state.get("brief")
+        if isinstance(brief, dict) and brief.get("topic"):
+            return str(brief.get("topic"))
     discovery_candidates = read_json_if_exists(project / "00_discovery" / "discovery_candidates.json")
     if isinstance(discovery_candidates, dict) and discovery_candidates.get("topic"):
         return str(discovery_candidates.get("topic"))

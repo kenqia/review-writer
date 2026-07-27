@@ -25,6 +25,8 @@
       <div class="review-state-line" aria-live="polite">
         <span id="stage-badge" class="state-badge">读取中</span>
         <span id="status-badge">正在读取项目状态…</span>
+        <button id="export-docx" class="review-export-button" type="button">导出 DOCX</button>
+        <a id="download-docx" class="review-download-link" href="#" download hidden>下载 DOCX</a>
       </div>
     </header>
 
@@ -647,6 +649,31 @@
       }
     }
 
+    async function exportDocx() {
+      if (!projectId || editorBusy || projectLoadBusy) return;
+      if (editorDirty) {
+        $('workbench-message').textContent = '请先保存或撤销当前正文修改，再导出 DOCX。';
+        return;
+      }
+      const button = $('export-docx');
+      button.disabled = true;
+      button.textContent = '正在导出…';
+      $('download-docx').hidden = true;
+      $('workbench-message').textContent = '正在核对证据状态并生成 DOCX…';
+      try {
+        await getPayload(`/api/project/${encodeURIComponent(projectId)}/export-docx`, {method:'POST'});
+        const relative = `review-projects/${projectId}/05_final_audit/final_draft.docx`;
+        $('download-docx').href = `/file?path=${encodeURIComponent(relative)}`;
+        $('download-docx').hidden = false;
+        $('workbench-message').textContent = 'DOCX 已生成，可以下载。';
+      } catch (error) {
+        $('workbench-message').textContent = 'DOCX 暂不可导出；请先完成待处理的证据复核。';
+      } finally {
+        button.disabled = false;
+        button.textContent = '导出 DOCX';
+      }
+    }
+
     async function confirmBrief() {
       $('confirm-brief').disabled = true;
       $('brief-confirmation-message').textContent = '正在确认…';
@@ -750,6 +777,7 @@
       }
     });
     $('confirm-brief').addEventListener('click', confirmBrief);
+    $('export-docx').addEventListener('click', exportDocx);
     $('save-section').addEventListener('click', () => saveDraftBody($('section-editor').value));
     $('section-editor').addEventListener('input', event => {
       editorDirty = true;

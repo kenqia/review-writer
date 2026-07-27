@@ -951,6 +951,19 @@ textarea.editor {
   border: 1px solid rgba(255,255,255,.28);
   border-radius: 999px;
 }
+.review-export-button,
+.review-download-link {
+  padding: 7px 10px;
+  color: #163326;
+  background: #f7f1df;
+  border: 1px solid rgba(255,255,255,.62);
+  border-radius: 2px;
+  font-size: 12px;
+  font-weight: 800;
+  text-decoration: none;
+}
+.review-export-button:disabled { cursor: wait; opacity: .68; }
+.review-download-link { color: #fff; background: transparent; }
 .workspace-switcher {
   display: flex;
   min-height: 48px;
