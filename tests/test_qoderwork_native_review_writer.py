@@ -136,7 +136,7 @@ class NativeReviewWriterPluginTests(unittest.TestCase):
         manifest = json.loads((PLUGIN / ".qoder-plugin" / "plugin.json").read_text(encoding="utf-8"))
         self.assertEqual(MANIFEST_KEYS, set(manifest))
         self.assertEqual("research-review-writer", manifest["name"])
-        self.assertEqual("0.2.5", manifest["version"])
+        self.assertEqual("0.2.6", manifest["version"])
         self.assertEqual("科研综述专家", manifest["displayName"])
         self.assertTrue(manifest["description"].isascii())
         self.assertIn("科研综述", manifest["descriptionZh"])
@@ -247,6 +247,11 @@ class NativeReviewWriterPluginTests(unittest.TestCase):
             "--review-root review-projects",
             "--review-root . --host 127.0.0.1 --port 8765",
             "127.0.0.1:8765/review",
+            "/api/project/<project_id>/review-state",
+            "generic HTTP 200",
+            "AWAITING_BRIEF_CONFIRMATION",
+            "review_brief",
+            "端口被旧 dashboard 占用",
             "scripts/run_vertical_review.py wait-state",
             "--status BRIEF_CONFIRMED --stage ready_for_discovery",
             "只在 dashboard 的 Brief 确认界面等待",
@@ -260,6 +265,10 @@ class NativeReviewWriterPluginTests(unittest.TestCase):
         )
         self.assertLess(
             skill.index("view/serve_review_dashboard.py"),
+            skill.index("/api/project/<project_id>/review-state"),
+        )
+        self.assertLess(
+            skill.index("/api/project/<project_id>/review-state"),
             skill.index("scripts/run_vertical_review.py wait-state"),
         )
         self.assertLess(
