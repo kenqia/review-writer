@@ -1111,19 +1111,24 @@ def _visible_claim_detail(
         for ref in refs
         if isinstance(ref, dict)
     ]
+    raw_findings = reviewer.get("findings")
     finding = next(
         (
             row
-            for row in (reviewer.get("findings") if isinstance(reviewer.get("findings"), list) else [])
+            for row in (raw_findings if isinstance(raw_findings, list) else [])
             if isinstance(row, dict)
             and row.get("target_id") == claim_id
         ),
         {},
     )
-    review_verdict = visible_text(finding.get("verdict"))
+    use_root_conclusion = not isinstance(raw_findings, list) or not raw_findings
+    review_verdict = visible_text(finding.get("verdict")) or (
+        visible_text(reviewer.get("verdict")) if use_root_conclusion else ""
+    )
     review_summary = (
         visible_text(finding.get("reason"))
         or visible_text(finding.get("summary"))
+        or (visible_text(reviewer.get("summary")) if use_root_conclusion else "")
     )
     return {
         "claim_id": claim_id,

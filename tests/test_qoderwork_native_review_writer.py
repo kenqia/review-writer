@@ -285,6 +285,16 @@ class NativeReviewWriterPluginTests(unittest.TestCase):
         ):
             self.assertIn(required, planner)
 
+    def test_expert_kit_consumes_dashboard_source_inbox(self) -> None:
+        skill = (PLUGIN / "skills" / "research-review-writer" / "SKILL.md").read_text(encoding="utf-8")
+
+        self.assertIn("00_sources/manual_upload/inbox/source_bundle.zip", skill)
+        self.assertIn("同一个任务", skill)
+        self.assertIn("不要求研究者再次点击继续", skill)
+        self.assertIn("只运行一次 `scripts/acquisition/import_manual_archive.py`", skill)
+        self.assertIn("随后立即运行", skill)
+        self.assertNotIn("请提供 ZIP 路径", skill)
+
     def test_quickstart_keeps_commands_inside_expert_task_and_out_of_scientist_steps(self) -> None:
         quickstart = (ROOT / "docs/qoderwork/research_review_writer_quickstart.md").read_text(encoding="utf-8")
 
@@ -2066,6 +2076,44 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             )
             self.assertEqual("", details[second_claim["claim_id"]]["review_verdict"])
             self.assertEqual("", details[second_claim["claim_id"]]["review_summary"])
+
+    def test_claim_details_use_root_reviewer_conclusion_when_no_findings_exist(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = self._copy_fixture(Path(temp_dir))
+            project = review_root / "review-projects" / "synthetic-review"
+            cards_path = project / "01_evidence" / "evidence_cards.jsonl"
+            card = json.loads(cards_path.read_text(encoding="utf-8"))
+            card["reviewer"] = {
+                "verdict": "SUPPORT",
+                "summary": "The reviewer found the bounded claim supported by the cited evidence.",
+                "findings": [],
+            }
+            cards_path.write_text(json.dumps(card, ensure_ascii=False) + "\n", encoding="utf-8")
+
+            with patch.object(
+                dashboard,
+                "benchmark_metrics",
+                return_value={
+                    "registered_study_count": 1,
+                    "approved_claim_count": 1,
+                    "human_required_claim_count": 0,
+                    "blocked_claim_count": 0,
+                    "exception_count": 0,
+                    "projected_claim_count": 1,
+                },
+            ):
+                detail = dashboard.project_evidence_payload(
+                    review_root, "synthetic-review"
+                )["cards"][0]["claim_details"][0]
+
+            self.assertEqual("SUPPORT", detail["review_verdict"])
+            self.assertEqual(
+                "The reviewer found the bounded claim supported by the cited evidence.",
+                detail["review_summary"],
+            )
 
     def test_evidence_locator_opens_a_uniquely_matched_project_pdf_page_and_fails_closed(self) -> None:
         sys.path.insert(0, str(ROOT))
