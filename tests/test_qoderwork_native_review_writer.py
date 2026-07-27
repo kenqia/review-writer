@@ -876,6 +876,104 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             )
             self.assertEqual(replacement, inbox.read_bytes())
 
+    def test_project_progress_payload_uses_existing_artifacts_only(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir) / "review-root"
+            project = review_root / "review-projects/progress-review"
+
+            def write_json(relative: str, payload: object) -> None:
+                path = project / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
+
+            write_json(
+                "00_brief/review_state.json",
+                {
+                    "project_id": "progress-review",
+                    "brief": {"topic": "Synthetic progress review"},
+                    "current_stage": "evidence_review",
+                    "status": "in_progress",
+                    "blockers": [],
+                    "counts": {"sources": 2, "evidence": 1, "claims": 1},
+                },
+            )
+            write_json(
+                "00_discovery/screening_decisions.json",
+                {
+                    "decisions": [
+                        {"candidate_id": "STUDY-01", "disposition": "INCLUDE_FOR_FULL_TEXT"},
+                        {"candidate_id": "STUDY-02", "disposition": "INCLUDE_FOR_FULL_TEXT"},
+                    ]
+                },
+            )
+            downloads = [
+                {
+                    "download_id": f"STUDY_0{index}_MAIN",
+                    "study_id": f"STUDY-0{index}",
+                    "doi": f"10.1000/progress-0{index}",
+                    "document_role": "MAIN",
+                    "landing_page_url": f"https://publisher.example/progress-0{index}",
+                }
+                for index in (1, 2)
+            ]
+            write_json(
+                "00_discovery/acquisition_manifest.json",
+                {"schema_version": "public-corpus-acquisition.v1", "downloads": downloads},
+            )
+            write_json(
+                "00_sources/acquisition_receipt.json",
+                {
+                    "results": [
+                        {"download_id": row["download_id"], "status": "VERIFIED_EXISTING"}
+                        for row in downloads
+                    ]
+                },
+            )
+            write_json(
+                "01_evidence/mineru/manifest.json",
+                {
+                    "completed": [
+                        {"source_id": "STUDY_01_MAIN"},
+                        {"source_id": "STUDY_02_MAIN"},
+                    ],
+                    "failed": [],
+                },
+            )
+            cards = project / "01_evidence/evidence_cards.jsonl"
+            cards.parent.mkdir(parents=True, exist_ok=True)
+            cards.write_text(
+                json.dumps({"study_id": "STUDY-01", "candidate": {"study_id": "STUDY-01"}})
+                + "\n",
+                encoding="utf-8",
+            )
+
+            payload = dashboard.project_progress_payload(review_root, "progress-review")
+
+            self.assertEqual("evidence", payload["active_stage"])
+            self.assertEqual(
+                ["complete", "complete", "active", "pending", "pending", "pending"],
+                [stage["status"] for stage in payload["stages"]],
+            )
+            self.assertEqual(
+                {"STUDY-01": "已完成", "STUDY-02": "正在处理"},
+                {row["study_id"]: row["status"] for row in payload["studies"]},
+            )
+            self.assertEqual("继续处理下一篇研究证据", payload["recommended_next"])
+            self.assertEqual("", payload["blocker"])
+            serialized = json.dumps(payload, ensure_ascii=False)
+            for forbidden in ("manifest.json", "evidence_cards.jsonl", "hash", "Agent", "/home/"):
+                self.assertNotIn(forbidden, serialized)
+            status, _, body = self._request(
+                dashboard,
+                review_root,
+                b"GET /api/project/progress-review/progress HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            )
+            self.assertEqual(200, status)
+            self.assertEqual(payload, json.loads(body))
+
     def test_dashboard_run_keeps_serving_when_review_root_is_empty(self) -> None:
         sys.path.insert(0, str(ROOT))
         from view import serve_review_dashboard as dashboard
@@ -2485,6 +2583,37 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
         self.assertIn("async function refreshProjects()", review_html)
         self.assertIn("setInterval(refreshProjects, 3000)", review_html)
 
+    def test_review_workbench_exposes_one_zip_drop_and_automatic_progress(self) -> None:
+        review_html = (ROOT / "view/assets/dashboard/review.html").read_text(encoding="utf-8")
+        parser = VisibleTextParser()
+        parser.feed(review_html)
+        visible = parser.text.casefold()
+
+        for element_id in (
+            "brief-stage-panel",
+            "source-stage-panel",
+            "source-drop-zone",
+            "source-archive-input",
+            "processing-stage-panel",
+            "processing-stage-list",
+            "processing-study-list",
+        ):
+            self.assertIn(f'id="{element_id}"', review_html)
+        for binding in (
+            "/sources`",
+            "/progress`",
+            "body:file",
+            "'Content-Type':'application/zip'",
+            "source-archive",
+            "renderStageWorkspace",
+            "uploadSourceArchive",
+        ):
+            self.assertIn(binding, review_html)
+        self.assertIn("拖入一个 pdf zip", visible)
+        self.assertIn("上传成功后立即开始核验", visible)
+        for forbidden in ("mapping file", "manifest path", "json", "agent", "prompt", "git"):
+            self.assertNotIn(forbidden, visible)
+
     def test_review_workbench_binds_manuscript_lineage_pending_restore_and_empty_state(self) -> None:
         review_html = (ROOT / "view" / "assets" / "dashboard" / "review.html").read_text(encoding="utf-8")
         review_css = (ROOT / "view" / "assets" / "dashboard" / "review-ui.css").read_text(encoding="utf-8")
@@ -2604,12 +2733,14 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             "projectId !== requestedProjectId",
             "return 'stale'",
             "return 'loaded'",
-            "const [nextProjectState, nextCockpitPayload, nextDraftPayload, nextEvidencePayload, nextRiskPayload]",
+            "const [nextProjectState, nextCockpitPayload, nextDraftPayload, nextEvidencePayload, nextRiskPayload, nextSourcePayload, nextProgressPayload]",
             "projectState = nextProjectState",
             "cockpitPayload = nextCockpitPayload",
             "draftPayload = nextDraftPayload",
             "evidencePayload = nextEvidencePayload",
             "riskPayload = nextRiskPayload",
+            "sourcePayload = nextSourcePayload",
+            "progressPayload = nextProgressPayload",
             "if (generation === projectLoadGeneration) setProjectLoadBusy(false)",
             "applyWorkbenchBusyState(editorBusy || projectLoadBusy)",
             "button.disabled = editorBusy || projectLoadBusy",

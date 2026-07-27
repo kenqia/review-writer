@@ -546,6 +546,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         payloads = {
             "cockpit": project_cockpit_payload,
             "sources": project_source_handoff_payload,
+            "progress": project_progress_payload,
             "evidence": project_evidence_payload,
             "risk-packet": project_risk_payload,
             "matrix": project_matrix_payload,
@@ -1562,6 +1563,133 @@ def project_source_handoff_payload(review_root: Path, project_id: str) -> dict[s
         },
         "upload_required": any(row["status"] == "需要上传" for row in sources),
         "sources": sources,
+    }
+
+
+def project_progress_payload(review_root: Path, project_id: str) -> dict[str, Any]:
+    project = project_dir(review_root, project_id)
+    state = read_json_if_exists(project / "00_brief/review_state.json") or {}
+    source_payload = project_source_handoff_payload(review_root, project_id)
+    screening = read_json_if_exists(project / "00_discovery/screening_decisions.json") or {}
+    decisions = screening.get("decisions") if isinstance(screening, dict) else []
+    decisions = decisions if isinstance(decisions, list) else []
+    included_ids = {
+        visible_text(row.get("candidate_id") or row.get("study_id"))
+        for row in decisions
+        if isinstance(row, dict) and row.get("disposition") == "INCLUDE_FOR_FULL_TEXT"
+    }
+    included_ids.discard("")
+    cards = read_jsonl_if_exists(project / "01_evidence/evidence_cards.jsonl")
+    reviewed_ids = {
+        visible_text(row.get("study_id"))
+        or visible_text((row.get("candidate") or {}).get("study_id"))
+        for row in cards
+        if isinstance(row, dict) and isinstance(row.get("candidate") or {}, dict)
+    }
+    reviewed_ids.discard("")
+    parse_manifest = read_json_if_exists(project / "01_evidence/mineru/manifest.json") or {}
+    completed_parse = parse_manifest.get("completed") if isinstance(parse_manifest, dict) else []
+    completed_parse = completed_parse if isinstance(completed_parse, list) else []
+    risk_packet = read_json_if_exists(project / "03_review/risk_packet.json") or {}
+    risk_decisions = read_json_if_exists(project / "03_review/risk_decisions.json") or {}
+    risk_targets = risk_packet.get("targets") if isinstance(risk_packet, dict) else []
+    risk_targets = risk_targets if isinstance(risk_targets, list) else []
+    open_risks = _open_scientific_risk_count(risk_packet, risk_decisions)
+
+    source_total = int(source_payload["counts"]["total"])
+    source_ready = int(source_payload["counts"]["ready"])
+    sources_complete = source_total > 0 and source_ready == source_total
+    parsing_complete = sources_complete and len(completed_parse) >= source_ready
+    evidence_complete = bool(included_ids) and included_ids.issubset(reviewed_ids)
+    risk_packet_present = os.path.lexists(project / "03_review/risk_packet.json")
+    risk_complete = evidence_complete and risk_packet_present and open_risks == 0
+    draft_complete = project_regular_file_exists(project, Path("04_first_draft/first_draft.md"))
+    final_complete = project_regular_file_exists(project, Path("05_final_audit/final_draft.docx"))
+
+    archive_received = project_regular_file_exists(project, SOURCE_ARCHIVE_RELATIVE)
+    if not sources_complete:
+        active_stage = "sources"
+    elif not parsing_complete:
+        active_stage = "parsing"
+    elif not evidence_complete:
+        active_stage = "evidence"
+    elif not risk_complete and not draft_complete:
+        active_stage = "risk"
+    elif not draft_complete:
+        active_stage = "drafting"
+    else:
+        active_stage = "final"
+
+    stage_definitions = (
+        ("sources", "整理文献来源", sources_complete),
+        ("parsing", "解析全文与补充信息", parsing_complete),
+        ("evidence", "提取并核对逐研究证据", evidence_complete),
+        ("risk", "汇总科学风险", risk_complete),
+        ("drafting", "撰写证据约束正文", draft_complete),
+        ("final", "完成终稿与 DOCX", final_complete),
+    )
+    active_index = next(
+        (index for index, (stage_id, _, _) in enumerate(stage_definitions) if stage_id == active_stage),
+        0,
+    )
+    raw_blockers = state.get("blockers") if isinstance(state, dict) else []
+    raw_blockers = raw_blockers if isinstance(raw_blockers, list) else []
+    source_invalid = any(
+        isinstance(item, str) and item.startswith(("SOURCE_ARCHIVE_", "MANUAL_ARCHIVE_"))
+        for item in raw_blockers
+    )
+    blocker = (
+        "上传的压缩包未通过来源核验，请按缺失清单修正后重新上传。"
+        if source_invalid
+        else "当前阶段需要补充信息，请查看推荐操作。"
+        if raw_blockers
+        else ""
+    )
+    stages = []
+    for index, (stage_id, label, complete) in enumerate(stage_definitions):
+        status = "complete" if complete else "active" if index == active_index else "pending"
+        if status == "active" and blocker:
+            status = "blocked"
+        stages.append({"id": stage_id, "label": label, "status": status})
+
+    source_rows: dict[str, dict[str, Any]] = {}
+    for row in source_payload["sources"]:
+        study_id = visible_text(row.get("study_id"))
+        if not study_id:
+            continue
+        summary = source_rows.setdefault(
+            study_id,
+            {"study_id": study_id, "label": visible_text(row.get("citation")) or study_id, "missing": False},
+        )
+        summary["missing"] = summary["missing"] or row.get("status") != "已获得"
+    studies = []
+    for study_id, summary in source_rows.items():
+        status = (
+            "需要补充"
+            if summary["missing"]
+            else "已完成"
+            if study_id in reviewed_ids
+            else "正在处理"
+        )
+        studies.append({"study_id": study_id, "label": summary["label"], "status": status})
+    studies.sort(key=lambda row: row["study_id"])
+
+    recommended = {
+        "sources": "正在核验您上传的来源" if archive_received else "上传一次 PDF ZIP",
+        "parsing": "等待全文解析完成",
+        "evidence": "继续处理下一篇研究证据",
+        "risk": "检查集中科学风险",
+        "drafting": "开始撰写证据约束正文",
+        "final": "检查正文并导出 DOCX",
+    }[active_stage]
+    return {
+        "project_id": project_id,
+        "active_stage": active_stage,
+        "stages": stages,
+        "studies": studies,
+        "blocker": blocker,
+        "recommended_next": recommended,
+        "archive_received": archive_received,
     }
 
 
