@@ -1751,6 +1751,12 @@ def project_risk_payload(review_root: Path, project_id: str) -> dict[str, Any]:
         action = visible_text(saved.get("action")).lower()
         if saved.get("review_target_digest") != decision_token or action not in {"approve", "reword", "exclude", "unresolved"}:
             action = "unresolved"
+        approved_text = visible_text(saved.get("approved_text")) if action == "reword" else ""
+        proposed_action = (
+            "自动证据审查支持；该主张属于高风险类别，需要您确认是否进入正文。"
+            if visible_text(row.get("selection_reason")) == "HUMAN_REQUIRED"
+            else "自动证据审查支持；该主张被抽样展示，请确认证据与措辞是否一致。"
+        )
         targets.append(
             {
                 "target_id": target_id,
@@ -1760,8 +1766,9 @@ def project_risk_payload(review_root: Path, project_id: str) -> dict[str, Any]:
                 "source_excerpt": visible_text(source.get("exact_quote")),
                 "source_label": source_label,
                 "page": page,
-                "proposed_action": "Review the evidence fit and choose approve, reword, exclude, or unresolved.",
+                "proposed_action": proposed_action,
                 "existing_decision": action,
+                "approved_text": approved_text,
                 "decision_token": decision_token,
             }
         )

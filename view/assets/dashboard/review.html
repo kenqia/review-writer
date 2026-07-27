@@ -124,6 +124,23 @@
             <div id="processing-study-list" class="processing-study-list"></div>
           </section>
 
+          <section id="risk-stage-panel" class="stage-task-panel risk-stage-panel" hidden>
+            <div class="stage-task-heading">
+              <div>
+                <p class="section-label">Scientific risk packet</p>
+                <h3>集中检查高风险科学主张</h3>
+              </div>
+              <strong id="risk-target-count">—</strong>
+            </div>
+            <p class="stage-task-lead">逐项核对主张、原文摘录与页码，选择采纳、改写、排除或暂缓，然后一次提交决定。</p>
+            <div id="risk-decision-list" class="risk-decision-list"></div>
+            <div class="risk-submit-row">
+              <p id="risk-unresolved-note">尚有暂缓项，完成决定后才能进入写作</p>
+              <button id="submit-risk-decisions" class="stage-primary-action" type="button">提交全部科学决定</button>
+            </div>
+            <p id="risk-decision-message" class="inline-message" role="status" aria-live="polite"></p>
+          </section>
+
           <div id="cockpit-overview">
           <section class="next-action" aria-labelledby="next-action-label">
             <p id="next-action-label">建议下一步</p>
@@ -290,6 +307,7 @@
     let projectsRefreshTimer = null;
     let projectsRefreshBusy = false;
     let sourceUploadBusy = false;
+    let riskDecisionDirty = false;
     let activeWorkspace = 'cockpit';
 
     async function getPayload(url, options) {
@@ -320,12 +338,22 @@
       return true;
     }
 
+    function confirmDiscardRiskDecisions() {
+      if (!riskDecisionDirty) return true;
+      if (!window.confirm('当前科学决定尚未提交。确定要丢弃这些选择吗？')) return false;
+      riskDecisionDirty = false;
+      return true;
+    }
+
     function applyWorkbenchBusyState(busy) {
       $('section-editor').disabled = busy;
       $('project').disabled = busy;
       $('save-section').disabled = busy;
       $('restore-verified').disabled = busy;
       $('source-archive-input').disabled = busy || sourceUploadBusy;
+      document.querySelectorAll('#risk-stage-panel input, #risk-stage-panel button').forEach(control => {
+        control.disabled = busy;
+      });
       document.querySelectorAll('[data-workspace], .outline-section').forEach(button => {
         button.disabled = busy;
       });
@@ -547,20 +575,149 @@
       });
     }
 
+    function riskDecisionCard(targetId) {
+      return Array.from(document.querySelectorAll('.risk-decision-card'))
+        .find(card => card.dataset.targetId === targetId);
+    }
+
+    function selectedRiskDecision(targetId) {
+      return riskDecisionCard(targetId)?.querySelector('input[type="radio"]:checked')?.value || 'unresolved';
+    }
+
+    function riskRewordText(targetId) {
+      return riskDecisionCard(targetId)?.querySelector('.risk-reword-input')?.value.trim() || '';
+    }
+
+    function updateRiskDecisionStatus() {
+      const unresolved = (riskPayload.targets || []).filter(
+        target => selectedRiskDecision(target.target_id) === 'unresolved'
+      ).length;
+      $('risk-unresolved-note').textContent = unresolved
+        ? '尚有暂缓项，完成决定后才能进入写作'
+        : '所有主张均已有明确决定，可以一次提交。';
+      $('risk-unresolved-note').classList.toggle('resolved', unresolved === 0);
+    }
+
+    function renderRiskPacket() {
+      const targets = riskPayload.targets || [];
+      $('risk-target-count').textContent = `${targets.length} 项待决策`;
+      clear($('risk-decision-list'));
+      targets.forEach((target, index) => {
+        const article = document.createElement('article');
+        article.className = 'risk-decision-card';
+        article.dataset.targetId = target.target_id;
+
+        const context = document.createElement('div');
+        context.className = 'risk-decision-context';
+        const heading = document.createElement('header');
+        heading.append(textElement('span', 'risk-number', String(index + 1).padStart(2, '0')));
+        const categories = document.createElement('div');
+        categories.className = 'risk-category-list';
+        (target.risk_categories || []).forEach(category => categories.append(textElement('span', '', category)));
+        heading.append(categories);
+        context.append(heading);
+        context.append(textElement('h4', '', target.claim_text || '待核对科学主张'));
+        context.append(textElement('p', 'risk-review-summary', target.proposed_action || '请核对证据与主张是否一致。'));
+        context.append(textElement('blockquote', '', target.source_excerpt || '未提供原文摘录'));
+        const location = [target.source_label, target.page ? `第 ${target.page} 页` : ''].filter(Boolean).join(' · ');
+        context.append(textElement('p', 'risk-source-location', location || target.evidence_summary || '定位信息待补充'));
+
+        const controls = document.createElement('fieldset');
+        controls.className = 'risk-decision-controls';
+        controls.append(textElement('legend', '', '您的决定'));
+        const options = [
+          ['approve', '采纳', '证据足以支持当前表述'],
+          ['reword', '改写', '保留结论，但收窄或修正措辞'],
+          ['exclude', '排除', '不让该主张进入正文'],
+          ['unresolved', '暂缓', '暂不决定，并阻止进入写作'],
+        ];
+        options.forEach(([value, label, help]) => {
+          const option = document.createElement('label');
+          option.className = 'risk-decision-option';
+          const input = document.createElement('input');
+          input.type = 'radio';
+          input.name = `risk-decision-${index}`;
+          if (value === 'approve') input.value = 'approve';
+          if (value === 'reword') input.value = 'reword';
+          if (value === 'exclude') input.value = 'exclude';
+          if (value === 'unresolved') input.value = 'unresolved';
+          input.checked = value === (target.existing_decision || 'unresolved');
+          input.addEventListener('change', () => {
+            riskDecisionDirty = true;
+            reword.hidden = selectedRiskDecision(target.target_id) !== 'reword';
+            updateRiskDecisionStatus();
+          });
+          const copy = document.createElement('span');
+          copy.append(textElement('strong', '', label), textElement('small', '', help));
+          option.append(input, copy);
+          controls.append(option);
+        });
+        const reword = document.createElement('label');
+        reword.className = 'risk-reword-field';
+        reword.hidden = (target.existing_decision || 'unresolved') !== 'reword';
+        reword.append(textElement('span', '', '批准进入正文的改写'));
+        const rewordInput = document.createElement('textarea');
+        rewordInput.className = 'risk-reword-input';
+        rewordInput.rows = 3;
+        rewordInput.value = target.approved_text || target.claim_text || '';
+        rewordInput.addEventListener('input', () => { riskDecisionDirty = true; });
+        reword.append(rewordInput);
+        controls.append(reword);
+
+        article.append(context, controls);
+        $('risk-decision-list').append(article);
+      });
+      updateRiskDecisionStatus();
+    }
+
+    async function submitRiskDecisions() {
+      if (!projectId || projectLoadBusy) return;
+      const decisions = (riskPayload.targets || []).map(target => ({
+        target_id:target.target_id,
+        decision:selectedRiskDecision(target.target_id),
+        ...(selectedRiskDecision(target.target_id) === 'reword'
+          ? {approved_text:riskRewordText(target.target_id)} : {}),
+        decision_token:target.decision_token,
+      }));
+      if (decisions.some(row => row.decision === 'reword' && !row.approved_text)) {
+        $('risk-decision-message').textContent = '请先填写所有改写后的科学表述。';
+        return;
+      }
+      applyWorkbenchBusyState(true);
+      $('risk-decision-message').textContent = '正在保存科学决定…';
+      try {
+        await getPayload(`/api/project/${encodeURIComponent(projectId)}/risk-decisions`, {
+          method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({decisions})
+        });
+        riskDecisionDirty = false;
+        await loadProject();
+        if ((riskPayload.targets || []).some(target => target.existing_decision === 'unresolved')) {
+          $('risk-decision-message').textContent = '决定已保存；暂缓项仍会阻止进入写作。';
+        }
+      } catch (error) {
+        $('risk-decision-message').textContent = '科学决定未保存；请重新核对后提交。';
+      } finally {
+        applyWorkbenchBusyState(editorBusy || projectLoadBusy);
+      }
+    }
+
     function renderStageWorkspace() {
       const awaitingBrief = projectState.status === 'AWAITING_BRIEF_CONFIRMATION';
       const hasSourceQueue = Boolean((sourcePayload.sources || []).length);
       const needsSourceUpload = hasSourceQueue && sourcePayload.upload_required && !progressPayload.archive_received;
       const sourceBlocked = progressPayload.active_stage === 'sources' && Boolean(progressPayload.blocker);
       const showSource = !awaitingBrief && (needsSourceUpload || sourceBlocked);
-      const showProcessing = !awaitingBrief && !showSource && !draftPayload.available;
+      const showRisk = !awaitingBrief && !showSource && progressPayload.active_stage === 'risk' && Boolean((riskPayload.targets || []).length) && !draftPayload.available;
+      const showProcessing = !awaitingBrief && !showSource && !showRisk && !draftPayload.available;
       $('brief-stage-panel').hidden = !awaitingBrief;
       $('source-stage-panel').hidden = !showSource;
       $('processing-stage-panel').hidden = !showProcessing;
-      $('cockpit-overview').hidden = awaitingBrief || showSource || showProcessing;
+      $('risk-stage-panel').hidden = !showRisk;
+      $('cockpit-overview').hidden = awaitingBrief || showSource || showRisk || showProcessing;
       renderBriefStage();
       renderSourceStage();
       renderProcessingStage();
+      renderRiskPacket();
     }
 
     function renderCockpit() {
@@ -904,6 +1061,7 @@
         sourcePayload = nextSourcePayload;
         progressPayload = nextProgressPayload;
         editorDirty = false;
+        riskDecisionDirty = false;
         activeSectionId = draftPayload.sections?.[0]?.id || '';
         selectedClaimId = '';
         renderProjectHeader();
@@ -956,6 +1114,7 @@
             && !editorBusy
             && !projectLoadBusy
             && !sourceUploadBusy
+            && !riskDecisionDirty
           ) return loadProject();
           return 'unchanged';
         }
@@ -993,6 +1152,10 @@
         event.target.value = projectId;
         return;
       }
+      if (!confirmDiscardRiskDecisions()) {
+        event.target.value = projectId;
+        return;
+      }
       projectId = nextProjectId;
       try {
         const loadResult = await loadProject();
@@ -1014,6 +1177,7 @@
       $('source-drop-zone').classList.remove('dragging');
       uploadSourceArchive(event.dataTransfer?.files?.[0]);
     });
+    $('submit-risk-decisions').addEventListener('click', submitRiskDecisions);
     $('export-docx').addEventListener('click', exportDocx);
     $('save-section').addEventListener('click', () => saveDraftBody($('section-editor').value));
     $('section-editor').addEventListener('input', event => {
@@ -1030,7 +1194,7 @@
       }
     });
     window.addEventListener('beforeunload', event => {
-      if (!editorDirty) return;
+      if (!editorDirty && !riskDecisionDirty) return;
       event.preventDefault();
       event.returnValue = '';
     });

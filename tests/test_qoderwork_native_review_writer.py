@@ -83,6 +83,7 @@ VISIBLE_RISK_TARGET_FIELDS = {
     "page",
     "proposed_action",
     "existing_decision",
+    "approved_text",
     "decision_token",
 }
 
@@ -1967,6 +1968,11 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             self.assertEqual(1, risk["coverage"]["targets"])
             self.assertEqual(VISIBLE_RISK_TARGET_FIELDS, set(risk["targets"][0]))
             self.assertEqual("unresolved", risk["targets"][0]["existing_decision"])
+            self.assertEqual("", risk["targets"][0]["approved_text"])
+            self.assertEqual(
+                "自动证据审查支持；该主张属于高风险类别，需要您确认是否进入正文。",
+                risk["targets"][0]["proposed_action"],
+            )
             self.assertEqual(
                 "b4dac5597d27c55c41a2438b9cbe38d267495993d1c88f17fabbe54c386b1afc",
                 risk["targets"][0]["decision_token"],
@@ -2371,6 +2377,10 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             )
             self.assertEqual("REWORD", stored["decisions"][0]["action"])
             self.assertEqual(token, stored["decisions"][0]["review_target_digest"])
+            self.assertEqual(
+                "The measured response changed under the reported conditions.",
+                dashboard.project_risk_payload(review_root, "synthetic-review")["targets"][0]["approved_text"],
+            )
 
         invalid_cases = {
             "empty reword": lambda token: {"decisions": [{"target_id": "claim-neutral-01", "decision": "reword", "approved_text": "  ", "decision_token": token}]},
@@ -2613,6 +2623,40 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
         self.assertIn("上传成功后立即开始核验", visible)
         for forbidden in ("mapping file", "manifest path", "json", "agent", "prompt", "git"):
             self.assertNotIn(forbidden, visible)
+
+    def test_review_workbench_completes_risk_packet_in_scientific_language(self) -> None:
+        review_html = (ROOT / "view/assets/dashboard/review.html").read_text(encoding="utf-8")
+        parser = VisibleTextParser()
+        parser.feed(review_html)
+        visible = parser.text
+
+        for element_id in (
+            "risk-stage-panel",
+            "risk-decision-list",
+            "submit-risk-decisions",
+            "risk-decision-message",
+        ):
+            self.assertIn(f'id="{element_id}"', review_html)
+        for decision in ("approve", "reword", "exclude", "unresolved"):
+            self.assertIn(f"value = '{decision}'", review_html)
+        for binding in (
+            "decision_token:target.decision_token",
+            "approved_text:riskRewordText(target.target_id)",
+            "/risk-decisions`",
+            "method:'PUT'",
+            "renderRiskPacket",
+            "submitRiskDecisions",
+        ):
+            self.assertIn(binding, review_html)
+        for copy in (
+            "采纳",
+            "改写",
+            "排除",
+            "暂缓",
+            "尚有暂缓项，完成决定后才能进入写作",
+        ):
+            self.assertIn(copy, visible)
+        self.assertNotIn("decision_token", visible)
 
     def test_review_workbench_binds_manuscript_lineage_pending_restore_and_empty_state(self) -> None:
         review_html = (ROOT / "view" / "assets" / "dashboard" / "review.html").read_text(encoding="utf-8")
