@@ -13,9 +13,9 @@ description: 当科研用户要在 QoderWork 写作工作台中，以三次确�
 
 - 直接委派 `REVIEW_BRIEFING_AGENT` 处理用户给出的 topic/context，只询问缺失的 material scope：研究问题、目标读者与语言、时间/纳排边界、可用本地材料和交付形式。已有信息不重复询问；保留 QoderWork 的结构化关键问题弹窗。
 - Briefing 完成后，从 topic 派生一个 portable kebab-case `<project_id>`。若同名项目已存在，停止并报告冲突；不得删除、覆盖或复用。把 human-readable brief 映射为 `topic`、`review_question`、`audience`、`output_language`、`from_year`、`to_year`、`target_primary_studies`、`acceptable_core_range`、`required_modes`、`exclusions`、`deliverables` 等已有字段，写入一个 workspace-local temporary JSON；不向研究者展示或索取该路径。
-- 在索取任何 Brief 确认之前，严格运行一次本地 product command：`python scripts/run_vertical_review.py init --review-root . --project-id <project_id> --brief <temporary_brief_json>`。只接受输出状态 `AWAITING_BRIEF_CONFIRMATION`；该命令创建 `00_brief/review_state.json`，不要求研究者操作内部状态。
+- 在索取任何 Brief 确认之前，严格运行一次本地 product command：`python scripts/run_vertical_review.py init --review-root review-projects --project-id <project_id> --brief <temporary_brief_json>`。只接受输出状态 `AWAITING_BRIEF_CONFIRMATION`；该命令把项目与 `00_brief/review_state.json` 直接创建在工作台读取的 `review-projects/` 中，不要求研究者操作内部状态；不得移动或复制项目目录。
 - 随后在后台启动一次 `view/serve_review_dashboard.py`：`python view/serve_review_dashboard.py --review-root . --host 127.0.0.1 --port 8765`。确认本地地址 `127.0.0.1:8765/review` 可访问，并把这个 localhost 可点击 brief URL 呈现给研究者。不得为此探索文件、读取 README 或另建 dashboard。
-- 可以在聊天中概述 human-readable brief，但不得在聊天中索取 Brief 确认。此处只等待一次确认，并且只在 dashboard 的 Brief 确认界面等待研究者亲自操作；留在同一个 QoderWork 任务中观察通用状态接口，直到状态为 `BRIEF_CONFIRMED` 且阶段为 `ready_for_discovery`。确认动作不得改写 brief，也不得自身触发检索、Provider 或网络操作。
+- 可以在聊天中概述 human-readable brief，但不得在聊天中索取 Brief 确认。只在 dashboard 的 Brief 确认界面等待，并且只等待一次确认：呈现 dashboard 后，立即在前台运行 `python scripts/run_vertical_review.py wait-state --project-dir review-projects/<project_id> --status BRIEF_CONFIRMED --stage ready_for_discovery --poll-seconds 2`；保持这一个无 Provider、无网络的本地命令阻塞，直到研究者亲自在 dashboard 确认。不要用模型轮询，保持在同一个 QoderWork 任务中，也不要设置生产 timeout。确认动作不得改写 brief，也不得自身触发检索、Provider 或网络操作。
 - Review Brief/job authorization 必须在上传前披露 full-PDF MinerU egress 并取得明确确认。不得在 chat 中读取或暴露 token 值；缺少该授权或 token 时合并为一个具体 blocker。
 - 未观察到 `BRIEF_CONFIRMED` 前不得委派 `DISCOVERY_ACQUISITION_PLANNER`，也不得生成 search plan 或运行 discovery/acquisition；确认后的 brief 是后续检索、证据和写作的唯一范围基线，同一任务随后自动继续。
 

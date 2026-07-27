@@ -136,7 +136,7 @@ class NativeReviewWriterPluginTests(unittest.TestCase):
         manifest = json.loads((PLUGIN / ".qoder-plugin" / "plugin.json").read_text(encoding="utf-8"))
         self.assertEqual(MANIFEST_KEYS, set(manifest))
         self.assertEqual("research-review-writer", manifest["name"])
-        self.assertEqual("0.2.4", manifest["version"])
+        self.assertEqual("0.2.5", manifest["version"])
         self.assertEqual("科研综述专家", manifest["displayName"])
         self.assertTrue(manifest["description"].isascii())
         self.assertIn("科研综述", manifest["descriptionZh"])
@@ -244,8 +244,11 @@ class NativeReviewWriterPluginTests(unittest.TestCase):
             "不得探索插件目录、仓库结构、README 或 docs",
             "直接委派 `REVIEW_BRIEFING_AGENT`",
             "scripts/run_vertical_review.py init",
+            "--review-root review-projects",
             "--review-root . --host 127.0.0.1 --port 8765",
             "127.0.0.1:8765/review",
+            "scripts/run_vertical_review.py wait-state",
+            "--status BRIEF_CONFIRMED --stage ready_for_discovery",
             "只在 dashboard 的 Brief 确认界面等待",
             "不得在聊天中索取 Brief 确认",
         ):
@@ -257,7 +260,11 @@ class NativeReviewWriterPluginTests(unittest.TestCase):
         )
         self.assertLess(
             skill.index("view/serve_review_dashboard.py"),
-            skill.index("只在 dashboard 的 Brief 确认界面等待"),
+            skill.index("scripts/run_vertical_review.py wait-state"),
+        )
+        self.assertLess(
+            skill.index("scripts/run_vertical_review.py wait-state"),
+            skill.index("DISCOVERY_ACQUISITION_PLANNER"),
         )
 
     def test_source_handoff_uses_one_zip_then_the_existing_mineru_route(self) -> None:

@@ -5,6 +5,7 @@ import hashlib
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -1815,3 +1816,81 @@ def test_makefile_has_focused_vertical_projection_gate() -> None:
         "\t$(PYTHON) -m pytest tests/test_vertical_review_projection.py -q"
         in makefile
     )
+
+
+def _wait_state_command(project: Path, *, timeout_seconds: str = "1") -> list[str]:
+    return [
+        sys.executable,
+        str(CLI),
+        "wait-state",
+        "--project-dir",
+        str(project),
+        "--status",
+        "BRIEF_CONFIRMED",
+        "--stage",
+        "ready_for_discovery",
+        "--poll-seconds",
+        "0.01",
+        "--timeout-seconds",
+        timeout_seconds,
+    ]
+
+
+def test_wait_state_returns_immediately_when_brief_is_already_confirmed(
+    tmp_path: Path,
+) -> None:
+    project = _initialize(tmp_path)
+    vertical_review.confirm_review_brief(project)
+
+    result = subprocess.run(
+        _wait_state_command(project),
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "command": "wait-state",
+        "current_stage": "ready_for_discovery",
+        "status": "BRIEF_CONFIRMED",
+    }
+
+
+def test_wait_state_unblocks_after_dashboard_confirmation(tmp_path: Path) -> None:
+    project = _initialize(tmp_path)
+    process = subprocess.Popen(
+        _wait_state_command(project),
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    time.sleep(0.05)
+    assert process.poll() is None
+
+    vertical_review.confirm_review_brief(project)
+    stdout, stderr = process.communicate(timeout=2)
+
+    assert process.returncode == 0, stderr
+    assert json.loads(stdout)["status"] == "BRIEF_CONFIRMED"
+
+
+def test_wait_state_times_out_with_concrete_error(tmp_path: Path) -> None:
+    project = _initialize(tmp_path)
+
+    result = subprocess.run(
+        _wait_state_command(project, timeout_seconds="0.03"),
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert json.loads(result.stderr) == {
+        "command": "wait-state",
+        "error_code": "WAIT_STATE_TIMEOUT",
+        "status": "ERROR",
+    }

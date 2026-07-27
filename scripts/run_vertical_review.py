@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -426,6 +427,64 @@ def _prepare_status(project: Path, study_id: str) -> dict[str, Any]:
     }
 
 
+def _wait_for_state(
+    project: Path,
+    *,
+    expected_status: str,
+    expected_stage: str,
+    poll_seconds: float,
+    timeout_seconds: float | None,
+) -> dict[str, str]:
+    if (
+        not expected_status.strip()
+        or not expected_stage.strip()
+        or poll_seconds <= 0
+        or (timeout_seconds is not None and timeout_seconds <= 0)
+    ):
+        raise VerticalReviewError(
+            "WAIT_STATE_ARGUMENT_INVALID",
+            "status, stage, and timing values must be valid",
+        )
+    state_path = project / "00_brief" / "review_state.json"
+    started = time.monotonic()
+    while True:
+        try:
+            state = _load_json(state_path)
+        except FileNotFoundError as exc:
+            raise VerticalReviewError(
+                "WAIT_STATE_FILE_MISSING",
+                "review state file does not exist",
+            ) from exc
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise VerticalReviewError(
+                "WAIT_STATE_FILE_INVALID",
+                "review state file is unreadable",
+            ) from exc
+        if not isinstance(state, dict):
+            raise VerticalReviewError(
+                "WAIT_STATE_FILE_INVALID",
+                "review state must be a JSON object",
+            )
+        status = state.get("status")
+        stage = state.get("current_stage")
+        if status == expected_status and stage == expected_stage:
+            return {
+                "command": "wait-state",
+                "current_stage": expected_stage,
+                "status": expected_status,
+            }
+        elapsed = time.monotonic() - started
+        if timeout_seconds is not None and elapsed >= timeout_seconds:
+            raise VerticalReviewError(
+                "WAIT_STATE_TIMEOUT",
+                "review state did not reach the expected status before timeout",
+            )
+        delay = poll_seconds
+        if timeout_seconds is not None:
+            delay = min(delay, max(0.0, timeout_seconds - elapsed))
+        time.sleep(delay)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the offline vertical review projection.")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -434,6 +493,13 @@ def _parser() -> argparse.ArgumentParser:
     init.add_argument("--review-root", type=Path, required=True)
     init.add_argument("--project-id", required=True)
     init.add_argument("--brief", type=Path, required=True)
+
+    wait = commands.add_parser("wait-state")
+    wait.add_argument("--project-dir", type=Path, required=True)
+    wait.add_argument("--status", required=True)
+    wait.add_argument("--stage", required=True)
+    wait.add_argument("--poll-seconds", type=float, default=2.0)
+    wait.add_argument("--timeout-seconds", type=float)
 
     prepare = commands.add_parser("prepare-study")
     prepare.add_argument("--project-dir", type=Path, required=True)
@@ -471,6 +537,17 @@ def _run(args: argparse.Namespace) -> int:
         state = _load_json(project / "00_brief" / "review_state.json")
         _print_summary(
             {"command": "init", "project_dir": str(project), "status": state["status"]}
+        )
+        return 0
+    if args.command == "wait-state":
+        _print_summary(
+            _wait_for_state(
+                args.project_dir,
+                expected_status=args.status,
+                expected_stage=args.stage,
+                poll_seconds=args.poll_seconds,
+                timeout_seconds=args.timeout_seconds,
+            )
         )
         return 0
     if args.command == "prepare-study":
