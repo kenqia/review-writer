@@ -5,11 +5,15 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
+import shutil
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -28,15 +32,29 @@ from review_writer.project.vertical_review import (  # noqa: E402
     initialize_review,
     register_study,
 )
+from review_writer.delivery.project_release import (  # noqa: E402
+    ProjectReleaseError,
+    bind_authoritative_draft,
+)
 from scripts.evidence.build_page_atom_catalog import (  # noqa: E402
     PageCatalogError,
     build_page_atom_catalog,
     validate_catalog_schema,
 )
 from scripts.evidence.evidence_atom_core import sha256_file  # noqa: E402
+from scripts.evidence.validate_evidence_candidate import validate as validate_evidence_candidate  # noqa: E402
 
 
 CATALOG_SCHEMA = REPO_ROOT / "schemas" / "evidence" / "evidence_atom_catalog.v1.schema.json"
+CANDIDATE_SCHEMA = REPO_ROOT / "schemas" / "evidence" / "evidence_candidate.v2.schema.json"
+DEFAULT_MINERU_TOKEN_FILE = (
+    REPO_ROOT
+    / "skills"
+    / "mineru-precise-parse-review-writer"
+    / "config"
+    / "mineru_api_token.txt"
+)
+MINERU_ORIGIN = "https://mineru.net"
 
 
 def _load_json(path: Path) -> Any:
@@ -93,6 +111,85 @@ def _decision_counts(projection: list[dict[str, Any]]) -> dict[str, int]:
             row.get("decision") == "HUMAN_REQUIRED" for row in projection
         ),
     }
+
+
+def _preflight_status(
+    review_root: Path,
+    *,
+    mineru_token_file: Path,
+    mineru_egress_authorized: bool,
+    check_network: bool,
+) -> dict[str, Any]:
+    existing = review_root.expanduser().resolve(strict=False)
+    while not existing.exists() and existing != existing.parent:
+        existing = existing.parent
+    token_present = bool(os.environ.get("MINERU_API_TOKEN")) or (
+        mineru_token_file.is_file() and mineru_token_file.stat().st_size > 0
+    )
+    checks: dict[str, str] = {
+        "docx_export": "ready" if importlib.util.find_spec("docx") else "missing",
+        "image_rendering": "ready" if importlib.util.find_spec("PIL") else "missing",
+        "jsonschema": "ready" if importlib.util.find_spec("jsonschema") else "missing",
+        "mineru_egress": "authorized" if mineru_egress_authorized else "not_authorized",
+        "mineru_parser": "ready"
+        if (
+            REPO_ROOT
+            / "skills/mineru-precise-parse-review-writer/scripts/parse_review_writer_pdfs.py"
+        ).is_file()
+        else "missing",
+        "mineru_token": "present" if token_present else "missing",
+        "pdftotext": "ready" if shutil.which("pdftotext") else "missing",
+        "review_root": "writable" if existing.is_dir() and os.access(existing, os.W_OK) else "not_writable",
+    }
+    if check_network and token_present and mineru_egress_authorized:
+        try:
+            request = urllib.request.Request(MINERU_ORIGIN, method="HEAD")
+            with urllib.request.urlopen(request, timeout=10):  # noqa: S310 - fixed HTTPS origin.
+                checks["mineru_network"] = "reachable"
+        except (OSError, urllib.error.URLError):
+            checks["mineru_network"] = "unreachable"
+    else:
+        checks["mineru_network"] = "not_checked"
+    blocking = {
+        key: value
+        for key, value in checks.items()
+        if value in {"missing", "not_authorized", "not_writable", "unreachable"}
+    }
+    return {
+        "checks": checks,
+        "command": "preflight",
+        "reason_code": "MINERU_PREFLIGHT_BLOCKED" if blocking else "PREFLIGHT_READY",
+        "status": "BLOCKED" if blocking else "READY",
+    }
+
+
+def _canonical_r0_report(project: Path, candidate: dict[str, Any], supplied: dict[str, Any]) -> dict[str, Any]:
+    study_id = candidate.get("study_id") if isinstance(candidate, dict) else None
+    if (
+        not isinstance(study_id, str)
+        or not study_id
+        or study_id in {".", ".."}
+        or "/" in study_id
+        or "\\" in study_id
+    ):
+        raise VerticalReviewError("STUDY_ID_INVALID", "candidate study_id is invalid")
+    job_path = project / "01_evidence" / study_id / "sealed_job.json"
+    if not job_path.is_file():
+        raise VerticalReviewError("R0_JOB_MISSING", "canonical sealed job is missing")
+    canonical = validate_evidence_candidate(
+        _load_json(job_path),
+        candidate,
+        project.resolve(),
+        _load_json(CANDIDATE_SCHEMA),
+    )
+    if canonical.get("status") != "R0_PASS":
+        raise VerticalReviewError("R0_REJECTED", "candidate failed deterministic grounding validation")
+    if supplied != canonical:
+        raise VerticalReviewError(
+            "R0_REPORT_NOT_CANONICAL",
+            "supplied R0 report differs from fresh deterministic validation",
+        )
+    return canonical
 
 
 class _PrepareNotReady(Exception):
@@ -489,6 +586,12 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the offline vertical review projection.")
     commands = parser.add_subparsers(dest="command", required=True)
 
+    preflight = commands.add_parser("preflight")
+    preflight.add_argument("--review-root", type=Path, required=True)
+    preflight.add_argument("--mineru-token-file", type=Path, default=DEFAULT_MINERU_TOKEN_FILE)
+    preflight.add_argument("--mineru-egress-authorized", action="store_true")
+    preflight.add_argument("--skip-network-check", action="store_true")
+
     init = commands.add_parser("init")
     init.add_argument("--review-root", type=Path, required=True)
     init.add_argument("--project-id", required=True)
@@ -525,6 +628,11 @@ def _parser() -> argparse.ArgumentParser:
     writer = commands.add_parser("build-writer-packet")
     writer.add_argument("--project-dir", type=Path, required=True)
 
+    bind = commands.add_parser("bind-draft")
+    bind.add_argument("--project-dir", type=Path, required=True)
+    bind.add_argument("--manuscript", type=Path, required=True)
+    bind.add_argument("--lineage", type=Path, required=True)
+
     metrics = commands.add_parser("metrics")
     metrics.add_argument("--project-dir", type=Path, required=True)
     metrics.add_argument("--output", type=Path, required=True)
@@ -532,6 +640,15 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _run(args: argparse.Namespace) -> int:
+    if args.command == "preflight":
+        summary = _preflight_status(
+            args.review_root,
+            mineru_token_file=args.mineru_token_file,
+            mineru_egress_authorized=args.mineru_egress_authorized,
+            check_network=not args.skip_network_check,
+        )
+        _print_summary(summary)
+        return 0 if summary["status"] == "READY" else 3
     if args.command == "init":
         project = initialize_review(args.review_root, args.project_id, _load_json(args.brief))
         state = _load_json(project / "00_brief" / "review_state.json")
@@ -576,10 +693,16 @@ def _run(args: argparse.Namespace) -> int:
         _print_summary(summary)
         return 0 if summary["status"] == "READY" else 3
     if args.command == "register-study":
+        candidate = _load_json(args.candidate)
+        r0_report = _canonical_r0_report(
+            args.project_dir,
+            candidate,
+            _load_json(args.r0_report),
+        )
         result = register_study(
             args.project_dir,
-            _load_json(args.candidate),
-            _load_json(args.r0_report),
+            candidate,
+            r0_report,
             _load_json(args.reviewer),
         )
         summary = {
@@ -624,6 +747,14 @@ def _run(args: argparse.Namespace) -> int:
             }
         )
         return 0
+    if args.command == "bind-draft":
+        result = bind_authoritative_draft(
+            args.project_dir,
+            args.manuscript,
+            args.lineage,
+        )
+        _print_summary({"command": "bind-draft", "status": "BOUND", **result})
+        return 0
     if args.command == "metrics":
         project = args.project_dir.resolve()
         output = args.output.resolve()
@@ -648,6 +779,24 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return _run(args)
     except VerticalReviewError as exc:
+        payload: dict[str, Any] = {
+            "command": args.command,
+            "error_code": exc.code,
+            "status": "ERROR",
+        }
+        if exc.code == "WAIT_STATE_TIMEOUT":
+            payload.update(
+                {
+                    "project_saved": True,
+                    "resume_instruction": "完成工作台操作后，在 QoderWork 发送“继续当前综述项目”。",
+                }
+            )
+        _print_summary(
+            payload,
+            stream=sys.stderr,
+        )
+        return 2
+    except ProjectReleaseError as exc:
         _print_summary(
             {"command": args.command, "error_code": exc.code, "status": "ERROR"},
             stream=sys.stderr,

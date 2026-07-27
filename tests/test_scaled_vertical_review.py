@@ -285,7 +285,7 @@ def test_synthetic_three_study_product_acceptance_path(
     ]
     assert all(card["locators"] for card in evidence["cards"])
     assert all(
-        locator["href"].startswith("/library?") and "p. 1" in locator["label"]
+        locator["href"] == "" and "p. 1" in locator["label"]
         for card in evidence["cards"]
         for locator in card["locators"]
     )

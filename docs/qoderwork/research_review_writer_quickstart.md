@@ -22,7 +22,9 @@ make qoderwork-plugin-package
 1. 在 QoderWork CN 中打开维护者准备好的 review-writer 仓库工作区；工作区已包含专家套件需要的受维护命令。
 2. 模型选择 **Qwen3.7-Max**。
 3. 选择专家套件“科研综述专家”。
-4. 用普通科研语言说明主题、目标读者、年份/对象范围、排除条件和已有本地来源，然后确认 Review Brief；不上传密钥或私人历史。
+4. 用普通科研语言说明主题即可。专家套件会默认核对尚缺、且会改变结果的关键范围，最多询问 12 项，然后在工作台中等待你确认 Review Brief；不上传密钥或私人历史。
+
+Brief 确认后，专家套件会在付费处理前一次性检查工作目录、MinerU 配置与网络、PDF/DOCX/图片依赖、可用 Agent 和 Credits 余量；缺失时会在花费 Credits 前停止，不会中途静默降级。界面等待最长 12 小时，来源与风险决策最长 24 小时；超时后项目仍会保存，在 QoderWork 发送“继续当前综述项目”即可恢复。
 
 专家套件在同一个任务中运行本地仪表盘、来源获取与导入、MinerU 解析、逐研究证据提取、对抗审查、综合写作和质量/发布判断。科研用户不运行这些命令。模型只能基于提供的来源写作；候选来源、冲突和高风险解释会保留为待核验项。
 
@@ -30,7 +32,7 @@ make qoderwork-plugin-package
 
 ## 3. 科研用户：审阅并完成交付
 
-来源和证据处理完成后，科研用户集中审阅 Scientific Risk Packet。系统随后生成终稿工作台；科研用户在其中编辑并下载最终 DOCX。正常流程中的人工动作只有确认 Review Brief、必要时上传一个 ZIP、审阅 Scientific Risk Packet、编辑并下载最终 DOCX。
+来源和证据处理完成后，科研用户集中审阅 Scientific Risk Packet。系统随后生成原创的证据比较图和带 claim lineage 的正文工作台；点击科学表述可查看原文摘录、页码和审查结论，修改科学内容会进入待复核状态。科研用户可继续编辑并下载最终 DOCX。正常流程中的人工动作只有确认 Review Brief、必要时在工作台上传一个 ZIP、审阅 Scientific Risk Packet、编辑并下载最终 DOCX。
 
 仪表盘由专家套件在同一个任务内启动和维护；科研用户无需打开终端、查看 manifest，或理解 JSON、Prompt、Agent 与 Git。
 

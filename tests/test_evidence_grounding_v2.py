@@ -14,6 +14,8 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "evidence_grounding_v2" / "packet"
 VALIDATOR = REPO_ROOT / "scripts" / "evidence" / "validate_evidence_candidate.py"
 PARSER = REPO_ROOT / "scripts" / "evidence" / "build_pdf_text_layers.py"
@@ -245,6 +247,132 @@ class EvidenceGroundingV2Tests(unittest.TestCase):
             self.assertEqual(2, manifest["sources"][0]["page_count"])
             self.assertEqual("pdftotext-default-reading-order", manifest["sources"][0]["reading_order_method"])
             self.assertEqual("pdftotext-layout-visual-locator-only", manifest["sources"][0]["layout_method"])
+
+    def test_pdf_parser_force_cannot_drop_existing_sources_from_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            first_pdf = root / "first.pdf"
+            second_pdf = root / "second.pdf"
+            first_pdf.write_bytes(b"%PDF first")
+            second_pdf.write_bytes(b"%PDF second")
+            fake_pdftotext = root / "pdftotext"
+            fake_pdftotext.write_text(
+                "#!/bin/sh\n"
+                "out=''\n"
+                "for arg in \"$@\"; do out=$arg; done\n"
+                "printf 'one page\\f' > \"$out\"\n",
+                encoding="utf-8",
+            )
+            fake_pdftotext.chmod(0o755)
+            output_root = root / "layers"
+            initial = subprocess.run(
+                [
+                    sys.executable,
+                    str(PARSER),
+                    "--source",
+                    f"FIRST={first_pdf}",
+                    "--source",
+                    f"SECOND={second_pdf}",
+                    "--output-root",
+                    str(output_root),
+                    "--pdftotext",
+                    str(fake_pdftotext),
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(0, initial.returncode, initial.stderr)
+            before = (output_root / "text_layers.manifest.json").read_bytes()
+
+            destructive = subprocess.run(
+                [
+                    sys.executable,
+                    str(PARSER),
+                    "--source",
+                    f"SECOND={second_pdf}",
+                    "--output-root",
+                    str(output_root),
+                    "--pdftotext",
+                    str(fake_pdftotext),
+                    "--force",
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(2, destructive.returncode)
+            self.assertIn("refusing to drop existing source layers", destructive.stderr)
+            self.assertEqual(before, (output_root / "text_layers.manifest.json").read_bytes())
+
+    def test_register_cli_recomputes_r0_and_rejects_handwritten_pass(self) -> None:
+        from review_writer.project.vertical_review import initialize_review
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            project = initialize_review(root, "r0-recompute", {"topic": "R0 recompute"})
+            candidate = copy.deepcopy(self.valid)
+            study_id = candidate["study_id"]
+            packet = project
+            shutil.copytree(FIXTURE_ROOT / "sources", packet / "sources")
+            job_path = project / "01_evidence" / study_id / "sealed_job.json"
+            job_path.parent.mkdir(parents=True)
+            shutil.copy2(self.job, job_path)
+            candidate_path = root / "candidate.json"
+            candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
+            fake_report = root / "r0.json"
+            fake_report.write_text(
+                json.dumps(
+                    {
+                        "candidate_job_id": candidate["job_id"],
+                        "job_id": candidate["job_id"],
+                        "status": "R0_PASS",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            reviewer = root / "reviewer.json"
+            reviewer.write_text(
+                json.dumps(
+                    {
+                        "job_id": candidate["job_id"],
+                        "study_id": study_id,
+                        "verdict": "SUPPORT",
+                        "findings": [
+                            {"target_id": "RU-1", "verdict": "SUPPORT", "reason": "Grounded."},
+                            {"target_id": "CL-1", "verdict": "SUPPORT", "reason": "Grounded."},
+                        ],
+                        "summary": "Grounded.",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "scripts/run_vertical_review.py"),
+                    "register-study",
+                    "--project-dir",
+                    str(project),
+                    "--candidate",
+                    str(candidate_path),
+                    "--r0-report",
+                    str(fake_report),
+                    "--reviewer",
+                    str(reviewer),
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(2, result.returncode)
+            self.assertEqual("R0_REPORT_NOT_CANONICAL", json.loads(result.stderr)["error_code"])
 
     def test_generic_make_gate_runs_the_complete_grounding_suite(self) -> None:
         makefile_path = REPO_ROOT / "Makefile"

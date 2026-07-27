@@ -136,7 +136,7 @@ class NativeReviewWriterPluginTests(unittest.TestCase):
         manifest = json.loads((PLUGIN / ".qoder-plugin" / "plugin.json").read_text(encoding="utf-8"))
         self.assertEqual(MANIFEST_KEYS, set(manifest))
         self.assertEqual("research-review-writer", manifest["name"])
-        self.assertEqual("0.2.6", manifest["version"])
+        self.assertEqual("0.2.7", manifest["version"])
         self.assertEqual("科研综述专家", manifest["displayName"])
         self.assertTrue(manifest["description"].isascii())
         self.assertIn("科研综述", manifest["descriptionZh"])
@@ -219,6 +219,61 @@ class NativeReviewWriterPluginTests(unittest.TestCase):
         self.assertLessEqual(command_refs, ALLOWED_MAIN_COMMANDS)
         self.assertIn("scripts/run_vertical_review.py", command_refs)
         self.assertIn("view/serve_review_dashboard.py", command_refs)
+
+    def test_main_skill_runs_default_scope_questions_preflight_and_bounded_waits(self) -> None:
+        skill = (PLUGIN / "skills" / "research-review-writer" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        briefing = (PLUGIN / "agents" / "REVIEW_BRIEFING_AGENT.md").read_text(
+            encoding="utf-8"
+        )
+
+        for required in (
+            "最多 12 个",
+            "核心研究问题",
+            "目标读者",
+            "输出语言",
+            "时间范围",
+            "目标研究数量",
+            "纳入标准",
+            "排除标准",
+            "本地材料或公开检索",
+            "交付格式",
+            "图片需求",
+            "credits",
+            "scripts/run_vertical_review.py preflight",
+            "MINERU_PREFLIGHT_BLOCKED",
+            "--timeout-seconds 43200",
+            "--timeout-seconds 86400",
+            "WAIT_STATE_TIMEOUT",
+            "继续当前综述项目",
+        ):
+            self.assertIn(required, skill + briefing)
+        self.assertLess(
+            skill.index("scripts/run_vertical_review.py preflight"),
+            skill.index("DISCOVERY_ACQUISITION_PLANNER"),
+        )
+        self.assertNotIn("不要设置生产 timeout", skill)
+
+    def test_main_skill_uses_only_canonical_pipeline_outputs_and_fails_closed(self) -> None:
+        skill = (PLUGIN / "skills" / "research-review-writer" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        for required in (
+            "00_discovery/acquisition_manifest.json",
+            "00_sources/acquisition_receipt.json",
+            "一次命令传入全部 `--source`",
+            "不得手工解压、复制、重命名",
+            "不得用 pdftotext-only",
+            "不得手工构造 candidate、R0 report 或 reviewer verdict",
+            "R0_FAIL",
+            "bind-draft",
+            "04_first_draft/manuscript_lineage.json",
+            "原创 comparative evidence figure",
+            "QoderWork Usage",
+            "credits before/after",
+        ):
+            self.assertIn(required, skill)
 
     def test_main_skill_blocks_discovery_until_brief_confirmation(self) -> None:
         skill = (PLUGIN / "skills" / "research-review-writer" / "SKILL.md").read_text(encoding="utf-8")
@@ -1024,6 +1079,104 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             )
             self.assertEqual(200, status)
             self.assertEqual(payload, json.loads(body))
+
+    def test_progress_surfaces_canonical_source_state_mismatch_instead_of_silent_sources_loop(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir) / "review-root"
+            project = review_root / "review-projects/mismatch-review"
+
+            def write_json(relative: str, payload: object) -> None:
+                path = project / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+            write_json(
+                "00_brief/review_state.json",
+                {
+                    "project_id": "mismatch-review",
+                    "current_stage": "evidence_review",
+                    "status": "in_progress",
+                    "blockers": [],
+                },
+            )
+            write_json(
+                "00_sources/acquisition_manifest.json",
+                {"downloads": [{"download_id": "LEGACY_MAIN"}]},
+            )
+            cards = project / "01_evidence/evidence_cards.jsonl"
+            cards.parent.mkdir(parents=True, exist_ok=True)
+            cards.write_text(json.dumps({"study_id": "STUDY-1", "candidate": {"study_id": "STUDY-1"}}) + "\n")
+
+            payload = dashboard.project_progress_payload(review_root, "mismatch-review")
+
+            self.assertEqual("sources", payload["active_stage"])
+            self.assertEqual("PIPELINE_STATE_INCONSISTENT", payload["blocker_code"])
+            self.assertIn("来源清单", payload["blocker"])
+            self.assertEqual("在 QoderWork 中恢复项目来源状态", payload["recommended_next"])
+
+    def test_complete_canonical_sources_and_evidence_activate_real_risk_workspace(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir) / "review-root"
+            shutil.copytree(FIXTURE, review_root)
+            project = review_root / "review-projects/synthetic-review"
+            (project / "04_first_draft/first_draft.md").unlink()
+            manifest = project / "00_discovery/acquisition_manifest.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "downloads": [
+                            {
+                                "download_id": "SYNTH_MAIN",
+                                "study_id": "study-neutral-01",
+                                "document_role": "MAIN",
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            receipt = project / "00_sources/acquisition_receipt.json"
+            receipt.parent.mkdir(parents=True, exist_ok=True)
+            receipt.write_text(
+                json.dumps(
+                    {"results": [{"download_id": "SYNTH_MAIN", "status": "VERIFIED_EXISTING"}]}
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            screening = project / "00_discovery/screening_decisions.json"
+            screening.write_text(
+                json.dumps(
+                    {
+                        "decisions": [
+                            {
+                                "candidate_id": "study-neutral-01",
+                                "disposition": "INCLUDE_FOR_FULL_TEXT",
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            mineru = project / "01_evidence/mineru/manifest.json"
+            mineru.parent.mkdir(parents=True)
+            mineru.write_text(json.dumps({"completed": [{"source_id": "SYNTH_MAIN"}]}) + "\n")
+
+            progress = dashboard.project_progress_payload(review_root, "synthetic-review")
+            risk = dashboard.project_risk_payload(review_root, "synthetic-review")
+
+            self.assertEqual("risk", progress["active_stage"])
+            self.assertEqual("检查集中科学风险", progress["recommended_next"])
+            self.assertEqual(1, len(risk["targets"]))
 
     def test_dashboard_run_keeps_serving_when_review_root_is_empty(self) -> None:
         sys.path.insert(0, str(ROOT))
@@ -2728,6 +2881,7 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             self.assertIn(f'id="{element_id}"', review_html)
         for decision in ("approve", "reword", "exclude", "unresolved"):
             self.assertIn(f"value = '{decision}'", review_html)
+        self.assertIn("科学决定已保存，正在进入写作。", review_html)
         for binding in (
             "decision_token:target.decision_token",
             "approved_text:riskRewordText(target.target_id)",

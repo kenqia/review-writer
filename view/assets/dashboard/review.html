@@ -693,6 +693,8 @@
         await loadProject();
         if ((riskPayload.targets || []).some(target => target.existing_decision === 'unresolved')) {
           $('risk-decision-message').textContent = '决定已保存；暂缓项仍会阻止进入写作。';
+        } else {
+          $('workbench-message').textContent = '科学决定已保存，正在进入写作。';
         }
       } catch (error) {
         $('risk-decision-message').textContent = '科学决定未保存；请重新核对后提交。';

@@ -1643,9 +1643,29 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
         isinstance(item, str) and item.startswith(("SOURCE_ARCHIVE_", "MANUAL_ARCHIVE_"))
         for item in raw_blockers
     )
+    legacy_manifest_present = any(
+        os.path.lexists(project / relative)
+        for relative in (
+            "00_sources/acquisition_manifest.json",
+            "00_sources/acquisition_manifest_v2.json",
+        )
+    )
+    downstream_present = any(
+        os.path.lexists(project / relative)
+        for relative in (
+            "01_evidence/evidence_cards.jsonl",
+            "03_review/risk_packet.json",
+            "04_first_draft/first_draft.md",
+        )
+    ) and bool(cards or risk_targets or draft_complete)
+    pipeline_state_inconsistent = source_total == 0 and (
+        legacy_manifest_present or downstream_present
+    )
     blocker = (
         "上传的压缩包未通过来源核验，请按缺失清单修正后重新上传。"
         if source_invalid
+        else "项目来源清单与后续证据状态不一致，请在 QoderWork 中恢复后继续。"
+        if pipeline_state_inconsistent
         else "当前阶段需要补充信息，请查看推荐操作。"
         if raw_blockers
         else ""
@@ -1687,12 +1707,23 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
         "drafting": "开始撰写证据约束正文",
         "final": "检查正文并导出 DOCX",
     }[active_stage]
+    if pipeline_state_inconsistent:
+        recommended = "在 QoderWork 中恢复项目来源状态"
     return {
         "project_id": project_id,
         "active_stage": active_stage,
         "stages": stages,
         "studies": studies,
         "blocker": blocker,
+        "blocker_code": (
+            "SOURCE_ARCHIVE_INVALID"
+            if source_invalid
+            else "PIPELINE_STATE_INCONSISTENT"
+            if pipeline_state_inconsistent
+            else "PROJECT_BLOCKED"
+            if raw_blockers
+            else ""
+        ),
         "recommended_next": recommended,
         "archive_received": archive_received,
     }

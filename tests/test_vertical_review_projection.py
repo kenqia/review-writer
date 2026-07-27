@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 import time
+import os
 from pathlib import Path
 
 import pytest
@@ -918,6 +919,38 @@ def test_writer_packet_is_an_approved_only_whitelist(tmp_path: Path) -> None:
     }
 
 
+def test_writer_packet_builds_one_original_comparative_evidence_figure(tmp_path: Path) -> None:
+    project = _initialize(tmp_path)
+    for index, mode in enumerate(("Photoredox", "Electrochemical"), start=1):
+        study_id = f"STUDY-FIGURE-{index}"
+        candidate = _candidate(study_id, [_claim(f"CLAIM-FIGURE-{index}")])
+        candidate.update(
+            {
+                "activation_mode": mode,
+                "citation": f"Synthetic study {index}",
+                "reaction_class": "C-C bond formation",
+            }
+        )
+        register_study(project, candidate, _r0(study_id), _reviewer(study_id))
+
+    packet = build_writer_packet(project)
+
+    assert len(packet["figures"]) == 1
+    figure = packet["figures"][0]
+    assert figure["license"] == "ORIGINAL_GENERATED"
+    assert figure["markdown_path"] == "../03_figure_redraw/comparative_evidence_map.png"
+    image = project / "03_figure_redraw/comparative_evidence_map.png"
+    assert image.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    manifest = json.loads(
+        (project / "03_figure_redraw/figure_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["copied_source_images"] is False
+    assert manifest["figures"][0]["source_claim_ids"] == [
+        "CLAIM-FIGURE-1",
+        "CLAIM-FIGURE-2",
+    ]
+
+
 def test_writer_packet_requires_explicit_rebuild_after_projection_or_decision_change(
     tmp_path: Path,
 ) -> None:
@@ -1559,6 +1592,7 @@ def test_cli_exposes_required_subcommands_and_prepare_creates_no_state(tmp_path:
     )
     assert help_result.returncode == 0, help_result.stderr
     for command in (
+        "preflight",
         "init",
         "prepare-study",
         "prepare-batch",
@@ -1566,6 +1600,7 @@ def test_cli_exposes_required_subcommands_and_prepare_creates_no_state(tmp_path:
         "build-risk-packet",
         "apply-risk-decisions",
         "build-writer-packet",
+        "bind-draft",
         "metrics",
     ):
         assert command in help_result.stdout
@@ -1632,6 +1667,71 @@ def test_cli_exposes_required_subcommands_and_prepare_creates_no_state(tmp_path:
         if path.is_file()
     }
     assert after == before
+
+
+def test_preflight_reports_missing_mineru_without_exposing_secret_values(tmp_path: Path) -> None:
+    missing_token = tmp_path / "missing-mineru-token.txt"
+    environment = dict(os.environ)
+    environment.pop("MINERU_API_TOKEN", None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(CLI),
+            "preflight",
+            "--review-root",
+            str(tmp_path / "review-root"),
+            "--mineru-token-file",
+            str(missing_token),
+            "--mineru-egress-authorized",
+        ],
+        cwd=REPO_ROOT,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 3
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "BLOCKED"
+    assert payload["reason_code"] == "MINERU_PREFLIGHT_BLOCKED"
+    assert payload["checks"]["mineru_token"] == "missing"
+    assert "token_value" not in json.dumps(payload)
+
+
+def test_wait_state_timeout_is_bounded_and_returns_resume_instruction(tmp_path: Path) -> None:
+    project = _initialize(tmp_path)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(CLI),
+            "wait-state",
+            "--project-dir",
+            str(project),
+            "--status",
+            "BRIEF_CONFIRMED",
+            "--stage",
+            "ready_for_discovery",
+            "--poll-seconds",
+            "0.01",
+            "--timeout-seconds",
+            "0.02",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    payload = json.loads(result.stderr)
+    assert payload == {
+        "command": "wait-state",
+        "error_code": "WAIT_STATE_TIMEOUT",
+        "project_saved": True,
+        "resume_instruction": "完成工作台操作后，在 QoderWork 发送“继续当前综述项目”。",
+        "status": "ERROR",
+    }
 
 
 def test_prepare_study_builds_current_pre_provider_packet_without_reruns_and_is_idempotent(
@@ -1892,5 +1992,7 @@ def test_wait_state_times_out_with_concrete_error(tmp_path: Path) -> None:
     assert json.loads(result.stderr) == {
         "command": "wait-state",
         "error_code": "WAIT_STATE_TIMEOUT",
+        "project_saved": True,
+        "resume_instruction": "完成工作台操作后，在 QoderWork 发送“继续当前综述项目”。",
         "status": "ERROR",
     }

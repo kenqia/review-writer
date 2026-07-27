@@ -161,6 +161,32 @@ def test_release_snapshots_exact_authoritative_bytes(tmp_path: Path) -> None:
     assert report["release_status"] == result["release_status"]
 
 
+def test_provider_draft_binding_preserves_exact_bytes_and_advances_to_drafting(
+    tmp_path: Path,
+) -> None:
+    from review_writer.delivery.project_release import bind_authoritative_draft
+
+    project = make_release_ready_project(tmp_path)
+    manuscript_path = project / "04_first_draft" / "first_draft.md"
+    lineage_path = project / "04_first_draft" / "manuscript_lineage.json"
+    provider_manuscript = tmp_path / "provider-first-draft.md"
+    provider_lineage = tmp_path / "provider-lineage.json"
+    provider_manuscript.write_bytes(manuscript_path.read_bytes())
+    provider_lineage.write_bytes(lineage_path.read_bytes())
+    expected_manuscript = provider_manuscript.read_bytes()
+    expected_lineage = provider_lineage.read_bytes()
+    manuscript_path.unlink()
+    lineage_path.unlink()
+
+    result = bind_authoritative_draft(project, provider_manuscript, provider_lineage)
+
+    assert result["project_id"] == "synthetic-release"
+    assert manuscript_path.read_bytes() == expected_manuscript
+    assert lineage_path.read_bytes() == expected_lineage
+    state = json.loads((project / "00_brief/review_state.json").read_text(encoding="utf-8"))
+    assert (state["current_stage"], state["status"]) == ("drafting", "in_progress")
+
+
 def _update_lineage(project: Path, **changes: object) -> None:
     path = project / "04_first_draft" / "manuscript_lineage.json"
     lineage = json.loads(path.read_text(encoding="utf-8"))

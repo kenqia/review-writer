@@ -9,6 +9,7 @@ import math
 import os
 import re
 import tempfile
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -979,10 +980,12 @@ def build_writer_packet(project: Path) -> dict:
         for row in projection
         if row["decision"] != "APPROVED"
     ]
+    figures = _build_comparative_evidence_figure(project_path, projection)
     packet = {
         "approved_claim_count": len(approved),
         "blocked_count": sum(row["decision"] == "BLOCKED" for row in projection),
         "claims": approved,
+        "figures": figures,
         "human_required_count": sum(
             row["decision"] == "HUMAN_REQUIRED" for row in projection
         ),
@@ -993,6 +996,146 @@ def build_writer_packet(project: Path) -> dict:
     }
     _write_json(project_path / "02_claims" / "writer_packet.json", packet)
     return packet
+
+
+def _figure_text(value: Any, limit: int) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = text.encode("ascii", "ignore").decode("ascii")
+    text = " ".join(text.split()) or "Not recorded"
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _build_comparative_evidence_figure(
+    project: Path,
+    projection: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    approved = [row for row in projection if row.get("decision") == "APPROVED"]
+    if not approved:
+        return []
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError as exc:
+        _fail("FIGURE_RENDERER_MISSING", "Pillow is required for the original comparison figure")
+        raise AssertionError from exc
+
+    cards = _load_validated_cards(project)
+    approved_by_study: dict[str, list[str]] = {}
+    for row in approved:
+        approved_by_study.setdefault(row["study_id"], []).append(row["claim_id"])
+    rows: list[dict[str, Any]] = []
+    for card in cards:
+        study_id = card["study_id"]
+        claim_ids = sorted(approved_by_study.get(study_id, []))
+        if not claim_ids:
+            continue
+        candidate = card["candidate"]
+        rows.append(
+            {
+                "activation_mode": _figure_text(candidate.get("activation_mode"), 34),
+                "approved_claim_count": len(claim_ids),
+                "citation": _figure_text(candidate.get("citation") or study_id, 44),
+                "claim_ids": claim_ids,
+                "reaction_class": _figure_text(candidate.get("reaction_class"), 34),
+                "study_id": study_id,
+            }
+        )
+    rows.sort(key=lambda row: row["study_id"])
+    if not rows:
+        return []
+
+    width = 1400
+    header_height = 170
+    row_height = 96
+    footer_height = 90
+    height = header_height + row_height * len(rows) + footer_height
+    image = Image.new("RGB", (width, height), "#F7F5EE")
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default()
+    dark = "#173F35"
+    muted = "#5F6F67"
+    line = "#CBD4CE"
+    accent = "#2D725F"
+    draw.rectangle((0, 0, width, 18), fill=dark)
+    draw.text((54, 48), "Comparative evidence landscape", fill=dark, font=font)
+    draw.text(
+        (54, 86),
+        "Original figure generated only from approved review-writer evidence",
+        fill=muted,
+        font=font,
+    )
+    draw.text((54, 140), "Study", fill=muted, font=font)
+    draw.text((450, 140), "Activation / reaction class", fill=muted, font=font)
+    draw.text((1020, 140), "Approved claims", fill=muted, font=font)
+    max_claims = max(row["approved_claim_count"] for row in rows)
+    for index, row in enumerate(rows):
+        top = header_height + index * row_height
+        draw.line((54, top, width - 54, top), fill=line, width=2)
+        draw.text((54, top + 24), row["citation"], fill=dark, font=font)
+        draw.text((450, top + 18), row["activation_mode"], fill=dark, font=font)
+        draw.text((450, top + 50), row["reaction_class"], fill=muted, font=font)
+        bar_width = int(250 * row["approved_claim_count"] / max_claims)
+        draw.rounded_rectangle(
+            (1020, top + 26, 1020 + bar_width, top + 54),
+            radius=10,
+            fill=accent,
+        )
+        draw.text(
+            (1034 + bar_width, top + 32),
+            str(row["approved_claim_count"]),
+            fill=dark,
+            font=font,
+        )
+    draw.line((54, header_height + len(rows) * row_height, width - 54, header_height + len(rows) * row_height), fill=line, width=2)
+    draw.text(
+        (54, height - 54),
+        "Counts describe the approved evidence whitelist, not publication volume or method quality.",
+        fill=muted,
+        font=font,
+    )
+
+    stage = project / "03_figure_redraw"
+    stage.mkdir(parents=True, exist_ok=True)
+    image_path = stage / "comparative_evidence_map.png"
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w+b",
+            dir=stage,
+            prefix=".comparative_evidence_map.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            image.save(handle, format="PNG")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, image_path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+    source_claim_ids = sorted(row["claim_id"] for row in approved)
+    figure = {
+        "caption": (
+            "Comparative evidence landscape for the included studies. Bar lengths show "
+            "the number of claims admitted to the approved writer whitelist."
+        ),
+        "figure_id": "comparative-evidence-map",
+        "license": "ORIGINAL_GENERATED",
+        "markdown_path": "../03_figure_redraw/comparative_evidence_map.png",
+        "source_claim_ids": source_claim_ids,
+        "study_ids": [row["study_id"] for row in rows],
+    }
+    _write_json(
+        stage / "figure_manifest.json",
+        {
+            "copied_source_images": False,
+            "figures": [figure],
+            "schema_version": "review-writer-original-figure-manifest.v1",
+        },
+    )
+    return [figure]
 
 
 def benchmark_metrics(project: Path) -> dict:

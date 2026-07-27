@@ -436,13 +436,17 @@ def _validate_manuscript_lineage(
     writer_path = validate_project_file_path(
         project_path, Path("02_claims/writer_packet.json"), "WRITER_PACKET_INVALID"
     )
-    lineage_path = validate_project_file_path(
-        project_path, Path("04_first_draft/manuscript_lineage.json"), "MANUSCRIPT_LINEAGE_INVALID"
-    )
+    lineage_path = None
+    if lineage_override is None:
+        lineage_path = validate_project_file_path(
+            project_path,
+            Path("04_first_draft/manuscript_lineage.json"),
+            "MANUSCRIPT_LINEAGE_INVALID",
+        )
     projection = _read_jsonl(projection_path, "PROJECTION_INVALID")
     writer_packet = _read_json(writer_path, "WRITER_PACKET_INVALID")
     lineage = lineage_override if lineage_override is not None else _read_json(
-        lineage_path, "MANUSCRIPT_LINEAGE_INVALID"
+        lineage_path, "MANUSCRIPT_LINEAGE_INVALID"  # type: ignore[arg-type]
     )
     if not isinstance(writer_packet, dict) or not isinstance(lineage, dict):
         raise ProjectReleaseError("RELEASE_STATE_INVALID", "writer packet and lineage must be objects")
@@ -550,6 +554,56 @@ def _validate_manuscript_lineage(
 def validate_manuscript_lineage(project: Path, markdown: str) -> dict[str, Any]:
     """Validate current Task4 state, manuscript lineage, citations, and images."""
     return _validate_manuscript_lineage(project, markdown)
+
+
+def bind_authoritative_draft(
+    project: Path,
+    manuscript_input: Path,
+    lineage_input: Path,
+) -> dict[str, Any]:
+    """Validate and bind exact provider outputs to the one canonical draft location."""
+    project_path = Path(project).resolve()
+    try:
+        manuscript_bytes = Path(manuscript_input).read_bytes()
+        lineage_bytes = Path(lineage_input).read_bytes()
+        manuscript = manuscript_bytes.decode("utf-8")
+        lineage = json.loads(lineage_bytes.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ProjectReleaseError(
+            "DRAFT_BIND_INPUT_INVALID",
+            "provider manuscript and lineage must be readable UTF-8 files",
+        ) from exc
+    if not isinstance(lineage, dict):
+        raise ProjectReleaseError("DRAFT_BIND_INPUT_INVALID", "provider lineage must be an object")
+    validation = _validate_manuscript_lineage(
+        project_path,
+        manuscript,
+        lineage_override=lineage,
+    )
+    manuscript_path = project_path / "04_first_draft" / "first_draft.md"
+    lineage_path = project_path / "04_first_draft" / "manuscript_lineage.json"
+    for destination, payload in (
+        (manuscript_path, manuscript_bytes),
+        (lineage_path, lineage_bytes),
+    ):
+        if destination.exists() and destination.read_bytes() != payload:
+            raise ProjectReleaseError(
+                "DRAFT_BIND_CONFLICT",
+                "canonical draft already exists with different bytes",
+            )
+    _atomic_write(manuscript_path, manuscript_bytes)
+    _atomic_write(lineage_path, lineage_bytes)
+    state_path = project_path / "00_brief" / "review_state.json"
+    state = _read_json(state_path, "PROJECT_STATE_INVALID")
+    if not isinstance(state, dict):
+        raise ProjectReleaseError("PROJECT_STATE_INVALID", "review state must be an object")
+    updated_state = {**state, "current_stage": "drafting", "status": "in_progress"}
+    _atomic_write(state_path, _json_bytes(updated_state))
+    return {
+        "claim_reference_count": validation["claim_reference_count"],
+        "image_count": validation["image_count"],
+        "project_id": validation["project_id"],
+    }
 
 
 def validated_draft_manuscript_lineage(project: Path, markdown: str) -> dict[str, Any]:

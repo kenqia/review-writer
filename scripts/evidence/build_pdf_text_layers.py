@@ -69,12 +69,29 @@ def build_layers(
     force: bool,
 ) -> dict:
     output_root.mkdir(parents=True, exist_ok=True)
+    manifest_path = output_root / "text_layers.manifest.json"
+    if force and manifest_path.exists():
+        try:
+            existing_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            existing_rows = existing_manifest["sources"]
+            existing_ids = {
+                row["source_id"]
+                for row in existing_rows
+                if isinstance(row, dict) and isinstance(row.get("source_id"), str)
+            }
+        except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
+            raise RuntimeError("existing text-layer manifest is invalid") from exc
+        requested_ids = {source_id for source_id, _ in sources}
+        if existing_ids - requested_ids:
+            raise RuntimeError(
+                "refusing to drop existing source layers; pass every existing and new --source together"
+            )
     planned = [
         output_root / name
         for source_id, _ in sources
         for name in (f"{source_id}.reading.txt", f"{source_id}.layout.txt")
     ]
-    planned.append(output_root / "text_layers.manifest.json")
+    planned.append(manifest_path)
     existing = [path for path in planned if path.exists()]
     if existing and not force:
         raise FileExistsError(f"refusing to overwrite existing output: {existing[0]}")

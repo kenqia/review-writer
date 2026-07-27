@@ -1,7 +1,7 @@
 {
   "name": "research-review-writer",
   "displayName": "科研综述专家",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "An auditable literature-review expert for the QoderWork Writing Workbench.",
   "descriptionZh": "科研综述专家：在 QoderWork 写作工作台中完成可审计、按指定语言写作的综述任务。",
   "author": {"name": "review-writer"},
