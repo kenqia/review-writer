@@ -11,6 +11,7 @@ import re
 import shutil
 import sys
 import tempfile
+import zipfile
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -30,6 +31,7 @@ from review_writer.project.vertical_review import (  # noqa: E402
     confirm_review_brief,
 )
 from review_writer.acquisition.manifest_identity import normalize_doi  # noqa: E402
+from review_writer.acquisition.manual_archive import DEFAULT_MAX_ARCHIVE_BYTES  # noqa: E402
 from review_writer.delivery.project_release import (  # noqa: E402
     PROJECT_RELEASE_LOCK,
     build_project_release,
@@ -90,6 +92,8 @@ _CHEMICAL_STRUCTURE_RE = re.compile(
     r"(?<!\w)(?:(?=[A-Za-z0-9]*\d)(?:[A-Z][a-z]?\d*){2,}|"
     r"[A-Z][a-z]?\s*(?:[-=≡–—])\s*[A-Z][a-z]?)(?!\w)"
 )
+SOURCE_ARCHIVE_RELATIVE = Path("00_sources/manual_upload/inbox/source_bundle.zip")
+SOURCE_ARCHIVE_SUCCESS_STATUSES = frozenset({"DOWNLOADED", "IMPORTED", "VERIFIED_EXISTING"})
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -234,6 +238,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/project/") and parsed.path.endswith("/source-archive"):
+            project_id = project_id_from_route(parsed.path, "source-archive")
+            if project_id is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                return
+            replace = parse_qs(parsed.query).get("replace", [""])[0]
+            self.handle_project_source_archive_post(project_id, replace=replace)
+            return
         if parsed.path.startswith("/api/project/") and parsed.path.endswith("/export-docx"):
             project_id = project_id_from_route(parsed.path, "export-docx")
             if project_id is None:
@@ -242,6 +254,82 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.handle_project_export_docx(project_id)
             return
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+
+    def handle_project_source_archive_post(self, project_id: str, *, replace: str) -> None:
+        try:
+            project = project_dir(self.review_root, project_id)
+        except ValueError:
+            self.send_error(HTTPStatus.BAD_REQUEST, "invalid project")
+            return
+        if not project.is_dir():
+            self.send_error(HTTPStatus.NOT_FOUND, "project not found")
+            return
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            self.send_error(HTTPStatus.BAD_REQUEST, "archive length is invalid")
+            return
+        if length <= 0:
+            self.send_error(HTTPStatus.BAD_REQUEST, "archive is empty")
+            return
+        if length > DEFAULT_MAX_ARCHIVE_BYTES:
+            self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "archive exceeds the size limit")
+            return
+        archive_path = project / SOURCE_ARCHIVE_RELATIVE
+        try:
+            validate_project_path_components(project, (SOURCE_ARCHIVE_RELATIVE,))
+        except ValueError:
+            self.send_error(HTTPStatus.BAD_REQUEST, "archive destination is unavailable")
+            return
+        state = read_json_if_exists(project / "00_brief" / "review_state.json") or {}
+        blockers = state.get("blockers") if isinstance(state, dict) else []
+        replacement_allowed = (
+            replace == "invalid"
+            and isinstance(blockers, list)
+            and any(
+                isinstance(blocker, str)
+                and blocker.startswith(("SOURCE_ARCHIVE_", "MANUAL_ARCHIVE_"))
+                for blocker in blockers
+            )
+        )
+        if archive_path.exists() and not replacement_allowed:
+            self.send_error(HTTPStatus.CONFLICT, "a source archive is already awaiting processing")
+            return
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary: Path | None = None
+        try:
+            validate_project_path_components(project, (SOURCE_ARCHIVE_RELATIVE,))
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=archive_path.parent,
+                prefix=f".{archive_path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                temporary = Path(handle.name)
+                remaining = length
+                while remaining:
+                    chunk = self.rfile.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        raise ValueError("archive body is incomplete")
+                    handle.write(chunk)
+                    remaining -= len(chunk)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if not zipfile.is_zipfile(temporary):
+                raise ValueError("archive is not a valid ZIP")
+            validate_project_path_components(project, (SOURCE_ARCHIVE_RELATIVE,))
+            os.replace(temporary, archive_path)
+            temporary = None
+        except (OSError, ValueError):
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+            self.send_error(HTTPStatus.BAD_REQUEST, "archive is not a valid ZIP")
+            return
+        self.send_json(
+            {"status": "received", "message": "压缩包已接收，正在核验来源。"},
+            status=HTTPStatus.CREATED,
+        )
 
     def handle_project_export_docx(self, project_id: str) -> None:
         try:
@@ -457,6 +545,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         payloads = {
             "cockpit": project_cockpit_payload,
+            "sources": project_source_handoff_payload,
             "evidence": project_evidence_payload,
             "risk-packet": project_risk_payload,
             "matrix": project_matrix_payload,
@@ -613,9 +702,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except Exception:
             return None
 
-    def send_json(self, data: object) -> None:
+    def send_json(self, data: object, *, status: HTTPStatus = HTTPStatus.OK) -> None:
         payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
-        self.send_response(HTTPStatus.OK)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
@@ -1398,6 +1487,81 @@ def project_cockpit_payload(review_root: Path, project_id: str) -> dict[str, Any
         },
         "recommended_next": recommended_next,
         "mode_coverage": _mode_coverage(classifications, cards, included_studies),
+    }
+
+
+def _safe_research_source_url(value: Any) -> str:
+    text = visible_text(value)
+    parsed = urlparse(text)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        return ""
+    return text
+
+
+def project_source_handoff_payload(review_root: Path, project_id: str) -> dict[str, Any]:
+    project = project_dir(review_root, project_id)
+    manifest_relative = Path("00_discovery/acquisition_manifest.json")
+    receipt_relative = Path("00_sources/acquisition_receipt.json")
+    validate_project_path_components(project, (manifest_relative, receipt_relative))
+    manifest_path = project / manifest_relative
+    receipt_path = project / receipt_relative
+    manifest = read_json_if_exists(manifest_path)
+    receipt = read_json_if_exists(receipt_path)
+    if os.path.lexists(manifest_path) and not isinstance(manifest, dict):
+        raise ValueError("project source list is unavailable")
+    if os.path.lexists(receipt_path) and not isinstance(receipt, dict):
+        raise ValueError("project source list is unavailable")
+    manifest = manifest or {}
+    receipt = receipt or {}
+    downloads = manifest.get("downloads") if isinstance(manifest, dict) else []
+    results = receipt.get("results") if isinstance(receipt, dict) else []
+    if downloads is not None and not isinstance(downloads, list):
+        raise ValueError("project source list is unavailable")
+    if results is not None and not isinstance(results, list):
+        raise ValueError("project source list is unavailable")
+    downloads = downloads or []
+    results = results or []
+    result_by_id = {
+        visible_text(row.get("download_id")): row
+        for row in results
+        if isinstance(row, dict) and visible_text(row.get("download_id"))
+    }
+    sources: list[dict[str, Any]] = []
+    for index, row in enumerate(item for item in downloads if isinstance(item, dict)):
+        download_id = visible_text(row.get("download_id"))
+        result = result_by_id.get(download_id, {})
+        ready = visible_text(result.get("status")).upper() in SOURCE_ARCHIVE_SUCCESS_STATUSES
+        role = visible_text(row.get("document_role")).upper() or "FULL TEXT"
+        study_id = visible_text(row.get("study_id"))
+        doi = normalize_doi(row.get("doi")) or ""
+        citation = doi or study_id or f"研究 {index + 1}"
+        landing_url = _safe_research_source_url(row.get("landing_page_url"))
+        source_url = _safe_research_source_url(row.get("source_url") or row.get("url"))
+        sources.append(
+            {
+                "study_id": study_id or doi,
+                "citation": citation,
+                "role": role,
+                "status": "已获得" if ready else "需要上传",
+                "download_url": landing_url or source_url,
+                "message": "全文已就绪" if ready else f"请补充 {role} 文件",
+            }
+        )
+    ready_count = sum(row["status"] == "已获得" for row in sources)
+    return {
+        "project_id": project_id,
+        "counts": {
+            "total": len(sources),
+            "ready": ready_count,
+            "missing": len(sources) - ready_count,
+        },
+        "upload_required": any(row["status"] == "需要上传" for row in sources),
+        "sources": sources,
     }
 
 

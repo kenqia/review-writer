@@ -617,6 +617,265 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             self.assertEqual(200, status)
             self.assertEqual([], json.loads(body))
 
+    def test_source_handoff_payload_is_researcher_safe(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir) / "review-root"
+            project = review_root / "review-projects" / "source-review"
+            state = project / "00_brief" / "review_state.json"
+            state.parent.mkdir(parents=True)
+            state.write_text(
+                json.dumps({"project_id": "source-review", "current_stage": "ready_for_discovery"}) + "\n",
+                encoding="utf-8",
+            )
+            manifest = project / "00_discovery" / "acquisition_manifest.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "public-corpus-acquisition.v1",
+                        "downloads": [
+                            {
+                                "download_id": "STUDY_01_MAIN",
+                                "study_id": "STUDY-01",
+                                "doi": "10.1000/source-01",
+                                "document_role": "MAIN",
+                                "landing_page_url": "https://publisher.example/source-01",
+                                "source_url": "https://publisher.example/source-01.pdf",
+                                "target_path": "/private/internal/source-01.pdf",
+                            },
+                            {
+                                "download_id": "STUDY_01_SI",
+                                "study_id": "STUDY-01",
+                                "doi": "10.1000/source-01",
+                                "document_role": "SI",
+                                "landing_page_url": "javascript:alert(1)",
+                                "source_url": "https://publisher.example/source-01-si.pdf",
+                                "target_path": "/private/internal/source-01-si.pdf",
+                            },
+                        ],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            receipt = project / "00_sources" / "acquisition_receipt.json"
+            receipt.parent.mkdir(parents=True)
+            receipt.write_text(
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "download_id": "STUDY_01_MAIN",
+                                "status": "MANUAL_REQUIRED",
+                                "reason": "NO_PUBLIC_DIRECT_PDF",
+                                "target_path": "/private/internal/source-01.pdf",
+                                "sha256": "a" * 64,
+                            },
+                            {
+                                "download_id": "STUDY_01_SI",
+                                "status": "VERIFIED_EXISTING",
+                                "target_path": "/private/internal/source-01-si.pdf",
+                                "sha256": "b" * 64,
+                            },
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            payload = dashboard.project_source_handoff_payload(review_root, "source-review")
+
+            self.assertEqual(
+                {"project_id", "counts", "upload_required", "sources"},
+                set(payload),
+            )
+            self.assertEqual({"total": 2, "ready": 1, "missing": 1}, payload["counts"])
+            self.assertTrue(payload["upload_required"])
+            self.assertEqual(
+                {
+                    "study_id",
+                    "citation",
+                    "role",
+                    "status",
+                    "download_url",
+                    "message",
+                },
+                set(payload["sources"][0]),
+            )
+            self.assertEqual("https://publisher.example/source-01", payload["sources"][0]["download_url"])
+            self.assertEqual(
+                "https://publisher.example/source-01-si.pdf",
+                payload["sources"][1]["download_url"],
+            )
+            serialized = json.dumps(payload, ensure_ascii=False)
+            for forbidden in ("/private/", "sha256", "target_path", "MANUAL_REQUIRED"):
+                self.assertNotIn(forbidden, serialized)
+            status, _, body = self._request(
+                dashboard,
+                review_root,
+                b"GET /api/project/source-review/sources HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            )
+            self.assertEqual(200, status)
+            self.assertEqual(payload, json.loads(body))
+
+    def test_source_handoff_payload_rejects_malformed_canonical_data(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        for relative in (
+            "00_discovery/acquisition_manifest.json",
+            "00_sources/acquisition_receipt.json",
+        ):
+            with self.subTest(relative=relative), tempfile.TemporaryDirectory() as temp_dir:
+                review_root = Path(temp_dir) / "review-root"
+                project = review_root / "review-projects/source-review"
+                state = project / "00_brief/review_state.json"
+                state.parent.mkdir(parents=True)
+                state.write_text("{}\n", encoding="utf-8")
+                canonical = project / relative
+                canonical.parent.mkdir(parents=True, exist_ok=True)
+                canonical.write_text("{", encoding="utf-8")
+
+                with self.assertRaises(ValueError):
+                    dashboard.project_source_handoff_payload(review_root, "source-review")
+                status, _, _ = self._request(
+                    dashboard,
+                    review_root,
+                    b"GET /api/project/source-review/sources HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                )
+                self.assertEqual(400, status)
+
+    def test_source_archive_route_publishes_one_valid_zip_atomically(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = self._copy_fixture(Path(temp_dir))
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("study-main.pdf", b"%PDF-1.4\nsynthetic source\n%%EOF\n")
+            archive_bytes = buffer.getvalue()
+            request = (
+                b"POST /api/project/synthetic-review/source-archive HTTP/1.1\r\n"
+                b"Host: localhost\r\nContent-Type: application/zip\r\nContent-Length: "
+                + str(len(archive_bytes)).encode()
+                + b"\r\n\r\n"
+                + archive_bytes
+            )
+
+            status, _, body = self._request(dashboard, review_root, request)
+
+            self.assertEqual(201, status)
+            self.assertEqual(
+                {"status": "received", "message": "压缩包已接收，正在核验来源。"},
+                json.loads(body),
+            )
+            inbox = (
+                review_root
+                / "review-projects/synthetic-review/00_sources/manual_upload/inbox/source_bundle.zip"
+            )
+            self.assertEqual(archive_bytes, inbox.read_bytes())
+            self.assertEqual([], list(inbox.parent.glob(".source_bundle.zip.*.tmp")))
+
+            status, _, _ = self._request(dashboard, review_root, request)
+            self.assertEqual(409, status)
+
+    def test_source_archive_route_rejects_invalid_or_unapproved_input(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = self._copy_fixture(Path(temp_dir))
+            invalid = b"PK\x03\x04not-a-valid-zip"
+            invalid_request = (
+                b"POST /api/project/synthetic-review/source-archive HTTP/1.1\r\n"
+                b"Host: localhost\r\nContent-Length: "
+                + str(len(invalid)).encode()
+                + b"\r\n\r\n"
+                + invalid
+            )
+            status, _, _ = self._request(dashboard, review_root, invalid_request)
+            self.assertEqual(400, status)
+            inbox = (
+                review_root
+                / "review-projects/synthetic-review/00_sources/manual_upload/inbox/source_bundle.zip"
+            )
+            self.assertFalse(inbox.exists())
+
+            with patch.object(dashboard, "DEFAULT_MAX_ARCHIVE_BYTES", 4):
+                oversized = (
+                    b"POST /api/project/synthetic-review/source-archive HTTP/1.1\r\n"
+                    b"Host: localhost\r\nContent-Length: 5\r\n\r\n12345"
+                )
+                status, _, _ = self._request(dashboard, review_root, oversized)
+            self.assertEqual(413, status)
+
+            status, _, _ = self._request(
+                dashboard,
+                review_root,
+                b"POST /api/project/missing/source-archive HTTP/1.1\r\n"
+                b"Host: localhost\r\nContent-Length: 4\r\n\r\nPK00",
+            )
+            self.assertEqual(404, status)
+
+    def test_source_archive_route_replaces_only_a_reported_invalid_upload(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        def zipped(name: str, payload: bytes) -> bytes:
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr(name, payload)
+            return buffer.getvalue()
+
+        def request(payload: bytes, *, replace: bool = False) -> bytes:
+            suffix = b"?replace=invalid" if replace else b""
+            return (
+                b"POST /api/project/synthetic-review/source-archive"
+                + suffix
+                + b" HTTP/1.1\r\nHost: localhost\r\nContent-Length: "
+                + str(len(payload)).encode()
+                + b"\r\n\r\n"
+                + payload
+            )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = self._copy_fixture(Path(temp_dir))
+            original = zipped("old.pdf", b"%PDF-1.4\nold\n%%EOF\n")
+            replacement = zipped("new.pdf", b"%PDF-1.4\nnew\n%%EOF\n")
+            status, _, _ = self._request(dashboard, review_root, request(original))
+            self.assertEqual(201, status)
+
+            status, _, _ = self._request(
+                dashboard,
+                review_root,
+                request(replacement, replace=True),
+            )
+            self.assertEqual(409, status)
+
+            state_path = (
+                review_root
+                / "review-projects/synthetic-review/00_brief/review_state.json"
+            )
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["blockers"] = ["SOURCE_ARCHIVE_INVALID"]
+            state_path.write_text(json.dumps(state) + "\n", encoding="utf-8")
+            status, _, _ = self._request(
+                dashboard,
+                review_root,
+                request(replacement, replace=True),
+            )
+            self.assertEqual(201, status)
+            inbox = (
+                review_root
+                / "review-projects/synthetic-review/00_sources/manual_upload/inbox/source_bundle.zip"
+            )
+            self.assertEqual(replacement, inbox.read_bytes())
+
     def test_dashboard_run_keeps_serving_when_review_root_is_empty(self) -> None:
         sys.path.insert(0, str(ROOT))
         from view import serve_review_dashboard as dashboard
