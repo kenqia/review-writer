@@ -254,10 +254,18 @@ def assemble(job: dict, catalog: dict, semantic: dict, atoms: dict[str, dict]) -
 
     for decision in semantic["decisions"]:
         target_kind = decision["target_kind"]
-        target_id = decision["target_id"]
+        semantic_target_id = decision["target_id"]
+        target_id = (
+            f"{job['target_namespace']}:{semantic_target_id}"
+            if target_kind != "ELIGIBILITY" and "target_namespace" in job
+            else semantic_target_id
+        )
         if target_kind != "ELIGIBILITY":
             if target_id in target_ids:
-                raise AssemblyError("DUPLICATE_TARGET_ID", f"duplicate semantic target_id: {target_id!r}")
+                raise AssemblyError(
+                    "DUPLICATE_TARGET_ID",
+                    f"duplicate semantic target_id: {semantic_target_id!r}",
+                )
             target_ids.add(target_id)
         selected_atoms = []
         for atom_id in decision["atom_ids"]:

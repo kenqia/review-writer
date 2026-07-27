@@ -402,6 +402,8 @@ def _prepare_status(project: Path, study_id: str) -> dict[str, Any]:
             "schema_version": "sealed-evidence-extraction-job.v2",
             "source_files": source_files,
             "study": {"doi": doi, "study_id": study_id},
+            "target_namespace": "study-"
+            + hashlib.sha256(study_id.encode("utf-8")).hexdigest(),
             "visual_crops": [],
         }
         _persist_prepare_packet(project, study_id, job)

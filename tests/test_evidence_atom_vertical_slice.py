@@ -19,6 +19,7 @@ from jsonschema import Draft202012Validator
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "evidence"))
 
+from assemble_evidence_candidate_from_atoms import assemble  # noqa: E402
 from evidence_atom_core import canonical_json_sha256, canonicalize_text  # noqa: E402
 
 
@@ -397,6 +398,9 @@ class EvidenceAtomAssemblerTests(unittest.TestCase):
         self.assertEqual(["R3_SOURCE_DEPICTION_REQUIRED"], visual_ref["r3_flags"])
         self.assertEqual(["synthetic product label", "91% yield"], visual_ref["transcribed_values"])
         claim = candidate["claims"][0]
+        self.assertEqual("RU-VISUAL", candidate["anchor_reaction_unit_id"])
+        self.assertEqual("RU-VISUAL", visual_unit["reaction_unit_id"])
+        self.assertEqual("CL-HIGH-RISK", claim["claim_id"])
         self.assertEqual("R3", claim["risk_level"])
         self.assertEqual(
             {
@@ -412,6 +416,85 @@ class EvidenceAtomAssemblerTests(unittest.TestCase):
         mappings = {item["target_id"]: item for item in candidate["r3_review_items"]}
         self.assertTrue(set(claim["risk_categories"]).issubset(mappings["CL-HIGH-RISK"]["risk_categories"]))
         self.assertEqual(3, candidate["source_coverage"]["SYNTH_MAIN"]["evidence_ref_count"])
+
+    def test_study_namespace_maps_local_target_ids_without_mutating_semantic_input(self) -> None:
+        def assembled(study_id: str) -> tuple[dict, dict]:
+            namespace = "study-" + hashlib.sha256(study_id.encode("utf-8")).hexdigest()
+            job = {
+                "job_id": f"JOB-{study_id}",
+                "study": {"study_id": study_id},
+                "target_namespace": namespace,
+                "source_files": [{"source_id": "SOURCE"}],
+            }
+            semantic = {
+                "job_id": job["job_id"],
+                "study_id": study_id,
+                "eligibility_status": "SCIENTIFICALLY_ELIGIBLE_CORE",
+                "decisions": [
+                    {
+                        "target_kind": "ELIGIBILITY",
+                        "target_id": "eligibility",
+                        "statement": "Eligible.",
+                        "evidence_summary": "Eligibility evidence.",
+                        "atom_ids": ["atom-eligibility"],
+                    },
+                    {
+                        "target_kind": "REACTION_UNIT",
+                        "target_id": "reaction-unit-01",
+                        "statement": "Local reaction unit.",
+                        "evidence_summary": "Reaction evidence.",
+                        "atom_ids": ["atom-reaction"],
+                    },
+                    {
+                        "target_kind": "CLAIM",
+                        "target_id": "claim-01",
+                        "statement": "Local claim.",
+                        "evidence_summary": "Claim evidence.",
+                        "atom_ids": ["atom-claim"],
+                        "semantic_risk_categories": ["MECHANISM_CAUSALITY"],
+                    },
+                ],
+            }
+            atoms = {
+                atom_id: {
+                    "atom_id": atom_id,
+                    "source_id": "SOURCE",
+                    "page": 1,
+                    "evidence_mode": "TEXT_QUOTE",
+                    "raw_source_span": f"Source text for {atom_id}.",
+                    "r3_floor_categories": [],
+                }
+                for atom_id in ("atom-eligibility", "atom-reaction", "atom-claim")
+            }
+            semantic_before = copy.deepcopy(semantic)
+
+            candidate = assemble(job, {}, semantic, atoms)
+
+            self.assertEqual(semantic_before, semantic)
+            return candidate, semantic
+
+        first, first_semantic = assembled("STUDY-A")
+        second, second_semantic = assembled("STUDY-B")
+
+        first_namespace = "study-" + hashlib.sha256(b"STUDY-A").hexdigest()
+        second_namespace = "study-" + hashlib.sha256(b"STUDY-B").hexdigest()
+        self.assertEqual(
+            f"{first_namespace}:reaction-unit-01",
+            first["reaction_units"][0]["reaction_unit_id"],
+        )
+        self.assertEqual(
+            first["reaction_units"][0]["reaction_unit_id"],
+            first["anchor_reaction_unit_id"],
+        )
+        self.assertEqual(f"{first_namespace}:claim-01", first["claims"][0]["claim_id"])
+        self.assertEqual(
+            f"{first_namespace}:claim-01",
+            first["r3_review_items"][0]["target_id"],
+        )
+        self.assertEqual(f"{second_namespace}:claim-01", second["claims"][0]["claim_id"])
+        self.assertNotEqual(first["claims"][0]["claim_id"], second["claims"][0]["claim_id"])
+        self.assertEqual("claim-01", first_semantic["decisions"][2]["target_id"])
+        self.assertEqual("claim-01", second_semantic["decisions"][2]["target_id"])
 
     def test_unknown_duplicate_and_hash_drift_atoms_are_rejected(self) -> None:
         semantic = copy.deepcopy(self.semantic)

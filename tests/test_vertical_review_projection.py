@@ -1655,6 +1655,9 @@ def test_prepare_study_builds_current_pre_provider_packet_without_reruns_and_is_
     job = json.loads(job_path.read_text(encoding="utf-8"))
     catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
     assert job["study"] == {"doi": "10.1000/canary.test", "study_id": study_id}
+    assert job["target_namespace"] == (
+        "study-" + hashlib.sha256(study_id.encode("utf-8")).hexdigest()
+    )
     assert [source["document_role"] for source in job["source_files"]] == ["MAIN", "SI"]
     assert all(
         {
