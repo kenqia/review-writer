@@ -13,6 +13,8 @@ from unittest.mock import patch
 import pytest
 
 from review_writer.project.vertical_review import (
+    apply_risk_decisions,
+    build_risk_packet,
     build_writer_packet,
     initialize_review,
     register_study,
@@ -90,11 +92,26 @@ def make_release_ready_project(tmp_path: Path) -> Path:
         {"status": "R0_PASS", "job_id": human_candidate["job_id"], "candidate_job_id": human_candidate["job_id"]},
         {"verdict": "SUPPORT", "job_id": human_candidate["job_id"], "study_id": human_candidate["study_id"]},
     )
+    risk_packet = build_risk_packet(project)
+    apply_risk_decisions(
+        project,
+        {
+            "packet_digest": risk_packet["packet_digest"],
+            "decisions": [
+                {
+                    "action": "EXCLUDE" if target["claim_id"] == HUMAN_CLAIM_ID else "APPROVE",
+                    "claim_id": target["claim_id"],
+                    "review_target_digest": target["review_target_digest"],
+                }
+                for target in risk_packet["targets"]
+            ],
+        },
+    )
     packet = build_writer_packet(project)
     manuscript = (
         "# Synthetic Review\n\n"
         "## Results\n\n"
-        f"{APPROVED_CLAIM_TEXT} [1].\n\n"
+        f"{APPROVED_CLAIM_TEXT} [1]. <!-- claim_id:{APPROVED_CLAIM_ID} -->\n\n"
         "![Synthetic one-pixel figure](../assets/tiny.png)\n\n"
         "Figure 1. Synthetic local image.\n\n"
         "## References\n\n"
@@ -106,6 +123,20 @@ def make_release_ready_project(tmp_path: Path) -> Path:
     image_path = project / "assets" / "tiny.png"
     image_path.parent.mkdir(parents=True, exist_ok=True)
     image_path.write_bytes(TINY_PNG)
+    _write_json(
+        project / "03_figure_redraw" / "figure_manifest.json",
+        {
+            "schema_version": "review-writer-figure-manifest.v1",
+            "figures": [
+                {
+                    "figure_id": "synthetic-one-pixel",
+                    "figure_type": "ORIGINAL_GENERATED",
+                    "markdown_path": "../assets/tiny.png",
+                    "source_claim_ids": [APPROVED_CLAIM_ID],
+                }
+            ],
+        },
+    )
     _write_json(
         project / "04_first_draft" / "manuscript_lineage.json",
         {
@@ -159,6 +190,619 @@ def test_release_snapshots_exact_authoritative_bytes(tmp_path: Path) -> None:
     assert report["manuscript_sha256"] == result["manuscript_sha256"]
     assert report["docx_sha256"] == result["docx_sha256"]
     assert report["release_status"] == result["release_status"]
+    assert report["figure_validation"]["status"] == "VERIFIED"
+    assert report["figure_validation"]["manuscript_sha256"] == result["manuscript_sha256"]
+    assert report["figure_validation"]["figures"][0]["figure_type"] == "ORIGINAL_GENERATED"
+    assert report["figure_validation"]["figures"][0]["source_claim_ids"] == [APPROVED_CLAIM_ID]
+
+
+def test_release_accepts_licensed_source_with_explicit_license_and_attribution(tmp_path: Path) -> None:
+    from review_writer.delivery.project_release import build_project_release
+
+    project = make_release_ready_project(tmp_path)
+    attribution = "Adapted from Example et al., 2024, CC BY 4.0."
+    manuscript_path = project / "04_first_draft" / "first_draft.md"
+    manuscript = manuscript_path.read_text(encoding="utf-8").replace(
+        "Figure 1. Synthetic local image.",
+        f"Figure 1. Synthetic local image. {attribution}",
+    )
+    manuscript_path.write_text(manuscript, encoding="utf-8")
+    _update_lineage(project, manuscript_sha256=hashlib.sha256(manuscript.encode("utf-8")).hexdigest())
+    _write_json(
+        project / "03_figure_redraw" / "figure_manifest.json",
+        {
+            "schema_version": "review-writer-figure-manifest.v1",
+            "figures": [
+                {
+                    "figure_id": "licensed-source-figure",
+                    "figure_type": "LICENSED_SOURCE",
+                    "markdown_path": "../assets/tiny.png",
+                    "license": "CC BY 4.0",
+                    "attribution": attribution,
+                }
+            ],
+        },
+    )
+
+    result = build_project_release(project)
+
+    report = json.loads(Path(result["quality_report"]).read_text(encoding="utf-8"))
+    figure = report["figure_validation"]["figures"][0]
+    assert figure["figure_type"] == "LICENSED_SOURCE"
+    assert figure["license"] == "CC BY 4.0"
+    assert figure["attribution"].startswith("Adapted from")
+    with zipfile.ZipFile(result["docx"]) as archive:
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+    assert "Adapted from Example et al., 2024, CC BY 4.0." in document_xml
+
+
+@pytest.mark.parametrize(
+    ("license_name", "canonical_license"),
+    [
+        ("CC-BY-4.0", "CC BY 4.0"),
+        ("CC BY 4.0 International", "CC BY 4.0 International"),
+        ("Public Domain Mark 1.0", "Public Domain Mark 1.0"),
+    ],
+)
+def test_release_canonicalizes_explicit_license_aliases(
+    tmp_path: Path,
+    license_name: str,
+    canonical_license: str,
+) -> None:
+    from review_writer.delivery.project_release import build_project_release
+
+    project = make_release_ready_project(tmp_path)
+    attribution = "Source status verified for the synthetic figure."
+    manuscript_path = project / "04_first_draft" / "first_draft.md"
+    manuscript = manuscript_path.read_text(encoding="utf-8").replace(
+        "Figure 1. Synthetic local image.",
+        f"Figure 1. Synthetic local image. {attribution}",
+    )
+    manuscript_path.write_text(manuscript, encoding="utf-8")
+    _update_lineage(project, manuscript_sha256=hashlib.sha256(manuscript.encode("utf-8")).hexdigest())
+    _write_json(
+        project / "03_figure_redraw" / "figure_manifest.json",
+        {
+            "schema_version": "review-writer-figure-manifest.v1",
+            "figures": [
+                {
+                    "figure_id": "licensed-source-figure",
+                    "figure_type": "LICENSED_SOURCE",
+                    "markdown_path": "../assets/tiny.png",
+                    "license": license_name,
+                    "attribution": attribution,
+                }
+            ],
+        },
+    )
+
+    result = build_project_release(project)
+
+    report = json.loads(Path(result["quality_report"]).read_text(encoding="utf-8"))
+    assert report["figure_validation"]["figures"][0]["license"] == canonical_license
+
+
+@pytest.mark.parametrize(
+    "license_name",
+    [
+        "All Rights Reserved",
+        "permission requested",
+        "custom terms may apply",
+        "unknown",
+        "Creative Commons Attribution status unknown / All Rights Reserved",
+        "Creative Commons Attribution 4.0 / All Rights Reserved",
+    ],
+)
+def test_release_rejects_non_permissive_or_ambiguous_source_license(
+    tmp_path: Path,
+    license_name: str,
+) -> None:
+    from review_writer.delivery.project_release import ProjectReleaseError, build_project_release
+
+    project = make_release_ready_project(tmp_path)
+    _write_json(
+        project / "03_figure_redraw" / "figure_manifest.json",
+        {
+            "schema_version": "review-writer-figure-manifest.v1",
+            "figures": [
+                {
+                    "figure_id": "source-figure",
+                    "figure_type": "LICENSED_SOURCE",
+                    "markdown_path": "../assets/tiny.png",
+                    "license": license_name,
+                    "attribution": "Source: Example et al., 2024.",
+                }
+            ],
+        },
+    )
+
+    with pytest.raises(ProjectReleaseError) as error:
+        build_project_release(project)
+
+    assert error.value.code == "FIGURE_POLICY_INVALID"
+
+
+def test_release_accepts_explicit_written_authorization_with_attribution(tmp_path: Path) -> None:
+    from review_writer.delivery.project_release import build_project_release
+
+    project = make_release_ready_project(tmp_path)
+    attribution = "Reproduced with written authorization from Example Research Group."
+    manuscript_path = project / "04_first_draft" / "first_draft.md"
+    manuscript = manuscript_path.read_text(encoding="utf-8").replace(
+        "Figure 1. Synthetic local image.",
+        f"Figure 1. Synthetic local image. {attribution}",
+    )
+    manuscript_path.write_text(manuscript, encoding="utf-8")
+    _update_lineage(project, manuscript_sha256=hashlib.sha256(manuscript.encode("utf-8")).hexdigest())
+    _write_json(
+        project / "03_figure_redraw" / "figure_manifest.json",
+        {
+            "schema_version": "review-writer-figure-manifest.v1",
+            "figures": [
+                {
+                    "figure_id": "authorized-source-figure",
+                    "figure_type": "LICENSED_SOURCE",
+                    "markdown_path": "../assets/tiny.png",
+                    "license": "Explicit written authorization",
+                    "attribution": attribution,
+                    "permission_grantor": "Example Research Group",
+                    "permission_scope": "Reproduction in this review manuscript and its DOCX release",
+                    "permission_evidence_reference": "permission-record-synthetic",
+                    "researcher_confirmed": True,
+                }
+            ],
+        },
+    )
+
+    result = build_project_release(project)
+
+    with zipfile.ZipFile(result["docx"]) as archive:
+        assert attribution in archive.read("word/document.xml").decode("utf-8")
+
+
+@pytest.mark.parametrize(
+    "invalid_field",
+    [
+        "permission_grantor",
+        "permission_scope",
+        "permission_evidence_reference",
+        "researcher_confirmed",
+    ],
+)
+def test_release_rejects_incomplete_written_permission_record(
+    tmp_path: Path,
+    invalid_field: str,
+) -> None:
+    from review_writer.delivery.project_release import ProjectReleaseError, build_project_release
+
+    project = make_release_ready_project(tmp_path)
+    attribution = "Reproduced with written permission from Example Research Group."
+    manuscript_path = project / "04_first_draft" / "first_draft.md"
+    manuscript = manuscript_path.read_text(encoding="utf-8").replace(
+        "Figure 1. Synthetic local image.",
+        f"Figure 1. Synthetic local image. {attribution}",
+    )
+    manuscript_path.write_text(manuscript, encoding="utf-8")
+    _update_lineage(project, manuscript_sha256=hashlib.sha256(manuscript.encode("utf-8")).hexdigest())
+    figure = {
+        "figure_id": "authorized-source-figure",
+        "figure_type": "LICENSED_SOURCE",
+        "markdown_path": "../assets/tiny.png",
+        "license": "Written permission",
+        "attribution": attribution,
+        "permission_grantor": "Example Research Group",
+        "permission_scope": "Reproduction in this review manuscript and its DOCX release",
+        "permission_evidence_reference": "permission-record-2026-07-28",
+        "researcher_confirmed": True,
+    }
+    if invalid_field == "researcher_confirmed":
+        figure[invalid_field] = False
+    else:
+        figure.pop(invalid_field)
+    _write_json(
+        project / "03_figure_redraw" / "figure_manifest.json",
+        {"schema_version": "review-writer-figure-manifest.v1", "figures": [figure]},
+    )
+
+    with pytest.raises(ProjectReleaseError) as error:
+        build_project_release(project)
+
+    assert error.value.code == "FIGURE_POLICY_INVALID"
+
+
+def test_release_rejects_licensed_attribution_absent_from_authoritative_manuscript(
+    tmp_path: Path,
+) -> None:
+    from review_writer.delivery.project_release import ProjectReleaseError, build_project_release
+
+    project = make_release_ready_project(tmp_path)
+    _write_json(
+        project / "03_figure_redraw" / "figure_manifest.json",
+        {
+            "schema_version": "review-writer-figure-manifest.v1",
+            "figures": [
+                {
+                    "figure_id": "licensed-source-figure",
+                    "figure_type": "LICENSED_SOURCE",
+                    "markdown_path": "../assets/tiny.png",
+                    "license": "CC BY 4.0",
+                    "attribution": "Adapted from Example et al., 2024, CC BY 4.0.",
+                }
+            ],
+        },
+    )
+
+    with pytest.raises(ProjectReleaseError) as error:
+        build_project_release(project)
+
+    assert error.value.code == "FIGURE_ATTRIBUTION_MISSING"
+
+
+def test_release_rejects_converter_output_missing_required_attribution(
+    tmp_path: Path,
+) -> None:
+    from review_writer.delivery import project_release
+    from review_writer.delivery.project_release import ProjectReleaseError, build_project_release
+    from view.serve_review_dashboard import project_release_docx_is_current
+
+    project = make_release_ready_project(tmp_path)
+    old_release = build_project_release(project)
+    old_docx = Path(old_release["docx"]).read_bytes()
+    attribution = "Adapted from Example et al., 2024, CC BY 4.0."
+    manuscript_path = project / "04_first_draft" / "first_draft.md"
+    manuscript = manuscript_path.read_text(encoding="utf-8").replace(
+        "Figure 1. Synthetic local image.",
+        f"Figure 1. Synthetic local image. {attribution}",
+    )
+    manuscript_path.write_text(manuscript, encoding="utf-8")
+    _update_lineage(project, manuscript_sha256=hashlib.sha256(manuscript.encode("utf-8")).hexdigest())
+    _write_json(
+        project / "03_figure_redraw" / "figure_manifest.json",
+        {
+            "schema_version": "review-writer-figure-manifest.v1",
+            "figures": [
+                {
+                    "figure_id": "licensed-source-figure",
+                    "figure_type": "LICENSED_SOURCE",
+                    "markdown_path": "../assets/tiny.png",
+                    "license": "CC BY 4.0",
+                    "attribution": attribution,
+                }
+            ],
+        },
+    )
+
+    def converter_without_attribution(command, **kwargs):
+        output_path = Path(command[command.index("--output") + 1])
+        with zipfile.ZipFile(output_path, "w") as archive:
+            archive.writestr("[Content_Types].xml", "<Types/>")
+            archive.writestr("word/document.xml", "<document><p>Synthetic Review</p></document>")
+        return project_release.subprocess.CompletedProcess(command, 0, "", "")
+
+    with patch.object(project_release.subprocess, "run", side_effect=converter_without_attribution):
+        with pytest.raises(ProjectReleaseError) as error:
+            build_project_release(project)
+
+    assert error.value.code == "DOCX_ATTRIBUTION_MISSING"
+    release_docx = project / "05_final_audit" / "final_draft.docx"
+    assert release_docx.read_bytes() == old_docx
+    assert project_release_docx_is_current(release_docx) is False
+
+
+@pytest.mark.parametrize(
+    "invalid_docx",
+    ["ordinary_zip", "missing_content_types", "malformed_document_xml"],
+)
+def test_release_rejects_non_docx_converter_archives(
+    tmp_path: Path,
+    invalid_docx: str,
+) -> None:
+    from review_writer.delivery import project_release
+    from review_writer.delivery.project_release import ProjectReleaseError, build_project_release
+
+    project = make_release_ready_project(tmp_path)
+
+    def invalid_converter(command, **kwargs):
+        output_path = Path(command[command.index("--output") + 1])
+        with zipfile.ZipFile(output_path, "w") as archive:
+            if invalid_docx == "ordinary_zip":
+                archive.writestr("notes.txt", "not an OPC document")
+            else:
+                if invalid_docx == "malformed_document_xml":
+                    archive.writestr("[Content_Types].xml", "<Types/>")
+                    archive.writestr("word/document.xml", "<document>")
+                else:
+                    archive.writestr("word/document.xml", "<document/>")
+        return project_release.subprocess.CompletedProcess(command, 0, "", "")
+
+    with patch.object(project_release.subprocess, "run", side_effect=invalid_converter):
+        with pytest.raises(ProjectReleaseError) as error:
+            build_project_release(project)
+
+    assert error.value.code == "DOCX_EXPORT_FAILED"
+    assert not (project / "05_final_audit" / "final_draft.docx").exists()
+
+
+def test_release_rejects_original_figure_claim_outside_writer_whitelist(tmp_path: Path) -> None:
+    from review_writer.delivery.project_release import ProjectReleaseError, build_project_release
+
+    project = make_release_ready_project(tmp_path)
+    manifest_path = project / "03_figure_redraw" / "figure_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["figures"][0]["source_claim_ids"] = ["claim-fabricated-for-figure"]
+    _write_json(manifest_path, manifest)
+
+    with pytest.raises(ProjectReleaseError) as error:
+        build_project_release(project)
+
+    assert error.value.code == "FIGURE_CLAIM_NOT_APPROVED"
+    assert not (project / "05_final_audit" / "final_draft.docx").exists()
+
+
+@pytest.mark.parametrize(
+    "figure_changes",
+    [
+        {"license": "UNKNOWN"},
+        {"license": "CC BY 4.0", "attribution": ""},
+    ],
+    ids=["unknown-license", "missing-attribution"],
+)
+def test_release_rejects_unlicensed_or_unattributed_source_figure(
+    tmp_path: Path,
+    figure_changes: dict[str, str],
+) -> None:
+    from review_writer.delivery.project_release import ProjectReleaseError, build_project_release
+
+    project = make_release_ready_project(tmp_path)
+    figure = {
+        "figure_id": "licensed-source-figure",
+        "figure_type": "LICENSED_SOURCE",
+        "markdown_path": "../assets/tiny.png",
+        "license": "CC BY 4.0",
+        "attribution": "Adapted from Example et al., 2024, CC BY 4.0.",
+        **figure_changes,
+    }
+    _write_json(
+        project / "03_figure_redraw" / "figure_manifest.json",
+        {"schema_version": "review-writer-figure-manifest.v1", "figures": [figure]},
+    )
+
+    with pytest.raises(ProjectReleaseError) as error:
+        build_project_release(project)
+
+    assert error.value.code == "FIGURE_POLICY_INVALID"
+    assert not (project / "05_final_audit" / "final_draft.docx").exists()
+
+
+def test_release_rejects_figure_brief_placeholder(tmp_path: Path) -> None:
+    from review_writer.delivery.project_release import ProjectReleaseError, build_project_release
+
+    project = make_release_ready_project(tmp_path)
+    _write_json(
+        project / "03_figure_redraw" / "figure_manifest.json",
+        {
+            "schema_version": "review-writer-figure-manifest.v1",
+            "figures": [
+                {
+                    "figure_id": "future-mechanism-figure",
+                    "figure_type": "FIGURE_BRIEF_PLACEHOLDER",
+                    "brief": "Show the evidence-supported catalytic cycle and unresolved branch.",
+                }
+            ],
+        },
+    )
+
+    with pytest.raises(ProjectReleaseError) as error:
+        build_project_release(project)
+
+    assert error.value.code == "FIGURE_PLACEHOLDER_PENDING"
+    assert not (project / "05_final_audit" / "final_draft.docx").exists()
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["empty-manifest", "manuscript-without-figure", "unreferenced-manifest-figure"],
+)
+def test_release_requires_a_nonempty_exactly_referenced_figure_manifest(
+    tmp_path: Path,
+    case: str,
+) -> None:
+    from review_writer.delivery.project_release import ProjectReleaseError, build_project_release
+
+    project = make_release_ready_project(tmp_path)
+    manifest_path = project / "03_figure_redraw" / "figure_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manuscript_path = project / "04_first_draft" / "first_draft.md"
+    manuscript = manuscript_path.read_text(encoding="utf-8")
+    if case == "empty-manifest":
+        manifest["figures"] = []
+    elif case == "manuscript-without-figure":
+        manuscript = manuscript.replace("![Synthetic one-pixel figure](../assets/tiny.png)\n\n", "")
+    else:
+        manifest["figures"].append(
+            {
+                "figure_id": "unreferenced-copy",
+                "figure_type": "ORIGINAL_GENERATED",
+                "markdown_path": "../assets/unreferenced.png",
+                "source_claim_ids": [APPROVED_CLAIM_ID],
+            }
+        )
+        (project / "assets" / "unreferenced.png").write_bytes(TINY_PNG)
+    manuscript_path.write_text(manuscript, encoding="utf-8")
+    _update_lineage(project, manuscript_sha256=hashlib.sha256(manuscript.encode("utf-8")).hexdigest())
+    _write_json(manifest_path, manifest)
+
+    with pytest.raises(ProjectReleaseError) as error:
+        build_project_release(project)
+
+    assert error.value.code == "FIGURE_POLICY_INVALID"
+    assert not (project / "05_final_audit" / "final_draft.docx").exists()
+
+
+@pytest.mark.parametrize("image_failure", ["undecodable", "extension-mismatch"])
+def test_release_rejects_invalid_or_mislabelled_image_content(
+    tmp_path: Path,
+    image_failure: str,
+) -> None:
+    from review_writer.delivery.project_release import ProjectReleaseError, build_project_release
+
+    project = make_release_ready_project(tmp_path)
+    image_path = project / "assets" / "tiny.png"
+    if image_failure == "undecodable":
+        image_path.write_bytes(b"not an image")
+    else:
+        jpg_path = image_path.with_suffix(".jpg")
+        jpg_path.write_bytes(image_path.read_bytes())
+        manuscript_path = project / "04_first_draft" / "first_draft.md"
+        manuscript = manuscript_path.read_text(encoding="utf-8").replace(
+            "../assets/tiny.png", "../assets/tiny.jpg"
+        )
+        manuscript_path.write_text(manuscript, encoding="utf-8")
+        _update_lineage(project, manuscript_sha256=hashlib.sha256(manuscript.encode("utf-8")).hexdigest())
+        manifest_path = project / "03_figure_redraw" / "figure_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["figures"][0]["markdown_path"] = "../assets/tiny.jpg"
+        _write_json(manifest_path, manifest)
+
+    with pytest.raises(ProjectReleaseError) as error:
+        build_project_release(project)
+
+    assert error.value.code == "FIGURE_IMAGE_INVALID"
+
+
+def test_release_binds_decoded_image_properties_and_content_digest(tmp_path: Path) -> None:
+    from review_writer.delivery.project_release import build_project_release
+
+    project = make_release_ready_project(tmp_path)
+
+    result = build_project_release(project)
+
+    report = json.loads(Path(result["quality_report"]).read_text(encoding="utf-8"))
+    figure = report["figure_validation"]["figures"][0]
+    assert figure["content_sha256"] == hashlib.sha256(TINY_PNG).hexdigest()
+    assert figure["image_format"] == "PNG"
+    assert figure["width"] == 1
+    assert figure["height"] == 1
+
+
+@pytest.mark.parametrize("bounded_resource", ["input_bytes", "decoded_pixels"])
+def test_release_rejects_figures_above_bounded_decode_limits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bounded_resource: str,
+) -> None:
+    from review_writer.delivery import figure_policy, project_release
+    from review_writer.delivery.project_release import ProjectReleaseError, build_project_release
+
+    project = make_release_ready_project(tmp_path)
+    if bounded_resource == "input_bytes":
+        monkeypatch.setattr(figure_policy, "_MAX_IMAGE_BYTES", len(TINY_PNG) - 1, raising=False)
+    else:
+        monkeypatch.setattr(figure_policy, "_MAX_IMAGE_PIXELS", 0, raising=False)
+
+    with patch.object(project_release.subprocess, "run", wraps=project_release.subprocess.run) as converter:
+        with pytest.raises(ProjectReleaseError) as error:
+            build_project_release(project)
+
+    assert error.value.code == "FIGURE_IMAGE_INVALID"
+    converter.assert_not_called()
+
+
+@pytest.mark.parametrize("mutation", ["image", "manifest"])
+def test_dashboard_invalidates_old_docx_when_figure_inputs_change(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    from review_writer.delivery.project_release import build_project_release
+    from view import serve_review_dashboard as dashboard
+
+    project = make_release_ready_project(tmp_path / "review-projects")
+    result = build_project_release(project)
+    assert dashboard.project_release_docx_is_current(Path(result["docx"])) is True
+    if mutation == "image":
+        (project / "assets" / "tiny.png").write_bytes(TINY_PNG + b"replacement")
+    else:
+        manifest_path = project / "03_figure_redraw" / "figure_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["figures"][0]["title"] = "Updated comparative evidence figure"
+        _write_json(manifest_path, manifest)
+
+    payload = dashboard.project_final_payload(tmp_path, "synthetic-release")
+
+    assert dashboard.project_release_docx_is_current(Path(result["docx"])) is False
+    assert payload["final_draft_docx_exists"] is False
+    assert payload["final_draft_docx_path"] == ""
+    assert payload["release_status"] == "RELEASE_OUTDATED"
+
+
+def test_figure_freshness_streams_digest_without_reading_or_decoding_whole_image(
+    tmp_path: Path,
+) -> None:
+    from review_writer.delivery import figure_policy
+    from review_writer.delivery.figure_policy import figure_validation_is_current
+    from review_writer.delivery.project_release import build_project_release
+
+    project = make_release_ready_project(tmp_path)
+    result = build_project_release(project)
+    report = json.loads(Path(result["quality_report"]).read_text(encoding="utf-8"))
+    manifest = json.loads(
+        (project / "03_figure_redraw" / "figure_manifest.json").read_text(encoding="utf-8")
+    )
+    image_path = project / "assets" / "tiny.png"
+    image_files = {"../assets/tiny.png": image_path}
+
+    with (
+        patch.object(Path, "read_bytes", side_effect=AssertionError("whole-image read is forbidden")),
+        patch.object(figure_policy.Image, "open", side_effect=AssertionError("Pillow decode is forbidden")),
+    ):
+        assert figure_validation_is_current(
+            report["figure_validation"],
+            manuscript_sha256=report["manuscript_sha256"],
+            manifest=manifest,
+            image_files_by_markdown_path=image_files,
+        ) is True
+
+    image_path.write_bytes(TINY_PNG + b"replacement")
+    with (
+        patch.object(Path, "read_bytes", side_effect=AssertionError("whole-image read is forbidden")),
+        patch.object(figure_policy.Image, "open", side_effect=AssertionError("Pillow decode is forbidden")),
+    ):
+        assert figure_validation_is_current(
+            report["figure_validation"],
+            manuscript_sha256=report["manuscript_sha256"],
+            manifest=manifest,
+            image_files_by_markdown_path=image_files,
+        ) is False
+
+
+def test_manuscript_revision_invalidates_figure_validation_and_docx_snapshot(tmp_path: Path) -> None:
+    from review_writer.delivery.figure_policy import figure_validation_is_current
+    from review_writer.delivery.project_release import build_project_release
+
+    project = make_release_ready_project(tmp_path)
+    result = build_project_release(project)
+    report = json.loads(Path(result["quality_report"]).read_text(encoding="utf-8"))
+    manuscript_path = project / "04_first_draft" / "first_draft.md"
+    revised = manuscript_path.read_text(encoding="utf-8").replace(
+        "# Synthetic Review\n\n",
+        "# Synthetic Review\n\nEditorial revision.\n\n",
+        1,
+    )
+    manuscript_path.write_text(revised, encoding="utf-8")
+    _update_lineage(project, manuscript_sha256=hashlib.sha256(revised.encode("utf-8")).hexdigest())
+    current_sha256 = hashlib.sha256(manuscript_path.read_bytes()).hexdigest()
+
+    assert figure_validation_is_current(
+        report["figure_validation"],
+        manuscript_sha256=current_sha256,
+        manifest=json.loads(
+            (project / "03_figure_redraw" / "figure_manifest.json").read_text(encoding="utf-8")
+        ),
+    ) is False
+    assert report["manuscript_sha256"] != current_sha256
+    assert report["docx_sha256"] == hashlib.sha256(
+        (project / "05_final_audit" / "final_draft.docx").read_bytes()
+    ).hexdigest()
 
 
 def test_provider_draft_binding_preserves_exact_bytes_and_advances_to_drafting(
@@ -317,13 +961,10 @@ def test_claim_span_edit_is_saved_pending_and_blocks_release(tmp_path: Path) -> 
     assert b"The measured response changed under defined conditions" in manuscript_path.read_bytes()
     lineage = json.loads(lineage_path.read_text(encoding="utf-8"))
     assert lineage["manuscript_sha256"] == hashlib.sha256(manuscript_path.read_bytes()).hexdigest()
-    assert lineage["pending_scientific_edits"] == [
-        {
-            "section_id": "results",
-            "verified_body": verified_body,
-            "reasons": ["修改了证据绑定主张"],
-        }
-    ]
+    pending = lineage["pending_scientific_edits"][0]
+    assert pending["section_id"] == "results"
+    assert pending["reasons"] == ["修改了证据绑定主张"]
+    assert pending["verified_body"].replace(f"<!-- claim_id:{APPROVED_CLAIM_ID} -->", "") == verified_body
     assert result["edit_classification"] == "scientific"
     assert result["needs_evidence_review"] is True
     assert result["reasons"] == ["修改了证据绑定主张"]
@@ -775,7 +1416,10 @@ def test_consecutive_scientific_edits_keep_one_pending_verified_baseline(tmp_pat
     assert result["edit_classification"] == "scientific"
     assert result["needs_evidence_review"] is True
     assert len(lineage["pending_scientific_edits"]) == 1
-    assert lineage["pending_scientific_edits"][0]["verified_body"] == original
+    assert lineage["pending_scientific_edits"][0]["verified_body"].replace(
+        f"<!-- claim_id:{APPROVED_CLAIM_ID} -->",
+        "",
+    ) == original
     assert "decreased" in (project / "04_first_draft" / "first_draft.md").read_text(encoding="utf-8")
 
 
@@ -804,6 +1448,300 @@ def test_release_rejects_ambiguous_duplicate_lineage_span(
         build_project_release(project)
 
     assert not (project / "05_final_audit" / "final_draft.docx").exists()
+
+
+@pytest.mark.parametrize("marker_failure", ["missing", "duplicate"])
+def test_release_requires_each_lineage_claim_marker_exactly_once(
+    tmp_path: Path,
+    marker_failure: str,
+) -> None:
+    from review_writer.delivery.project_release import ProjectReleaseError, build_project_release
+
+    project = make_release_ready_project(tmp_path)
+    manuscript_path = project / "04_first_draft" / "first_draft.md"
+    manuscript = manuscript_path.read_text(encoding="utf-8")
+    marker = f"<!-- claim_id:{APPROVED_CLAIM_ID} -->"
+    manuscript = (
+        manuscript.replace(marker, "")
+        if marker_failure == "missing"
+        else manuscript.replace(marker, f"{marker} {marker}")
+    )
+    manuscript_path.write_text(manuscript, encoding="utf-8")
+    _update_lineage(project, manuscript_sha256=hashlib.sha256(manuscript.encode("utf-8")).hexdigest())
+
+    with pytest.raises(ProjectReleaseError) as error:
+        build_project_release(project)
+
+    assert error.value.code == "MANUSCRIPT_LINEAGE_DRIFT"
+
+
+def test_dashboard_exposes_researcher_safe_figure_states_without_manifest_internals(
+    tmp_path: Path,
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    project = make_release_ready_project(tmp_path / "review-projects")
+    (project / "assets" / "licensed.png").write_bytes(TINY_PNG)
+    _write_json(
+        project / "03_figure_redraw" / "figure_manifest.json",
+        {
+            "schema_version": "review-writer-figure-manifest.v1",
+            "manifest_sha256": "must-never-be-visible",
+            "figures": [
+                {
+                    "figure_id": "internal-original-id",
+                    "figure_type": "ORIGINAL_GENERATED",
+                    "markdown_path": "../assets/tiny.png",
+                    "source_claim_ids": [APPROVED_CLAIM_ID],
+                    "title": "跨研究比较证据图",
+                    "caption": "比较纳入研究中的实验响应。",
+                },
+                {
+                    "figure_id": "internal-licensed-id",
+                    "figure_type": "LICENSED_SOURCE",
+                    "markdown_path": "../assets/licensed.png",
+                    "license": "CC BY 4.0",
+                    "attribution": "改编自 Example 等，2024，CC BY 4.0。",
+                    "caption": "许可来源图。",
+                },
+                {
+                    "figure_id": "internal-placeholder-id",
+                    "figure_type": "FIGURE_BRIEF_PLACEHOLDER",
+                    "brief": "汇总证据支持的催化循环及尚未解决的分支。",
+                },
+            ],
+        },
+    )
+
+    payload = dashboard.project_figures_payload(tmp_path, "synthetic-release")
+
+    assert [row["state"] for row in payload["figures"]] == [
+        "原创生成图",
+        "许可来源图",
+        "图片说明占位符",
+    ]
+    assert payload["figures"][0]["image_url"] == "/api/project/synthetic-release/figure?index=0"
+    assert payload["figures"][1]["image_url"] == "/api/project/synthetic-release/figure?index=1"
+    assert "image_url" not in payload["figures"][2]
+    assert payload["figures"][2]["description"] == "汇总证据支持的催化循环及尚未解决的分支。"
+    serialized = json.dumps(payload, ensure_ascii=False)
+    for forbidden in (
+        "figure_manifest",
+        "manifest_sha256",
+        "source_claim_ids",
+        "claim-approved-01",
+        "internal-original-id",
+        "../assets/",
+        "/home/",
+    ):
+        assert forbidden not in serialized
+
+
+def test_dashboard_figure_payload_does_not_decode_images_during_polling(
+    tmp_path: Path,
+) -> None:
+    from review_writer.delivery import figure_policy
+    from view import serve_review_dashboard as dashboard
+
+    project = make_release_ready_project(tmp_path / "review-projects")
+
+    with patch.object(
+        figure_policy.Image,
+        "open",
+        side_effect=AssertionError("dashboard polling must not decode figures"),
+    ):
+        payload = dashboard.project_figures_payload(tmp_path, "synthetic-release")
+
+    assert payload["figures"][0]["image_url"].endswith("figure?index=0")
+
+
+def test_dashboard_merges_existing_original_figure_manifests_without_duplicates(
+    tmp_path: Path,
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    project = make_release_ready_project(tmp_path / "review-projects")
+    (project / "03_figure_redraw" / "comparative_evidence_map.png").write_bytes(TINY_PNG)
+    (project / "assets" / "shared.png").write_bytes(TINY_PNG)
+    _write_json(
+        project / "03_figure_redraw" / "figure_manifest.json",
+        {
+            "figures": [
+                {
+                    "figure_id": "comparative-evidence-map",
+                    "license": "ORIGINAL_GENERATED",
+                    "markdown_path": "../03_figure_redraw/comparative_evidence_map.png",
+                    "source_claim_ids": [APPROVED_CLAIM_ID],
+                    "title": "跨研究比较证据图",
+                    "caption": "比较纳入研究中的证据分布。",
+                },
+                {
+                    "figure_id": "shared-original",
+                    "license": "ORIGINAL_GENERATED",
+                    "markdown_path": "../assets/shared.png",
+                    "source_claim_ids": [APPROVED_CLAIM_ID],
+                    "title": "重复图件的旧记录",
+                },
+            ]
+        },
+    )
+    _write_json(
+        project / "03_figure_redraw" / "redrawn_figure_manifest.json",
+        {
+            "figures": [
+                {
+                    "figure_id": "shared-original",
+                    "figure_type": "ORIGINAL_GENERATED",
+                    "markdown_path": "../assets/shared.png",
+                    "source_claim_ids": [APPROVED_CLAIM_ID],
+                    "title": "重复图件的现行记录",
+                }
+            ]
+        },
+    )
+
+    payload = dashboard.project_figures_payload(tmp_path, "synthetic-release")
+
+    assert [row["title"] for row in payload["figures"]] == [
+        "重复图件的现行记录",
+        "跨研究比较证据图",
+    ]
+    assert [row["state"] for row in payload["figures"]] == ["原创生成图", "原创生成图"]
+    assert [row["image_url"] for row in payload["figures"]] == [
+        "/api/project/synthetic-release/figure?index=0",
+        "/api/project/synthetic-release/figure?index=1",
+    ]
+    serialized = json.dumps(payload, ensure_ascii=False)
+    for forbidden in (
+        "figure_id",
+        "markdown_path",
+        "source_claim_ids",
+        APPROVED_CLAIM_ID,
+        "../assets/",
+        "../03_figure_redraw/",
+    ):
+        assert forbidden not in serialized
+
+
+def test_dashboard_orders_reading_figures_by_manuscript_references(
+    tmp_path: Path,
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    project = make_release_ready_project(tmp_path / "review-projects")
+    (project / "assets" / "second.png").write_bytes(TINY_PNG)
+    manuscript_path = project / "04_first_draft" / "first_draft.md"
+    manuscript = manuscript_path.read_text(encoding="utf-8").replace(
+        "![Synthetic one-pixel figure](../assets/tiny.png)",
+        "![Second figure](../assets/second.png)\n\n"
+        "![Synthetic one-pixel figure](../assets/tiny.png)",
+    )
+    manuscript_path.write_text(manuscript, encoding="utf-8")
+    _write_json(
+        project / "03_figure_redraw" / "figure_manifest.json",
+        {
+            "figures": [
+                {
+                    "figure_id": "first-in-manifest",
+                    "figure_type": "ORIGINAL_GENERATED",
+                    "markdown_path": "../assets/tiny.png",
+                    "source_claim_ids": [APPROVED_CLAIM_ID],
+                    "title": "First in manifest",
+                },
+                {
+                    "figure_id": "second-in-manifest",
+                    "figure_type": "ORIGINAL_GENERATED",
+                    "markdown_path": "../assets/second.png",
+                    "source_claim_ids": [APPROVED_CLAIM_ID],
+                    "title": "Second in manifest",
+                },
+            ]
+        },
+    )
+
+    payload = dashboard.project_figures_payload(tmp_path, "synthetic-release")
+
+    assert [row["title"] for row in payload["figures"]] == [
+        "First in manifest",
+        "Second in manifest",
+    ]
+    assert [row["title"] for row in payload["reading_figures"]] == [
+        "Second in manifest",
+        "First in manifest",
+    ]
+    assert [row["image_url"] for row in payload["reading_figures"]] == [
+        "/api/project/synthetic-release/figure?index=1",
+        "/api/project/synthetic-release/figure?index=0",
+    ]
+    serialized = json.dumps(payload["reading_figures"], ensure_ascii=False)
+    assert "markdown_path" not in serialized
+    assert "../assets/" not in serialized
+
+
+def test_draft_editor_hides_claim_marker_and_preserves_it_through_pending_restore(
+    tmp_path: Path,
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    project = make_release_ready_project(tmp_path / "review-projects")
+    marker = f"<!-- claim_id:{APPROVED_CLAIM_ID} -->"
+    draft = dashboard.project_draft_payload(tmp_path, "synthetic-release")
+    results = next(section for section in draft["sections"] if section["id"] == "results")
+    assert marker not in results["body"]
+
+    dashboard.write_project_draft_sections(
+        tmp_path,
+        "synthetic-release",
+        {
+            "section_id": "results",
+            "body": results["body"].replace(
+                APPROVED_CLAIM_TEXT,
+                "The measured response changed under defined conditions",
+            ),
+            "manuscript_version": draft["manuscript_version"],
+        },
+    )
+    pending = dashboard.project_draft_payload(tmp_path, "synthetic-release")
+    verified = pending["revision_status"]["pending_scientific_edits"][0]["verified_body"]
+    assert marker not in verified
+    dashboard.write_project_draft_sections(
+        tmp_path,
+        "synthetic-release",
+        {
+            "section_id": "results",
+            "body": verified,
+            "manuscript_version": pending["manuscript_version"],
+        },
+    )
+
+    restored = dashboard.project_draft_payload(tmp_path, "synthetic-release")
+    assert restored["revision_status"]["pending_scientific_edits"] == []
+    assert (project / "04_first_draft" / "first_draft.md").read_text(encoding="utf-8").count(marker) == 1
+
+
+def test_review_workbench_connects_figure_states_and_current_docx_without_internal_terms() -> None:
+    review_html = (
+        Path(__file__).resolve().parents[1] / "view" / "assets" / "dashboard" / "review.html"
+    ).read_text(encoding="utf-8")
+    review_css = (
+        Path(__file__).resolve().parents[1]
+        / "view"
+        / "assets"
+        / "dashboard"
+        / "review-ui.css"
+    ).read_text(encoding="utf-8")
+
+    assert 'id="figure-summary"' in review_html
+    assert 'id="figure-list"' in review_html
+    assert "/figures`" in review_html
+    assert "/final`" in review_html
+    for label in ("原创生成图", "许可来源图", "图片说明占位符", "图件与许可状态"):
+        assert label in review_html
+    assert "final_draft_docx_exists" in review_html
+    assert "claim.text || claim.claim_id" not in review_html
+    assert "证据绑定主张待核对" in review_html
+    assert "overflow-wrap: anywhere" in review_css
+    assert "min-width: 0" in review_css
 
 
 def test_concurrent_draft_edits_with_one_version_allow_exactly_one_commit(tmp_path: Path) -> None:
@@ -931,6 +1869,7 @@ def test_failed_concurrent_release_rollback_cannot_overwrite_success(tmp_path: P
             return project_release.subprocess.CompletedProcess(command, 1, "", "synthetic failure")
         output_path = Path(command[command.index("--output") + 1])
         with zipfile.ZipFile(output_path, "w") as archive:
+            archive.writestr("[Content_Types].xml", "<Types/>")
             archive.writestr("word/document.xml", "<document/>")
         return project_release.subprocess.CompletedProcess(command, 0, "", "")
 
@@ -1279,8 +2218,10 @@ def test_release_rejects_unsafe_image_inside_tilde_fence_before_export(tmp_path:
     converter.assert_not_called()
 
 
-def test_release_ignores_image_text_inside_backtick_fence(tmp_path: Path) -> None:
-    from review_writer.delivery.project_release import build_project_release
+def test_release_ignores_image_text_inside_backtick_fence_and_blocks_no_figure(
+    tmp_path: Path,
+) -> None:
+    from review_writer.delivery.project_release import ProjectReleaseError, build_project_release
 
     project = make_release_ready_project(tmp_path)
     manuscript_path = project / "04_first_draft" / "first_draft.md"
@@ -1291,9 +2232,11 @@ def test_release_ignores_image_text_inside_backtick_fence(tmp_path: Path) -> Non
     manuscript_path.write_text(manuscript, encoding="utf-8")
     _update_lineage(project, manuscript_sha256=hashlib.sha256(manuscript.encode("utf-8")).hexdigest())
 
-    build_project_release(project)
+    with pytest.raises(ProjectReleaseError) as error:
+        build_project_release(project)
 
-    assert (project / "05_final_audit" / "final_draft.docx").is_file()
+    assert error.value.code == "FIGURE_POLICY_INVALID"
+    assert not (project / "05_final_audit" / "final_draft.docx").exists()
 
 
 @pytest.mark.parametrize(

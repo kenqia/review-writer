@@ -9,6 +9,8 @@ description: 当科研用户要在 QoderWork 写作工作台中，以三次确�
 
 本 Skill 已由界面激活；不得再次调用 Skill 工具。已安装的 Agent 与下列命令就是运行合同：不得探索插件目录、仓库结构、README 或 docs，不得先派发结构探索任务，也不得用 `ls`、glob 或全文搜索猜测入口。
 
+所有会恢复自动处理的人工 checkpoint 只使用 maintained `wait-state`；不得自建 watcher、轮询脚本或后台替研究者提交决定。任何等待超时都立即安全停止，不自动重试、不继续付费步骤，并且只告知固定恢复语：“项目已安全保存；完成界面操作后发送‘继续当前综述项目’”。Final Review 是终端交付，不在研究者最终确认后恢复新的自动处理，因此不新增第四次交互或新的状态。
+
 ## 1. Review Brief
 
 - 直接委派 `REVIEW_BRIEFING_AGENT` 处理用户给出的 topic/context。每个新项目都默认核对关键范围，不依赖用户写出“先追问”；最多 12 个，只询问缺失的 material scope 与会改变结果的事项。覆盖主题、核心研究问题、目标读者、输出语言、时间范围、目标研究数量、纳入标准、排除标准、本地材料或公开检索、交付格式、图片需求与 credits/外部处理授权。已有明确答案不重复询问；不得用旧会话内容静默补全新项目。保留 QoderWork 的结构化关键问题弹窗。
@@ -19,6 +21,7 @@ description: 当科研用户要在 QoderWork 写作工作台中，以三次确�
 - Review Brief/job authorization 必须在上传前披露 full-PDF MinerU egress 并取得明确确认。不得在 chat 中读取或暴露 token 值；缺少该授权或 token 时合并为一个具体 blocker。
 - Brief 确认后、discovery 或任何 paid delegation 之前，严格运行 `python scripts/run_vertical_review.py preflight --review-root . --mineru-egress-authorized`，并查询一次 QoderWork Usage 与已安装 Agent 清单。preflight 必须检查工作目录、Python、pdftotext、MinerU parser/token/network、DOCX 与图片依赖；Usage 必须确认当前余额、预算和 reserve。任一项失败即报告 `MINERU_PREFLIGHT_BLOCKED` 或具体 credits/Agent blocker；不得中途降级。绝不读取、打印或复制 token 值。
 - 未观察到 `BRIEF_CONFIRMED` 前不得委派 `DISCOVERY_ACQUISITION_PLANNER`，也不得生成 search plan 或运行 discovery/acquisition；确认后的 brief 是后续检索、证据和写作的唯一范围基线，同一任务随后自动继续。
+- discovery 前明确运行 `python scripts/run_vertical_review.py audit-reusable-library --project-dir review-projects/<project_id>`。该命令只读取项目内研究者声明的 library descriptor 与 canonical 请求，原子写入空或已核验的 reuse audit；没有声明时不得扫描个人目录，也不得把既有 claims、candidate、reviewer、risk 或 manuscript 当作可复用来源。
 
 ### Automatic corpus/evidence（后台自动工作，不是 interaction）
 
@@ -26,21 +29,24 @@ description: 当科研用户要在 QoderWork 写作工作台中，以三次确�
 - `DISCOVERY_ACQUISITION_PLANNER` 根据 confirmed brief 与 candidate pool 生成 bounded scholarly-search-plan.v1、screening decisions 和覆盖每个 expected MAIN/SI 的 acquisition rows。只用 `scripts/discovery/discover_scholarly_corpus.py` 与 `scripts/acquisition/acquire_public_corpus.py` 执行一次确定性 public-direct 检索和合法获取；候选在验证前保持待核验。Qwen 不逐篇浏览或下载论文，也不启动浏览器机器人。
 - canonical 数据位置固定：检索、筛选与计划只写 `00_discovery/candidate_pool.json`、`00_discovery/screening_decisions.json`、`00_discovery/acquisition_manifest.json`；获取结果只写 `00_sources/acquisition_receipt.json` 与既有 final receipt。不得在 `00_sources` 创建第二份 acquisition manifest，也不得让 dashboard 与 product command 读取不同位置。
 - 剩余来源只显示一次 consolidated HTML queue。若仍有缺失，暂停进行一次必要来源交接：研究者从页面链接下载并上传一个 ZIP，不逐篇提问，也不要求编辑映射文件。这个条件性 ZIP 是至多一次 consolidated 输入 handoff，不是新的科学 decision；科学 checkpoints 仍只有 Brief、Risk Packet、Final Review。
-- 发布 queue 后，同一个任务观察固定的项目相对 inbox：`review-projects/<project_id>/00_sources/manual_upload/inbox/source_bundle.zip`，等待最长 86400 秒。文件出现后只运行一次 `scripts/acquisition/import_manual_archive.py`，随后立即运行 `scripts/acquisition/acquire_public_corpus.py` 的 `--verify-only` 并继续既有 MinerU 阶段；不要求研究者再次点击继续，也不询问或接受 ZIP 路径。unmatched / ambiguous / missing rows 继续留在同一个 queue；不得手工解压、复制、重命名或按文件名语义猜测归属。超时按 `WAIT_STATE_TIMEOUT` 安全退出并提示“继续当前综述项目”。
+- 发布 queue 后，同一个任务观察固定的项目相对 inbox：`review-projects/<project_id>/00_sources/manual_upload/inbox/source_bundle.zip`，等待最长 86400 秒。文件出现后只运行一次 `scripts/acquisition/import_manual_archive.py`，随后立即运行 `scripts/acquisition/acquire_public_corpus.py` 的 `--verify-only` 并继续既有 MinerU 阶段；不要求研究者再次点击继续，也不询问或接受 ZIP 路径。unmatched / ambiguous / missing rows 继续留在同一个 queue；不得手工解压、复制、重命名或按文件名语义猜测归属。任何等待超时都按上述固定恢复语安全退出。
+- discovery/acquisition 与来源身份闭合后、MinerU 前再次运行 `python scripts/run_vertical_review.py audit-reusable-library --project-dir review-projects/<project_id>`；只有该 canonical audit 明确核验通过的 source/parse assets 才能复用。
 - 来源身份闭合后，严格调用仓库既有解析器 `skills/mineru-precise-parse-review-writer/scripts/parse_review_writer_pdfs.py`，输入项目 source directory，输出项目 parse directory，保持 incremental 默认；除非另行批准一次重跑，否则不得使用 `--force`。
 - MinerU 只提供 semantic Markdown/figures/tables；`pdftotext` reading/layout layers 对 exact page locators 与 verbatim quotes 保持 authoritative。构建 text layers 时一次命令传入全部 `--source`，不得逐篇使用 `--force`。Qwen 与 MinerU 都不得创作 locator/page/quote fields。
 - 先处理三篇 calibration，使用 QoderWork Usage 记录每批 `credits before/after` 并给出 credits forecast；未超过已确认预算后，自动按 4–6 篇 batch 继续。若 Usage 不可读、缺少 job-level Qoder egress/credits 授权或 reserve 将被突破，必须停在任何 paid run 之前。
-- 解析完成后自动连续执行每项研究的 atom catalog → Qwen selector → deterministic assembly/R0 → fresh reviewer → registration：先由 `scripts/evidence/build_pdf_text_layers.py` 与 `scripts/evidence/build_page_atom_catalog.py` 产生确定性 atom catalog，再以 fresh delegation contract 委派 `PER_STUDY_EVIDENCE_EXTRACTOR` 选择 atom，随后用 `scripts/evidence/assemble_evidence_candidate_from_atoms.py` 和 `scripts/evidence/validate_evidence_candidate.py` 组装、校验 candidate。
-- 对每项 assembled candidate 重新委派 `ADVERSARIAL_EVIDENCE_REVIEWER` 做 fresh adversarial review，再运行 `scripts/run_vertical_review.py` 的 `register-study` 完成逐项 deterministic registration。失败项写入 `01_evidence/exception_queue.json`，其余研究继续；整个队列无需研究者按单项触发。
-- 科学流水线严格 fail closed：MinerU 缺失时不得用 pdftotext-only、Read PDF 或模型直读替代 atom catalog；不得手工构造 candidate、R0 report 或 reviewer verdict。`validate_evidence_candidate.py` 返回任何 `R0_FAIL` 时不得注册；`register-study` 会重新计算并比对 canonical R0。不得以口头判断豁免 deterministic gate。
+- 每批逻辑阶段保持 atom catalog → Qwen selector → deterministic assembly/R0 → fresh reviewer → registration；其中 assembly/R0 与 registration 只由下述 maintained runner 执行，不拆成逐项命令。
+- 解析完成后，先由 `scripts/evidence/build_pdf_text_layers.py` 与 `scripts/evidence/build_page_atom_catalog.py` 为本批研究生成确定性 atom catalog，并把本批 study IDs 写入受控的 `<study_ids_file>`。随后只运行 maintained product command：`python scripts/run_vertical_review.py run-batch --project-dir review-projects/<project_id> --study-ids-file <study_ids_file>`；它是 atom catalog 之后 assembly、R0、reviewer wait 与 registration 的唯一证据编排入口。calibration 的 `credits before/after` 与 forecast 只作为该命令已有参数传入。
+- `run-batch` 报告 semantic 缺失时，才按 fresh delegation contract 把当前 sealed job、atom catalog 与允许的目标交给 `PER_STUDY_EVIDENCE_EXTRACTOR`；机器输出原字节落到 runner 约定位置后，重新运行同一条 `run-batch`。报告 reviewer 缺失时，才把当前 assembled candidate 与 selected atoms 交给 `ADVERSARIAL_EVIDENCE_REVIEWER`，要求 reviewer 回传当前 `candidate_sha256`；输出落地后再次运行同一条 `run-batch`。不得逐项调用 assembly、R0 或 `register-study`，不得修改 provider 输出。
+- maintained runner 每次阶段推进前重读 canonical snapshot，只接受通过 schema、identity 与 binding 校验的机器输出；semantic 必须绑定当前 job，reviewer 必须绑定当前 job、study、完整 targets 与 candidate 内容，R0 与 deterministic registration 只能消费当前 canonical candidate。旧输出、缺字段、target 不完整或内容漂移一律 fail closed；registration exception 进入既有 `01_evidence/exception_queue.json`，其他单项失败进入既有 progress，其余研究继续。
+- 不得编写自用 orchestration script、one-off runner 或旁路状态；不得伪造 semantic、reviewer、candidate、R0 或 receipt，也不得用 chat context 当作授权——chat context 不构成授权。科学流水线严格 fail closed：MinerU 缺失时不得用 pdftotext-only、Read PDF 或模型直读替代 atom catalog；不得手工构造 candidate、R0 report 或 reviewer verdict；任何 `R0_FAIL` 都不得注册，且不得以口头判断豁免 deterministic gate。
 - fresh delegation contract 只约束每次以最小、当前输入重新委派，不声称底层平台提供额外的上下文隔离能力。
 
 ## 2. Scientific Risk Packet
 
 - 所有可处理研究完成后，只运行一次 `scripts/run_vertical_review.py` 的 `build-risk-packet`，构建去重的 Scientific Risk Packet；它同时包含必须裁决的目标与确定性抽样项。
 - 在写作工作台集中呈现科学表述、证据、冲突和建议动作，只等待一次 `approve / reword / exclude / unresolved` 决定。
-- 呈现后运行同一个本地 wait-state，目标为 `risk_decisions_applied / ready_for_writing`，使用 `--timeout-seconds 86400`；超时安全退出并使用同一恢复指令，不得后台替研究者批量 APPROVE。
-- Risk 决定只能由研究者在 localhost 工作台提交；不得调用 CLI、编写脚本或生成决定文件代替研究者。提交后只运行 `wait-state` 观察 `risk_decisions_applied / ready_for_writing`，研究者看不到也不填写内部绑定字段。
+- 呈现后运行 maintained wait-state：`python scripts/run_vertical_review.py wait-state --project-dir review-projects/<project_id> --status risk_decisions_applied --stage ready_for_writing --poll-seconds 2 --timeout-seconds 86400`；任何等待超时都安全停止并只使用上述固定恢复语，不得后台替研究者批量 APPROVE。
+- Risk 决定只能由研究者在 localhost 工作台提交；不得调用 CLI、编写脚本或生成决定文件代替研究者。每个提交项携带工作台当前 `review_target_digest`，服务端只接受当前 digest，旧页面或旧证据对应的 digest 一律拒绝。提交后只运行 maintained `wait-state` 观察 `risk_decisions_applied / ready_for_writing`；研究者不手工填写该绑定字段。
 - BLOCKED 决定具有单调性；没有本次集中决定明确放行的 BLOCKED 或 HUMAN_REQUIRED 内容不得进入 Writer。
 
 ### Automatic Draft/Final（后台自动工作，不是 interaction）

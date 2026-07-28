@@ -378,6 +378,48 @@ class EvidenceAtomAssemblerTests(unittest.TestCase):
                 )
         return result, candidate, validator_result
 
+    def test_cli_rejects_stale_job_binding_before_reading_semantic(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            job = json.loads(JOB.read_text(encoding="utf-8"))
+            job["source_files"][0]["source_binary_sha256"] = "0" * 64
+            job_path = root / "job.json"
+            catalog_path = root / "catalog.json"
+            semantic_path = root / "semantic.json"
+            job_path.write_text(json.dumps(job) + "\n", encoding="utf-8")
+            catalog_path.write_text(json.dumps(self.catalog) + "\n", encoding="utf-8")
+            semantic_path.write_text("not-json\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ASSEMBLER),
+                    "--job",
+                    str(job_path),
+                    "--packet-root",
+                    str(FIXTURE_ROOT),
+                    "--catalog",
+                    str(catalog_path),
+                    "--semantic",
+                    str(semantic_path),
+                    "--catalog-schema",
+                    str(ATOM_SCHEMA),
+                    "--semantic-schema",
+                    str(SEMANTIC_SCHEMA),
+                    "--candidate-schema",
+                    str(CANDIDATE_SCHEMA),
+                    "--output",
+                    str(root / "candidate.json"),
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("JOB_BINDING_INVALID", result.stderr)
+
     def assert_assembly_rejected(self, catalog: dict, semantic: dict, code: str) -> None:
         result, candidate, _ = self.run_assembler(catalog, semantic)
         self.assertEqual(1, result.returncode, result.stderr)

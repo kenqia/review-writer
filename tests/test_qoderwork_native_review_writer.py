@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import concurrent.futures
 import hashlib
 import io
 import json
@@ -12,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 import zipfile
 from html.parser import HTMLParser
@@ -25,6 +28,9 @@ PLUGIN = ROOT / "qoderwork" / "plugins" / "research-review-writer"
 BUILDER = ROOT / "scripts" / "build_qoderwork_plugin_zip.py"
 SERVER = ROOT / "view" / "serve_review_dashboard.py"
 FIXTURE = ROOT / "tests" / "fixtures" / "qoderwork_native_review"
+TINY_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
 
 EXPECTED_INVENTORY = (
     ".qoder-plugin/plugin.json",
@@ -81,6 +87,7 @@ VISIBLE_RISK_TARGET_FIELDS = {
     "source_excerpt",
     "source_label",
     "page",
+    "locator",
     "proposed_action",
     "existing_decision",
     "approved_text",
@@ -298,6 +305,66 @@ class NativeReviewWriterPluginTests(unittest.TestCase):
         self.assertIn("不得调用 CLI、编写脚本或生成决定文件代替研究者", skill)
         self.assertNotIn("product command 的 `apply-risk-decisions`", skill)
 
+    def test_expert_kit_uses_maintained_run_batch_as_the_only_evidence_orchestrator(self) -> None:
+        skill = (PLUGIN / "skills/research-review-writer/SKILL.md").read_text(encoding="utf-8")
+
+        for required in (
+            "唯一证据编排入口",
+            "python scripts/run_vertical_review.py run-batch",
+            "每次阶段推进前重读 canonical snapshot",
+            "schema、identity 与 binding",
+            "不得编写自用 orchestration script",
+            "不得伪造 semantic、reviewer、candidate、R0 或 receipt",
+            "chat context 不构成授权",
+            "review_target_digest",
+            "只接受当前 digest",
+        ):
+            self.assertIn(required, skill)
+        self.assertNotIn(
+            "随后用 `scripts/evidence/assemble_evidence_candidate_from_atoms.py`",
+            skill,
+        )
+        self.assertNotIn("`register-study` 完成逐项", skill)
+
+    def test_reviewer_contract_binds_verdict_to_candidate_content_without_platform_claims(self) -> None:
+        reviewer = (PLUGIN / "agents/ADVERSARIAL_EVIDENCE_REVIEWER.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("candidate_sha256", reviewer)
+        self.assertIn("assembled candidate", reviewer)
+        self.assertIn("不声称底层平台保证独立 context", reviewer)
+
+    def test_all_resumable_human_waits_use_the_maintained_wait_state_and_fixed_timeout_copy(
+        self,
+    ) -> None:
+        skill = (PLUGIN / "skills/research-review-writer/SKILL.md").read_text(encoding="utf-8")
+        recovery = "项目已安全保存；完成界面操作后发送‘继续当前综述项目’"
+
+        self.assertIn("所有会恢复自动处理的人工 checkpoint 只使用 maintained `wait-state`", skill)
+        self.assertGreaterEqual(skill.count("scripts/run_vertical_review.py wait-state"), 2)
+        self.assertIn(recovery, skill)
+        self.assertIn("任何等待超时", skill)
+        self.assertIn("Final Review 是终端交付", skill)
+
+    def test_main_skill_runs_maintained_reuse_audit_before_discovery_and_mineru(self) -> None:
+        skill = (PLUGIN / "skills/research-review-writer/SKILL.md").read_text(encoding="utf-8")
+        command = (
+            "python scripts/run_vertical_review.py audit-reusable-library "
+            "--project-dir review-projects/<project_id>"
+        )
+
+        self.assertGreaterEqual(skill.count(command), 2)
+        first_audit = skill.index(command)
+        discovery = skill.index("scripts/discovery/discover_scholarly_corpus.py")
+        second_audit = skill.index(command, first_audit + len(command))
+        mineru = skill.index(
+            "skills/mineru-precise-parse-review-writer/scripts/parse_review_writer_pdfs.py"
+        )
+        self.assertLess(first_audit, discovery)
+        self.assertLess(discovery, second_audit)
+        self.assertLess(second_audit, mineru)
+
     def test_main_skill_initializes_project_and_opens_gui_before_brief_confirmation(self) -> None:
         skill = (PLUGIN / "skills" / "research-review-writer" / "SKILL.md").read_text(encoding="utf-8")
 
@@ -494,6 +561,15 @@ class NativeReviewWriterPluginTests(unittest.TestCase):
         self.assertIn("target_id", reviewer)
         self.assertIn("ACCEPT_WITH_NOTES is invalid", reviewer)
 
+    def test_extractor_obeys_sealed_denied_claim_contract(self) -> None:
+        extractor = (
+            PLUGIN / "agents/PER_STUDY_EVIDENCE_EXTRACTOR.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("semantic_target_contract", extractor)
+        self.assertIn("denied_claim_ids", extractor)
+        self.assertIn("不得选择或输出", extractor)
+
     def test_writer_reads_only_approved_writer_packet(self) -> None:
         writer = (PLUGIN / "agents" / "SYNTHESIS_MANUSCRIPT_WRITER.md").read_text(encoding="utf-8")
         self.assertIn("Input: writer_packet.json only", writer)
@@ -539,6 +615,47 @@ class NativeReviewWriterPluginTests(unittest.TestCase):
 
 
 class NativeReviewWriterDashboardTests(unittest.TestCase):
+    @staticmethod
+    def _add_current_figure_binding(project: Path, report: dict[str, object]) -> None:
+        image_path = project / "assets" / "tiny.png"
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        image_path.write_bytes(TINY_PNG)
+        manifest = {
+            "schema_version": "review-writer-figure-manifest.v1",
+            "figures": [
+                {
+                    "figure_id": "synthetic-current-figure",
+                    "figure_type": "ORIGINAL_GENERATED",
+                    "markdown_path": "../assets/tiny.png",
+                    "source_claim_ids": ["claim-neutral-01"],
+                }
+            ],
+        }
+        manifest_path = project / "03_figure_redraw" / "figure_manifest.json"
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False) + "\n", encoding="utf-8")
+        manifest_payload = json.dumps(
+            manifest,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        report["figure_validation"] = {
+            "status": "VERIFIED",
+            "manuscript_sha256": report["manuscript_sha256"],
+            "manifest_sha256": hashlib.sha256(manifest_payload).hexdigest(),
+            "figures": [
+                {
+                    **manifest["figures"][0],
+                    "content_sha256": hashlib.sha256(TINY_PNG).hexdigest(),
+                    "image_format": "PNG",
+                    "width": 1,
+                    "height": 1,
+                }
+            ],
+        }
+
     @staticmethod
     def _bind_authoritative_fixture_draft(
         project: Path,
@@ -626,6 +743,56 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
         lines = head.decode("iso-8859-1").split("\r\n")
         headers = dict(line.split(": ", 1) for line in lines[1:] if ": " in line)
         return int(lines[0].split()[1]), headers, body
+
+    @staticmethod
+    def _real_source_mapping_fixture(review_root: Path) -> tuple[Path, dict[str, str]]:
+        from review_writer.acquisition.manual_archive import import_manual_archive
+
+        project = review_root / "review-projects/source-review"
+        state = project / "00_brief/review_state.json"
+        state.parent.mkdir(parents=True)
+        state.write_text("{}\n", encoding="utf-8")
+        rows = [
+            {
+                "download_id": download_id,
+                "study_id": study_id,
+                "document_role": "SI",
+                "url": f"https://example.org/{study_id}.docx",
+                "target_path": f"sources/{study_id}/supplement.docx",
+                "source_class": "LANDING_PAGE_ONLY",
+                "expected_format": "DOCX",
+                "archive_names": ["opaque-a.docx", "opaque-b.docx"],
+            }
+            for download_id, study_id in (("A_DOCX", "A"), ("B_DOCX", "B"))
+        ]
+        manifest = project / "00_discovery/acquisition_manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(
+            json.dumps(
+                {"schema_version": "public-corpus-acquisition.v1", "downloads": rows}
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        docx = io.BytesIO()
+        with zipfile.ZipFile(docx, "w", zipfile.ZIP_DEFLATED) as document:
+            document.writestr(
+                "[Content_Types].xml",
+                '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                '<Override PartName="/word/document.xml" '
+                'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+                "</Types>",
+            )
+            document.writestr("word/document.xml", "<synthetic/>")
+        archive = project / "00_sources/manual_upload/inbox/source_bundle.zip"
+        archive.parent.mkdir(parents=True)
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
+            bundle.writestr("opaque-a.docx", docx.getvalue())
+            bundle.writestr("opaque-b.docx", docx.getvalue())
+        receipt = import_manual_archive(manifest, archive, project / "00_sources")
+        return project, {
+            row["member_display_name"]: row["member_id"] for row in receipt["unresolved"]
+        }
 
     def test_review_home_persists_state_and_exports_docx(self) -> None:
         sys.path.insert(0, str(ROOT))
@@ -802,17 +969,43 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
                 + "\n",
                 encoding="utf-8",
             )
+            (project / "00_sources/manual_import_receipt.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "manual-archive-import-receipt.v1",
+                        "unresolved": [
+                            {
+                                "reason": "AMBIGUOUS_PDF_TITLE",
+                                "member_id": "MEMBER-0002",
+                                "member_display_name": "研究补充材料.pdf",
+                                "download_ids": ["STUDY_01_MAIN", "STUDY_01_SI"],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
 
             payload = dashboard.project_source_handoff_payload(review_root, "source-review")
 
             self.assertEqual(
-                {"project_id", "counts", "upload_required", "sources"},
+                {
+                    "project_id",
+                    "counts",
+                    "upload_required",
+                    "sources",
+                    "supplements",
+                    "unresolved",
+                },
                 set(payload),
             )
             self.assertEqual({"total": 2, "ready": 1, "missing": 1}, payload["counts"])
             self.assertTrue(payload["upload_required"])
             self.assertEqual(
                 {
+                    "download_id",
                     "study_id",
                     "citation",
                     "role",
@@ -823,9 +1016,21 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
                 set(payload["sources"][0]),
             )
             self.assertEqual("https://publisher.example/source-01", payload["sources"][0]["download_url"])
+            self.assertEqual("STUDY_01_MAIN", payload["sources"][0]["download_id"])
             self.assertEqual(
                 "https://publisher.example/source-01-si.pdf",
                 payload["sources"][1]["download_url"],
+            )
+            self.assertEqual(
+                [
+                    {
+                        "reason": "AMBIGUOUS_PDF_TITLE",
+                        "member_id": "MEMBER-0002",
+                        "member_display_name": "研究补充材料.pdf",
+                        "download_ids": ["STUDY_01_MAIN", "STUDY_01_SI"],
+                    }
+                ],
+                payload["unresolved"],
             )
             serialized = json.dumps(payload, ensure_ascii=False)
             for forbidden in ("/private/", "sha256", "target_path", "MANUAL_REQUIRED"):
@@ -865,6 +1070,864 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
                 )
                 self.assertEqual(400, status)
 
+    def test_source_handoff_payload_rejects_non_object_canonical_rows(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        cases = (
+            ("00_discovery/acquisition_manifest.json", {"downloads": [None]}),
+            ("00_sources/acquisition_receipt.json", {"results": [None]}),
+            ("00_discovery/screening_decisions.json", {"decisions": [None]}),
+        )
+        for relative, malformed in cases:
+            with self.subTest(relative=relative), tempfile.TemporaryDirectory() as temp_dir:
+                review_root = Path(temp_dir) / "review-root"
+                project = review_root / "review-projects/source-review"
+                state = project / "00_brief/review_state.json"
+                state.parent.mkdir(parents=True)
+                state.write_text("{}\n", encoding="utf-8")
+                fixtures = {
+                    "00_discovery/acquisition_manifest.json": {"downloads": []},
+                    "00_sources/acquisition_receipt.json": {"results": []},
+                    "00_discovery/screening_decisions.json": {"decisions": []},
+                }
+                fixtures[relative] = malformed
+                for path_text, payload in fixtures.items():
+                    path = project / path_text
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+                with self.assertRaises(ValueError):
+                    dashboard.project_source_handoff_payload(review_root, "source-review")
+                status, _, _ = self._request(
+                    dashboard,
+                    review_root,
+                    b"GET /api/project/source-review/sources HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                )
+                self.assertEqual(400, status)
+
+    def test_source_handoff_payload_rejects_missing_or_duplicate_canonical_ids(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        cases = (
+            ("00_discovery/acquisition_manifest.json", {"downloads": [{}]}),
+            (
+                "00_discovery/acquisition_manifest.json",
+                {"downloads": [{"download_id": "D1"}, {"download_id": "D1"}]},
+            ),
+            ("00_sources/acquisition_receipt.json", {"results": [{}]}),
+            (
+                "00_sources/acquisition_receipt.json",
+                {"results": [{"download_id": "D1"}, {"download_id": "D1"}]},
+            ),
+            ("00_discovery/screening_decisions.json", {"decisions": [{}]}),
+            (
+                "00_discovery/screening_decisions.json",
+                {"decisions": [{"candidate_id": "C1"}, {"candidate_id": "C1"}]},
+            ),
+            (
+                "00_sources/manual_import_receipt.json",
+                {
+                    "unresolved": [
+                        {
+                            "reason": "AMBIGUOUS_PDF_TITLE",
+                            "member_display_name": "paper.pdf",
+                            "download_ids": [],
+                        }
+                    ]
+                },
+            ),
+            (
+                "00_sources/manual_import_receipt.json",
+                {
+                    "unresolved": [
+                        {
+                            "reason": "AMBIGUOUS_PDF_TITLE",
+                            "member_id": "MEMBER-0001",
+                            "member_display_name": "paper-a.pdf",
+                            "download_ids": [],
+                        },
+                        {
+                            "reason": "AMBIGUOUS_PDF_TITLE",
+                            "member_id": "MEMBER-0001",
+                            "member_display_name": "paper-b.pdf",
+                            "download_ids": [],
+                        },
+                    ]
+                },
+            ),
+        )
+        for relative, malformed in cases:
+            with self.subTest(relative=relative, malformed=malformed), tempfile.TemporaryDirectory() as temp_dir:
+                review_root = Path(temp_dir) / "review-root"
+                project = review_root / "review-projects/source-review"
+                state = project / "00_brief/review_state.json"
+                state.parent.mkdir(parents=True)
+                state.write_text("{}\n", encoding="utf-8")
+                fixtures = {
+                    "00_discovery/acquisition_manifest.json": {"downloads": []},
+                    "00_sources/acquisition_receipt.json": {"results": []},
+                    "00_discovery/screening_decisions.json": {"decisions": []},
+                    "00_sources/manual_import_receipt.json": {"unresolved": []},
+                }
+                fixtures[relative] = malformed
+                for path_text, payload in fixtures.items():
+                    path = project / path_text
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+                with self.assertRaises(ValueError):
+                    dashboard.project_source_handoff_payload(review_root, "source-review")
+
+    def test_source_handoff_payload_rejects_non_string_canonical_identifiers(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        cases = (
+            ("download_id object", {"downloads": [{"download_id": {"value": "D1"}, "study_id": "S1"}]}, {"results": []}, {"decisions": []}, {"unresolved": []}),
+            ("result download_id list", {"downloads": [{"download_id": "D1", "study_id": "S1"}]}, {"results": [{"download_id": ["D1"]}]}, {"decisions": []}, {"unresolved": []}),
+            ("study_id object", {"downloads": [{"download_id": "D1", "study_id": {"value": "S1"}}]}, {"results": []}, {"decisions": []}, {"unresolved": []}),
+            ("candidate_id object", {"downloads": []}, {"results": []}, {"decisions": [{"candidate_id": {"value": "C1"}}]}, {"unresolved": []}),
+            (
+                "unresolved download_id object",
+                {"downloads": [{"download_id": "D1", "study_id": "S1"}]},
+                {"results": []},
+                {"decisions": []},
+                {"unresolved": [{"reason": "AMBIGUOUS_PDF_TITLE", "member_id": "MEMBER-0001", "member_display_name": "paper.pdf", "download_ids": [{"value": "D1"}]}]},
+            ),
+        )
+        for label, manifest, receipt, screening, manual_receipt in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temp_dir:
+                review_root = Path(temp_dir) / "review-root"
+                project = review_root / "review-projects/source-review"
+                fixtures = {
+                    "00_discovery/acquisition_manifest.json": manifest,
+                    "00_sources/acquisition_receipt.json": receipt,
+                    "00_discovery/screening_decisions.json": screening,
+                    "00_sources/manual_import_receipt.json": manual_receipt,
+                }
+                for relative, payload in fixtures.items():
+                    path = project / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+                with self.assertRaises(ValueError):
+                    dashboard.project_source_handoff_payload(review_root, "source-review")
+
+    def test_researcher_can_supplement_sources_without_overwriting_system_recommendation(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+        from review_writer.project.vertical_review import initialize_review
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir) / "review-root"
+            project = initialize_review(
+                review_root / "review-projects",
+                "source-review",
+                {"topic": "Synthetic source supplementation"},
+            )
+            candidate_pool = project / "00_discovery/candidate_pool.json"
+            candidate_pool.parent.mkdir(parents=True, exist_ok=True)
+            candidate_pool.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "candidate-pool.v1",
+                        "candidates": [
+                            {
+                                "candidate_id": "SYSTEM-01",
+                                "doi": "10.1000/system-01",
+                                "title": "System candidate",
+                            }
+                        ],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            decisions = project / "00_discovery/screening_decisions.json"
+            decisions.write_text(
+                json.dumps(
+                    {
+                        "decisions": [
+                            {
+                                "candidate_id": "SYSTEM-01",
+                                "title": "System candidate",
+                                "system_recommendation": "INCLUDE",
+                                "disposition": "EXCLUDE",
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (project / "00_discovery/acquisition_manifest.json").write_text(
+                json.dumps({"schema_version": "case02-acquisition-plan.v1", "downloads": []})
+                + "\n",
+                encoding="utf-8",
+            )
+            reusable_audit = project / "00_sources/reusable_library_audit.json"
+            reusable_audit.parent.mkdir(parents=True, exist_ok=True)
+            reusable_audit.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "reusable-library-audit.v1",
+                        "canonical_artifact": "00_sources/reusable_library_audit.json",
+                        "request_set_digest": hashlib.sha256(b"[]").hexdigest(),
+                        "required_parser_contract": "NOT_DECLARED",
+                        "results": [],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            body = json.dumps(
+                {
+                    "doi": "https://doi.org/10.1000/SUPPLEMENT-01",
+                    "title": "Researcher supplied study",
+                    "disposition": "include",
+                }
+            ).encode("utf-8")
+            request = (
+                b"POST /api/project/source-review/source-supplement HTTP/1.1\r\n"
+                b"Host: localhost\r\nContent-Type: application/json\r\nContent-Length: "
+                + str(len(body)).encode()
+                + b"\r\n\r\n"
+                + body
+            )
+
+            status, _, response = self._request(dashboard, review_root, request)
+
+            self.assertEqual(201, status)
+            self.assertEqual("已加入来源候选", json.loads(response)["message"])
+            saved = json.loads(decisions.read_text(encoding="utf-8"))
+            self.assertEqual("INCLUDE", saved["decisions"][0]["system_recommendation"])
+            self.assertEqual("EXCLUDE", saved["decisions"][0]["disposition"])
+            self.assertEqual("RESEARCHER_SUPPLIED", saved["decisions"][1]["system_recommendation"])
+            self.assertEqual("INCLUDE_FOR_FULL_TEXT", saved["decisions"][1]["disposition"])
+            self.assertEqual("10.1000/supplement-01", saved["decisions"][1]["doi"])
+            pool = json.loads(candidate_pool.read_text(encoding="utf-8"))
+            self.assertEqual("candidate-pool.v1", pool["schema_version"])
+            self.assertEqual("SYSTEM-01", pool["candidates"][0]["candidate_id"])
+            self.assertEqual(saved["decisions"][1]["candidate_id"], pool["candidates"][1]["candidate_id"])
+            self.assertEqual("10.1000/supplement-01", pool["candidates"][1]["doi"])
+            self.assertEqual("Researcher supplied study", pool["candidates"][1]["title"])
+
+            prepare = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts/run_vertical_review.py"),
+                    "prepare-study",
+                    "--project-dir",
+                    str(project),
+                    "--study-id",
+                    pool["candidates"][1]["candidate_id"],
+                ],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(3, prepare.returncode, prepare.stderr)
+            prepare_payload = json.loads(prepare.stdout)
+            self.assertEqual("ACQUISITION_FINAL_RECEIPT_MISSING", prepare_payload["reason_code"])
+            self.assertNotEqual("STUDY_NOT_DECLARED", prepare_payload["reason_code"])
+
+            payload = dashboard.project_source_handoff_payload(review_root, "source-review")
+            self.assertEqual(1, len(payload["supplements"]))
+            self.assertEqual("Researcher supplied study", payload["supplements"][0]["citation"])
+            self.assertEqual("用户要求纳入", payload["supplements"][0]["researcher_disposition"])
+            self.assertEqual("待系统简要复核", payload["supplements"][0]["system_recommendation"])
+
+    def test_source_supplement_requires_a_doi_or_title_and_known_disposition(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir) / "review-root"
+            state = review_root / "review-projects/source-review/00_brief/review_state.json"
+            state.parent.mkdir(parents=True)
+            state.write_text("{}\n", encoding="utf-8")
+            for payload in (
+                {"doi": "", "title": "", "disposition": "include"},
+                {"doi": "10.1000/valid", "title": "", "disposition": "maybe"},
+                {"doi": "not-a-doi", "title": "Valid fallback title", "disposition": "include"},
+            ):
+                body = json.dumps(payload).encode("utf-8")
+                request = (
+                    b"POST /api/project/source-review/source-supplement HTTP/1.1\r\n"
+                    b"Host: localhost\r\nContent-Type: application/json\r\nContent-Length: "
+                    + str(len(body)).encode()
+                    + b"\r\n\r\n"
+                    + body
+                )
+                status, _, _ = self._request(dashboard, review_root, request)
+                self.assertEqual(400, status)
+
+    def test_source_supplement_rejects_invalid_or_oversized_length_before_reading_body(
+        self,
+    ) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir) / "review-root"
+            state = review_root / "review-projects/source-review/00_brief/review_state.json"
+            state.parent.mkdir(parents=True)
+            state.write_text("{}\n", encoding="utf-8")
+            invalid = (
+                b"POST /api/project/source-review/source-supplement HTTP/1.1\r\n"
+                b"Host: localhost\r\nContent-Length: invalid\r\n\r\n"
+            )
+            oversized = (
+                b"POST /api/project/source-review/source-supplement HTTP/1.1\r\n"
+                b"Host: localhost\r\nContent-Length: 16385\r\n\r\n"
+            )
+            huge_decimal = (
+                b"POST /api/project/source-review/source-supplement HTTP/1.1\r\n"
+                b"Host: localhost\r\nContent-Length: "
+                + (b"9" * 5_000)
+                + b"\r\n\r\n"
+            )
+
+            with patch.object(
+                dashboard,
+                "add_project_source_supplement",
+                side_effect=AssertionError("invalid body length reached supplement mutation"),
+            ):
+                invalid_status, _, _ = self._request(dashboard, review_root, invalid)
+                oversized_status, _, _ = self._request(dashboard, review_root, oversized)
+                huge_decimal_status, _, _ = self._request(dashboard, review_root, huge_decimal)
+
+            self.assertEqual(400, invalid_status)
+            self.assertEqual(413, oversized_status)
+            self.assertEqual(413, huge_decimal_status)
+
+    def test_source_supplement_rejects_oversized_doi_and_title_fields(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        payloads = (
+            {"doi": "10.1000/" + "a" * 505, "title": "", "disposition": "include"},
+            {"doi": "", "title": "T" * 2001, "disposition": "include"},
+        )
+        for payload in payloads:
+            with self.subTest(field="doi" if payload["doi"] else "title"), tempfile.TemporaryDirectory() as temp_dir:
+                review_root = Path(temp_dir) / "review-root"
+                state = review_root / "review-projects/source-review/00_brief/review_state.json"
+                state.parent.mkdir(parents=True)
+                state.write_text("{}\n", encoding="utf-8")
+                body = json.dumps(payload).encode("utf-8")
+                request = (
+                    b"POST /api/project/source-review/source-supplement HTTP/1.1\r\n"
+                    b"Host: localhost\r\nContent-Type: application/json\r\nContent-Length: "
+                    + str(len(body)).encode()
+                    + b"\r\n\r\n"
+                    + body
+                )
+
+                status, _, _ = self._request(dashboard, review_root, request)
+
+                self.assertEqual(400, status)
+                self.assertFalse(
+                    (state.parents[1] / "00_discovery/candidate_pool.json").exists()
+                )
+
+    def test_concurrent_source_supplement_routes_do_not_lose_canonical_rows(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir) / "review-root"
+            project = review_root / "review-projects/source-review"
+            state = project / "00_brief/review_state.json"
+            state.parent.mkdir(parents=True)
+            state.write_text("{}\n", encoding="utf-8")
+            pool = project / "00_discovery/candidate_pool.json"
+            pool.parent.mkdir(parents=True)
+            pool.write_text(json.dumps({"candidates": []}) + "\n", encoding="utf-8")
+            decisions = project / "00_discovery/screening_decisions.json"
+            decisions.write_text(json.dumps({"decisions": []}) + "\n", encoding="utf-8")
+            real_replace = dashboard._replace_json_pair
+            entered = 0
+            entered_lock = threading.Lock()
+            both_entered = threading.Event()
+
+            def coordinated_replace(updates):
+                nonlocal entered
+                with entered_lock:
+                    entered += 1
+                    if entered == 2:
+                        both_entered.set()
+                both_entered.wait(timeout=0.2)
+                return real_replace(updates)
+
+            def request(doi: str) -> tuple[int, dict[str, str], bytes]:
+                body = json.dumps(
+                    {"doi": doi, "title": doi, "disposition": "include"}
+                ).encode("utf-8")
+                raw = (
+                    b"POST /api/project/source-review/source-supplement HTTP/1.1\r\n"
+                    b"Host: localhost\r\nContent-Type: application/json\r\nContent-Length: "
+                    + str(len(body)).encode()
+                    + b"\r\n\r\n"
+                    + body
+                )
+                return self._request(dashboard, review_root, raw)
+
+            with patch.object(dashboard, "_replace_json_pair", side_effect=coordinated_replace):
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                    responses = list(
+                        executor.map(request, ("10.1000/concurrent-a", "10.1000/concurrent-b"))
+                    )
+
+            self.assertEqual([201, 201], sorted(response[0] for response in responses))
+            saved_pool = json.loads(pool.read_text(encoding="utf-8"))["candidates"]
+            saved_decisions = json.loads(decisions.read_text(encoding="utf-8"))["decisions"]
+            self.assertEqual(2, len(saved_pool))
+            self.assertEqual(2, len(saved_decisions))
+            self.assertEqual(
+                {"10.1000/concurrent-a", "10.1000/concurrent-b"},
+                {row["doi"] for row in saved_pool},
+            )
+
+    def test_discovery_publication_failure_rolls_back_all_three_canonical_files(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir) / "review-root"
+            discovery = review_root / "review-projects/discovery-review/00_discovery"
+            discovery.mkdir(parents=True)
+            paths = (
+                discovery / "combined_results_by_keyword.json",
+                discovery / "selected_discovery_results.json",
+                discovery / "human_check_state.json",
+            )
+            old_payloads = (
+                {"project_id": "discovery-review", "results": []},
+                {"project_id": "discovery-review", "selected": []},
+                {"project_id": "discovery-review", "status": "pending"},
+            )
+            for path, payload in zip(paths, old_payloads, strict=True):
+                path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+            old_bytes = tuple(path.read_bytes() for path in paths)
+            body = json.dumps(
+                {
+                    "project_id": "discovery-review",
+                    "results": [{"paper_id": "P-1", "selected": True}],
+                }
+            ).encode("utf-8")
+            request = (
+                b"PUT /api/discovery/discovery-review?confirm=1 HTTP/1.1\r\n"
+                b"Host: localhost\r\nContent-Type: application/json\r\nContent-Length: "
+                + str(len(body)).encode()
+                + b"\r\n\r\n"
+                + body
+            )
+            real_replace = dashboard.os.replace
+
+            def fail_selected(source: object, destination: object) -> None:
+                if Path(destination) == paths[1]:
+                    raise OSError("synthetic selected discovery publication failure")
+                real_replace(source, destination)
+
+            with patch.object(dashboard.os, "replace", side_effect=fail_selected):
+                with self.assertRaisesRegex(OSError, "synthetic selected discovery"):
+                    self._request(dashboard, review_root, request)
+
+            self.assertEqual(old_bytes, tuple(path.read_bytes() for path in paths))
+
+    def test_concurrent_discovery_submissions_are_serialized_with_one_bound_publication(
+        self,
+    ) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir) / "review-root"
+            project_id = "discovery-review"
+            real_replace = dashboard._replace_json_pair
+            active = 0
+            overlap = False
+            active_lock = threading.Lock()
+            first_entered = threading.Event()
+            second_entered = threading.Event()
+
+            def observed_replace(updates):
+                nonlocal active, overlap
+                with active_lock:
+                    active += 1
+                    is_first = active == 1
+                    if is_first:
+                        first_entered.set()
+                    else:
+                        overlap = True
+                        second_entered.set()
+                if is_first:
+                    second_entered.wait(timeout=0.25)
+                try:
+                    return real_replace(updates)
+                finally:
+                    with active_lock:
+                        active -= 1
+
+            def request(label: str) -> tuple[int, dict[str, str], bytes]:
+                body = json.dumps(
+                    {
+                        "project_id": project_id,
+                        "topic": label,
+                        "results": [
+                            {
+                                "keyword": label,
+                                "category": "core",
+                                "keep": True,
+                                "local_results": [
+                                    {
+                                        "paper_id": f"P-{label}",
+                                        "keep": True,
+                                        "role": "core_candidate",
+                                    }
+                                ],
+                                "web_results": [],
+                            }
+                        ],
+                    }
+                ).encode("utf-8")
+                raw = (
+                    f"PUT /api/discovery/{project_id}?confirm=1 HTTP/1.1\r\n".encode()
+                    + b"Host: localhost\r\nContent-Type: application/json\r\nContent-Length: "
+                    + str(len(body)).encode()
+                    + b"\r\n\r\n"
+                    + body
+                )
+                return self._request(dashboard, review_root, raw)
+
+            with patch.object(dashboard, "_replace_json_pair", side_effect=observed_replace):
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                    first = executor.submit(request, "A")
+                    self.assertTrue(first_entered.wait(timeout=2))
+                    second = executor.submit(request, "B")
+                    responses = (first.result(timeout=5), second.result(timeout=5))
+
+            self.assertFalse(overlap)
+            self.assertEqual([200, 200], sorted(response[0] for response in responses))
+            discovery = review_root / f"review-projects/{project_id}/00_discovery"
+            payloads = [
+                json.loads((discovery / name).read_text(encoding="utf-8"))
+                for name in (
+                    "combined_results_by_keyword.json",
+                    "selected_discovery_results.json",
+                    "human_check_state.json",
+                )
+            ]
+            digests = {payload.get("selection_digest") for payload in payloads}
+            self.assertEqual(1, len(digests))
+            self.assertRegex(next(iter(digests)), r"^[0-9a-f]{64}$")
+
+    def test_mixed_discovery_publication_fails_closed_until_researcher_resubmits(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir) / "review-root"
+            project_id = "discovery-review"
+
+            def put(label: str) -> int:
+                body = json.dumps(
+                    {
+                        "project_id": project_id,
+                        "topic": label,
+                        "results": [
+                            {
+                                "keyword": label,
+                                "category": "core",
+                                "keep": True,
+                                "local_results": [
+                                    {
+                                        "paper_id": f"P-{label}",
+                                        "keep": True,
+                                        "role": "core_candidate",
+                                    }
+                                ],
+                                "web_results": [],
+                            }
+                        ],
+                    }
+                ).encode("utf-8")
+                request = (
+                    f"PUT /api/discovery/{project_id}?confirm=1 HTTP/1.1\r\n".encode()
+                    + b"Host: localhost\r\nContent-Type: application/json\r\nContent-Length: "
+                    + str(len(body)).encode()
+                    + b"\r\n\r\n"
+                    + body
+                )
+                return self._request(dashboard, review_root, request)[0]
+
+            self.assertEqual(200, put("A"))
+            discovery = review_root / f"review-projects/{project_id}/00_discovery"
+            selected_path = discovery / "selected_discovery_results.json"
+            selected_a = selected_path.read_bytes()
+            self.assertEqual(200, put("B"))
+            selected_path.write_bytes(selected_a)
+
+            status, _, _ = self._request(
+                dashboard,
+                review_root,
+                f"GET /api/discovery/{project_id} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode(),
+            )
+            self.assertEqual(409, status)
+            listed = dashboard.list_review_projects(review_root)
+            self.assertEqual("", listed[0]["topic"])
+            self.assertFalse(listed[0]["has_discovery"])
+            self.assertEqual("invalid", listed[0]["discovery_status"])
+
+            self.assertEqual(200, put("C"))
+            status, _, body = self._request(
+                dashboard,
+                review_root,
+                f"GET /api/discovery/{project_id} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode(),
+            )
+            self.assertEqual(200, status)
+            self.assertEqual("C", json.loads(body)["topic"])
+
+    def test_researcher_can_confirm_one_safe_unresolved_member_mapping(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir) / "review-root"
+            project = review_root / "review-projects/source-review"
+            state = project / "00_brief/review_state.json"
+            state.parent.mkdir(parents=True)
+            state.write_text("{}\n", encoding="utf-8")
+            manifest = project / "00_discovery/acquisition_manifest.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "downloads": [
+                            {"download_id": "ROW_A", "study_id": "A", "document_role": "MAIN"},
+                            {"download_id": "ROW_B", "study_id": "B", "document_role": "MAIN"},
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            receipt = project / "00_sources/manual_import_receipt.json"
+            receipt.parent.mkdir(parents=True)
+            receipt.write_text(
+                json.dumps(
+                    {
+                        "unresolved": [
+                            {
+                                "reason": "AMBIGUOUS_PDF_TITLE",
+                                "member_id": "MEMBER-0002",
+                                "member_display_name": "待确认论文.pdf",
+                                "download_ids": ["ROW_A", "ROW_B"],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            archive = project / "00_sources/manual_upload/inbox/source_bundle.zip"
+            archive.parent.mkdir(parents=True)
+            archive.write_bytes(b"synthetic archive placeholder")
+            mapped_receipt = {"unresolved": [], "confirmed_mappings": []}
+            body = json.dumps(
+                {"member_id": "MEMBER-0002", "download_id": "ROW_B"}
+            ).encode("utf-8")
+            request = (
+                b"POST /api/project/source-review/source-mapping HTTP/1.1\r\n"
+                b"Host: localhost\r\nContent-Type: application/json\r\nContent-Length: "
+                + str(len(body)).encode()
+                + b"\r\n\r\n"
+                + body
+            )
+
+            with patch.object(
+                dashboard,
+                "import_manual_archive",
+                return_value=mapped_receipt,
+                create=True,
+            ) as importer:
+                status, _, response = self._request(dashboard, review_root, request)
+
+                self.assertEqual(200, status)
+                self.assertEqual(
+                    {"status": "mapped", "message": "文件归属已确认"},
+                    json.loads(response),
+                )
+                importer.assert_called_once_with(
+                    manifest,
+                    archive,
+                    project / "00_sources",
+                    member_overrides={"MEMBER-0002": "ROW_B"},
+                )
+
+            invalid_body = json.dumps(
+                {"member_id": "MEMBER-0002", "download_id": "ROW-NOT-CANDIDATE"}
+            ).encode("utf-8")
+            invalid_request = (
+                b"POST /api/project/source-review/source-mapping HTTP/1.1\r\n"
+                b"Host: localhost\r\nContent-Type: application/json\r\nContent-Length: "
+                + str(len(invalid_body)).encode()
+                + b"\r\n\r\n"
+                + invalid_body
+            )
+            with patch.object(
+                dashboard,
+                "import_manual_archive",
+                side_effect=AssertionError("invalid mapping reached importer"),
+                create=True,
+            ):
+                status, _, _ = self._request(dashboard, review_root, invalid_request)
+                self.assertEqual(400, status)
+
+    def test_real_source_mapping_route_rewrites_receipt_and_replays_prior_mapping(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir) / "review-root"
+            project, member_ids = self._real_source_mapping_fixture(review_root)
+
+            def map_request(member_name: str, download_id: str) -> tuple[int, dict[str, str], bytes]:
+                body = json.dumps(
+                    {"member_id": member_ids[member_name], "download_id": download_id}
+                ).encode("utf-8")
+                return self._request(
+                    dashboard,
+                    review_root,
+                    b"POST /api/project/source-review/source-mapping HTTP/1.1\r\n"
+                    b"Host: localhost\r\nContent-Type: application/json\r\nContent-Length: "
+                    + str(len(body)).encode()
+                    + b"\r\n\r\n"
+                    + body,
+                )
+
+            first_status, _, _ = map_request("opaque-a.docx", "A_DOCX")
+            first_receipt = json.loads(
+                (project / "00_sources/manual_import_receipt.json").read_text(encoding="utf-8")
+            )
+            second_status, _, _ = map_request("opaque-b.docx", "B_DOCX")
+            final_receipt = json.loads(
+                (project / "00_sources/manual_import_receipt.json").read_text(encoding="utf-8")
+            )
+
+            self.assertEqual((200, 200), (first_status, second_status))
+            self.assertEqual(
+                [{"member_id": member_ids["opaque-a.docx"], "download_id": "A_DOCX"}],
+                first_receipt["confirmed_mappings"],
+            )
+            self.assertEqual(
+                [
+                    {"member_id": member_ids["opaque-a.docx"], "download_id": "A_DOCX"},
+                    {"member_id": member_ids["opaque-b.docx"], "download_id": "B_DOCX"},
+                ],
+                final_receipt["confirmed_mappings"],
+            )
+            self.assertEqual([], final_receipt["unresolved"])
+            self.assertTrue((project / "00_sources/sources/A/supplement.docx").is_file())
+            self.assertTrue((project / "00_sources/sources/B/supplement.docx").is_file())
+
+    def test_real_source_mapping_route_rejects_malformed_prior_receipt_without_changes(
+        self,
+    ) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir) / "review-root"
+            project, member_ids = self._real_source_mapping_fixture(review_root)
+            receipt_path = project / "00_sources/manual_import_receipt.json"
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            receipt["confirmed_mappings"] = [{"member_id": "MALFORMED"}]
+            receipt_path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+            before = receipt_path.read_bytes()
+            body = json.dumps(
+                {"member_id": member_ids["opaque-a.docx"], "download_id": "A_DOCX"}
+            ).encode("utf-8")
+            request = (
+                b"POST /api/project/source-review/source-mapping HTTP/1.1\r\n"
+                b"Host: localhost\r\nContent-Type: application/json\r\nContent-Length: "
+                + str(len(body)).encode()
+                + b"\r\n\r\n"
+                + body
+            )
+
+            status, _, _ = self._request(dashboard, review_root, request)
+
+            self.assertEqual(400, status)
+            self.assertEqual(before, receipt_path.read_bytes())
+            self.assertFalse((project / "00_sources/sources/A/supplement.docx").exists())
+            self.assertFalse((project / "00_sources/sources/B/supplement.docx").exists())
+
+    def test_concurrent_real_source_mapping_routes_do_not_lose_confirmed_mappings(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir) / "review-root"
+            project, member_ids = self._real_source_mapping_fixture(review_root)
+            real_import = dashboard.import_manual_archive
+            entered = 0
+            entered_lock = threading.Lock()
+            both_entered = threading.Event()
+
+            def coordinated_import(*args, **kwargs):
+                nonlocal entered
+                with entered_lock:
+                    entered += 1
+                    if entered == 2:
+                        both_entered.set()
+                both_entered.wait(timeout=0.2)
+                return real_import(*args, **kwargs)
+
+            def map_request(mapping: tuple[str, str]) -> tuple[int, dict[str, str], bytes]:
+                member_name, download_id = mapping
+                body = json.dumps(
+                    {"member_id": member_ids[member_name], "download_id": download_id}
+                ).encode("utf-8")
+                request = (
+                    b"POST /api/project/source-review/source-mapping HTTP/1.1\r\n"
+                    b"Host: localhost\r\nContent-Type: application/json\r\nContent-Length: "
+                    + str(len(body)).encode()
+                    + b"\r\n\r\n"
+                    + body
+                )
+                return self._request(dashboard, review_root, request)
+
+            with patch.object(dashboard, "import_manual_archive", side_effect=coordinated_import):
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                    responses = list(
+                        executor.map(
+                            map_request,
+                            (("opaque-a.docx", "A_DOCX"), ("opaque-b.docx", "B_DOCX")),
+                        )
+                    )
+
+            self.assertEqual([200, 200], sorted(response[0] for response in responses))
+            receipt = json.loads(
+                (project / "00_sources/manual_import_receipt.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                {
+                    (member_ids["opaque-a.docx"], "A_DOCX"),
+                    (member_ids["opaque-b.docx"], "B_DOCX"),
+                },
+                {
+                    (row["member_id"], row["download_id"])
+                    for row in receipt["confirmed_mappings"]
+                },
+            )
+            self.assertEqual([], receipt["unresolved"])
+
     def test_source_archive_route_publishes_one_valid_zip_atomically(self) -> None:
         sys.path.insert(0, str(ROOT))
         from view import serve_review_dashboard as dashboard
@@ -899,6 +1962,58 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
 
             status, _, _ = self._request(dashboard, review_root, request)
             self.assertEqual(409, status)
+
+    def test_concurrent_source_archive_routes_publish_only_one_archive(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        def zipped(name: str) -> bytes:
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr(name, b"%PDF-1.4\nsynthetic source\n%%EOF\n")
+            return buffer.getvalue()
+
+        def raw_request(payload: bytes) -> bytes:
+            return (
+                b"POST /api/project/synthetic-review/source-archive HTTP/1.1\r\n"
+                b"Host: localhost\r\nContent-Type: application/zip\r\nContent-Length: "
+                + str(len(payload)).encode()
+                + b"\r\n\r\n"
+                + payload
+            )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = self._copy_fixture(Path(temp_dir))
+            first_inside_validation = threading.Event()
+            second_inside_validation = threading.Event()
+            release_first = threading.Event()
+            real_is_zipfile = zipfile.is_zipfile
+            calls = 0
+            calls_lock = threading.Lock()
+
+            def coordinated_is_zipfile(path):
+                nonlocal calls
+                with calls_lock:
+                    calls += 1
+                    call_number = calls
+                if call_number == 1:
+                    first_inside_validation.set()
+                    release_first.wait(timeout=2)
+                else:
+                    second_inside_validation.set()
+                return real_is_zipfile(path)
+
+            requests = (raw_request(zipped("first.pdf")), raw_request(zipped("second.pdf")))
+            with patch.object(dashboard.zipfile, "is_zipfile", side_effect=coordinated_is_zipfile):
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                    first = executor.submit(self._request, dashboard, review_root, requests[0])
+                    self.assertTrue(first_inside_validation.wait(timeout=1))
+                    second = executor.submit(self._request, dashboard, review_root, requests[1])
+                    second_inside_validation.wait(timeout=0.2)
+                    release_first.set()
+                    responses = (first.result(timeout=2), second.result(timeout=2))
+
+            self.assertEqual([201, 409], sorted(response[0] for response in responses))
 
     def test_source_archive_route_rejects_invalid_or_unapproved_input(self) -> None:
         sys.path.insert(0, str(ROOT))
@@ -1089,6 +2204,303 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             )
             self.assertEqual(200, status)
             self.assertEqual(payload, json.loads(body))
+
+    def test_progress_maps_reuse_source_gaps_matches_batch_stage_and_credits(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir) / "review-root"
+            project = review_root / "review-projects/progress-review"
+
+            def write_json(relative: str, payload: object) -> None:
+                path = project / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
+
+            write_json(
+                "00_brief/review_state.json",
+                {"project_id": "progress-review", "current_stage": "evidence_review", "blockers": []},
+            )
+            write_json(
+                "00_discovery/screening_decisions.json",
+                {"decisions": [{"candidate_id": "STUDY-01", "disposition": "INCLUDE_FOR_FULL_TEXT"}]},
+            )
+            write_json(
+                "00_discovery/acquisition_manifest.json",
+                {
+                    "downloads": [
+                        {"download_id": "STUDY_01_MAIN", "study_id": "STUDY-01", "document_role": "MAIN"},
+                        {"download_id": "STUDY_01_SI", "study_id": "STUDY-01", "document_role": "SI"},
+                    ]
+                },
+            )
+            write_json(
+                "00_sources/acquisition_receipt.json",
+                {"results": [{"download_id": "STUDY_01_MAIN", "status": "VERIFIED_EXISTING"}]},
+            )
+            write_json(
+                "00_sources/reusable_library_audit.json",
+                {"results": [{"study_id": "STUDY-01", "status": "REUSABLE"}]},
+            )
+            write_json(
+                "00_sources/source_coverage.json",
+                {
+                    "studies": [
+                        {
+                            "study_id": "STUDY-01",
+                            "available_roles": ["MAIN"],
+                            "si_policy": "RECOMMENDED",
+                            "study_status": "READY_WITH_LIMITATION",
+                        }
+                    ]
+                },
+            )
+            write_json(
+                "00_sources/manual_import_receipt.json",
+                {
+                    "unresolved": [
+                        {
+                            "reason": "AMBIGUOUS_PDF_TITLE",
+                            "member_id": "MEMBER-0001",
+                            "member_display_name": "supplement.pdf",
+                            "download_ids": ["STUDY_01_SI"],
+                        }
+                    ]
+                },
+            )
+            write_json(
+                "01_evidence/batch_progress.json",
+                {
+                    "status": "WAITING_FOR_PROVIDER",
+                    "credits": {
+                        "measured": {"before": 400, "after": 373, "consumed": 27},
+                        "forecast": {"estimated_credits": 80},
+                    },
+                    "studies": [
+                        {
+                            "study_id": "STUDY-01",
+                            "stage": "WAITING_FOR_PROVIDER",
+                            "reason_code": "SEMANTIC_OUTPUT_MISSING",
+                            "last_completed_stage": "PREPARED",
+                        }
+                    ],
+                },
+            )
+
+            payload = dashboard.project_progress_payload(review_root, "progress-review")
+
+            self.assertEqual(
+                {"measured": 27, "forecast": 80},
+                payload["credits"],
+            )
+            study = payload["studies"][0]
+            self.assertEqual("等待证据提取", study["status"])
+            self.assertEqual("已复用全文与解析结果", study["reuse_status"])
+            self.assertEqual("已获得", study["main_status"])
+            self.assertEqual("匹配待确认", study["si_status"])
+            self.assertEqual("建议补充", study["si_policy"])
+            self.assertEqual("需要确认一个文件归属", study["match_status"])
+            serialized = json.dumps(payload, ensure_ascii=False)
+            for forbidden in ("WAITING_FOR_PROVIDER", "SEMANTIC_OUTPUT_MISSING", "Agent", "Prompt", "JSON", "Git"):
+                self.assertNotIn(forbidden, serialized)
+
+    def test_progress_does_not_render_missing_credit_measurement_as_zero(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir) / "review-root"
+            project = review_root / "review-projects/progress-review"
+            state = project / "00_brief/review_state.json"
+            state.parent.mkdir(parents=True)
+            state.write_text(json.dumps({"project_id": "progress-review", "blockers": []}) + "\n")
+            payload = dashboard.project_progress_payload(review_root, "progress-review")
+            self.assertEqual({"measured": None, "forecast": None}, payload["credits"])
+
+            progress = project / "01_evidence/batch_progress.json"
+            progress.parent.mkdir(parents=True, exist_ok=True)
+            for measured, forecast in ((-1, float("inf")), (float("nan"), -2)):
+                progress.write_text(
+                    json.dumps(
+                        {
+                            "credits": {
+                                "measured": {"consumed": measured},
+                                "forecast": {"estimated_credits": forecast},
+                            },
+                            "studies": [],
+                        }
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                invalid = dashboard.project_progress_payload(review_root, "progress-review")
+                self.assertEqual({"measured": None, "forecast": None}, invalid["credits"])
+
+    def test_progress_includes_batch_study_without_a_source_row(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir) / "review-root"
+            project = review_root / "review-projects/progress-review"
+
+            def write_json(relative: str, payload: object) -> None:
+                path = project / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+            write_json(
+                "00_brief/review_state.json",
+                {"project_id": "progress-review", "blockers": []},
+            )
+            write_json(
+                "01_evidence/batch_progress.json",
+                {
+                    "studies": [
+                        {
+                            "study_id": "BATCH-ONLY",
+                            "stage": "WAITING_FOR_PROVIDER",
+                            "reason_code": "SEMANTIC_OUTPUT_MISSING",
+                            "last_completed_stage": "PREPARED",
+                        }
+                    ]
+                },
+            )
+
+            payload = dashboard.project_progress_payload(review_root, "progress-review")
+
+            self.assertEqual(1, len(payload["studies"]))
+            self.assertEqual("BATCH-ONLY", payload["studies"][0]["study_id"])
+            self.assertEqual("研究 BATCH-ONLY", payload["studies"][0]["label"])
+            self.assertEqual("等待证据提取", payload["studies"][0]["status"])
+
+    def test_processing_ui_labels_measured_and_forecast_credits_separately(self) -> None:
+        html = (ROOT / "view/assets/dashboard/review.html").read_text(encoding="utf-8")
+
+        self.assertIn('id="processing-credit-measured"', html)
+        self.assertIn('id="processing-credit-forecast"', html)
+        self.assertIn("实测消耗", html)
+        self.assertIn("预测用量", html)
+        self.assertNotIn("实测/预测", html)
+
+    def test_blocked_progress_gives_safe_specific_recovery_for_common_scientific_stages(
+        self,
+    ) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        cases = (
+            (
+                "PREPARE_OUTPUT_MISSING",
+                "研究来源或解析材料尚未就绪",
+                "补齐该研究所需全文并完成解析",
+                "PREPARED",
+            ),
+            (
+                "SEMANTIC_SCHEMA_INVALID",
+                "证据提取结果未通过完整性校验",
+                "重新运行该研究的证据提取",
+                "PREPARED",
+            ),
+            (
+                "REVIEWER_CANDIDATE_BINDING_INVALID",
+                "科学复核结果不完整或与当前证据不一致",
+                "重新运行该研究的科学复核",
+                "R0_PASS",
+            ),
+            (
+                "R0_REJECTED",
+                "证据定位或原文支撑未通过校验",
+                "核对该研究的全文解析与证据选择",
+                "CANDIDATE_ASSEMBLED",
+            ),
+            (
+                "EVIDENCE_CARDS_INVALID",
+                "研究证据尚未安全写入项目",
+                "恢复项目处理状态后重试该研究",
+                "R0_PASS",
+            ),
+            (
+                "RESUME_BINDING_INVALID",
+                "当前研究输入完整性异常，现有结果不会继续使用",
+                "在 QoderWork 中创建一个新项目重新开始",
+                "PREPARED",
+            ),
+            (
+                "RESUME_BINDING_INVALID",
+                "当前研究输入完整性异常，现有结果不会继续使用",
+                "在 QoderWork 中创建一个新项目重新开始",
+                "CANDIDATE_ASSEMBLED",
+            ),
+            (
+                "RESUME_BINDING_INVALID",
+                "当前研究输入完整性异常，现有结果不会继续使用",
+                "在 QoderWork 中创建一个新项目重新开始",
+                "R0_PASS",
+            ),
+        )
+        for reason_code, expected_blocker, expected_action, last_completed_stage in cases:
+            with self.subTest(reason_code=reason_code, last_completed_stage=last_completed_stage), tempfile.TemporaryDirectory() as temp_dir:
+                review_root = Path(temp_dir) / "review-root"
+                project = review_root / "review-projects/progress-review"
+
+                def write_json(relative: str, payload: object) -> None:
+                    path = project / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+                write_json(
+                    "00_brief/review_state.json",
+                    {"project_id": "progress-review", "blockers": ["GENERIC_INTERNAL_BLOCKER"]},
+                )
+                write_json(
+                    "00_discovery/screening_decisions.json",
+                    {"decisions": [{"candidate_id": "STUDY-01", "disposition": "INCLUDE_FOR_FULL_TEXT"}]},
+                )
+                write_json(
+                    "00_discovery/acquisition_manifest.json",
+                    {"downloads": [{"download_id": "STUDY_01_MAIN", "study_id": "STUDY-01", "document_role": "MAIN"}]},
+                )
+                write_json(
+                    "00_sources/acquisition_receipt.json",
+                    {"results": [{"download_id": "STUDY_01_MAIN", "status": "VERIFIED_EXISTING"}]},
+                )
+                write_json("00_sources/manual_import_receipt.json", {"unresolved": []})
+                write_json("01_evidence/mineru/manifest.json", {"completed": ["STUDY-01"]})
+                write_json(
+                    "01_evidence/batch_progress.json",
+                    {
+                        "status": "BLOCKED",
+                        "credits": {"measured": None, "forecast": None},
+                        "studies": [
+                            {
+                                "study_id": "STUDY-01",
+                                "stage": "BLOCKED",
+                                "reason_code": reason_code,
+                                "last_completed_stage": last_completed_stage,
+                            }
+                        ],
+                    },
+                )
+
+                payload = dashboard.project_progress_payload(review_root, "progress-review")
+
+                self.assertIn(expected_blocker, payload["blocker"])
+                self.assertIn(expected_action, payload["recommended_next"])
+                self.assertIn(expected_action, payload["studies"][0]["next_action"])
+                researcher_text = json.dumps(
+                    {
+                        "blocker": payload["blocker"],
+                        "recommended_next": payload["recommended_next"],
+                        "studies": payload["studies"],
+                    },
+                    ensure_ascii=False,
+                )
+                for forbidden in (reason_code, "Agent", "Prompt", "JSON", "Git", "hash", "path", ".json", "/"):
+                    self.assertNotIn(forbidden, researcher_text)
+                if reason_code == "RESUME_BINDING_INVALID":
+                    self.assertNotIn("重新准备该研究", researcher_text)
 
     def test_progress_surfaces_canonical_source_state_mismatch_instead_of_silent_sources_loop(self) -> None:
         sys.path.insert(0, str(ROOT))
@@ -1759,6 +3171,7 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
                 "manuscript_sha256": hashlib.sha256(manuscript_path.read_bytes()).hexdigest(),
                 "docx_sha256": hashlib.sha256(docx_path.read_bytes()).hexdigest(),
             }
+            self._add_current_figure_binding(project, valid_report)
             quality_path.write_text(json.dumps(valid_report) + "\n", encoding="utf-8")
 
             status, _, body = self._request(
@@ -1850,17 +3263,13 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             quality_path = project / "05_final_audit" / "quality_report.json"
             snapshot_path.write_bytes(manuscript_path.read_bytes())
             docx_path.write_bytes(b"current-synthetic-docx")
-            quality_path.write_text(
-                json.dumps(
-                    {
-                        "release_status": "AI_REVIEWED_BENCHMARK",
-                        "manuscript_sha256": hashlib.sha256(manuscript_path.read_bytes()).hexdigest(),
-                        "docx_sha256": hashlib.sha256(docx_path.read_bytes()).hexdigest(),
-                    }
-                )
-                + "\n",
-                encoding="utf-8",
-            )
+            report = {
+                "release_status": "AI_REVIEWED_BENCHMARK",
+                "manuscript_sha256": hashlib.sha256(manuscript_path.read_bytes()).hexdigest(),
+                "docx_sha256": hashlib.sha256(docx_path.read_bytes()).hexdigest(),
+            }
+            self._add_current_figure_binding(project, report)
+            quality_path.write_text(json.dumps(report) + "\n", encoding="utf-8")
             direct = f"GET /file?path={quote(str(docx_path), safe='')} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode()
             status, _, body = self._request(dashboard, review_root, direct)
             self.assertEqual(200, status)
@@ -1879,6 +3288,48 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             docx_path.write_bytes(b"tampered-stale-docx")
             alias = f"GET /file?path={quote(str(alias_path), safe='')} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode()
             status, _, _ = self._request(dashboard, review_root, alias)
+            self.assertEqual(403, status)
+
+    def test_file_route_checks_resolved_paper_relative_release_identity(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = self._copy_fixture(Path(temp_dir))
+            project = review_root / "review-projects" / "synthetic-review"
+            manuscript_path = project / "04_first_draft" / "first_draft.md"
+            snapshot_path = project / "05_final_audit" / "final_draft.md"
+            docx_path = project / "05_final_audit" / "final_draft.docx"
+            quality_path = project / "05_final_audit" / "quality_report.json"
+            snapshot_path.write_bytes(manuscript_path.read_bytes())
+            current_docx = b"current-synthetic-docx"
+            docx_path.write_bytes(current_docx)
+            report = {
+                "release_status": "AI_REVIEWED_BENCHMARK",
+                "manuscript_sha256": hashlib.sha256(manuscript_path.read_bytes()).hexdigest(),
+                "docx_sha256": hashlib.sha256(current_docx).hexdigest(),
+            }
+            self._add_current_figure_binding(project, report)
+            quality_path.write_text(json.dumps(report) + "\n", encoding="utf-8")
+            metadata_path = review_root / "review-library/metadata/papers/release-alias.metadata.json"
+            metadata_path.write_text(
+                json.dumps(
+                    {
+                        "paper_id": "release-alias",
+                        "source_paths": {"markdown": str(snapshot_path)},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            docx_path.write_bytes(b"tampered-stale-docx")
+
+            request = (
+                b"GET /file?path=final_draft.docx&paper_id=release-alias HTTP/1.1\r\n"
+                b"Host: localhost\r\n\r\n"
+            )
+            status, _, _ = self._request(dashboard, review_root, request)
+
             self.assertEqual(403, status)
 
     def test_review_projects_symlink_escape_rejects_api_read_write_without_outside_changes(self) -> None:
@@ -2187,6 +3638,11 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
                 risk["targets"][0]["proposed_action"],
             )
             self.assertEqual(
+                "Synthetic study, Results · 第 3 页",
+                risk["targets"][0]["locator"]["label"],
+            )
+            self.assertIn("locator.href", (ROOT / "view/assets/dashboard/review.html").read_text(encoding="utf-8"))
+            self.assertEqual(
                 "b4dac5597d27c55c41a2438b9cbe38d267495993d1c88f17fabbe54c386b1afc",
                 risk["targets"][0]["decision_token"],
             )
@@ -2366,7 +3822,7 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
                 manuscript=(
                     "# Synthetic Review\n\n"
                     "## Results\n\n"
-                    f"{claim_text} [1].\n\n"
+                    f"{claim_text} [1]. <!-- claim_id:{projection['claim_id']} -->\n\n"
                     "## References\n\n"
                     "[1] Synthetic reference.\n"
                 ),
@@ -2876,6 +4332,50 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
         for forbidden in ("mapping file", "manifest path", "json", "agent", "prompt", "git"):
             self.assertNotIn(forbidden, visible)
 
+    def test_review_workbench_accepts_researcher_source_supplements(self) -> None:
+        review_html = (ROOT / "view/assets/dashboard/review.html").read_text(encoding="utf-8")
+        parser = VisibleTextParser()
+        parser.feed(review_html)
+        visible = parser.text.casefold()
+
+        for element_id in (
+            "source-supplement-form",
+            "source-supplement-doi",
+            "source-supplement-title",
+            "source-supplement-include",
+            "source-supplement-exclude",
+            "source-supplement-message",
+            "source-supplement-list",
+        ):
+            self.assertIn(f'id="{element_id}"', review_html)
+        for binding in (
+            "submitSourceSupplement",
+            "/source-supplement`",
+            "method:'POST'",
+            "renderSourceStage",
+        ):
+            self.assertIn(binding, review_html)
+        self.assertIn("补充一篇研究", visible)
+        self.assertIn("doi", visible)
+        self.assertIn("论文标题", visible)
+        self.assertIn("纳入全文处理", visible)
+        self.assertIn("排除", visible)
+
+    def test_review_workbench_maps_unresolved_members_without_internal_paths(self) -> None:
+        review_html = (ROOT / "view/assets/dashboard/review.html").read_text(encoding="utf-8")
+        parser = VisibleTextParser()
+        parser.feed(review_html)
+        visible = parser.text.casefold()
+
+        self.assertIn('id="source-unresolved-list"', review_html)
+        self.assertIn("submitSourceMapping", review_html)
+        self.assertIn("/source-mapping`", review_html)
+        self.assertIn("member_id", review_html)
+        self.assertIn("download_id", review_html)
+        self.assertIn("确认文件归属", visible)
+        for forbidden in ("target_path", "sha256", "json mapping", "absolute path"):
+            self.assertNotIn(forbidden, visible)
+
     def test_review_workbench_completes_risk_packet_in_scientific_language(self) -> None:
         review_html = (ROOT / "view/assets/dashboard/review.html").read_text(encoding="utf-8")
         parser = VisibleTextParser()
@@ -2988,6 +4488,105 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, visible)
 
+    def test_review_workbench_renders_manuscript_images_without_a_general_markdown_renderer(self) -> None:
+        review_html = (ROOT / "view/assets/dashboard/review.html").read_text(encoding="utf-8")
+        review_css = (ROOT / "view/assets/dashboard/review-ui.css").read_text(encoding="utf-8")
+
+        for binding in (
+            "parseManuscriptImageTokens",
+            "renderReadingContent",
+            "figure.image_url",
+            "figurePayload.reading_figures",
+            "manuscript-figure",
+            "figure-placeholder",
+            "naturalWidth",
+        ):
+            self.assertIn(binding, review_html)
+        self.assertIn(".manuscript-figure", review_css)
+        self.assertIn(".figure-placeholder", review_css)
+        self.assertNotIn("marked.parse", review_html)
+        self.assertNotIn("innerHTML", review_html)
+
+    def test_dashboard_serves_only_bounded_valid_project_figures(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = self._copy_fixture(Path(temp_dir))
+            project = review_root / "review-projects" / "synthetic-review"
+            figure_dir = project / "03_figure_redraw"
+            figure_dir.mkdir(parents=True, exist_ok=True)
+            (figure_dir / "visible.png").write_bytes(TINY_PNG)
+            (figure_dir / "not-image.png").write_bytes(b"not an image")
+            outside = Path(temp_dir) / "outside.png"
+            outside.write_bytes(TINY_PNG)
+            (figure_dir / "escape.png").symlink_to(outside)
+            (figure_dir / "figure_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "figures": [
+                            {
+                                "figure_id": "visible",
+                                "figure_type": "ORIGINAL_GENERATED",
+                                "markdown_path": "../03_figure_redraw/visible.png",
+                                "source_claim_ids": ["claim-neutral-01"],
+                                "caption": "Visible figure.",
+                            },
+                            {
+                                "figure_id": "placeholder",
+                                "figure_type": "FIGURE_BRIEF_PLACEHOLDER",
+                                "brief": "Pending figure.",
+                            },
+                            {
+                                "figure_id": "invalid-bytes",
+                                "figure_type": "ORIGINAL_GENERATED",
+                                "markdown_path": "../03_figure_redraw/not-image.png",
+                                "source_claim_ids": ["claim-neutral-01"],
+                            },
+                            {
+                                "figure_id": "escape",
+                                "figure_type": "ORIGINAL_GENERATED",
+                                "markdown_path": "../03_figure_redraw/escape.png",
+                                "source_claim_ids": ["claim-neutral-01"],
+                            },
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            payload = dashboard.project_figures_payload(review_root, "synthetic-review")
+            self.assertEqual(
+                "/api/project/synthetic-review/figure?index=0",
+                payload["figures"][0]["image_url"],
+            )
+            self.assertNotIn("image_url", payload["figures"][1])
+            self.assertNotIn("image_url", payload["figures"][2])
+            self.assertNotIn("image_url", payload["figures"][3])
+
+            status, headers, body = self._request(
+                dashboard,
+                review_root,
+                b"GET /api/project/synthetic-review/figure?index=0 HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            )
+            self.assertEqual(200, status)
+            self.assertEqual("image/png", headers["Content-Type"])
+            self.assertEqual(TINY_PNG, body)
+
+            for index in ("1", "2", "3", "4", "-1", "nope", "0&extra=1"):
+                with self.subTest(index=index):
+                    status, _, body = self._request(
+                        dashboard,
+                        review_root,
+                        (
+                            f"GET /api/project/synthetic-review/figure?index={index} HTTP/1.1\r\n"
+                            "Host: localhost\r\n\r\n"
+                        ).encode(),
+                    )
+                    self.assertNotEqual(200, status)
+                    self.assertNotIn(TINY_PNG, body)
+
     def test_cockpit_context_preview_clamps_excerpt_without_clamping_manuscript_quotes(self) -> None:
         review_css = (ROOT / "view" / "assets" / "dashboard" / "review-ui.css").read_text(encoding="utf-8")
 
@@ -3030,7 +4629,7 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             "projectId !== requestedProjectId",
             "return 'stale'",
             "return 'loaded'",
-            "const [nextProjectState, nextCockpitPayload, nextDraftPayload, nextEvidencePayload, nextRiskPayload, nextSourcePayload, nextProgressPayload]",
+            "const [nextProjectState, nextCockpitPayload, nextDraftPayload, nextEvidencePayload, nextRiskPayload, nextSourcePayload, nextProgressPayload, nextFigurePayload, nextFinalPayload]",
             "projectState = nextProjectState",
             "cockpitPayload = nextCockpitPayload",
             "draftPayload = nextDraftPayload",
@@ -3038,6 +4637,8 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             "riskPayload = nextRiskPayload",
             "sourcePayload = nextSourcePayload",
             "progressPayload = nextProgressPayload",
+            "figurePayload = nextFigurePayload",
+            "finalPayload = nextFinalPayload",
             "if (generation === projectLoadGeneration) setProjectLoadBusy(false)",
             "applyWorkbenchBusyState(editorBusy || projectLoadBusy)",
             "button.disabled = editorBusy || projectLoadBusy",
@@ -3063,6 +4664,192 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             text=True,
             check=False,
         )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+
+    def test_review_workbench_clears_release_controls_when_next_draft_is_unavailable(self) -> None:
+        review_html = (ROOT / "view" / "assets" / "dashboard" / "review.html").read_text(encoding="utf-8")
+        functions = []
+        for name in ("renderReleaseControls", "renderDraft"):
+            match = re.search(
+                rf"^    function {name}\(\) \{{[\s\S]*?^    \}}",
+                review_html,
+                flags=re.MULTILINE,
+            )
+            self.assertIsNotNone(match)
+            functions.append(match.group(0))
+        node = shutil.which("node")
+        self.assertIsNotNone(node)
+        runtime = "\n".join(
+            [
+                "const nodes = {",
+                "  'manuscript-empty': {hidden:true},",
+                "  'manuscript-layout': {hidden:false},",
+                "  'download-docx': {hidden:false, href:'/file?path=stale.docx'},",
+                "};",
+                "const $ = id => nodes[id];",
+                "let draftPayload = {available:false, sections:[]};",
+                "let finalPayload = {final_draft_docx_exists:false, final_draft_docx_path:''};",
+                "let activeSectionId = '';",
+                "let selectedClaimId = '';",
+                *functions,
+                "renderDraft();",
+                "if (!nodes['download-docx'].hidden) throw new Error('stale download remained visible');",
+                "if (nodes['download-docx'].href !== '#') throw new Error('stale download href remained active');",
+            ]
+        )
+
+        completed = subprocess.run(
+            [node, "-e", runtime],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+
+    def test_review_workbench_export_ignores_stale_project_response_and_restores_controls(self) -> None:
+        review_html = (ROOT / "view" / "assets" / "dashboard" / "review.html").read_text(encoding="utf-8")
+        functions = []
+        for name in ("applyWorkbenchBusyState", "exportDocx"):
+            match = re.search(
+                rf"^    (?:async )?function {name}\([^)]*\) \{{[\s\S]*?^    \}}",
+                review_html,
+                flags=re.MULTILINE,
+            )
+            self.assertIsNotNone(match)
+            functions.append(match.group(0))
+        node = shutil.which("node")
+        self.assertIsNotNone(node)
+        runtime = "\n".join(
+            [
+                "(async () => {",
+                "const nodes = new Proxy({}, {get(target, id) {",
+                "  if (!target[id]) target[id] = {disabled:false, hidden:false, href:'#', textContent:'', value:''};",
+                "  return target[id];",
+                "}});",
+                "const $ = id => nodes[id];",
+                "const document = {querySelectorAll:() => []};",
+                "let projectId = 'project-a';",
+                "let projectLoadGeneration = 7;",
+                "let editorBusy = false, projectLoadBusy = false, editorDirty = false, exportBusy = false;",
+                "let sourceUploadBusy = false, sourceSupplementBusy = false, sourceMappingBusy = false;",
+                "let finalPayload = {marker:'project-a-old'};",
+                "let releaseRenderCount = 0;",
+                "const renderReleaseControls = () => { releaseRenderCount += 1; };",
+                "const calls = [];",
+                "let resolvePost;",
+                "const postPending = new Promise(resolve => { resolvePost = resolve; });",
+                "async function getPayload(url, options) {",
+                "  calls.push({url, method:options?.method || 'GET'});",
+                "  if (options?.method === 'POST') return postPending;",
+                "  return {marker:'unexpected-final'};",
+                "}",
+                *functions,
+                "const exporting = exportDocx();",
+                "await Promise.resolve();",
+                "const projectDisabledDuringExport = nodes['project'].disabled;",
+                "projectId = 'project-b';",
+                "projectLoadGeneration = 8;",
+                "resolvePost({ok:true});",
+                "await exporting;",
+                "if (!projectDisabledDuringExport) throw new Error('project switch was enabled during export');",
+                "if (calls.length !== 1 || calls[0].url !== '/api/project/project-a/export-docx') throw new Error(JSON.stringify(calls));",
+                "if (releaseRenderCount !== 0 || finalPayload.marker !== 'project-a-old') throw new Error('stale export rendered');",
+                "if (nodes['project'].disabled || nodes['export-docx'].disabled) throw new Error('controls were not restored');",
+                "if (nodes['export-docx'].textContent !== '导出 DOCX') throw new Error('export label was not restored');",
+                "})().catch(error => { console.error(error); process.exit(1); });",
+            ]
+        )
+
+        completed = subprocess.run(
+            [node, "-e", runtime],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+
+    def test_review_workbench_save_refreshes_release_and_ignores_superseded_generation(self) -> None:
+        review_html = (ROOT / "view" / "assets" / "dashboard" / "review.html").read_text(encoding="utf-8")
+        functions = []
+        for name in ("applyWorkbenchBusyState", "setEditorBusy", "renderReleaseControls", "saveDraftBody"):
+            match = re.search(
+                rf"^    (?:async )?function {name}\([^)]*\) \{{[\s\S]*?^    \}}",
+                review_html,
+                flags=re.MULTILINE,
+            )
+            self.assertIsNotNone(match)
+            functions.append(match.group(0))
+        node = shutil.which("node")
+        self.assertIsNotNone(node)
+        runtime = "\n".join(
+            [
+                "(async () => {",
+                "const nodes = new Proxy({}, {get(target, id) {",
+                "  if (!target[id]) target[id] = {disabled:false, hidden:false, href:'#', textContent:'', value:''};",
+                "  return target[id];",
+                "}});",
+                "const $ = id => nodes[id];",
+                "const document = {querySelectorAll:() => []};",
+                "let projectId = 'project-a', projectLoadGeneration = 10, activeSectionId = 'results';",
+                "let editorBusy = false, projectLoadBusy = false, editorDirty = false, exportBusy = false;",
+                "let sourceUploadBusy = false, sourceSupplementBusy = false, sourceMappingBusy = false;",
+                "let draftPayload = {manuscript_version:'v1', marker:'before-save'};",
+                "let finalPayload = {final_draft_docx_exists:true, final_draft_docx_path:'project-a/old.docx', marker:'old-release'};",
+                "nodes['section-editor'].value = 'Scientific response changed by 99%.';",
+                "const getActiveSection = () => ({id:'results'});",
+                "let renderCount = 0;",
+                "const renderDraft = () => { renderCount += 1; renderReleaseControls(); };",
+                "let mode = 'stale-final';",
+                "let calls = [];",
+                "let resolveDraft, resolveFinal;",
+                "let draftPending, finalPending;",
+                "const saveResult = {section_id:'results', edit_classification:'scientific', needs_evidence_review:true, reasons:['数值变化需要证据复核']};",
+                "let getPayload = async (url, options) => {",
+                "  calls.push(url);",
+                "  if (options?.method === 'PUT') return saveResult;",
+                "  if (mode === 'stale-final') {",
+                "    if (url.endsWith('/draft')) return {manuscript_version:'v2', marker:'saved-draft'};",
+                "    if (url.endsWith('/final')) return {final_draft_docx_exists:false, final_draft_docx_path:'', marker:'stale-release'};",
+                "  }",
+                "  if (url.endsWith('/draft')) return draftPending;",
+                "  if (url.endsWith('/final')) return finalPending;",
+                "  throw new Error('unexpected request ' + url);",
+                "};",
+                "const optionalPayload = async (url, fallback) => { try { return await getPayload(url); } catch (_) { return fallback; } };",
+                *functions,
+                "await saveDraftBody(nodes['section-editor'].value);",
+                "if (!calls.some(url => url.endsWith('/final'))) throw new Error('final state was not refreshed');",
+                "if (!nodes['download-docx'].hidden || nodes['download-docx'].href !== '#') throw new Error('stale download remained available');",
+                "if (finalPayload.marker !== 'stale-release') throw new Error('stale final payload was not applied');",
+                "mode = 'deferred'; calls = []; renderCount = 0; projectLoadGeneration = 20;",
+                "draftPayload = {manuscript_version:'v2', marker:'generation-20'};",
+                "finalPayload = {final_draft_docx_exists:true, final_draft_docx_path:'project-a/generation-20.docx', marker:'generation-20'};",
+                "draftPending = new Promise(resolve => { resolveDraft = resolve; });",
+                "finalPending = new Promise(resolve => { resolveFinal = resolve; });",
+                "const saving = saveDraftBody(nodes['section-editor'].value);",
+                "await Promise.resolve(); await Promise.resolve();",
+                "projectLoadGeneration = 21;",
+                "draftPayload = {manuscript_version:'v3', marker:'generation-21'};",
+                "finalPayload = {final_draft_docx_exists:true, final_draft_docx_path:'project-a/generation-21.docx', marker:'generation-21'};",
+                "renderReleaseControls();",
+                "resolveDraft({manuscript_version:'old', marker:'superseded'});",
+                "resolveFinal({final_draft_docx_exists:false, final_draft_docx_path:'', marker:'superseded'});",
+                "await saving;",
+                "if (draftPayload.marker !== 'generation-21' || finalPayload.marker !== 'generation-21') throw new Error('superseded save polluted current state');",
+                "if (nodes['download-docx'].hidden || !nodes['download-docx'].href.includes('generation-21.docx')) throw new Error('current release control was overwritten');",
+                "})().catch(error => { console.error(error); process.exit(1); });",
+            ]
+        )
+
+        completed = subprocess.run(
+            [node, "-e", runtime],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
         self.assertEqual(0, completed.returncode, completed.stderr)
 
     def test_dashboard_accepts_qoderwork_native_project_root_without_library_metadata(self) -> None:

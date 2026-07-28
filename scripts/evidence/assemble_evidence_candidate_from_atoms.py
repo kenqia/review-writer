@@ -18,6 +18,7 @@ from evidence_atom_core import (
     RENDERER_CONTRACT,
     EvidenceAtomCoreError,
     canonical_json_sha256,
+    canonical_sealed_job_id,
     canonicalize_text,
     packet_path,
     render_pdf_page,
@@ -238,7 +239,53 @@ def evidence_ref(atom: dict, summary: str, visual_values: dict[str, list[str]]) 
     }
 
 
+def semantic_target_contract(job: dict[str, Any]) -> tuple[set[str], set[str]]:
+    contract = job.get("semantic_target_contract")
+    if contract is None:
+        if job.get("schema_version") == "sealed-evidence-extraction-job.v2":
+            raise AssemblyError(
+                "SEMANTIC_TARGET_CONTRACT_INVALID",
+                "sealed v2 jobs require a semantic target contract",
+            )
+        return {"ELIGIBILITY", "REACTION_UNIT", "CLAIM"}, set()
+    if not isinstance(contract, dict):
+        raise AssemblyError("SEMANTIC_TARGET_CONTRACT_INVALID", "target contract must be an object")
+    allowed = contract.get("allowed_target_kinds")
+    denied = contract.get("denied_claim_ids")
+    if (
+        contract.get("policy") != "ALLOW_EXCEPT_DECLARED_SI_DEPENDENT_CLAIMS"
+        or not isinstance(allowed, list)
+        or not allowed
+        or any(kind not in {"ELIGIBILITY", "REACTION_UNIT", "CLAIM"} for kind in allowed)
+        or len(allowed) != len(set(allowed))
+        or not isinstance(denied, list)
+        or any(not isinstance(claim_id, str) or not claim_id for claim_id in denied)
+        or len(denied) != len(set(denied))
+    ):
+        raise AssemblyError(
+            "SEMANTIC_TARGET_CONTRACT_INVALID",
+            "sealed semantic target contract is malformed",
+        )
+    return set(allowed), set(denied)
+
+
+def validate_sealed_job_binding(job: dict[str, Any]) -> tuple[set[str], set[str]]:
+    allowed_target_kinds, denied_claim_ids = semantic_target_contract(job)
+    if job.get("schema_version") == "sealed-evidence-extraction-job.v2":
+        try:
+            expected_job_id = canonical_sealed_job_id(job)
+        except EvidenceAtomCoreError as exc:
+            raise AssemblyError("JOB_BINDING_INVALID", str(exc)) from exc
+        if job.get("job_id") != expected_job_id:
+            raise AssemblyError(
+                "JOB_BINDING_INVALID",
+                "sealed job_id does not match its current source and target bindings",
+            )
+    return allowed_target_kinds, denied_claim_ids
+
+
 def assemble(job: dict, catalog: dict, semantic: dict, atoms: dict[str, dict]) -> dict:
+    allowed_target_kinds, denied_claim_ids = validate_sealed_job_binding(job)
     if semantic.get("job_id") != job.get("job_id") or semantic.get("study_id") != (
         job.get("study") or {}
     ).get("study_id"):
@@ -260,6 +307,18 @@ def assemble(job: dict, catalog: dict, semantic: dict, atoms: dict[str, dict]) -
             if target_kind != "ELIGIBILITY" and "target_namespace" in job
             else semantic_target_id
         )
+        if target_kind not in allowed_target_kinds:
+            raise AssemblyError(
+                "SEMANTIC_TARGET_KIND_DENIED",
+                f"semantic target kind is not allowed: {target_kind!r}",
+            )
+        if target_kind == "CLAIM" and (
+            semantic_target_id in denied_claim_ids or target_id in denied_claim_ids
+        ):
+            raise AssemblyError(
+                "BLOCKED_CLAIM_SELECTED",
+                f"semantic decision selected a claim denied by source coverage: {semantic_target_id!r}",
+            )
         if target_kind != "ELIGIBILITY":
             if target_id in target_ids:
                 raise AssemblyError(
@@ -401,6 +460,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         job = load_json(args.job)
+        validate_sealed_job_binding(job)
         catalog = load_json(args.catalog)
         semantic = load_json(args.semantic)
         validate_schema(catalog, load_json(args.catalog_schema), "CATALOG_SCHEMA_INVALID")

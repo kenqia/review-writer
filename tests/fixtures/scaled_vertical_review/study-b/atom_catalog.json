@@ -55,9 +55,9 @@
       "source_id": "STUDY-B-SI"
     }
   ],
-  "catalog_sha256": "f2944543cb5abcf95cfc514e47ceba33d802d1c07362b3d6a2840826224fce46",
-  "job_id": "JOB-STUDY-B",
-  "job_sha256": "7a230653b6267376169df8ed0f4413ea9cf665e4aebc72a5ce4969450cb38f7c",
+  "catalog_sha256": "e611f08c9880219cb450ff4482006d07f5d99dd11ec6910cead6a6d2cde06e49",
+  "job_id": "JOB-571ebbb1ef47ee8cc023995d9e7c7f537f6d240c3d81483dbb760e74ece16e42",
+  "job_sha256": "05530b0766b4cdbad0ae100aef334749a6a36213fb1d72dd9941b0bd73daf17b",
   "schema_version": "evidence-atom-catalog.v1",
   "study_id": "STUDY-B"
 }

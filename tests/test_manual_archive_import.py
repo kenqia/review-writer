@@ -14,6 +14,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
+import zlib
 from pathlib import Path
 from unittest import mock
 
@@ -42,6 +43,80 @@ def make_minimal_pdf() -> bytes:
         b"xref\n0 3\n0000000000 65535 f \n"
         + f"{offsets[0]:010d} 00000 n \n{offsets[1]:010d} 00000 n \n".encode("ascii")
         + b"trailer\n<< /Size 3 /Root 1 0 R >>\nstartxref\n"
+        + str(xref_offset).encode("ascii")
+        + b"\n%%EOF\n"
+    )
+    return b"".join(parts)
+
+
+def make_identity_pdf(*, doi: str | None = None, title: str | None = None) -> bytes:
+    info_fields = []
+    if doi:
+        info_fields.append(f"/Subject (DOI: {doi})")
+    if title:
+        info_fields.append(f"/Title ({title})")
+    parts = [b"%PDF-1.4\n"]
+    offsets = []
+    for body in (
+        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+        b"2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n",
+        ("3 0 obj\n<< " + " ".join(info_fields) + " >>\nendobj\n").encode("utf-8"),
+    ):
+        offsets.append(sum(len(part) for part in parts))
+        parts.append(body)
+    xref_offset = sum(len(part) for part in parts)
+    parts.append(
+        b"xref\n0 4\n0000000000 65535 f \n"
+        + b"".join(f"{offset:010d} 00000 n \n".encode("ascii") for offset in offsets)
+        + b"trailer\n<< /Size 4 /Root 1 0 R /Info 3 0 R >>\nstartxref\n"
+        + str(xref_offset).encode("ascii")
+        + b"\n%%EOF\n"
+    )
+    return b"".join(parts)
+
+
+def make_real_identity_pdf(
+    *, first_page_text: str = "Synthetic article", metadata_title: str | None = None
+) -> bytes:
+    """Build one real page with a compressed text stream and optional UTF-16 title metadata."""
+
+    escaped = first_page_text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    content = f"BT /F1 12 Tf 72 720 Td ({escaped}) Tj ET\n".encode("ascii")
+    compressed = zlib.compress(content)
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        (
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"
+        ),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length "
+        + str(len(compressed)).encode("ascii")
+        + b" /Filter /FlateDecode >>\nstream\n"
+        + compressed
+        + b"\nendstream",
+    ]
+    if metadata_title is not None:
+        title_hex = (b"\xfe\xff" + metadata_title.encode("utf-16-be")).hex().upper().encode("ascii")
+        objects.append(b"<< /Title <" + title_hex + b"> >>")
+
+    parts = [b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n"]
+    offsets = []
+    for number, body in enumerate(objects, start=1):
+        offsets.append(sum(len(part) for part in parts))
+        parts.append(f"{number} 0 obj\n".encode("ascii") + body + b"\nendobj\n")
+    xref_offset = sum(len(part) for part in parts)
+    trailer = f"<< /Size {len(objects) + 1} /Root 1 0 R".encode("ascii")
+    if metadata_title is not None:
+        trailer += f" /Info {len(objects)} 0 R".encode("ascii")
+    trailer += b" >>"
+    parts.append(
+        f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode("ascii")
+        + b"".join(f"{offset:010d} 00000 n \n".encode("ascii") for offset in offsets)
+        + b"trailer\n"
+        + trailer
+        + b"\nstartxref\n"
         + str(xref_offset).encode("ascii")
         + b"\n%%EOF\n"
     )
@@ -139,6 +214,7 @@ class ManualArchiveImportTests(unittest.TestCase):
             self.assertEqual("IMPORTED", receipt["results"][0]["status"])
             self.assertEqual(1, receipt["unmatched_count"])
             self.assertEqual("manual-archive-import-receipt.v1", receipt["schema_version"])
+            self.assertEqual("00_sources/manual_import_receipt.json", receipt["canonical_artifact"])
             self.assertEqual(manifest.name, receipt["manifest_basename"])
             self.assertEqual(archive.name, receipt["archive_basename"])
             self.assertEqual(hashlib.sha256(manifest.read_bytes()).hexdigest(), receipt["manifest_sha256"])
@@ -271,6 +347,362 @@ class ManualArchiveImportTests(unittest.TestCase):
             self.assertEqual(2, receipt["unmatched_count"])
             self.assertFalse((root / "out/sources/DUP/main.pdf").exists())
 
+    def test_doi_filename_matches_after_exact_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.write_manifest(
+                root,
+                [self.row("OPAQUE_MAIN", "sources/S1/MAIN.pdf", doi="10.1000/abc.1")],
+            )
+            archive = root / "sources.zip"
+            self.write_zip(archive, [("10.1000_ABC.1.pdf", PDF_BYTES)])
+
+            receipt = manual_archive.import_manual_archive(manifest, archive, root / "out")
+
+            result = receipt["results"][0]
+            self.assertEqual("IMPORTED", result["status"])
+            self.assertEqual("DOI_FILENAME", result["match_basis"])
+
+    def test_pdf_embedded_doi_matches_when_filename_is_opaque(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.write_manifest(
+                root,
+                [self.row("S2_MAIN", "sources/S2/MAIN.pdf", doi="10.1000/embedded")],
+            )
+            archive = root / "sources.zip"
+            self.write_zip(
+                archive,
+                [("download.pdf", make_real_identity_pdf(first_page_text="DOI: 10.1000/embedded"))],
+            )
+
+            receipt = manual_archive.import_manual_archive(manifest, archive, root / "out")
+
+            self.assertEqual("PDF_DOI", receipt["results"][0]["match_basis"])
+
+    def test_compressed_first_page_doi_is_parsed_by_the_real_pdf_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.write_manifest(
+                root,
+                [self.row("COMPRESSED_MAIN", "sources/C/MAIN.pdf", doi="10.1000/compressed.1")],
+            )
+            archive = root / "sources.zip"
+            pdf = make_real_identity_pdf(
+                first_page_text="Article DOI: 10.1000/compressed.1"
+            )
+            self.assertNotIn(b"10.1000/compressed.1", pdf)
+            self.write_zip(archive, [("opaque.pdf", pdf)])
+
+            receipt = manual_archive.import_manual_archive(manifest, archive, root / "out")
+
+            self.assertEqual("PDF_DOI", receipt["results"][0]["match_basis"])
+
+    def test_utf16_unicode_pdf_metadata_title_matches_uniquely(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            title = "铜催化羧化：范围与机理"
+            manifest = self.write_manifest(
+                root,
+                [self.row("UNICODE_MAIN", "sources/U/MAIN.pdf", title=title)],
+            )
+            archive = root / "sources.zip"
+            self.write_zip(
+                archive,
+                [("opaque.pdf", make_real_identity_pdf(metadata_title=title))],
+            )
+
+            receipt = manual_archive.import_manual_archive(manifest, archive, root / "out")
+
+            self.assertEqual("PDF_TITLE", receipt["results"][0]["match_basis"])
+
+    def test_unique_normalized_title_matches_but_title_collision_never_guesses(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.write_manifest(
+                root,
+                [
+                    self.row("A_MAIN", "sources/A/MAIN.pdf", title="Copper–Catalyzed Carboxylation"),
+                    self.row("B_MAIN", "sources/B/MAIN.pdf", title="A Different Study"),
+                ],
+            )
+            archive = root / "sources.zip"
+            self.write_zip(
+                archive,
+                [
+                    (
+                        "opaque.pdf",
+                        make_real_identity_pdf(
+                            metadata_title="Copper-Catalyzed   Carboxylation"
+                        ),
+                    )
+                ],
+            )
+
+            receipt = manual_archive.import_manual_archive(manifest, archive, root / "out")
+
+            results = self.result_by_id(receipt)
+            self.assertEqual("PDF_TITLE", results["A_MAIN"]["match_basis"])
+            self.assertEqual("MISSING", results["B_MAIN"]["status"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.write_manifest(
+                root,
+                [
+                    self.row("A_MAIN", "sources/A/MAIN.pdf", title="Shared Study"),
+                    self.row("B_MAIN", "sources/B/MAIN.pdf", title="Shared Study"),
+                ],
+            )
+            archive = root / "sources.zip"
+            self.write_zip(
+                archive,
+                [("opaque.pdf", make_real_identity_pdf(metadata_title="Shared Study"))],
+            )
+
+            receipt = manual_archive.import_manual_archive(manifest, archive, root / "out")
+
+            self.assertEqual({"AMBIGUOUS": 2}, receipt["counts"])
+            self.assertEqual(1, len(receipt["unresolved"]))
+            self.assertEqual("AMBIGUOUS_PDF_TITLE", receipt["unresolved"][0]["reason"])
+            self.assertEqual(["A_MAIN", "B_MAIN"], receipt["unresolved"][0]["download_ids"])
+            self.assertEqual("opaque.pdf", receipt["unresolved"][0]["member_display_name"])
+            self.assertRegex(receipt["unresolved"][0]["member_id"], r"^MEMBER-\d{4}$")
+            self.assertNotIn(str(root), json.dumps(receipt))
+
+    def test_unique_normalized_title_can_come_from_the_pdf_filename(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.write_manifest(
+                root,
+                [
+                    self.row(
+                        "TITLE_MAIN",
+                        "sources/TITLE/MAIN.pdf",
+                        title="Electrochemical Reductive Carboxylation: Scope and Mechanism",
+                    )
+                ],
+            )
+            archive = root / "sources.zip"
+            self.write_zip(
+                archive,
+                [("Electrochemical Reductive Carboxylation - Scope and Mechanism.pdf", PDF_BYTES)],
+            )
+
+            receipt = manual_archive.import_manual_archive(manifest, archive, root / "out")
+
+            result = receipt["results"][0]
+            self.assertEqual("IMPORTED", result["status"])
+            self.assertEqual("PDF_TITLE", result["match_basis"])
+
+    def test_explicit_member_override_resolves_only_a_listed_candidate_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.write_manifest(
+                root,
+                [
+                    self.row("A_MAIN", "sources/A/MAIN.pdf", title="Shared Study"),
+                    self.row("B_MAIN", "sources/B/MAIN.pdf", title="Shared Study"),
+                ],
+            )
+            archive = root / "sources.zip"
+            payload = make_real_identity_pdf(metadata_title="Shared Study")
+            self.write_zip(archive, [("opaque.pdf", payload)])
+            output_root = root / "out"
+            first = manual_archive.import_manual_archive(manifest, archive, output_root)
+            unresolved = first["unresolved"][0]
+
+            second = manual_archive.import_manual_archive(
+                manifest,
+                archive,
+                output_root,
+                member_overrides={unresolved["member_id"]: "B_MAIN"},
+            )
+
+            results = self.result_by_id(second)
+            self.assertEqual("MISSING", results["A_MAIN"]["status"])
+            self.assertEqual("IMPORTED", results["B_MAIN"]["status"])
+            self.assertEqual("USER_CONFIRMED", results["B_MAIN"]["match_basis"])
+            self.assertEqual(payload, (output_root / "sources/B/MAIN.pdf").read_bytes())
+            self.assertFalse((output_root / "sources/A/MAIN.pdf").exists())
+            self.assertEqual([], second["unresolved"])
+            self.assertEqual(
+                [{"member_id": unresolved["member_id"], "download_id": "B_MAIN"}],
+                second["confirmed_mappings"],
+            )
+            persisted = json.loads(
+                (output_root / "manual_import_receipt.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(second, persisted)
+            self.assertNotIn(str(root), json.dumps(second))
+
+    def test_confirmed_member_overrides_can_be_replayed_while_resolving_the_next_member(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.write_manifest(
+                root,
+                [
+                    self.row("A_MAIN", "sources/A/MAIN.pdf", title="Shared Study"),
+                    self.row("B_MAIN", "sources/B/MAIN.pdf", title="Shared Study"),
+                ],
+            )
+            archive = root / "sources.zip"
+            first_payload = make_real_identity_pdf(
+                first_page_text="First member", metadata_title="Shared Study"
+            )
+            second_payload = make_real_identity_pdf(
+                first_page_text="Second member", metadata_title="Shared Study"
+            )
+            self.write_zip(
+                archive,
+                [("opaque-a.pdf", first_payload), ("opaque-b.pdf", second_payload)],
+            )
+            output_root = root / "out"
+            initial = manual_archive.import_manual_archive(manifest, archive, output_root)
+            first_member, second_member = [row["member_id"] for row in initial["unresolved"]]
+
+            first = manual_archive.import_manual_archive(
+                manifest,
+                archive,
+                output_root,
+                member_overrides={first_member: "A_MAIN"},
+            )
+            self.assertEqual(["B_MAIN"], first["unresolved"][0]["download_ids"])
+
+            second = manual_archive.import_manual_archive(
+                manifest,
+                archive,
+                output_root,
+                member_overrides={first_member: "A_MAIN", second_member: "B_MAIN"},
+            )
+
+            self.assertEqual([], second["unresolved"])
+            self.assertEqual(
+                [
+                    {"member_id": first_member, "download_id": "A_MAIN"},
+                    {"member_id": second_member, "download_id": "B_MAIN"},
+                ],
+                second["confirmed_mappings"],
+            )
+            self.assertEqual(first_payload, (output_root / "sources/A/MAIN.pdf").read_bytes())
+            self.assertEqual(second_payload, (output_root / "sources/B/MAIN.pdf").read_bytes())
+
+    def test_explicit_member_override_rejects_unlisted_candidate_without_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.write_manifest(
+                root,
+                [
+                    self.row("A_MAIN", "sources/A/MAIN.pdf", title="Shared Study"),
+                    self.row("B_MAIN", "sources/B/MAIN.pdf", title="Shared Study"),
+                    self.row("C_MAIN", "sources/C/MAIN.pdf", title="Different Study"),
+                ],
+            )
+            archive = root / "sources.zip"
+            self.write_zip(
+                archive,
+                [("opaque.pdf", make_real_identity_pdf(metadata_title="Shared Study"))],
+            )
+            output_root = root / "out"
+            first = manual_archive.import_manual_archive(manifest, archive, output_root)
+            receipt_path = output_root / "manual_import_receipt.json"
+            before = receipt_path.read_bytes()
+
+            with self.assertRaises(manual_archive.ManualArchiveError):
+                manual_archive.import_manual_archive(
+                    manifest,
+                    archive,
+                    output_root,
+                    member_overrides={first["unresolved"][0]["member_id"]: "C_MAIN"},
+                )
+
+            self.assertEqual(before, receipt_path.read_bytes())
+            self.assertFalse((output_root / "sources/A/MAIN.pdf").exists())
+            self.assertFalse((output_root / "sources/B/MAIN.pdf").exists())
+            self.assertFalse((output_root / "sources/C/MAIN.pdf").exists())
+
+    def test_pdf_tool_failure_stays_unresolved_with_compatible_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.write_manifest(
+                root,
+                [self.row("FAILED_PARSE_MAIN", "sources/F/MAIN.pdf")],
+            )
+            archive = root / "sources.zip"
+            self.write_zip(archive, [("opaque.pdf", PDF_BYTES)])
+
+            receipt = manual_archive.import_manual_archive(manifest, archive, root / "out")
+
+            self.assertEqual("MISSING", receipt["results"][0]["status"])
+            self.assertEqual(
+                [
+                    {
+                        "reason": "NO_DETERMINISTIC_MATCH",
+                        "member_id": "MEMBER-0001",
+                        "member_display_name": "opaque.pdf",
+                        "download_ids": ["FAILED_PARSE_MAIN"],
+                    }
+                ],
+                receipt["unresolved"],
+            )
+
+    def test_conflicting_pdf_identity_is_visible_and_writes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.write_manifest(
+                root,
+                [
+                    self.row("A_MAIN", "sources/A/MAIN.pdf", doi="10.1000/a"),
+                    self.row("B_MAIN", "sources/B/MAIN.pdf", doi="10.1000/b"),
+                ],
+            )
+            archive = root / "sources.zip"
+            self.write_zip(
+                archive,
+                [
+                    (
+                        "10.1000_a.pdf",
+                        make_real_identity_pdf(first_page_text="DOI: 10.1000/b"),
+                    )
+                ],
+            )
+
+            receipt = manual_archive.import_manual_archive(manifest, archive, root / "out")
+
+            self.assertEqual(1, len(receipt["unresolved"]))
+            self.assertEqual("CONFLICTING_MEMBER_IDENTITY", receipt["unresolved"][0]["reason"])
+            self.assertFalse((root / "out/sources/A/MAIN.pdf").exists())
+            self.assertFalse((root / "out/sources/B/MAIN.pdf").exists())
+
+    def test_exact_path_alias_wins_over_conflicting_embedded_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.write_manifest(
+                root,
+                [
+                    self.row("A_MAIN", "sources/A/MAIN.pdf", doi="10.1000/a"),
+                    self.row("B_MAIN", "sources/B/MAIN.pdf", doi="10.1000/b"),
+                ],
+            )
+            archive = root / "sources.zip"
+            self.write_zip(
+                archive,
+                [
+                    (
+                        "sources/A/MAIN.pdf",
+                        make_real_identity_pdf(first_page_text="DOI: 10.1000/b"),
+                    )
+                ],
+            )
+
+            receipt = manual_archive.import_manual_archive(manifest, archive, root / "out")
+
+            results = self.result_by_id(receipt)
+            self.assertEqual("IMPORTED", results["A_MAIN"]["status"])
+            self.assertEqual("EXACT_ALIAS", results["A_MAIN"]["match_basis"])
+            self.assertEqual("MISSING", results["B_MAIN"]["status"])
+            self.assertEqual([], receipt["unresolved"])
+
     def test_archive_names_must_be_safe_basenames(self) -> None:
         unsafe_values = (
             "../publisher.pdf",
@@ -384,6 +816,75 @@ class ManualArchiveImportTests(unittest.TestCase):
                         max_archive_bytes=archive.stat().st_size - 1,
                     )
 
+            self.assertFalse(output_root.exists())
+
+    def test_archive_growth_during_descriptor_hashing_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.write_manifest(root, [self.row("D1", "sources/D1/main.pdf")])
+            archive = root / "sources.zip"
+            self.write_zip(archive, [("D1.pdf", PDF_BYTES)])
+            initial_size = archive.stat().st_size
+            output_root = root / "out"
+            real_sha256 = hashlib.sha256
+            appended = False
+
+            class GrowingDigest:
+                def __init__(self, data: bytes = b"") -> None:
+                    self._digest = real_sha256(data)
+
+                def update(self, chunk: bytes) -> None:
+                    nonlocal appended
+                    self._digest.update(chunk)
+                    if not appended:
+                        appended = True
+                        with archive.open("ab") as handle:
+                            handle.write(b"growth-after-fstat")
+
+                def hexdigest(self) -> str:
+                    return self._digest.hexdigest()
+
+            with mock.patch.object(manual_archive.hashlib, "sha256", side_effect=GrowingDigest):
+                with self.assertRaises(manual_archive.ManualArchiveError):
+                    manual_archive.import_manual_archive(
+                        manifest,
+                        archive,
+                        output_root,
+                        max_archive_bytes=initial_size,
+                    )
+
+            self.assertTrue(appended)
+            self.assertFalse(output_root.exists())
+
+    def test_archive_growth_after_hash_before_zip_parse_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.write_manifest(root, [self.row("D1", "sources/D1/main.pdf")])
+            archive = root / "sources.zip"
+            self.write_zip(archive, [("D1.pdf", PDF_BYTES)])
+            initial_size = archive.stat().st_size
+            output_root = root / "out"
+            real_zip_file = zipfile.ZipFile
+            appended = False
+
+            def growing_zip_file(file, *args, **kwargs):
+                nonlocal appended
+                if not appended and hasattr(file, "fileno"):
+                    appended = True
+                    with archive.open("ab") as handle:
+                        handle.write(b"growth-after-hash")
+                return real_zip_file(file, *args, **kwargs)
+
+            with mock.patch.object(manual_archive.zipfile, "ZipFile", side_effect=growing_zip_file):
+                with self.assertRaises(manual_archive.ManualArchiveError):
+                    manual_archive.import_manual_archive(
+                        manifest,
+                        archive,
+                        output_root,
+                        max_archive_bytes=initial_size,
+                    )
+
+            self.assertTrue(appended)
             self.assertFalse(output_root.exists())
 
     def test_html_disguised_as_pdf_and_hash_mismatch_are_rejected(self) -> None:
@@ -584,6 +1085,82 @@ class ManualArchiveImportTests(unittest.TestCase):
 
             self.assertFalse((output_root / "sources/D1/MAIN.pdf").exists())
             self.assertEqual(old_receipt, receipt_path.read_bytes())
+
+    def test_publication_revalidates_a_replaced_output_root_before_linking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_root = root / "out"
+            target_parent = output_root / "sources/D1"
+            target_parent.mkdir(parents=True)
+            external = root / "external"
+            (external / "sources/D1").mkdir(parents=True)
+            staged = root / "staged.pdf"
+            staged.write_bytes(PDF_BYTES)
+            prepared = [{"row": {"target_path": "sources/D1/MAIN.pdf"}}]
+            real_stage_receipt = manual_archive._stage_receipt
+
+            def stage_then_replace_root(root_path, receipt):
+                destination, staged_receipt = real_stage_receipt(root_path, receipt)
+                moved = root / "moved-output"
+                root_path.rename(moved)
+                root_path.symlink_to(external, target_is_directory=True)
+                return destination, staged_receipt
+
+            def forbid_external_link(source, destination, *args, **kwargs):
+                raise AssertionError(f"publication reached replaced root: {Path(destination).name}")
+
+            with mock.patch.object(
+                manual_archive,
+                "_stage_receipt",
+                side_effect=stage_then_replace_root,
+            ), mock.patch.object(manual_archive.os, "link", side_effect=forbid_external_link):
+                with self.assertRaises(manual_archive.ManualArchiveError):
+                    manual_archive._publish_transaction(
+                        output_root,
+                        prepared,
+                        {0: (staged, hashlib.sha256(PDF_BYTES).hexdigest(), len(PDF_BYTES))},
+                        {"schema_version": "manual-archive-import-receipt.v1"},
+                    )
+
+            self.assertFalse((external / "sources/D1/MAIN.pdf").exists())
+
+    def test_publication_revalidates_a_replaced_output_parent_before_linking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            container = root / "container"
+            output_root = container / "out"
+            (output_root / "sources/D1").mkdir(parents=True)
+            external_container = root / "external-container"
+            (external_container / "out/sources/D1").mkdir(parents=True)
+            staged = root / "staged.pdf"
+            staged.write_bytes(PDF_BYTES)
+            prepared = [{"row": {"target_path": "sources/D1/MAIN.pdf"}}]
+            real_stage_receipt = manual_archive._stage_receipt
+
+            def stage_then_replace_parent(root_path, receipt):
+                destination, staged_receipt = real_stage_receipt(root_path, receipt)
+                container.rename(root / "moved-container")
+                container.symlink_to(external_container, target_is_directory=True)
+                return destination, staged_receipt
+
+            def forbid_external_link(source, destination, *args, **kwargs):
+                raise AssertionError(f"publication reached replaced parent: {Path(destination).name}")
+
+            with mock.patch.object(
+                manual_archive,
+                "_stage_receipt",
+                side_effect=stage_then_replace_parent,
+            ), mock.patch.object(manual_archive.os, "link", side_effect=forbid_external_link):
+                with self.assertRaises(manual_archive.ManualArchiveError):
+                    manual_archive._publish_transaction(
+                        output_root,
+                        prepared,
+                        {0: (staged, hashlib.sha256(PDF_BYTES).hexdigest(), len(PDF_BYTES))},
+                        {"schema_version": "manual-archive-import-receipt.v1"},
+                    )
+
+            self.assertFalse((external_container / "out/sources/D1/MAIN.pdf").exists())
+            self.assertEqual(PDF_BYTES, staged.read_bytes())
 
     def test_nonportable_download_id_is_rejected_before_output_effects(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

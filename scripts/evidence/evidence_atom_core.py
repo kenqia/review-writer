@@ -39,6 +39,13 @@ HIGH_RISK_CATEGORIES = frozenset(
         "FIGURE_TABLE_CHEMISTRY",
     }
 )
+JOB_SOURCE_BINDING_FIELDS = (
+    "document_role",
+    "layout_sha256",
+    "reading_order_sha256",
+    "source_binary_sha256",
+    "source_id",
+)
 
 
 class EvidenceAtomCoreError(Exception):
@@ -85,6 +92,60 @@ def canonical_json_sha256(payload: dict[str, Any]) -> str:
         sort_keys=True,
     ).encode("utf-8")
     return sha256_bytes(serialized)
+
+
+def canonical_sealed_job_id(job: Any) -> str:
+    """Recompute a v2 job ID only from its sealed, provider-visible bindings."""
+
+    if not isinstance(job, dict):
+        raise EvidenceAtomCoreError("JOB_BINDING_INVALID", "sealed job must be an object")
+    schema_version = job.get("schema_version")
+    mode = job.get("mode")
+    study = job.get("study")
+    target_namespace = job.get("target_namespace")
+    source_files = job.get("source_files")
+    contract = job.get("semantic_target_contract")
+    if (
+        not isinstance(schema_version, str)
+        or not schema_version
+        or not isinstance(mode, str)
+        or not mode
+        or not isinstance(study, dict)
+        or not isinstance(target_namespace, (str, type(None)))
+        or not isinstance(source_files, list)
+        or not source_files
+        or not isinstance(contract, dict)
+    ):
+        raise EvidenceAtomCoreError("JOB_BINDING_INVALID", "sealed job bindings are malformed")
+    projected_sources: list[dict[str, str]] = []
+    seen_sources: set[tuple[str, str]] = set()
+    for source in source_files:
+        if not isinstance(source, dict):
+            raise EvidenceAtomCoreError("JOB_BINDING_INVALID", "job sources must be objects")
+        projected: dict[str, str] = {}
+        for field in JOB_SOURCE_BINDING_FIELDS:
+            value = source.get(field)
+            if not isinstance(value, str) or not value:
+                raise EvidenceAtomCoreError(
+                    "JOB_BINDING_INVALID",
+                    f"job source binding is missing: {field}",
+                )
+            projected[field] = value
+        identity = (projected["document_role"], projected["source_id"])
+        if identity in seen_sources:
+            raise EvidenceAtomCoreError("JOB_BINDING_INVALID", "job source bindings are duplicated")
+        seen_sources.add(identity)
+        projected_sources.append(projected)
+    projected_sources.sort(key=lambda row: (row["document_role"], row["source_id"]))
+    payload = {
+        "mode": mode,
+        "schema_version": schema_version,
+        "semantic_target_contract": contract,
+        "source_files": projected_sources,
+        "study": study,
+        "target_namespace": target_namespace,
+    }
+    return "JOB-" + canonical_json_sha256(payload)
 
 
 def packet_path(packet_root: Path, relative_path: str) -> Path:

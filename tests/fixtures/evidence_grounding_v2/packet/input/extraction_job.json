@@ -1,6 +1,11 @@
 {
-  "schema_version": "sealed-evidence-extraction-job.v2",
+  "schema_version": "sealed-evidence-extraction-job.v1",
   "job_id": "SYNTHETIC-GROUNDING-V2",
+  "semantic_target_contract": {
+    "allowed_target_kinds": ["ELIGIBILITY", "REACTION_UNIT", "CLAIM"],
+    "denied_claim_ids": [],
+    "policy": "ALLOW_EXCEPT_DECLARED_SI_DEPENDENT_CLAIMS"
+  },
   "study": {
     "study_id": "SYNTHETIC_STUDY"
   },

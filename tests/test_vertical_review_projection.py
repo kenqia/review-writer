@@ -129,24 +129,73 @@ def _prepare_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _request_set_digest(requests: list[dict]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            requests,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _expected_sealed_job_id(job: dict) -> str:
+    source_files = [
+        {
+            key: source[key]
+            for key in (
+                "document_role",
+                "layout_sha256",
+                "reading_order_sha256",
+                "source_binary_sha256",
+                "source_id",
+            )
+        }
+        for source in job["source_files"]
+    ]
+    source_files.sort(key=lambda row: (row["document_role"], row["source_id"]))
+    payload = {
+        "mode": job["mode"],
+        "schema_version": job["schema_version"],
+        "semantic_target_contract": job["semantic_target_contract"],
+        "source_files": source_files,
+        "study": job["study"],
+        "target_namespace": job.get("target_namespace"),
+    }
+    return "JOB-" + hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+
+
 def _canonical_prepare_project(
     tmp_path: Path,
     *,
     study_id: str = "STUDY-CANARY",
+    si_policy: str = "NOT_REQUIRED",
+    si_dependent_claim_ids: list[str] | None = None,
+    main_pdf_bytes: bytes | None = None,
 ) -> Path:
     project = _initialize(tmp_path)
     doi = "10.1000/canary.test"
     _write_prepare_json(
         project / "00_discovery/candidate_pool.json",
-        {"candidates": [{"candidate_id": study_id, "doi": f"https://doi.org/{doi}."}]},
+        {
+            "candidates": [
+                {
+                    "candidate_id": study_id,
+                    "doi": f"https://doi.org/{doi}.",
+                    "si_policy": si_policy,
+                    "si_dependent_claim_ids": list(si_dependent_claim_ids or []),
+                }
+            ]
+        },
     )
     _write_prepare_json(
         project / "00_discovery/screening_decisions.json",
         {"decisions": [{"candidate_id": study_id, "disposition": "INCLUDE_FOR_FULL_TEXT"}]},
-    )
-    _write_prepare_json(
-        project / "00_discovery/acquisition_manifest.json",
-        {"schema_version": "case02-acquisition-plan.v1", "rows": []},
     )
     acquired: dict[str, dict[str, str]] = {}
     completed = []
@@ -158,7 +207,11 @@ def _canonical_prepare_project(
         relative_pdf = f"sources/{study_id}/{role}.pdf"
         pdf = project / "00_sources" / relative_pdf
         pdf.parent.mkdir(parents=True, exist_ok=True)
-        pdf.write_bytes(f"synthetic {role} pdf bytes\n".encode())
+        pdf.write_bytes(
+            main_pdf_bytes
+            if role == "MAIN" and main_pdf_bytes is not None
+            else f"synthetic {role} pdf bytes\n".encode()
+        )
         acquired[role] = {"path": relative_pdf, "sha256": _prepare_sha256(pdf)}
         markdown = project / f"01_evidence/mineru/markdown/{source_id}.md"
         markdown.parent.mkdir(parents=True, exist_ok=True)
@@ -184,6 +237,51 @@ def _canonical_prepare_project(
                 "source_id": source_id,
             }
         )
+    downloads = [
+        {
+            "document_role": role,
+            "doi": doi,
+            "download_id": f"{study_id}_{role}",
+            "expected_sha256": acquired[role]["sha256"],
+            "study_id": study_id,
+        }
+        for role in ("MAIN", "SI")
+    ]
+    requests = [
+        {
+            "document_role": row["document_role"],
+            "doi": row["doi"],
+            "pdf_sha256": row["expected_sha256"],
+            "study_id": row["study_id"],
+        }
+        for row in downloads
+    ]
+    _write_prepare_json(
+        project / "00_discovery/acquisition_manifest.json",
+        {"schema_version": "case02-acquisition-plan.v1", "downloads": downloads},
+    )
+    _write_prepare_json(
+        project / "00_sources/reusable_library_audit.json",
+        {
+            "schema_version": "reusable-library-audit.v1",
+            "canonical_artifact": "00_sources/reusable_library_audit.json",
+            "library_status": "NOT_DECLARED",
+            "request_set_digest": _request_set_digest(requests),
+            "required_parser_contract": "mineru-v2",
+            "results": [
+                {
+                    "assets": {},
+                    "document_role": request["document_role"],
+                    "library_id": None,
+                    "match_basis": "DOI",
+                    "reason": "NO_LIBRARY_MATCH",
+                    "status": "NOT_REUSABLE",
+                    "study_id": request["study_id"],
+                }
+                for request in requests
+            ],
+        },
+    )
     _write_prepare_json(
         project / "00_sources" / "acquisition_final_receipt.json",
         {
@@ -1960,6 +2058,7 @@ def test_prepare_study_builds_current_pre_provider_packet_without_reruns_and_is_
     after = _file_bytes(project)
     assert {path: after[path] for path in before} == before
     assert set(after) - set(before) == {
+        "00_sources/source_coverage.json",
         f"01_evidence/{study_id}/sealed_job.json",
         f"01_evidence/{study_id}/atom_catalog.json",
     }
@@ -1968,6 +2067,273 @@ def test_prepare_study_builds_current_pre_provider_packet_without_reruns_and_is_
     assert second.returncode == 0, second.stderr
     assert json.loads(second.stdout) == summary
     assert (job_path.read_bytes(), catalog_path.read_bytes()) == output_bytes
+
+
+@pytest.mark.parametrize(
+    ("audit_payload", "reason_code"),
+    (
+        (None, "REUSABLE_LIBRARY_AUDIT_MISSING"),
+        ({"schema_version": "wrong", "canonical_artifact": "00_sources/reusable_library_audit.json"}, "REUSABLE_LIBRARY_AUDIT_INVALID"),
+        ({"schema_version": "reusable-library-audit.v1", "canonical_artifact": "other.json"}, "REUSABLE_LIBRARY_AUDIT_INVALID"),
+    ),
+)
+def test_prepare_study_requires_the_canonical_reusable_library_audit(
+    tmp_path: Path,
+    audit_payload: dict[str, str] | None,
+    reason_code: str,
+) -> None:
+    study_id = "STUDY-CANARY"
+    project = _canonical_prepare_project(tmp_path, study_id=study_id)
+    audit_path = project / "00_sources/reusable_library_audit.json"
+    if audit_payload is None:
+        audit_path.unlink()
+    else:
+        _write_prepare_json(audit_path, audit_payload)
+    before = _file_bytes(project)
+
+    result = _run_prepare(project, study_id)
+
+    assert result.returncode == 3, result.stderr
+    assert json.loads(result.stdout)["reason_code"] == reason_code
+    assert _file_bytes(project) == before
+    assert not (project / "01_evidence" / study_id).exists()
+
+
+@pytest.mark.parametrize(
+    ("mutation", "reason_code"),
+    (
+        ("stale_digest", "REUSABLE_LIBRARY_AUDIT_STALE"),
+        ("missing_parser_contract", "REUSABLE_LIBRARY_AUDIT_INVALID"),
+        ("blank_parser_contract", "REUSABLE_LIBRARY_AUDIT_INVALID"),
+        ("reusable_source_pdf_mismatch", "REUSABLE_LIBRARY_AUDIT_INVALID"),
+        ("reusable_parser_contract_mismatch", "REUSABLE_LIBRARY_AUDIT_INVALID"),
+        ("pdf_only_with_derived_asset", "REUSABLE_LIBRARY_AUDIT_INVALID"),
+        ("unresolved_with_pdf_asset", "REUSABLE_LIBRARY_AUDIT_INVALID"),
+        ("malformed_results", "REUSABLE_LIBRARY_AUDIT_INVALID"),
+        ("malformed_result_assets", "REUSABLE_LIBRARY_AUDIT_INVALID"),
+        ("role_mismatch", "REUSABLE_LIBRARY_AUDIT_STALE"),
+    ),
+)
+def test_prepare_rejects_stale_or_mismatched_reusable_library_results(
+    tmp_path: Path,
+    mutation: str,
+    reason_code: str,
+) -> None:
+    project = _canonical_prepare_project(tmp_path)
+    audit_path = project / "00_sources/reusable_library_audit.json"
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    if mutation == "stale_digest":
+        audit["request_set_digest"] = _request_set_digest([])
+    elif mutation == "missing_parser_contract":
+        audit.pop("required_parser_contract")
+    elif mutation == "blank_parser_contract":
+        audit["required_parser_contract"] = " "
+    elif mutation in {"reusable_source_pdf_mismatch", "reusable_parser_contract_mismatch"}:
+        result_row = audit["results"][0]
+        pdf_sha256 = "1" * 64
+        result_row.update(
+            {
+                "assets": {
+                    "pdf": {"path": "library/main.pdf", "sha256": pdf_sha256},
+                    **{
+                        name: {
+                            "parser_contract": (
+                                "other-parser"
+                                if mutation == "reusable_parser_contract_mismatch"
+                                else audit["required_parser_contract"]
+                            ),
+                            "path": f"library/main.{name}",
+                            "sha256": "2" * 64,
+                            "source_pdf_sha256": (
+                                "0" * 64
+                                if mutation == "reusable_source_pdf_mismatch"
+                                else pdf_sha256
+                            ),
+                        }
+                        for name in ("mineru", "text", "atom")
+                    },
+                },
+                "library_id": "LIB-MAIN",
+                "reason": None,
+                "status": "REUSABLE",
+            }
+        )
+    elif mutation == "pdf_only_with_derived_asset":
+        audit["results"][0].update(
+            {
+                "assets": {
+                    "pdf": {"path": "library/main.pdf", "sha256": "1" * 64},
+                    "mineru": {
+                        "parser_contract": audit["required_parser_contract"],
+                        "path": "library/main.mineru",
+                        "sha256": "2" * 64,
+                        "source_pdf_sha256": "1" * 64,
+                    },
+                },
+                "library_id": "LIB-MAIN",
+                "reason": "PARSER_CONTRACT_MISMATCH",
+                "status": "PDF_ONLY",
+            }
+        )
+    elif mutation == "unresolved_with_pdf_asset":
+        audit["results"][0].update(
+            {
+                "assets": {"pdf": {"path": "library/main.pdf", "sha256": "1" * 64}},
+                "reason": "AMBIGUOUS_LIBRARY_MATCH",
+                "status": "UNRESOLVED",
+            }
+        )
+    elif mutation == "malformed_results":
+        audit["results"] = {"not": "a list"}
+    elif mutation == "malformed_result_assets":
+        audit["results"][0]["assets"] = {"claims": {}}
+    else:
+        audit["results"][0]["document_role"] = "SI"
+    _write_prepare_json(audit_path, audit)
+
+    result = _run_prepare(project, "STUDY-CANARY")
+
+    assert result.returncode == 3, result.stderr
+    assert json.loads(result.stdout)["reason_code"] == reason_code
+    assert not (project / "01_evidence/STUDY-CANARY").exists()
+
+
+def test_prepare_job_id_binds_source_hashes_and_the_semantic_target_contract(
+    tmp_path: Path,
+) -> None:
+    source_a = _canonical_prepare_project(
+        tmp_path / "source-a",
+        main_pdf_bytes=b"synthetic main source A\n",
+    )
+    source_b = _canonical_prepare_project(
+        tmp_path / "source-b",
+        main_pdf_bytes=b"synthetic main source B\n",
+    )
+    for project in (source_a, source_b):
+        result = _run_prepare(project, "STUDY-CANARY")
+        assert result.returncode == 0, result.stderr
+    source_a_job = json.loads(
+        (source_a / "01_evidence/STUDY-CANARY/sealed_job.json").read_text(encoding="utf-8")
+    )
+    source_b_job = json.loads(
+        (source_b / "01_evidence/STUDY-CANARY/sealed_job.json").read_text(encoding="utf-8")
+    )
+    assert source_a_job["job_id"] == _expected_sealed_job_id(source_a_job)
+    assert source_b_job["job_id"] == _expected_sealed_job_id(source_b_job)
+    assert source_a_job["source_files"] != source_b_job["source_files"]
+    assert source_a_job["job_id"] != source_b_job["job_id"]
+
+    required = _canonical_prepare_project(
+        tmp_path / "required",
+        si_policy="REQUIRED",
+        si_dependent_claim_ids=["CLAIM-SI-DEPENDENT"],
+    )
+    recommended = _canonical_prepare_project(
+        tmp_path / "recommended",
+        si_policy="RECOMMENDED",
+        si_dependent_claim_ids=["CLAIM-SI-DEPENDENT"],
+    )
+    for project in (required, recommended):
+        receipt_path = project / "00_sources/acquisition_final_receipt.json"
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt["studies"][0].pop("si_pdf")
+        _write_prepare_json(receipt_path, receipt)
+        result = _run_prepare(project, "STUDY-CANARY")
+        assert result.returncode == 0, result.stderr
+    required_job = json.loads(
+        (required / "01_evidence/STUDY-CANARY/sealed_job.json").read_text(encoding="utf-8")
+    )
+    recommended_job = json.loads(
+        (recommended / "01_evidence/STUDY-CANARY/sealed_job.json").read_text(encoding="utf-8")
+    )
+    assert required_job["job_id"] == _expected_sealed_job_id(required_job)
+    assert recommended_job["job_id"] == _expected_sealed_job_id(recommended_job)
+    assert required_job["source_files"] == recommended_job["source_files"]
+    assert required_job["semantic_target_contract"] != recommended_job["semantic_target_contract"]
+    assert required_job["job_id"] != recommended_job["job_id"]
+
+
+@pytest.mark.parametrize(
+    ("si_policy", "expected_status", "expected_reason", "expected_blocked_claims"),
+    (
+        (
+            "REQUIRED",
+            "PARTIAL",
+            "SI_REQUIRED_FOR_DECLARED_CLAIMS",
+            ["CLAIM-SI-DEPENDENT"],
+        ),
+        ("RECOMMENDED", "READY_WITH_LIMITATION", None, []),
+        ("NOT_REQUIRED", "READY", None, []),
+    ),
+)
+def test_prepare_study_persists_canonical_si_policy_without_blocking_the_whole_study(
+    tmp_path: Path,
+    si_policy: str,
+    expected_status: str,
+    expected_reason: str | None,
+    expected_blocked_claims: list[str],
+) -> None:
+    study_id = "STUDY-CANARY"
+    project = _canonical_prepare_project(
+        tmp_path,
+        study_id=study_id,
+        si_policy=si_policy,
+        si_dependent_claim_ids=["CLAIM-SI-DEPENDENT"],
+    )
+    receipt_path = project / "00_sources/acquisition_final_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["studies"][0].pop("si_pdf")
+    _write_prepare_json(receipt_path, receipt)
+
+    result = _run_prepare(project, study_id)
+
+    assert result.returncode == 0, result.stderr
+    coverage = json.loads(
+        (project / "00_sources/source_coverage.json").read_text(encoding="utf-8")
+    )
+    assert coverage["schema_version"] == "source-coverage.v1"
+    assert coverage["canonical_artifact"] == "00_sources/source_coverage.json"
+    assert len(coverage["studies"]) == 1
+    study = coverage["studies"][0]
+    assert study["study_id"] == study_id
+    assert study["available_roles"] == ["MAIN"]
+    assert study["si_policy"] == si_policy
+    assert study["study_status"] == expected_status
+    assert study["blocked_claim_ids"] == expected_blocked_claims
+    if expected_reason is None:
+        assert study["blocking_reasons"] == []
+    else:
+        assert study["blocking_reasons"] == [expected_reason]
+    job = json.loads(
+        (project / f"01_evidence/{study_id}/sealed_job.json").read_text(encoding="utf-8")
+    )
+    assert job["semantic_target_contract"] == {
+        "allowed_target_kinds": ["ELIGIBILITY", "REACTION_UNIT", "CLAIM"],
+        "denied_claim_ids": expected_blocked_claims,
+        "policy": "ALLOW_EXCEPT_DECLARED_SI_DEPENDENT_CLAIMS",
+    }
+
+
+def test_prepare_study_blocks_missing_main_and_records_the_same_canonical_coverage(
+    tmp_path: Path,
+) -> None:
+    study_id = "STUDY-CANARY"
+    project = _canonical_prepare_project(tmp_path, study_id=study_id)
+    receipt_path = project / "00_sources/acquisition_final_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["studies"][0].pop("main_pdf")
+    _write_prepare_json(receipt_path, receipt)
+
+    result = _run_prepare(project, study_id)
+
+    assert result.returncode == 3, result.stderr
+    assert json.loads(result.stdout)["reason_code"] == "MAIN_REQUIRED"
+    coverage = json.loads(
+        (project / "00_sources/source_coverage.json").read_text(encoding="utf-8")
+    )
+    assert coverage["studies"][0]["study_status"] == "BLOCKED"
+    assert coverage["studies"][0]["blocking_reasons"] == ["MAIN_REQUIRED"]
+    assert not (project / "01_evidence" / study_id).exists()
 
 
 @pytest.mark.parametrize(
@@ -2053,6 +2419,110 @@ def test_prepare_batch_persists_ready_studies_independently(tmp_path: Path) -> N
     assert (project / "01_evidence/STUDY-CANARY/sealed_job.json").is_file()
     assert (project / "01_evidence/STUDY-CANARY/atom_catalog.json").is_file()
     assert not (project / "01_evidence/STUDY-NOT-DECLARED").exists()
+
+
+def test_title_only_researcher_candidate_reaches_the_source_path(tmp_path: Path) -> None:
+    study_id = "RESEARCHER-TITLE-ONLY"
+    project = _initialize(tmp_path)
+    _write_prepare_json(
+        project / "00_discovery/candidate_pool.json",
+        {
+            "candidates": [
+                {
+                    "candidate_id": study_id,
+                    "doi": "",
+                    "title": "A uniquely titled researcher supplied study",
+                    "source_origin": "RESEARCHER_SUPPLIED",
+                }
+            ]
+        },
+    )
+    _write_prepare_json(
+        project / "00_discovery/screening_decisions.json",
+        {"decisions": [{"candidate_id": study_id, "disposition": "INCLUDE_FOR_FULL_TEXT"}]},
+    )
+    _write_prepare_json(
+        project / "00_discovery/acquisition_manifest.json",
+        {"schema_version": "case02-acquisition-plan.v1", "downloads": []},
+    )
+    _write_prepare_json(
+        project / "00_sources/reusable_library_audit.json",
+        {
+            "schema_version": "reusable-library-audit.v1",
+            "canonical_artifact": "00_sources/reusable_library_audit.json",
+            "request_set_digest": _request_set_digest([]),
+            "required_parser_contract": "NOT_DECLARED",
+            "results": [],
+        },
+    )
+
+    result = _run_prepare(project, study_id)
+
+    assert result.returncode == 3, result.stderr
+    reason = json.loads(result.stdout)["reason_code"]
+    assert reason == "ACQUISITION_FINAL_RECEIPT_MISSING"
+    assert reason != "STUDY_NOT_DECLARED"
+
+
+def test_run_batch_cli_pauses_for_provider_and_reports_separate_credit_fields(
+    tmp_path: Path,
+) -> None:
+    study_id = "STUDY-CANARY"
+    project = _canonical_prepare_project(tmp_path, study_id=study_id)
+    project_id = json.loads(
+        (project / "00_brief/review_state.json").read_text(encoding="utf-8")
+    )["project_id"]
+    study_ids = tmp_path / "study-ids.txt"
+    study_ids.write_text(f"{study_id}\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(CLI),
+            "run-batch",
+            "--project-dir",
+            str(project),
+            "--study-ids-file",
+            str(study_ids),
+            "--credits-before",
+            "100",
+            "--credits-after",
+            "91",
+            "--forecast-credits",
+            "30",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 3, result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["status"] == "WAITING_FOR_PROVIDER"
+    assert summary["credits"] == {
+        "forecast": {"estimated_credits": 30.0},
+        "measured": {"after": 91, "before": 100, "consumed": 9},
+    }
+    study_root = project / f"01_evidence/{study_id}"
+    assert summary["studies"] == [
+        {
+            "atom_catalog_sha256": hashlib.sha256(
+                (study_root / "atom_catalog.json").read_bytes()
+            ).hexdigest(),
+            "last_completed_stage": "PREPARED",
+            "project_id": project_id,
+            "reason_code": "SEMANTIC_OUTPUT_MISSING",
+            "sealed_job_sha256": hashlib.sha256(
+                (study_root / "sealed_job.json").read_bytes()
+            ).hexdigest(),
+            "stage": "WAITING_FOR_PROVIDER",
+            "study_id": study_id,
+        }
+    ]
+    assert json.loads(
+        (project / f"01_evidence/{study_id}/batch_state.json").read_text(encoding="utf-8")
+    ) == summary["studies"][0]
 
 
 def test_cli_init_reports_awaiting_brief_confirmation_without_discovery(

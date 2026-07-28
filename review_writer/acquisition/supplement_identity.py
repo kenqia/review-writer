@@ -19,6 +19,68 @@ class SupplementAuditError(ValueError):
     """The supplement audit inputs are structurally invalid."""
 
 
+SOURCE_COVERAGE_ARTIFACT = "00_sources/source_coverage.json"
+SI_POLICIES = frozenset({"REQUIRED", "RECOMMENDED", "NOT_REQUIRED"})
+
+
+def audit_source_coverage(
+    *,
+    study_id: str,
+    available_roles: list[str],
+    si_policy: str,
+    si_dependent_claim_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Apply the pure MAIN/SI availability policy for one study."""
+
+    if not isinstance(study_id, str) or not study_id.strip():
+        raise SupplementAuditError("study_id must be nonempty")
+    if (
+        not isinstance(available_roles, list)
+        or any(role not in {"MAIN", "SI"} for role in available_roles)
+        or len(set(available_roles)) != len(available_roles)
+    ):
+        raise SupplementAuditError("available_roles must contain unique MAIN/SI values")
+    if si_policy not in SI_POLICIES:
+        raise SupplementAuditError("si_policy must be REQUIRED, RECOMMENDED, or NOT_REQUIRED")
+    claim_ids = [] if si_dependent_claim_ids is None else si_dependent_claim_ids
+    if (
+        not isinstance(claim_ids, list)
+        or any(not isinstance(claim_id, str) or not claim_id.strip() for claim_id in claim_ids)
+        or len(set(claim_ids)) != len(claim_ids)
+    ):
+        raise SupplementAuditError("si_dependent_claim_ids must contain unique nonempty strings")
+
+    roles = set(available_roles)
+    blocking_reasons: list[str] = []
+    blocked_claim_ids: list[str] = []
+    limitations: list[str] = []
+    if "MAIN" not in roles:
+        study_status = "BLOCKED"
+        blocking_reasons.append("MAIN_REQUIRED")
+    elif si_policy == "REQUIRED" and "SI" not in roles:
+        study_status = "PARTIAL"
+        blocked_claim_ids = list(claim_ids)
+        blocking_reasons.append("SI_REQUIRED_FOR_DECLARED_CLAIMS")
+    elif si_policy == "RECOMMENDED" and "SI" not in roles:
+        study_status = "READY_WITH_LIMITATION"
+        limitations.append("SI_RECOMMENDED_NOT_AVAILABLE")
+    else:
+        study_status = "READY"
+
+    return {
+        "schema_version": "source-coverage.v1",
+        "canonical_artifact": SOURCE_COVERAGE_ARTIFACT,
+        "study_id": study_id.strip(),
+        "main_policy": "MAIN_REQUIRED",
+        "si_policy": si_policy,
+        "available_roles": sorted(roles),
+        "study_status": study_status,
+        "blocked_claim_ids": blocked_claim_ids,
+        "blocking_reasons": blocking_reasons,
+        "limitations": limitations,
+    }
+
+
 def supplement_parent_relation(
     value: str | None, *, publisher_confirmed_parent_doi: str | None = None
 ) -> dict[str, str | None]:
@@ -57,6 +119,18 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _safe_input_basename(path: Path, fallback: str) -> str:
+    name = path.name
+    if (
+        not name
+        or len(name) > 255
+        or name in {".", ".."}
+        or any(ord(character) < 32 or ord(character) == 127 for character in name)
+    ):
+        return fallback
+    return name
 
 
 def _validated_identity_record(record: Any, *, id_field: str, source: str) -> dict[str, Any]:
@@ -162,8 +236,14 @@ def audit_supplement_reports(candidate_pool: Path | str, acquisition_manifest: P
         "schema_version": "supplement-parent-relation-audit.v1",
         "non_mutating": True,
         "inputs": {
-            "candidate_pool": {"path": str(pool_path), "sha256": sha256_file(pool_path)},
-            "acquisition_manifest": {"path": str(manifest_path), "sha256": sha256_file(manifest_path)},
+            "candidate_pool": {
+                "path": _safe_input_basename(pool_path, "candidate-pool"),
+                "sha256": sha256_file(pool_path),
+            },
+            "acquisition_manifest": {
+                "path": _safe_input_basename(manifest_path, "acquisition-manifest"),
+                "sha256": sha256_file(manifest_path),
+            },
         },
         "counts": counts,
         "records": rows,

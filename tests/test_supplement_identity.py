@@ -1,15 +1,67 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from review_writer.acquisition.supplement_identity import audit_supplement_reports, normalize_doi, supplement_parent_relation
+from review_writer.acquisition.supplement_identity import (
+    audit_source_coverage,
+    audit_supplement_reports,
+    normalize_doi,
+    supplement_parent_relation,
+)
 
 
 class SupplementIdentityTests(unittest.TestCase):
+    def test_main_is_always_required(self):
+        result = audit_source_coverage(
+            study_id="S1",
+            available_roles=["SI"],
+            si_policy="NOT_REQUIRED",
+        )
+
+        self.assertEqual("BLOCKED", result["study_status"])
+        self.assertEqual("00_sources/source_coverage.json", result["canonical_artifact"])
+        self.assertEqual("source-coverage.v1", result["schema_version"])
+        self.assertEqual(["MAIN_REQUIRED"], result["blocking_reasons"])
+
+    def test_required_si_blocks_only_declared_dependent_claims(self):
+        result = audit_source_coverage(
+            study_id="S2",
+            available_roles=["MAIN"],
+            si_policy="REQUIRED",
+            si_dependent_claim_ids=["scope-1", "mechanism-1"],
+        )
+
+        self.assertEqual("PARTIAL", result["study_status"])
+        self.assertEqual(["scope-1", "mechanism-1"], result["blocked_claim_ids"])
+        self.assertEqual(["SI_REQUIRED_FOR_DECLARED_CLAIMS"], result["blocking_reasons"])
+
+    def test_recommended_and_not_required_si_do_not_block_available_main(self):
+        recommended = audit_source_coverage(
+            study_id="S3", available_roles=["MAIN"], si_policy="RECOMMENDED"
+        )
+        not_required = audit_source_coverage(
+            study_id="S4", available_roles=["MAIN"], si_policy="NOT_REQUIRED"
+        )
+
+        self.assertEqual("READY_WITH_LIMITATION", recommended["study_status"])
+        self.assertEqual("READY", not_required["study_status"])
+        self.assertEqual([], recommended["blocked_claim_ids"])
+        self.assertEqual([], not_required["blocking_reasons"])
+
+    def test_source_coverage_rejects_invalid_policy_and_roles(self):
+        for kwargs in (
+            {"available_roles": ["MAIN"], "si_policy": "OPTIONAL"},
+            {"available_roles": ["MAIN", "OTHER"], "si_policy": "REQUIRED"},
+            {"available_roles": ["MAIN"], "si_policy": "REQUIRED", "si_dependent_claim_ids": [""]},
+        ):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                audit_source_coverage(study_id="S5", **kwargs)
+
     def test_terminal_suffix_candidates_are_not_confirmed_by_string(self):
         for doi, parent in [
             ("10.1021/acs.joc.9b02398.s001", "10.1021/acs.joc.9b02398"),
@@ -153,6 +205,35 @@ class SupplementIdentityTests(unittest.TestCase):
                 audit = audit_supplement_reports(pool, manifest)
 
             self.assertEqual(audit["counts"]["candidate_pool_suffix_reports"], 1)
+
+    def test_audit_persists_only_safe_input_basenames_and_hashes(self):
+        with tempfile.TemporaryDirectory(prefix="supplement-sensitive-root-") as temp:
+            root = Path(temp)
+            pool = root / "candidate-pool.jsonl"
+            manifest = root / "acquisition-manifest.json"
+            pool.write_text(
+                json.dumps({"candidate_id": "C1", "doi": "10.1000/a.s1"}) + "\n",
+                encoding="utf-8",
+            )
+            manifest.write_text(
+                json.dumps(
+                    {"schema_version": "public-corpus-acquisition.v1", "downloads": []}
+                ),
+                encoding="utf-8",
+            )
+
+            audit = audit_supplement_reports(pool, manifest)
+
+            self.assertEqual("candidate-pool.jsonl", audit["inputs"]["candidate_pool"]["path"])
+            self.assertEqual(
+                "acquisition-manifest.json",
+                audit["inputs"]["acquisition_manifest"]["path"],
+            )
+            self.assertEqual(
+                hashlib.sha256(pool.read_bytes()).hexdigest(),
+                audit["inputs"]["candidate_pool"]["sha256"],
+            )
+            self.assertNotIn(str(root), json.dumps(audit))
 
     def test_records_without_optional_doi_are_valid_but_not_reported(self):
         with tempfile.TemporaryDirectory() as temp:

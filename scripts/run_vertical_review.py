@@ -8,12 +8,14 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
 import time
 import urllib.error
 import urllib.request
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +25,18 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from review_writer.acquisition.manifest_identity import normalize_doi  # noqa: E402
+from review_writer.acquisition.reusable_library import (  # noqa: E402
+    CANONICAL_ARTIFACT as REUSABLE_LIBRARY_AUDIT_ARTIFACT,
+    ReusableLibraryError,
+    audit_reusable_library,
+    reusable_request_set_digest,
+    reusable_requests_from_downloads,
+)
+from review_writer.acquisition.supplement_identity import (  # noqa: E402
+    SOURCE_COVERAGE_ARTIFACT,
+    SupplementAuditError,
+    audit_source_coverage,
+)
 from review_writer.project.vertical_review import (  # noqa: E402
     VerticalReviewError,
     benchmark_metrics,
@@ -31,6 +45,7 @@ from review_writer.project.vertical_review import (  # noqa: E402
     initialize_review,
     register_study,
 )
+from review_writer.project.batch_runner import BatchRunnerError, run_batch  # noqa: E402
 from review_writer.delivery.project_release import (  # noqa: E402
     ProjectReleaseError,
     bind_authoritative_draft,
@@ -40,7 +55,7 @@ from scripts.evidence.build_page_atom_catalog import (  # noqa: E402
     build_page_atom_catalog,
     validate_catalog_schema,
 )
-from scripts.evidence.evidence_atom_core import sha256_file  # noqa: E402
+from scripts.evidence.evidence_atom_core import canonical_sealed_job_id, sha256_file  # noqa: E402
 from scripts.evidence.validate_evidence_candidate import validate as validate_evidence_candidate  # noqa: E402
 
 
@@ -100,6 +115,60 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
                 temporary.unlink()
             except FileNotFoundError:
                 pass
+
+
+def _audit_reusable_library(project: Path) -> dict[str, Any]:
+    project = project.resolve()
+    manifest_path = project / "00_discovery" / "acquisition_manifest.json"
+    requests: list[dict[str, Any]] = []
+    if manifest_path.is_file():
+        manifest = _load_json(manifest_path)
+        downloads = manifest.get("downloads") if isinstance(manifest, dict) else None
+        requests = reusable_requests_from_downloads(downloads)
+
+    descriptor_path = project / "00_sources" / "reusable_library_descriptor.json"
+    if descriptor_path.is_file():
+        descriptor = _load_json(descriptor_path)
+        if not isinstance(descriptor, dict):
+            raise ValueError("reusable library descriptor must be an object")
+        library_root_value = descriptor.get("library_root")
+        records = descriptor.get("library_records")
+        parser_contract = descriptor.get("required_parser_contract")
+        if (
+            not isinstance(library_root_value, str)
+            or not library_root_value
+            or Path(library_root_value).is_absolute()
+            or not isinstance(records, list)
+            or not isinstance(parser_contract, str)
+            or not parser_contract
+        ):
+            raise ValueError("reusable library descriptor is invalid")
+        library_root = (project / library_root_value).resolve()
+        try:
+            library_root.relative_to(project)
+        except ValueError as exc:
+            raise ValueError("reusable library root must stay inside the project") from exc
+        library_status = "DECLARED"
+    else:
+        library_root = project
+        records = []
+        parser_contract = "NOT_DECLARED"
+        library_status = "NOT_DECLARED"
+
+    report = audit_reusable_library(
+        requests=requests,
+        library_root=library_root,
+        library_records=records,
+        required_parser_contract=parser_contract,
+    )
+    report["library_status"] = library_status
+    _atomic_write_json(project / REUSABLE_LIBRARY_AUDIT_ARTIFACT, report)
+    return {
+        "command": "audit-reusable-library",
+        "library_status": library_status,
+        "reusable_count": sum(row["status"] == "REUSABLE" for row in report["results"]),
+        "status": "AUDITED",
+    }
 
 
 def _decision_counts(projection: list[dict[str, Any]]) -> dict[str, int]:
@@ -227,6 +296,131 @@ def _prepare_rows(payload: dict[str, Any], key: str, invalid: str) -> list[dict[
     return rows
 
 
+def _verify_reusable_library_audit(project: Path) -> None:
+    audit = _prepare_manifest(
+        project,
+        REUSABLE_LIBRARY_AUDIT_ARTIFACT,
+        missing="REUSABLE_LIBRARY_AUDIT_MISSING",
+        invalid="REUSABLE_LIBRARY_AUDIT_INVALID",
+    )
+    if (
+        audit.get("schema_version") != "reusable-library-audit.v1"
+        or audit.get("canonical_artifact") != REUSABLE_LIBRARY_AUDIT_ARTIFACT
+        or not isinstance(audit.get("required_parser_contract"), str)
+        or not audit["required_parser_contract"]
+        or audit["required_parser_contract"] != audit["required_parser_contract"].strip()
+    ):
+        _prepare_block("REUSABLE_LIBRARY_AUDIT_INVALID")
+    manifest = _prepare_manifest(
+        project,
+        "00_discovery/acquisition_manifest.json",
+        missing="ACQUISITION_MANIFEST_MISSING",
+        invalid="ACQUISITION_MANIFEST_INVALID",
+    )
+    try:
+        requests = reusable_requests_from_downloads(manifest.get("downloads"))
+    except ReusableLibraryError:
+        _prepare_block("ACQUISITION_MANIFEST_INVALID")
+    if audit.get("request_set_digest") != reusable_request_set_digest(requests):
+        _prepare_block("REUSABLE_LIBRARY_AUDIT_STALE")
+    results = audit.get("results")
+    if not isinstance(results, list) or not all(isinstance(row, dict) for row in results):
+        _prepare_block("REUSABLE_LIBRARY_AUDIT_INVALID")
+    allowed_statuses = {"REUSABLE", "PDF_ONLY", "NOT_REUSABLE", "UNRESOLVED"}
+    allowed_match_bases = {"DOI", "PDF_SHA256"}
+    result_keys = {
+        "assets",
+        "document_role",
+        "library_id",
+        "match_basis",
+        "reason",
+        "status",
+        "study_id",
+    }
+    derived_asset_keys = {"path", "sha256", "source_pdf_sha256", "parser_contract"}
+
+    def valid_asset(name: str, descriptor: Any) -> bool:
+        expected_keys = {"path", "sha256"} if name == "pdf" else derived_asset_keys
+        if not isinstance(descriptor, dict) or set(descriptor) != expected_keys:
+            return False
+        relative = descriptor.get("path")
+        sha256 = descriptor.get("sha256")
+        if (
+            not isinstance(relative, str)
+            or not relative
+            or Path(relative).is_absolute()
+            or ".." in Path(relative).parts
+            or not isinstance(sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", sha256) is None
+        ):
+            return False
+        if name == "pdf":
+            return True
+        return (
+            isinstance(descriptor.get("source_pdf_sha256"), str)
+            and re.fullmatch(r"[0-9a-f]{64}", descriptor["source_pdf_sha256"]) is not None
+            and isinstance(descriptor.get("parser_contract"), str)
+            and bool(descriptor["parser_contract"])
+        )
+
+    for row in results:
+        assets = row.get("assets")
+        status = row.get("status")
+        expected_asset_names = {
+            "REUSABLE": {"pdf", "mineru", "text", "atom"},
+            "PDF_ONLY": {"pdf"},
+            "NOT_REUSABLE": set(),
+            "UNRESOLVED": set(),
+        }.get(status)
+        if (
+            set(row) != result_keys
+            or not isinstance(row.get("study_id"), str)
+            or not row["study_id"]
+            or row.get("document_role") not in {"MAIN", "SI"}
+            or status not in allowed_statuses
+            or row.get("match_basis") not in allowed_match_bases
+            or not isinstance(assets, dict)
+            or set(assets) != expected_asset_names
+            or any(not valid_asset(name, descriptor) for name, descriptor in assets.items())
+            or (
+                status == "REUSABLE"
+                and any(
+                    assets[name]["source_pdf_sha256"] != assets["pdf"]["sha256"]
+                    or assets[name]["parser_contract"] != audit["required_parser_contract"]
+                    for name in ("mineru", "text", "atom")
+                )
+            )
+            or not isinstance(row.get("library_id"), (str, type(None)))
+            or row.get("library_id") == ""
+            or not isinstance(row.get("reason"), (str, type(None)))
+            or (status == "REUSABLE") != (row.get("reason") is None)
+        ):
+            _prepare_block("REUSABLE_LIBRARY_AUDIT_INVALID")
+    expected = {
+        (row["study_id"], row["document_role"]): "DOI" if row.get("doi") else "PDF_SHA256"
+        for row in requests
+    }
+    expected_pairs = sorted(expected)
+    observed_pairs = sorted((row["study_id"], row["document_role"]) for row in results)
+    if observed_pairs != expected_pairs:
+        _prepare_block("REUSABLE_LIBRARY_AUDIT_STALE")
+    if any(
+        row["match_basis"] != expected[(row["study_id"], row["document_role"])]
+        for row in results
+    ):
+        _prepare_block("REUSABLE_LIBRARY_AUDIT_STALE")
+
+
+def _normalized_title(value: Any) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    normalized = unicodedata.normalize("NFKC", value)
+    normalized = "".join(
+        character.casefold() if character.isalnum() else " " for character in normalized
+    )
+    return re.sub(r"\s+", " ", normalized).strip() or None
+
+
 def _bound_file(project: Path, root: Path, value: Any, code: str) -> Path:
     if not isinstance(value, str) or not value.strip():
         _prepare_block(code)
@@ -253,8 +447,10 @@ def _bound_file(project: Path, root: Path, value: Any, code: str) -> Path:
 
 def _receipt_sources(project: Path, study: dict[str, Any]) -> list[dict[str, Any]]:
     main = study.get("main_pdf")
-    if study.get("status") != "ACQUIRED" or not isinstance(main, dict):
-        _prepare_block("ACQUISITION_MAIN_NOT_ACQUIRED")
+    if study.get("status") != "ACQUIRED":
+        _prepare_block("ACQUISITION_STUDY_NOT_ACQUIRED")
+    if main is not None and not isinstance(main, dict):
+        _prepare_block("ACQUISITION_MAIN_INVALID")
     si_value = study.get("si_pdf")
     if si_value is None:
         supplements = []
@@ -266,8 +462,10 @@ def _receipt_sources(project: Path, study: dict[str, Any]) -> list[dict[str, Any
         _prepare_block("ACQUISITION_SI_INVALID")
     if any(not isinstance(row.get("path"), str) or not row["path"].strip() for row in supplements):
         _prepare_block("ACQUISITION_SI_INVALID")
-    declared = [("MAIN", main)] + [("SI", row) for row in supplements]
-    declared[1:] = sorted(declared[1:], key=lambda item: str(item[1].get("path")))
+    declared = ([] if main is None else [("MAIN", main)]) + [
+        ("SI", row) for row in supplements
+    ]
+    declared = sorted(declared, key=lambda item: (item[0] != "MAIN", str(item[1].get("path"))))
     sources: list[dict[str, Any]] = []
     seen_paths: set[Path] = set()
     for role, row in declared:
@@ -289,7 +487,66 @@ def _receipt_sources(project: Path, study: dict[str, Any]) -> list[dict[str, Any
     return sources
 
 
-def _verify_source_identity(project: Path, doi: str) -> None:
+def _source_coverage_for_candidate(
+    candidate: dict[str, Any], sources: list[dict[str, Any]]
+) -> dict[str, Any]:
+    try:
+        return audit_source_coverage(
+            study_id=candidate.get("candidate_id"),
+            available_roles=sorted({source["document_role"] for source in sources}),
+            si_policy=candidate.get("si_policy", "NOT_REQUIRED"),
+            si_dependent_claim_ids=candidate.get("si_dependent_claim_ids", []),
+        )
+    except SupplementAuditError:
+        _prepare_block("CANDIDATE_SOURCE_POLICY_INVALID")
+
+
+def _persist_source_coverage(project: Path, coverage: dict[str, Any]) -> None:
+    path = project / SOURCE_COVERAGE_ARTIFACT
+    studies: list[dict[str, Any]] = []
+    if path.exists():
+        try:
+            existing = _load_json(path)
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            _prepare_block("SOURCE_COVERAGE_INVALID")
+        if not isinstance(existing, dict) or existing.get("schema_version") != "source-coverage.v1":
+            _prepare_block("SOURCE_COVERAGE_INVALID")
+        if isinstance(existing.get("studies"), list):
+            studies = existing["studies"]
+        elif isinstance(existing.get("study_id"), str):
+            studies = [
+                {
+                    key: value
+                    for key, value in existing.items()
+                    if key not in {"schema_version", "canonical_artifact"}
+                }
+            ]
+        if not all(isinstance(row, dict) and isinstance(row.get("study_id"), str) for row in studies):
+            _prepare_block("SOURCE_COVERAGE_INVALID")
+    study_row = {
+        key: value
+        for key, value in coverage.items()
+        if key not in {"schema_version", "canonical_artifact"}
+    }
+    studies = [row for row in studies if row.get("study_id") != study_row["study_id"]]
+    studies.append(study_row)
+    _atomic_write_json(
+        path,
+        {
+            "schema_version": "source-coverage.v1",
+            "canonical_artifact": SOURCE_COVERAGE_ARTIFACT,
+            "studies": sorted(studies, key=lambda row: row["study_id"]),
+        },
+    )
+
+
+def _verify_source_identity(
+    project: Path,
+    *,
+    doi: str | None,
+    study_id: str,
+    title: str | None,
+) -> None:
     audit = _prepare_manifest(
         project,
         "00_sources/source_identity_audit.json",
@@ -299,7 +556,15 @@ def _verify_source_identity(project: Path, doi: str) -> None:
     rows = audit.get("results")
     if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
         _prepare_block("SOURCE_IDENTITY_AUDIT_INVALID")
-    matches = [row for row in rows if normalize_doi(row.get("doi")) == doi]
+    if doi is not None:
+        matches = [row for row in rows if normalize_doi(row.get("doi")) == doi]
+    else:
+        matches = [
+            row
+            for row in rows
+            if row.get("study_id") == study_id
+            or (title is not None and _normalized_title(row.get("title")) == title)
+        ]
     if not matches:
         _prepare_block("SOURCE_IDENTITY_BINDING_MISSING")
     if len(matches) != 1:
@@ -425,7 +690,7 @@ def _persist_prepare_packet(project: Path, study_id: str, job: dict[str, Any]) -
 
 
 def _prepare_status(project: Path, study_id: str) -> dict[str, Any]:
-    metrics = benchmark_metrics(project)
+    benchmark_metrics(project)
     if (
         not study_id.strip()
         or study_id != study_id.strip()
@@ -443,6 +708,7 @@ def _prepare_status(project: Path, study_id: str) -> dict[str, Any]:
             "study_id": study_id,
         }
     try:
+        _verify_reusable_library_audit(project)
         pool = _prepare_manifest(
             project,
             "00_discovery/candidate_pool.json",
@@ -453,9 +719,14 @@ def _prepare_status(project: Path, study_id: str) -> dict[str, Any]:
         matches = [row for row in candidates if row.get("candidate_id") == study_id]
         if len(matches) != 1:
             _prepare_block("STUDY_NOT_DECLARED" if not matches else "STUDY_ID_AMBIGUOUS")
-        doi = normalize_doi(matches[0].get("doi"))
-        if doi is None:
+        candidate = matches[0]
+        supplied_doi = candidate.get("doi")
+        doi = normalize_doi(supplied_doi)
+        title = _normalized_title(candidate.get("title"))
+        if supplied_doi not in {None, ""} and doi is None:
             _prepare_block("CANDIDATE_DOI_INVALID")
+        if doi is None and title is None:
+            _prepare_block("CANDIDATE_IDENTITY_INVALID")
 
         screening = _prepare_manifest(
             project,
@@ -481,28 +752,47 @@ def _prepare_status(project: Path, study_id: str) -> dict[str, Any]:
             missing="ACQUISITION_FINAL_RECEIPT_MISSING",
             invalid="ACQUISITION_FINAL_RECEIPT_INVALID",
         )
-        studies = [
-            row
-            for row in _prepare_rows(receipt, "studies", "ACQUISITION_FINAL_RECEIPT_INVALID")
-            if normalize_doi(row.get("doi")) == doi
-        ]
+        receipt_studies = _prepare_rows(
+            receipt, "studies", "ACQUISITION_FINAL_RECEIPT_INVALID"
+        )
+        if doi is not None:
+            studies = [row for row in receipt_studies if normalize_doi(row.get("doi")) == doi]
+        else:
+            studies = [
+                row
+                for row in receipt_studies
+                if row.get("study_id") == study_id
+                or (title is not None and _normalized_title(row.get("title")) == title)
+            ]
         if len(studies) != 1:
             _prepare_block("ACQUISITION_DOI_MISSING" if not studies else "ACQUISITION_DOI_AMBIGUOUS")
-        _verify_source_identity(project, doi)
-        source_files = _bind_source_layers(project, _receipt_sources(project, studies[0]))
-        identity = {"doi": doi, "project_id": metrics["project_id"], "study_id": study_id}
+        sources = _receipt_sources(project, studies[0])
+        coverage = _source_coverage_for_candidate(candidate, sources)
+        if coverage["study_status"] == "BLOCKED":
+            _persist_source_coverage(project, coverage)
+            _prepare_block("MAIN_REQUIRED")
+        _verify_source_identity(project, doi=doi, study_id=study_id, title=title)
+        source_files = _bind_source_layers(project, sources)
+        _persist_source_coverage(project, coverage)
+        study_identity: dict[str, Any] = {"doi": doi, "study_id": study_id}
+        if title is not None:
+            study_identity["title"] = candidate["title"].strip()
+        semantic_target_contract = {
+            "allowed_target_kinds": ["ELIGIBILITY", "REACTION_UNIT", "CLAIM"],
+            "denied_claim_ids": coverage["blocked_claim_ids"],
+            "policy": "ALLOW_EXCEPT_DECLARED_SI_DEPENDENT_CLAIMS",
+        }
         job = {
-            "job_id": "JOB-" + hashlib.sha256(
-                json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
-            ).hexdigest(),
             "mode": "EVIDENCE_ATOM_SEMANTIC_DECISION_V1",
             "schema_version": "sealed-evidence-extraction-job.v2",
+            "semantic_target_contract": semantic_target_contract,
             "source_files": source_files,
-            "study": {"doi": doi, "study_id": study_id},
+            "study": study_identity,
             "target_namespace": "study-"
             + hashlib.sha256(study_id.encode("utf-8")).hexdigest(),
             "visual_crops": [],
         }
+        job["job_id"] = canonical_sealed_job_id(job)
         _persist_prepare_packet(project, study_id, job)
     except (_PrepareNotReady, PageCatalogError) as exc:
         return {
@@ -603,6 +893,9 @@ def _parser() -> argparse.ArgumentParser:
     wait.add_argument("--poll-seconds", type=float, default=2.0)
     wait.add_argument("--timeout-seconds", type=float)
 
+    reusable_audit = commands.add_parser("audit-reusable-library")
+    reusable_audit.add_argument("--project-dir", type=Path, required=True)
+
     prepare = commands.add_parser("prepare-study")
     prepare.add_argument("--project-dir", type=Path, required=True)
     prepare.add_argument("--study-id", required=True)
@@ -610,6 +903,13 @@ def _parser() -> argparse.ArgumentParser:
     batch = commands.add_parser("prepare-batch")
     batch.add_argument("--project-dir", type=Path, required=True)
     batch.add_argument("--study-ids-file", type=Path, required=True)
+
+    run = commands.add_parser("run-batch")
+    run.add_argument("--project-dir", type=Path, required=True)
+    run.add_argument("--study-ids-file", type=Path, required=True)
+    run.add_argument("--credits-before", type=int)
+    run.add_argument("--credits-after", type=int)
+    run.add_argument("--forecast-credits", type=float)
 
     register = commands.add_parser("register-study")
     register.add_argument("--project-dir", type=Path, required=True)
@@ -662,6 +962,9 @@ def _run(args: argparse.Namespace) -> int:
             )
         )
         return 0
+    if args.command == "audit-reusable-library":
+        _print_summary(_audit_reusable_library(args.project_dir))
+        return 0
     if args.command == "prepare-study":
         summary = _prepare_status(args.project_dir, args.study_id)
         _print_summary(summary)
@@ -687,6 +990,22 @@ def _run(args: argparse.Namespace) -> int:
         }
         _print_summary(summary)
         return 0 if summary["status"] == "READY" else 3
+    if args.command == "run-batch":
+        study_ids = [
+            line.strip()
+            for line in args.study_ids_file.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        summary = run_batch(
+            args.project_dir,
+            study_ids,
+            prepare_study=lambda study_id: _prepare_status(args.project_dir, study_id),
+            credits_before=args.credits_before,
+            credits_after=args.credits_after,
+            forecast_credits=args.forecast_credits,
+        )
+        _print_summary(summary)
+        return 0 if summary["status"] == "COMPLETE" else 3
     if args.command == "register-study":
         candidate = _load_json(args.candidate)
         r0_report = _canonical_r0_report(
@@ -763,7 +1082,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         return _run(args)
-    except VerticalReviewError as exc:
+    except (BatchRunnerError, VerticalReviewError) as exc:
         payload: dict[str, Any] = {
             "command": args.command,
             "error_code": exc.code,

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import mimetypes
 import os
 import posixpath
@@ -16,7 +17,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlencode, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -31,22 +32,39 @@ from review_writer.project.vertical_review import (  # noqa: E402
     confirm_review_brief,
 )
 from review_writer.acquisition.manifest_identity import normalize_doi  # noqa: E402
-from review_writer.acquisition.manual_archive import DEFAULT_MAX_ARCHIVE_BYTES  # noqa: E402
+from review_writer.acquisition.manual_archive import (  # noqa: E402
+    DEFAULT_MAX_ARCHIVE_BYTES,
+    ManualArchiveError,
+    SOURCE_TRANSACTION_LOCK,
+    import_manual_archive,
+)
 from review_writer.delivery.project_release import (  # noqa: E402
     PROJECT_RELEASE_LOCK,
+    ProjectReleaseError,
     build_project_release,
     is_reparse_component,
     manuscript_lineage_entries,
+    project_figure_validation_is_current,
     refreshed_manuscript_lineage,
     replace_manuscript_section_body,
     split_manuscript_sections,
     validate_project_file_path,
     validate_project_path_components,
     validated_draft_manuscript_lineage,
+    _validated_image,
 )
+from review_writer.delivery.figure_policy import FigurePolicyError, _image_binding  # noqa: E402
 
 
 _RESEARCHER_SHA256_RE = re.compile(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{64}(?![0-9A-Fa-f])")
+_DRAFT_CLAIM_MARKER_RE = re.compile(
+    r"(?:\[claim:[A-Za-z0-9._:-]+\]|<!--\s*claim(?:_id)?\s*:\s*[A-Za-z0-9._:-]+\s*-->)",
+    flags=re.IGNORECASE,
+)
+_DASHBOARD_IMAGE_RE = re.compile(
+    r"!\[[^\]\r\n]*\]\((?:<(?P<angle>[^>\r\n]+)>|(?P<plain>[^\s()<>\"']+))"
+    r"(?:\s+[\"'][^\"'\r\n]*[\"'])?\)"
+)
 _RESEARCHER_PATH_TAIL = (
     r"(?:[^\r\n;,)\]}>`\"']*?\."
     r"(?:jsonl?|md|docx|pdf|png|jpe?g|svg|csv|tsv|txt)"
@@ -94,6 +112,9 @@ _CHEMICAL_STRUCTURE_RE = re.compile(
 )
 SOURCE_ARCHIVE_RELATIVE = Path("00_sources/manual_upload/inbox/source_bundle.zip")
 SOURCE_ARCHIVE_SUCCESS_STATUSES = frozenset({"DOWNLOADED", "IMPORTED", "VERIFIED_EXISTING"})
+SOURCE_SUPPLEMENT_MAX_BODY_BYTES = 16 * 1024
+SOURCE_SUPPLEMENT_MAX_DOI_CHARS = 512
+SOURCE_SUPPLEMENT_MAX_TITLE_CHARS = 2_000
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -159,6 +180,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
                 return
             self.handle_project_source_get(project_id, parse_qs(parsed.query).get("source_id", [""])[0])
+        elif parsed.path.startswith("/api/project/") and parsed.path.endswith("/figure"):
+            project_id = project_id_from_route(parsed.path, "figure")
+            if project_id is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                return
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            indices = query.get("index", [])
+            if set(query) != {"index"} or len(indices) != 1 or not re.fullmatch(r"0|[1-9][0-9]*", indices[0]):
+                self.send_error(HTTPStatus.BAD_REQUEST, "figure index is invalid")
+                return
+            self.handle_project_figure_get(project_id, int(indices[0]))
         elif parsed.path.startswith("/api/project/") and parsed.path.endswith("/review-state"):
             project_id = project_id_from_route(parsed.path, "review-state")
             if project_id is None:
@@ -238,6 +270,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/project/") and parsed.path.endswith("/source-mapping"):
+            project_id = project_id_from_route(parsed.path, "source-mapping")
+            if project_id is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                return
+            self.handle_project_source_mapping_post(project_id)
+            return
+        if parsed.path.startswith("/api/project/") and parsed.path.endswith("/source-supplement"):
+            project_id = project_id_from_route(parsed.path, "source-supplement")
+            if project_id is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                return
+            self.handle_project_source_supplement_post(project_id)
+            return
         if parsed.path.startswith("/api/project/") and parsed.path.endswith("/source-archive"):
             project_id = project_id_from_route(parsed.path, "source-archive")
             if project_id is None:
@@ -254,6 +300,125 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.handle_project_export_docx(project_id)
             return
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+
+    def handle_project_source_mapping_post(self, project_id: str) -> None:
+        try:
+            project = project_dir(self.review_root, project_id)
+        except ValueError:
+            self.send_error(HTTPStatus.BAD_REQUEST, "invalid project")
+            return
+        if not project.is_dir():
+            self.send_error(HTTPStatus.NOT_FOUND, "project not found")
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            if length <= 0 or length > 16 * 1024:
+                raise ValueError("mapping body size is invalid")
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
+            if not isinstance(data, dict) or set(data) != {"member_id", "download_id"}:
+                raise ValueError("mapping body is invalid")
+            member_id = data.get("member_id")
+            download_id = data.get("download_id")
+            if (
+                not isinstance(member_id, str)
+                or not re.fullmatch(r"MEMBER-\d{4}", member_id)
+                or not isinstance(download_id, str)
+                or not download_id
+            ):
+                raise ValueError("mapping identifiers are invalid")
+
+            with SOURCE_TRANSACTION_LOCK:
+                manifest_relative = Path("00_discovery/acquisition_manifest.json")
+                receipt_relative = Path("00_sources/manual_import_receipt.json")
+                validate_project_path_components(
+                    project,
+                    (manifest_relative, receipt_relative, SOURCE_ARCHIVE_RELATIVE),
+                )
+                receipt = read_json_if_exists(project / receipt_relative)
+                unresolved = receipt.get("unresolved") if isinstance(receipt, dict) else None
+                if not isinstance(unresolved, list):
+                    raise ValueError("source mapping receipt is invalid")
+                matches = [
+                    row
+                    for row in unresolved
+                    if isinstance(row, dict) and row.get("member_id") == member_id
+                ]
+                if (
+                    len(matches) != 1
+                    or not isinstance(matches[0].get("download_ids"), list)
+                    or download_id not in matches[0]["download_ids"]
+                ):
+                    raise ValueError("source mapping is not a listed candidate")
+
+                overrides: dict[str, str] = {}
+                prior = receipt.get("confirmed_mappings", [])
+                if not isinstance(prior, list):
+                    raise ValueError("source mapping receipt is invalid")
+                for row in prior:
+                    if (
+                        not isinstance(row, dict)
+                        or not re.fullmatch(r"MEMBER-\d{4}", row.get("member_id", ""))
+                        or not isinstance(row.get("download_id"), str)
+                        or not row["download_id"]
+                    ):
+                        raise ValueError("source mapping receipt is invalid")
+                    overrides[row["member_id"]] = row["download_id"]
+                overrides[member_id] = download_id
+                import_manual_archive(
+                    project / manifest_relative,
+                    project / SOURCE_ARCHIVE_RELATIVE,
+                    project / "00_sources",
+                    member_overrides=overrides,
+                )
+        except (json.JSONDecodeError, UnicodeError, OSError, ValueError, ManualArchiveError):
+            self.send_error(HTTPStatus.BAD_REQUEST, "source mapping is invalid")
+            return
+        self.send_json({"status": "mapped", "message": "文件归属已确认"})
+
+    def handle_project_source_supplement_post(self, project_id: str) -> None:
+        try:
+            project = project_dir(self.review_root, project_id)
+        except ValueError:
+            self.send_error(HTTPStatus.BAD_REQUEST, "invalid project")
+            return
+        if not project.is_dir():
+            self.send_error(HTTPStatus.NOT_FOUND, "project not found")
+            return
+        raw_length = self.headers.get("Content-Length")
+        if not isinstance(raw_length, str) or re.fullmatch(r"[0-9]+", raw_length) is None:
+            self.send_error(HTTPStatus.BAD_REQUEST, "source supplement length is invalid")
+            return
+        normalized_length = raw_length.lstrip("0") or "0"
+        maximum_length = str(SOURCE_SUPPLEMENT_MAX_BODY_BYTES)
+        if len(normalized_length) > len(maximum_length) or (
+            len(normalized_length) == len(maximum_length)
+            and normalized_length > maximum_length
+        ):
+            self.send_error(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                "source supplement exceeds the size limit",
+            )
+            return
+        length = int(normalized_length)
+        if length <= 0:
+            self.send_error(HTTPStatus.BAD_REQUEST, "source supplement body is empty")
+            return
+        if length > SOURCE_SUPPLEMENT_MAX_BODY_BYTES:
+            self.send_error(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                "source supplement exceeds the size limit",
+            )
+            return
+        try:
+            body = self.rfile.read(length)
+            if len(body) != length:
+                raise ValueError("source supplement body is incomplete")
+            data = json.loads(body.decode("utf-8"))
+            result = add_project_source_supplement(project, data)
+        except (json.JSONDecodeError, OSError, ValueError):
+            self.send_error(HTTPStatus.BAD_REQUEST, "source supplement is invalid")
+            return
+        self.send_json(result, status=HTTPStatus.CREATED)
 
     def handle_project_source_archive_post(self, project_id: str, *, replace: str) -> None:
         try:
@@ -275,57 +440,58 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if length > DEFAULT_MAX_ARCHIVE_BYTES:
             self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "archive exceeds the size limit")
             return
-        archive_path = project / SOURCE_ARCHIVE_RELATIVE
-        try:
-            validate_project_path_components(project, (SOURCE_ARCHIVE_RELATIVE,))
-        except ValueError:
-            self.send_error(HTTPStatus.BAD_REQUEST, "archive destination is unavailable")
-            return
-        state = read_json_if_exists(project / "00_brief" / "review_state.json") or {}
-        blockers = state.get("blockers") if isinstance(state, dict) else []
-        replacement_allowed = (
-            replace == "invalid"
-            and isinstance(blockers, list)
-            and any(
-                isinstance(blocker, str)
-                and blocker.startswith(("SOURCE_ARCHIVE_", "MANUAL_ARCHIVE_"))
-                for blocker in blockers
+        with SOURCE_TRANSACTION_LOCK:
+            archive_path = project / SOURCE_ARCHIVE_RELATIVE
+            try:
+                validate_project_path_components(project, (SOURCE_ARCHIVE_RELATIVE,))
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "archive destination is unavailable")
+                return
+            state = read_json_if_exists(project / "00_brief" / "review_state.json") or {}
+            blockers = state.get("blockers") if isinstance(state, dict) else []
+            replacement_allowed = (
+                replace == "invalid"
+                and isinstance(blockers, list)
+                and any(
+                    isinstance(blocker, str)
+                    and blocker.startswith(("SOURCE_ARCHIVE_", "MANUAL_ARCHIVE_"))
+                    for blocker in blockers
+                )
             )
-        )
-        if archive_path.exists() and not replacement_allowed:
-            self.send_error(HTTPStatus.CONFLICT, "a source archive is already awaiting processing")
-            return
-        archive_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary: Path | None = None
-        try:
-            validate_project_path_components(project, (SOURCE_ARCHIVE_RELATIVE,))
-            with tempfile.NamedTemporaryFile(
-                mode="wb",
-                dir=archive_path.parent,
-                prefix=f".{archive_path.name}.",
-                suffix=".tmp",
-                delete=False,
-            ) as handle:
-                temporary = Path(handle.name)
-                remaining = length
-                while remaining:
-                    chunk = self.rfile.read(min(1024 * 1024, remaining))
-                    if not chunk:
-                        raise ValueError("archive body is incomplete")
-                    handle.write(chunk)
-                    remaining -= len(chunk)
-                handle.flush()
-                os.fsync(handle.fileno())
-            if not zipfile.is_zipfile(temporary):
-                raise ValueError("archive is not a valid ZIP")
-            validate_project_path_components(project, (SOURCE_ARCHIVE_RELATIVE,))
-            os.replace(temporary, archive_path)
-            temporary = None
-        except (OSError, ValueError):
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
-            self.send_error(HTTPStatus.BAD_REQUEST, "archive is not a valid ZIP")
-            return
+            if archive_path.exists() and not replacement_allowed:
+                self.send_error(HTTPStatus.CONFLICT, "a source archive is already awaiting processing")
+                return
+            archive_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary: Path | None = None
+            try:
+                validate_project_path_components(project, (SOURCE_ARCHIVE_RELATIVE,))
+                with tempfile.NamedTemporaryFile(
+                    mode="wb",
+                    dir=archive_path.parent,
+                    prefix=f".{archive_path.name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as handle:
+                    temporary = Path(handle.name)
+                    remaining = length
+                    while remaining:
+                        chunk = self.rfile.read(min(1024 * 1024, remaining))
+                        if not chunk:
+                            raise ValueError("archive body is incomplete")
+                        handle.write(chunk)
+                        remaining -= len(chunk)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                if not zipfile.is_zipfile(temporary):
+                    raise ValueError("archive is not a valid ZIP")
+                validate_project_path_components(project, (SOURCE_ARCHIVE_RELATIVE,))
+                os.replace(temporary, archive_path)
+                temporary = None
+            except (OSError, ValueError):
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
+                self.send_error(HTTPStatus.BAD_REQUEST, "archive is not a valid ZIP")
+                return
         self.send_json(
             {"status": "received", "message": "压缩包已接收，正在核验来源。"},
             status=HTTPStatus.CREATED,
@@ -379,10 +545,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
             return
-        if not path.exists():
+        try:
+            publication = _validated_discovery_publication(path.parents[1])
+        except ValueError:
+            self.send_error(HTTPStatus.CONFLICT, "discovery selection is inconsistent")
+            return
+        if publication is None:
             self.send_error(HTTPStatus.NOT_FOUND, "discovery data not found")
             return
-        self.send_file(path, "application/json; charset=utf-8")
+        self.send_json(publication[0])
 
     def handle_discovery_put(self, project_id: str, confirm: bool = False) -> None:
         try:
@@ -396,29 +567,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self.send_error(HTTPStatus.BAD_REQUEST, f"invalid discovery json: {exc}")
             return
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        tmp.replace(path)
-        selected = selected_from_combined(data.get("results", []), project_id)
-        selected["human_confirmed"] = bool(confirm)
-        (path.parent / "selected_discovery_results.json").write_text(
-            json.dumps(selected, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        (path.parent / "human_check_state.json").write_text(
-            json.dumps(
-                {
-                    "project_id": project_id,
-                    "status": "confirmed" if confirm else "pending",
-                    "confirmed_at": now_utc() if confirm else None,
-                },
-                ensure_ascii=False,
-                indent=2,
+        with SOURCE_TRANSACTION_LOCK:
+            selected = selected_from_combined(data.get("results", []), project_id)
+            selected["human_confirmed"] = bool(confirm)
+            selection_digest = _canonical_selection_digest(selected)
+            data["selection_digest"] = selection_digest
+            selected["selection_digest"] = selection_digest
+            human_state = {
+                "project_id": project_id,
+                "status": "confirmed" if confirm else "pending",
+                "confirmed_at": now_utc() if confirm else None,
+                "selection_digest": selection_digest,
+            }
+            _replace_json_pair(
+                [
+                    (path, data),
+                    (path.parent / "selected_discovery_results.json", selected),
+                    (path.parent / "human_check_state.json", human_state),
+                ]
             )
-            + "\n",
-            encoding="utf-8",
-        )
         self.send_json({"ok": True, "confirmed": confirm})
 
     def handle_project_draft_get(self, project_id: str) -> None:
@@ -566,6 +733,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self.send_json(payload)
 
+    def handle_project_figure_get(self, project_id: str, index: int) -> None:
+        try:
+            project = project_dir(self.review_root, project_id)
+            path, content_type = project_figure_image(project, index)
+        except ValueError:
+            self.send_error(HTTPStatus.NOT_FOUND, "figure is unavailable")
+            return
+        self.send_file(path, content_type)
+
     def handle_static_asset(self, path: str) -> None:
         assets_root = Path(__file__).resolve().parent / "assets"
         rel = posixpath.normpath(unquote(path.removeprefix("/assets/"))).lstrip("/")
@@ -648,7 +824,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.BAD_REQUEST, "missing path")
             return
         requested_path = Path(unquote(raw_path)).expanduser()
-        release_candidate = requested_path if requested_path.is_absolute() else self.review_root / requested_path
         try:
             validate_file_request_path_components(self.review_root, requested_path)
         except (OSError, ValueError):
@@ -683,9 +858,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not path.exists() or not path.is_file():
             self.send_error(HTTPStatus.NOT_FOUND, "file not found")
             return
-        if is_project_release_docx(release_candidate, self.review_root):
+        if is_project_release_docx(path, self.review_root):
             try:
-                current = project_release_docx_is_current(release_candidate)
+                current = project_release_docx_is_current(path)
             except ValueError:
                 current = False
             if not current:
@@ -843,6 +1018,129 @@ def selected_from_combined(groups: list[dict], project_id: str) -> dict:
     return selected
 
 
+def _canonical_selection_digest(selected: dict[str, Any]) -> str:
+    keywords = selected.get("keywords")
+    local_papers = selected.get("local_papers")
+    web_papers = selected.get("web_papers")
+    if (
+        not isinstance(keywords, list)
+        or not all(isinstance(row, dict) for row in keywords)
+        or not isinstance(local_papers, list)
+        or not all(isinstance(row, dict) for row in local_papers)
+        or not isinstance(web_papers, list)
+        or not all(isinstance(row, dict) for row in web_papers)
+    ):
+        raise ValueError("discovery selection is invalid")
+    canonical = {
+        "human_confirmed": selected.get("human_confirmed") is True,
+        "keywords": sorted(
+            (
+                {
+                    "category": visible_text(row.get("category")),
+                    "keyword": visible_text(row.get("keyword")),
+                }
+                for row in keywords
+            ),
+            key=lambda row: (row["keyword"], row["category"]),
+        ),
+        "local_papers": sorted(
+            (
+                {
+                    "matched_keywords": sorted(
+                        visible_text(value)
+                        for value in row.get("matched_keywords", [])
+                        if visible_text(value)
+                    ),
+                    "paper_id": visible_text(row.get("paper_id")),
+                    "role": visible_text(row.get("role")),
+                }
+                for row in local_papers
+            ),
+            key=lambda row: (row["paper_id"], row["role"], row["matched_keywords"]),
+        ),
+        "project_id": visible_text(selected.get("project_id")),
+        "web_papers": sorted(
+            (
+                {
+                    "doi": visible_text(row.get("doi")),
+                    "matched_keyword": visible_text(row.get("matched_keyword")),
+                    "paper_id": visible_text(row.get("paper_id")),
+                    "role": visible_text(row.get("role")),
+                    "title": visible_text(row.get("title")),
+                    "url": visible_text(row.get("url")),
+                }
+                for row in web_papers
+            ),
+            key=lambda row: (
+                row["paper_id"],
+                row["doi"],
+                row["url"],
+                row["title"],
+                row["matched_keyword"],
+                row["role"],
+            ),
+        ),
+    }
+    encoded = json.dumps(
+        canonical,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _validated_discovery_publication(
+    project: Path,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]] | None:
+    discovery = project / "00_discovery"
+    paths = (
+        discovery / "combined_results_by_keyword.json",
+        discovery / "selected_discovery_results.json",
+        discovery / "human_check_state.json",
+    )
+    with SOURCE_TRANSACTION_LOCK:
+        exists = tuple(path.is_file() for path in paths)
+        if not any(exists):
+            return None
+        if not all(exists):
+            raise ValueError("discovery publication is incomplete")
+        payloads = tuple(read_json_if_exists(path) for path in paths)
+        if not all(isinstance(payload, dict) for payload in payloads):
+            raise ValueError("discovery publication is invalid")
+        combined, selected, human_state = payloads
+        raw_digests = tuple(payload.get("selection_digest") for payload in payloads)
+        if not all(isinstance(digest, str) for digest in raw_digests) or len(
+            set(raw_digests)
+        ) != 1:
+            raise ValueError("discovery publication versions differ")
+        selection_digest = raw_digests[0]
+        if re.fullmatch(r"[0-9a-f]{64}", selection_digest) is None:
+            raise ValueError("discovery publication digest is invalid")
+        status = human_state.get("status")
+        if (
+            selected.get("project_id") != project.name
+            or human_state.get("project_id") != project.name
+            or status not in {"confirmed", "pending"}
+            or selected.get("human_confirmed") != (status == "confirmed")
+        ):
+            raise ValueError("discovery publication identity is invalid")
+        groups = combined.get("results")
+        if not isinstance(groups, list) or not all(isinstance(group, dict) for group in groups):
+            raise ValueError("discovery publication results are invalid")
+        try:
+            expected_selected = selected_from_combined(groups, project.name)
+            expected_selected["human_confirmed"] = status == "confirmed"
+            expected_digest = _canonical_selection_digest(expected_selected)
+            selected_digest = _canonical_selection_digest(selected)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("discovery publication selection is invalid") from exc
+        if selection_digest != expected_digest or selection_digest != selected_digest:
+            raise ValueError("discovery publication selection differs")
+        return combined, selected, human_state
+
+
 def read_text_if_exists(path: Path) -> str:
     if not path.exists():
         return ""
@@ -898,6 +1196,12 @@ def visible_text_list(value: Any) -> list[str]:
         return [item.strip() for item in value if isinstance(item, str) and item.strip()]
     text = visible_text(value)
     return [text] if text else []
+
+
+def _canonical_source_identifier(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("canonical source identifiers must be nonempty strings")
+    return value.strip()
 
 
 def _normalized_project_source_id(value: str) -> str:
@@ -1509,6 +1813,166 @@ def _safe_research_source_url(value: Any) -> str:
     return text
 
 
+def _researcher_disposition_label(value: Any) -> str:
+    return {
+        "INCLUDE_FOR_FULL_TEXT": "用户要求纳入",
+        "EXCLUDE": "用户要求排除",
+    }.get(visible_text(value).upper(), "等待用户决定")
+
+
+def _system_recommendation_label(value: Any) -> str:
+    return {
+        "RESEARCHER_SUPPLIED": "待系统简要复核",
+        "INCLUDE": "系统建议纳入",
+        "EXCLUDE": "系统建议排除",
+    }.get(visible_text(value).upper(), "系统尚未给出建议")
+
+
+def _stage_json(path: Path, payload: dict[str, Any]) -> Path:
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        temporary = Path(handle.name)
+        json.dump(payload, handle, ensure_ascii=False, allow_nan=False, indent=2)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    return temporary
+
+
+def _replace_json_pair(updates: list[tuple[Path, dict[str, Any]]]) -> None:
+    staged: dict[Path, Path] = {}
+    backups: dict[Path, Path | None] = {}
+    replaced: list[Path] = []
+    try:
+        for path, payload in updates:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            staged[path] = _stage_json(path, payload)
+            if path.exists():
+                descriptor, backup_name = tempfile.mkstemp(
+                    dir=path.parent,
+                    prefix=f".{path.name}.",
+                    suffix=".backup",
+                )
+                os.close(descriptor)
+                backup = Path(backup_name)
+                backup.unlink()
+                os.link(path, backup)
+                backups[path] = backup
+            else:
+                backups[path] = None
+        try:
+            for path, _ in updates:
+                os.replace(staged[path], path)
+                staged.pop(path)
+                replaced.append(path)
+        except BaseException as publication_error:
+            rollback_error: BaseException | None = None
+            for path in reversed(replaced):
+                backup = backups[path]
+                try:
+                    if backup is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        os.replace(backup, path)
+                        backups[path] = None
+                except BaseException as exc:
+                    rollback_error = rollback_error or exc
+            if rollback_error is not None:
+                raise OSError("source supplement rollback failed") from publication_error
+            raise
+    finally:
+        for temporary in staged.values():
+            temporary.unlink(missing_ok=True)
+        for backup in backups.values():
+            if backup is not None:
+                backup.unlink(missing_ok=True)
+
+
+def add_project_source_supplement(project: Path, data: Any) -> dict[str, Any]:
+    with SOURCE_TRANSACTION_LOCK:
+        return _add_project_source_supplement_unlocked(project, data)
+
+
+def _add_project_source_supplement_unlocked(project: Path, data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ValueError("source supplement must be an object")
+    doi_value = data.get("doi", "")
+    title_value = data.get("title", "")
+    if (
+        not isinstance(doi_value, str)
+        or len(doi_value) > SOURCE_SUPPLEMENT_MAX_DOI_CHARS
+        or not isinstance(title_value, str)
+        or len(title_value) > SOURCE_SUPPLEMENT_MAX_TITLE_CHARS
+    ):
+        raise ValueError("source supplement identity is too large")
+    doi_raw = doi_value.strip()
+    doi = normalize_doi(doi_raw) or ""
+    title = title_value.strip()
+    if doi_raw and not doi:
+        raise ValueError("DOI is invalid")
+    if not doi and not title:
+        raise ValueError("a DOI or title is required")
+    disposition = visible_text(data.get("disposition")).casefold()
+    dispositions = {"include": "INCLUDE_FOR_FULL_TEXT", "exclude": "EXCLUDE"}
+    if disposition not in dispositions:
+        raise ValueError("unknown disposition")
+    pool_relative = Path("00_discovery/candidate_pool.json")
+    decisions_relative = Path("00_discovery/screening_decisions.json")
+    validate_project_path_components(project, (pool_relative, decisions_relative))
+    pool_path = project / pool_relative
+    decisions_path = project / decisions_relative
+    pool_payload = read_json_if_exists(pool_path) or {"candidates": []}
+    decisions_payload = read_json_if_exists(decisions_path) or {"decisions": []}
+    if not isinstance(pool_payload, dict) or not isinstance(decisions_payload, dict):
+        raise ValueError("source candidates are unavailable")
+    candidates = pool_payload.get("candidates", [])
+    decisions = decisions_payload.get("decisions", [])
+    if not isinstance(candidates, list) or not all(isinstance(row, dict) for row in candidates):
+        raise ValueError("source candidates are unavailable")
+    if not isinstance(decisions, list) or not all(isinstance(row, dict) for row in decisions):
+        raise ValueError("screening decisions are unavailable")
+    identity = doi or title.casefold()
+    if any(
+        normalize_doi(row.get("doi")) == doi if doi else visible_text(row.get("title")).casefold() == identity
+        for row in [*candidates, *decisions]
+    ):
+        raise ValueError("source supplement already exists")
+    candidate_id = "RESEARCHER-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12].upper()
+    candidates.append(
+        {
+            "candidate_id": candidate_id,
+            "doi": doi,
+            "title": title,
+            "source_origin": "RESEARCHER_SUPPLIED",
+        }
+    )
+    decisions.append(
+        {
+            "candidate_id": candidate_id,
+            "doi": doi,
+            "title": title,
+            "system_recommendation": "RESEARCHER_SUPPLIED",
+            "disposition": dispositions[disposition],
+        }
+    )
+    pool_payload["candidates"] = candidates
+    decisions_payload["decisions"] = decisions
+    _replace_json_pair(
+        [(pool_path, pool_payload), (decisions_path, decisions_payload)]
+    )
+    return {
+        "status": "received",
+        "message": "已加入来源候选",
+        "study_id": candidate_id,
+    }
+
+
 def project_source_handoff_payload(review_root: Path, project_id: str) -> dict[str, Any]:
     project = project_dir(review_root, project_id)
     manifest_relative = Path("00_discovery/acquisition_manifest.json")
@@ -1532,24 +1996,38 @@ def project_source_handoff_payload(review_root: Path, project_id: str) -> dict[s
         raise ValueError("project source list is unavailable")
     downloads = downloads or []
     results = results or []
-    result_by_id = {
-        visible_text(row.get("download_id")): row
-        for row in results
-        if isinstance(row, dict) and visible_text(row.get("download_id"))
-    }
+    if not all(isinstance(row, dict) for row in downloads) or not all(
+        isinstance(row, dict) for row in results
+    ):
+        raise ValueError("project source list is unavailable")
+    download_ids = [_canonical_source_identifier(row.get("download_id")) for row in downloads]
+    result_ids = [_canonical_source_identifier(row.get("download_id")) for row in results]
+    study_ids = [_canonical_source_identifier(row.get("study_id")) for row in downloads]
+    if (
+        any(not download_id for download_id in download_ids)
+        or len(download_ids) != len(set(download_ids))
+        or any(not download_id for download_id in result_ids)
+        or len(result_ids) != len(set(result_ids))
+    ):
+        raise ValueError("project source list is unavailable")
+    declared_download_ids = set(download_ids)
+    if not set(result_ids).issubset(declared_download_ids):
+        raise ValueError("project source list is unavailable")
+    result_by_id = dict(zip(result_ids, results, strict=True))
     sources: list[dict[str, Any]] = []
-    for index, row in enumerate(item for item in downloads if isinstance(item, dict)):
-        download_id = visible_text(row.get("download_id"))
+    for index, (row, download_id, study_id) in enumerate(
+        zip(downloads, download_ids, study_ids, strict=True)
+    ):
         result = result_by_id.get(download_id, {})
         ready = visible_text(result.get("status")).upper() in SOURCE_ARCHIVE_SUCCESS_STATUSES
         role = visible_text(row.get("document_role")).upper() or "FULL TEXT"
-        study_id = visible_text(row.get("study_id"))
         doi = normalize_doi(row.get("doi")) or ""
         citation = doi or study_id or f"研究 {index + 1}"
         landing_url = _safe_research_source_url(row.get("landing_page_url"))
         source_url = _safe_research_source_url(row.get("source_url") or row.get("url"))
         sources.append(
             {
+                "download_id": download_id,
                 "study_id": study_id or doi,
                 "citation": citation,
                 "role": role,
@@ -1559,6 +2037,75 @@ def project_source_handoff_payload(review_root: Path, project_id: str) -> dict[s
             }
         )
     ready_count = sum(row["status"] == "已获得" for row in sources)
+    screening_path = project / "00_discovery/screening_decisions.json"
+    screening = read_json_if_exists(screening_path) or {}
+    if os.path.lexists(screening_path) and not isinstance(screening, dict):
+        raise ValueError("project source list is unavailable")
+    decisions = screening.get("decisions") if isinstance(screening, dict) else []
+    if decisions is not None and (
+        not isinstance(decisions, list) or not all(isinstance(row, dict) for row in decisions)
+    ):
+        raise ValueError("project source list is unavailable")
+    decision_ids = [_canonical_source_identifier(row.get("candidate_id")) for row in decisions or []]
+    if any(not candidate_id for candidate_id in decision_ids) or len(decision_ids) != len(
+        set(decision_ids)
+    ):
+        raise ValueError("project source list is unavailable")
+    supplements = [
+        {
+            "study_id": candidate_id,
+            "citation": visible_text(row.get("title")) or normalize_doi(row.get("doi")) or "用户补充研究",
+            "doi": normalize_doi(row.get("doi")) or "",
+            "system_recommendation": _system_recommendation_label(row.get("system_recommendation")),
+            "researcher_disposition": _researcher_disposition_label(row.get("disposition")),
+        }
+        for row, candidate_id in zip(decisions or [], decision_ids, strict=True)
+        if isinstance(row, dict) and visible_text(row.get("system_recommendation")).upper() == "RESEARCHER_SUPPLIED"
+    ]
+    manual_receipt = read_json_if_exists(project / "00_sources/manual_import_receipt.json") or {}
+    raw_unresolved = manual_receipt.get("unresolved") if isinstance(manual_receipt, dict) else []
+    if raw_unresolved is not None and not isinstance(raw_unresolved, list):
+        raise ValueError("project source mapping is unavailable")
+    unresolved: list[dict[str, Any]] = []
+    seen_member_ids: set[str] = set()
+    for row in raw_unresolved or []:
+        if not isinstance(row, dict):
+            raise ValueError("project source mapping is unavailable")
+        member_id = visible_text(row.get("member_id"))
+        display_name = visible_text(row.get("member_display_name"))
+        reason = visible_text(row.get("reason"))
+        download_ids = row.get("download_ids")
+        if (
+            not re.fullmatch(r"MEMBER-\d{4}", member_id)
+            or member_id in seen_member_ids
+            or not display_name
+            or len(display_name) > 255
+            or display_name in {".", ".."}
+            or "/" in display_name
+            or "\\" in display_name
+            or any(ord(character) < 32 for character in display_name)
+            or not reason
+            or len(reason) > 100
+            or not isinstance(download_ids, list)
+        ):
+            raise ValueError("project source mapping is unavailable")
+        seen_member_ids.add(member_id)
+        safe_download_ids = [_canonical_source_identifier(download_id) for download_id in download_ids]
+        if (
+            any(not download_id for download_id in safe_download_ids)
+            or len(safe_download_ids) != len(set(safe_download_ids))
+            or not set(safe_download_ids).issubset(declared_download_ids)
+        ):
+            raise ValueError("project source mapping is unavailable")
+        safe_download_ids.sort()
+        unresolved.append(
+            {
+                "reason": reason,
+                "member_id": member_id,
+                "member_display_name": display_name,
+                "download_ids": safe_download_ids,
+            }
+        )
     return {
         "project_id": project_id,
         "counts": {
@@ -1568,6 +2115,66 @@ def project_source_handoff_payload(review_root: Path, project_id: str) -> dict[s
         },
         "upload_required": any(row["status"] == "需要上传" for row in sources),
         "sources": sources,
+        "supplements": supplements,
+        "unresolved": unresolved,
+    }
+
+
+def _researcher_batch_blocker(reason_code: str, last_completed_stage: str) -> dict[str, str]:
+    reason = visible_text(reason_code).upper()
+    if reason == "RESUME_BINDING_INVALID":
+        return {
+            "message": "当前研究输入完整性异常，现有结果不会继续使用。",
+            "action": "在 QoderWork 中创建一个新项目重新开始",
+        }
+    if reason.startswith(("REVIEWER_",)):
+        return {
+            "message": "科学复核结果不完整或与当前证据不一致，请重新运行该研究的科学复核。",
+            "action": "在 QoderWork 中重新运行该研究的科学复核",
+        }
+    if reason.startswith(("R0_",)):
+        return {
+            "message": "证据定位或原文支撑未通过校验，请核对该研究的全文解析与证据选择后重新处理。",
+            "action": "核对该研究的全文解析与证据选择后重新处理",
+        }
+    if reason.startswith(
+        (
+            "EVIDENCE_CARDS_",
+            "EXCEPTION_QUEUE_",
+            "PROJECT_SNAPSHOT_",
+            "PROJECT_STATE_",
+            "PROJECTION_",
+            "REGISTRATION_",
+        )
+    ):
+        return {
+            "message": "研究证据尚未安全写入项目，请恢复项目处理状态后重试该研究。",
+            "action": "在 QoderWork 中恢复项目处理状态后重试该研究",
+        }
+    if reason.startswith(("SEMANTIC_", "JOB_BINDING_", "BLOCKED_CLAIM_")):
+        return {
+            "message": "证据提取结果未通过完整性校验，请重新运行该研究的证据提取。",
+            "action": "在 QoderWork 中重新运行该研究的证据提取",
+        }
+    if reason.startswith(
+        (
+            "ACQUISITION_",
+            "ATOM_",
+            "CATALOG_",
+            "MINERU_",
+            "PREPARE_",
+            "REUSABLE_",
+            "SOURCE_",
+            "STUDY_",
+        )
+    ):
+        return {
+            "message": "研究来源或解析材料尚未就绪，请补齐该研究所需全文并完成解析后再继续。",
+            "action": "补齐该研究所需全文并完成解析后继续证据处理",
+        }
+    return {
+        "message": "该研究未通过当前科学处理阶段，请在 QoderWork 中重新处理后继续。",
+        "action": "在 QoderWork 中重新处理该研究",
     }
 
 
@@ -1600,10 +2207,69 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
     risk_targets = risk_packet.get("targets") if isinstance(risk_packet, dict) else []
     risk_targets = risk_targets if isinstance(risk_targets, list) else []
     open_risks = _open_scientific_risk_count(risk_packet, risk_decisions)
+    batch_progress_path = project / "01_evidence/batch_progress.json"
+    batch_progress = read_json_if_exists(batch_progress_path) or {}
+    if os.path.lexists(batch_progress_path) and not isinstance(batch_progress, dict):
+        raise ValueError("project processing status is unavailable")
+    batch_studies = batch_progress.get("studies") if isinstance(batch_progress, dict) else []
+    if batch_studies is not None and not isinstance(batch_studies, list):
+        raise ValueError("project processing status is unavailable")
+    batch_by_study = {
+        visible_text(row.get("study_id")): row
+        for row in batch_studies or []
+        if isinstance(row, dict) and visible_text(row.get("study_id"))
+    }
+    raw_credits = batch_progress.get("credits") if isinstance(batch_progress, dict) else {}
+    raw_credits = raw_credits if isinstance(raw_credits, dict) else {}
+    measured = raw_credits.get("measured")
+    forecast = raw_credits.get("forecast")
+    measured_credits = measured.get("consumed") if isinstance(measured, dict) else None
+    forecast_credits = forecast.get("estimated_credits") if isinstance(forecast, dict) else None
+    if (
+        isinstance(measured_credits, bool)
+        or not isinstance(measured_credits, (int, float))
+        or not math.isfinite(measured_credits)
+        or measured_credits < 0
+    ):
+        measured_credits = None
+    if (
+        isinstance(forecast_credits, bool)
+        or not isinstance(forecast_credits, (int, float))
+        or not math.isfinite(forecast_credits)
+        or forecast_credits < 0
+    ):
+        forecast_credits = None
+
+    reuse_audit = read_json_if_exists(project / "00_sources/reusable_library_audit.json") or {}
+    reuse_results = reuse_audit.get("results") if isinstance(reuse_audit, dict) else []
+    reuse_by_study = {
+        visible_text(row.get("study_id")): visible_text(row.get("status")).upper()
+        for row in reuse_results or []
+        if isinstance(row, dict) and visible_text(row.get("study_id"))
+    }
+    coverage = read_json_if_exists(project / "00_sources/source_coverage.json") or {}
+    coverage_rows = coverage.get("studies") if isinstance(coverage, dict) else []
+    if isinstance(coverage, dict) and visible_text(coverage.get("study_id")):
+        coverage_rows = [coverage]
+    coverage_by_study = {
+        visible_text(row.get("study_id")): row
+        for row in coverage_rows or []
+        if isinstance(row, dict) and visible_text(row.get("study_id"))
+    }
+    manual_receipt = read_json_if_exists(project / "00_sources/manual_import_receipt.json") or {}
+    unresolved = manual_receipt.get("unresolved") if isinstance(manual_receipt, dict) else []
+    unresolved_download_ids = {
+        visible_text(download_id)
+        for row in unresolved or []
+        if isinstance(row, dict) and isinstance(row.get("download_ids"), list)
+        for download_id in row["download_ids"]
+        if visible_text(download_id)
+    }
 
     source_total = int(source_payload["counts"]["total"])
     source_ready = int(source_payload["counts"]["ready"])
-    sources_complete = source_total > 0 and source_ready == source_total
+    main_sources = [row for row in source_payload["sources"] if visible_text(row.get("role")).upper() == "MAIN"]
+    sources_complete = bool(main_sources) and all(row.get("status") == "已获得" for row in main_sources)
     parsing_complete = sources_complete and len(completed_parse) >= source_ready
     evidence_complete = bool(included_ids) and included_ids.issubset(reviewed_ids)
     risk_packet_present = os.path.lexists(project / "03_review/risk_packet.json")
@@ -1661,11 +2327,22 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
     pipeline_state_inconsistent = source_total == 0 and (
         legacy_manifest_present or downstream_present
     )
+    batch_recoveries = [
+        _researcher_batch_blocker(
+            visible_text(row.get("reason_code")),
+            visible_text(row.get("last_completed_stage")),
+        )
+        for row in batch_studies or []
+        if isinstance(row, dict) and visible_text(row.get("stage")).upper() == "BLOCKED"
+    ]
+    batch_recovery = batch_recoveries[0] if batch_recoveries else None
     blocker = (
         "上传的压缩包未通过来源核验，请按缺失清单修正后重新上传。"
         if source_invalid
         else "项目来源清单与后续证据状态不一致，请在 QoderWork 中恢复后继续。"
         if pipeline_state_inconsistent
+        else batch_recovery["message"]
+        if batch_recovery
         else "当前阶段需要补充信息，请查看推荐操作。"
         if raw_blockers
         else ""
@@ -1678,25 +2355,101 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
         stages.append({"id": stage_id, "label": label, "status": status})
 
     source_rows: dict[str, dict[str, Any]] = {}
-    for row in source_payload["sources"]:
+    manifest_downloads = (
+        (read_json_if_exists(project / "00_discovery/acquisition_manifest.json") or {}).get("downloads")
+        or []
+    )
+    for row_index, row in enumerate(source_payload["sources"]):
         study_id = visible_text(row.get("study_id"))
         if not study_id:
             continue
         summary = source_rows.setdefault(
             study_id,
-            {"study_id": study_id, "label": visible_text(row.get("citation")) or study_id, "missing": False},
+            {
+                "study_id": study_id,
+                "label": visible_text(row.get("citation")) or study_id,
+                "missing": False,
+                "roles": {},
+                "download_ids": set(),
+            },
         )
         summary["missing"] = summary["missing"] or row.get("status") != "已获得"
+        role = visible_text(row.get("role")).upper()
+        if role:
+            summary["roles"][role] = visible_text(row.get("status")) or "需要上传"
+        if row_index < len(manifest_downloads) and isinstance(manifest_downloads[row_index], dict):
+            download_id = visible_text(manifest_downloads[row_index].get("download_id"))
+            if download_id:
+                summary["download_ids"].add(download_id)
     studies = []
-    for study_id, summary in source_rows.items():
-        status = (
-            "需要补充"
-            if summary["missing"]
-            else "已完成"
-            if study_id in reviewed_ids
-            else "正在处理"
+    for study_id in sorted(set(source_rows) | set(batch_by_study)):
+        has_source = study_id in source_rows
+        summary = source_rows.get(
+            study_id,
+            {
+                "study_id": study_id,
+                "label": f"研究 {study_id}",
+                "missing": False,
+                "roles": {},
+                "download_ids": set(),
+            },
         )
-        studies.append({"study_id": study_id, "label": summary["label"], "status": status})
+        batch = batch_by_study.get(study_id, {})
+        stage = visible_text(batch.get("stage")).upper()
+        reason = visible_text(batch.get("reason_code")).upper()
+        main_missing = has_source and summary["roles"].get("MAIN") != "已获得"
+        if main_missing:
+            status = "需要补充"
+        elif stage == "REGISTERED" or study_id in reviewed_ids:
+            status = "已完成"
+        elif stage == "WAITING_FOR_PROVIDER" and reason == "SEMANTIC_OUTPUT_MISSING":
+            status = "等待证据提取"
+        elif stage == "WAITING_FOR_PROVIDER" and reason == "REVIEWER_OUTPUT_MISSING":
+            status = "等待科学复核"
+        elif stage == "BLOCKED":
+            status = "需要处理"
+        else:
+            status = "正在处理"
+        reuse_status = {
+            "REUSABLE": "已复用全文与解析结果",
+            "PDF_ONLY": "已复用全文；需要重新解析",
+            "UNRESOLVED": "复用来源待确认",
+            "NOT_REUSABLE": "使用本次来源",
+        }.get(reuse_by_study.get(study_id), "尚未检查复用")
+        coverage_row = coverage_by_study.get(study_id, {})
+        si_policy = {
+            "REQUIRED": "必须补充",
+            "RECOMMENDED": "建议补充",
+            "NOT_REQUIRED": "不需要",
+        }.get(visible_text(coverage_row.get("si_policy")).upper(), "尚未判断")
+        has_unresolved = bool(summary["download_ids"] & unresolved_download_ids)
+        roles = summary["roles"]
+        recovery = (
+            _researcher_batch_blocker(reason, visible_text(batch.get("last_completed_stage")))
+            if stage == "BLOCKED"
+            else None
+        )
+        studies.append(
+            {
+                "study_id": study_id,
+                "label": summary["label"],
+                "status": status,
+                "reuse_status": reuse_status,
+                "main_status": roles.get(
+                    "MAIN", "需要上传" if has_source else "尚无来源记录"
+                ),
+                "si_status": "匹配待确认" if has_unresolved and "SI" in roles else roles.get("SI", "未要求"),
+                "si_policy": si_policy,
+                "match_status": (
+                    "需要确认一个文件归属"
+                    if has_unresolved
+                    else "文件归属已确认"
+                    if has_source
+                    else "尚无来源记录"
+                ),
+                "next_action": recovery["action"] if recovery else "",
+            }
+        )
     studies.sort(key=lambda row: row["study_id"])
 
     recommended = {
@@ -1709,6 +2462,8 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
     }[active_stage]
     if pipeline_state_inconsistent:
         recommended = "在 QoderWork 中恢复项目来源状态"
+    elif batch_recovery:
+        recommended = batch_recovery["action"]
     return {
         "project_id": project_id,
         "active_stage": active_stage,
@@ -1726,6 +2481,7 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
         ),
         "recommended_next": recommended,
         "archive_received": archive_received,
+        "credits": {"measured": measured_credits, "forecast": forecast_credits},
     }
 
 
@@ -1764,6 +2520,13 @@ def project_risk_payload(review_root: Path, project_id: str) -> dict[str, Any]:
         claim_id = visible_text(row.get("claim_id"))
         if claim_id:
             existing[claim_id] = row
+    source_ids = {
+        visible_text(ref.get("source_id"))
+        for row in raw_targets
+        for ref in (row.get("evidence_refs") if isinstance(row.get("evidence_refs"), list) else [])
+        if isinstance(ref, dict) and visible_text(ref.get("source_id"))
+    }
+    source_index = build_project_source_index(project, source_ids)
     targets: list[dict[str, Any]] = []
     target_ids: list[str] = []
     for row in raw_targets:
@@ -1775,6 +2538,7 @@ def project_risk_payload(review_root: Path, project_id: str) -> dict[str, Any]:
         refs = row.get("evidence_refs") if isinstance(row.get("evidence_refs"), list) else []
         source = next((ref for ref in refs if isinstance(ref, dict)), {})
         source_label = visible_text(source.get("source_label")) or visible_text(source.get("source_id")) or "Source record"
+        source_id = visible_text(source.get("source_id"))
         raw_page = source.get("page")
         page = raw_page if isinstance(raw_page, int) and not isinstance(raw_page, bool) and raw_page > 0 else None
         section = visible_text(source.get("section_or_item"))
@@ -1802,6 +2566,18 @@ def project_risk_payload(review_root: Path, project_id: str) -> dict[str, Any]:
                 "source_excerpt": visible_text(source.get("exact_quote")),
                 "source_label": source_label,
                 "page": page,
+                "locator": {
+                    "label": " · ".join(
+                        [source_label, f"第 {page} 页" if page is not None else ""]
+                    ).strip(" ·"),
+                    "href": _evidence_locator_href(
+                        project,
+                        project_id,
+                        source_id,
+                        page,
+                        source_index,
+                    ),
+                },
                 "proposed_action": proposed_action,
                 "existing_decision": action,
                 "approved_text": approved_text,
@@ -1876,9 +2652,12 @@ def infer_project_topic(project: Path) -> str:
     discovery_candidates = read_json_if_exists(project / "00_discovery" / "discovery_candidates.json")
     if isinstance(discovery_candidates, dict) and discovery_candidates.get("topic"):
         return str(discovery_candidates.get("topic"))
-    discovery = read_json_if_exists(project / "00_discovery" / "combined_results_by_keyword.json")
-    if isinstance(discovery, dict) and discovery.get("topic"):
-        return str(discovery.get("topic"))
+    try:
+        discovery_publication = _validated_discovery_publication(project)
+    except ValueError:
+        discovery_publication = None
+    if discovery_publication is not None and discovery_publication[0].get("topic"):
+        return str(discovery_publication[0]["topic"])
     topic_input = project / "00_discovery" / "topic_input.md"
     if topic_input.exists():
         for line in topic_input.read_text(encoding="utf-8", errors="ignore").splitlines():
@@ -2012,13 +2791,23 @@ def list_review_projects(review_root: Path) -> list[dict[str, Any]]:
     for project in sorted(
         p for p in base.iterdir() if p.is_dir() and has_review_product_data(p)
     ):
-        discovery_state = read_json_if_exists(project / "00_discovery" / "human_check_state.json") or {}
+        try:
+            discovery_publication = _validated_discovery_publication(project)
+            discovery_invalid = False
+        except ValueError:
+            discovery_publication = None
+            discovery_invalid = True
+        discovery_state = discovery_publication[2] if discovery_publication is not None else {}
         projects.append(
             {
                 "project_id": project.name,
                 "topic": infer_project_topic(project),
-                "has_discovery": (project / "00_discovery" / "combined_results_by_keyword.json").exists(),
-                "discovery_status": discovery_state.get("status") or "pending",
+                "has_discovery": discovery_publication is not None,
+                "discovery_status": (
+                    "invalid"
+                    if discovery_invalid
+                    else discovery_state.get("status") or "pending"
+                ),
                 "has_matrix_outline": (project / "01_matrix_outline" / "literature_matrix.json").exists(),
                 "has_blueprint": (project / "01_matrix_outline" / "section_blueprint.json").exists(),
                 "has_section_drafting": (project / "02_section_drafting" / "section_drafts.md").exists(),
@@ -2327,11 +3116,6 @@ def _write_project_draft_sections_unlocked(
     current_order = [(row["id"], row["heading"], row["level"]) for row in current_sections]
     if sum(row["id"] == section_id for row in current_sections) != 1:
         raise ValueError("target section must exist exactly once")
-    candidate = replace_manuscript_section_body(current_markdown, section_id, body)
-    candidate_sections = split_manuscript_sections(candidate)
-    candidate_order = [(row["id"], row["heading"], row["level"]) for row in candidate_sections]
-    if candidate_order != current_order:
-        raise ValueError("section edit must preserve ordered ids and headings")
     try:
         lineage = json.loads(lineage_bytes.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -2339,7 +3123,6 @@ def _write_project_draft_sections_unlocked(
     if not isinstance(lineage, dict):
         raise ValueError("authoritative manuscript lineage is invalid")
     current_section = next(row for row in current_sections if row["id"] == section_id)
-    candidate_section = next(row for row in candidate_sections if row["id"] == section_id)
     pending_rows = lineage.get("pending_scientific_edits", [])
     if not isinstance(pending_rows, list):
         raise ValueError("authoritative manuscript lineage is invalid")
@@ -2351,16 +3134,27 @@ def _write_project_draft_sections_unlocked(
         ),
         None,
     )
-    verified_body = (
+    verified_raw_body = (
         existing_pending.get("verified_body")
         if isinstance(existing_pending, dict) and isinstance(existing_pending.get("verified_body"), str)
         else current_section["body"]
     )
-    restored = existing_pending is not None and candidate_section["body"] == verified_body
+    verified_body = _without_draft_claim_markers(verified_raw_body)
+    restored = existing_pending is not None and body == verified_body
+    candidate_raw_body = (
+        verified_raw_body
+        if restored
+        else _body_with_preserved_claim_markers(body, current_section["body"])
+    )
+    candidate = replace_manuscript_section_body(current_markdown, section_id, candidate_raw_body)
+    candidate_sections = split_manuscript_sections(candidate)
+    candidate_order = [(row["id"], row["heading"], row["level"]) for row in candidate_sections]
+    if candidate_order != current_order:
+        raise ValueError("section edit must preserve ordered ids and headings")
     reasons = [] if restored else _scientific_edit_reasons(
         section_id,
         verified_body,
-        candidate_section["body"],
+        body,
         lineage,
     )
     if existing_pending is not None and not restored:
@@ -2481,20 +3275,159 @@ def project_sections_payload(review_root: Path, project_id: str) -> dict[str, An
     }
 
 
+def _project_figure_rows(project: Path) -> list[dict[str, Any]]:
+    stage = project / "03_figure_redraw"
+    raw_figures: list[Any] = []
+    for name in ("redrawn_figure_manifest.json", "figure_manifest.json"):
+        manifest = read_json_if_exists(stage / name)
+        rows = manifest.get("figures") if isinstance(manifest, dict) else None
+        if isinstance(rows, list):
+            raw_figures.extend(rows)
+    figures: list[dict[str, Any]] = []
+    seen_figure_ids: set[str] = set()
+    seen_markdown_paths: set[str] = set()
+    state_labels = {
+        "ORIGINAL_GENERATED": "原创生成图",
+        "LICENSED_SOURCE": "许可来源图",
+        "FIGURE_BRIEF_PLACEHOLDER": "图片说明占位符",
+    }
+    for index, row in enumerate(raw_figures, start=1):
+        if not isinstance(row, dict):
+            continue
+        state = state_labels.get(
+            visible_text(row.get("figure_type")) or visible_text(row.get("license"))
+        )
+        if state is None:
+            continue
+        figure_id = visible_text(row.get("figure_id"))
+        markdown_path = visible_text(row.get("markdown_path"))
+        if (figure_id and figure_id in seen_figure_ids) or (
+            markdown_path and markdown_path in seen_markdown_paths
+        ):
+            continue
+        if figure_id:
+            seen_figure_ids.add(figure_id)
+        if markdown_path:
+            seen_markdown_paths.add(markdown_path)
+        figures.append(row)
+    return figures
+
+
+def project_figure_image(project: Path, index: int) -> tuple[Path, str]:
+    rows = _project_figure_rows(project)
+    if index < 0 or index >= len(rows):
+        raise ValueError("figure index is unavailable")
+    row = rows[index]
+    figure_type = visible_text(row.get("figure_type")) or visible_text(row.get("license"))
+    if figure_type == "FIGURE_BRIEF_PLACEHOLDER":
+        raise ValueError("figure placeholder has no image")
+    markdown_path = visible_text(row.get("markdown_path"))
+    if not markdown_path:
+        raise ValueError("figure image is unavailable")
+    try:
+        image_path = _validated_image(project, markdown_path)
+        binding = _image_binding(image_path, markdown_path)
+    except (OSError, FigurePolicyError, ProjectReleaseError):
+        raise ValueError("figure image is unavailable") from None
+    content_types = {
+        "BMP": "image/bmp",
+        "GIF": "image/gif",
+        "JPEG": "image/jpeg",
+        "PNG": "image/png",
+        "TIFF": "image/tiff",
+        "WEBP": "image/webp",
+    }
+    content_type = content_types.get(binding.get("image_format"))
+    if content_type is None:
+        raise ValueError("figure image is unavailable")
+    return image_path, content_type
+
+
+def _project_figure_image_is_available(project: Path, row: dict[str, Any]) -> bool:
+    """Check dashboard availability without decoding an image during polling."""
+    markdown_path = visible_text(row.get("markdown_path"))
+    expected_signatures = {
+        ".bmp": lambda header: header.startswith(b"BM"),
+        ".gif": lambda header: header.startswith((b"GIF87a", b"GIF89a")),
+        ".jpeg": lambda header: header.startswith(b"\xff\xd8\xff"),
+        ".jpg": lambda header: header.startswith(b"\xff\xd8\xff"),
+        ".png": lambda header: header.startswith(b"\x89PNG\r\n\x1a\n"),
+        ".tif": lambda header: header.startswith((b"II*\x00", b"MM\x00*")),
+        ".tiff": lambda header: header.startswith((b"II*\x00", b"MM\x00*")),
+        ".webp": lambda header: header.startswith(b"RIFF") and header[8:12] == b"WEBP",
+    }
+    signature_matches = expected_signatures.get(Path(markdown_path).suffix.casefold())
+    if not markdown_path or signature_matches is None:
+        return False
+    try:
+        image_path = _validated_image(project, markdown_path)
+        size = image_path.stat().st_size
+        if size <= 0 or size > 32 * 1024 * 1024:
+            return False
+        with image_path.open("rb") as handle:
+            return bool(signature_matches(handle.read(16)))
+    except (OSError, ProjectReleaseError):
+        return False
+
+
 def project_figures_payload(review_root: Path, project_id: str) -> dict[str, Any]:
     project = project_dir(review_root, project_id)
-    draft_stage = project / "02_section_drafting"
-    stage = project / "03_figure_redraw"
-    figure_manifest = read_json_if_exists(stage / "figure_manifest.json")
+    rows = _project_figure_rows(project)
+    figures: list[dict[str, str]] = []
+    safe_figure_by_markdown_path: dict[str, dict[str, str]] = {}
+    state_labels = {
+        "ORIGINAL_GENERATED": "原创生成图",
+        "LICENSED_SOURCE": "许可来源图",
+        "FIGURE_BRIEF_PLACEHOLDER": "图片说明占位符",
+    }
+    for index, row in enumerate(rows):
+        state = state_labels.get(
+            visible_text(row.get("figure_type")) or visible_text(row.get("license"))
+        )
+        if state is None:
+            continue
+        description = visible_text(
+            row.get("brief")
+            if state == "图片说明占位符"
+            else row.get("caption") or row.get("description")
+        )
+        figure = {
+            "state": state,
+            "title": researcher_safe_markdown(visible_text(row.get("title")) or f"图件 {index}"),
+            "description": researcher_safe_markdown(description or "说明待科研团队完善。"),
+        }
+        if state == "许可来源图":
+            figure["license"] = researcher_safe_markdown(visible_text(row.get("license")))
+            figure["attribution"] = researcher_safe_markdown(visible_text(row.get("attribution")))
+        if state != "图片说明占位符" and _project_figure_image_is_available(project, row):
+            figure["image_url"] = f"/api/project/{quote(project_id, safe='')}/figure?index={index}"
+        figures.append(figure)
+        markdown_path = visible_text(row.get("markdown_path"))
+        if markdown_path:
+            safe_figure_by_markdown_path[markdown_path] = figure
+    manuscript = read_text_if_exists(project / "04_first_draft" / "first_draft.md")
+    reading_figures = []
+    for match in _DASHBOARD_IMAGE_RE.finditer(manuscript):
+        markdown_path = match.group("angle") or match.group("plain") or ""
+        figure = safe_figure_by_markdown_path.get(markdown_path)
+        reading_figures.append(
+            dict(figure)
+            if figure is not None
+            else {
+                "state": "图件状态待核对",
+                "title": "图件暂不可显示",
+                "description": "正文图件与图件清单尚未完成绑定。",
+            }
+        )
     return {
         "project_id": project_id,
         "topic": infer_project_topic(project),
-        "summary": project_summary(review_root, project_id),
-        "figure_candidates": read_json_if_exists(draft_stage / "figure_candidates.json"),
-        "figure_manifest": figure_manifest,
-        "redrawn_manifest": read_json_if_exists(stage / "redrawn_figure_manifest.json") or figure_manifest,
-        "figure_redraw_report_md": read_text_if_exists(stage / "figure_redraw_report.md"),
-        "paths": {"stage_dir": str(stage), "draft_stage_dir": str(draft_stage)},
+        "figures": figures,
+        "reading_figures": reading_figures,
+        "summary": {
+            "total": len(figures),
+            "placeholders": sum(row["state"] == "图片说明占位符" for row in figures),
+        },
     }
 
 
@@ -2543,6 +3476,11 @@ def _project_release_artifact_state(project: Path) -> dict[str, Any]:
         and docx_exists
         and quality_report.get("manuscript_sha256") == hashlib.sha256(authoritative_bytes).hexdigest()
         and quality_report.get("docx_sha256") == hashlib.sha256(docx_bytes).hexdigest()
+        and project_figure_validation_is_current(
+            project_path,
+            quality_report.get("figure_validation"),
+            manuscript_sha256=hashlib.sha256(authoritative_bytes).hexdigest(),
+        )
     )
     return {
         "authoritative_path": authoritative_path,
@@ -2732,7 +3670,7 @@ def _draft_revision_status(lineage: dict[str, Any]) -> dict[str, Any]:
         pending.append(
             {
                 "section_id": section_id.strip(),
-                "verified_body": verified_body,
+                "verified_body": _without_draft_claim_markers(verified_body),
                 "reasons": [reason.strip() for reason in raw_reasons],
             }
         )
@@ -2740,6 +3678,19 @@ def _draft_revision_status(lineage: dict[str, Any]) -> dict[str, Any]:
         "needs_evidence_review": bool(pending),
         "pending_scientific_edits": pending,
     }
+
+
+def _without_draft_claim_markers(text: str) -> str:
+    return _DRAFT_CLAIM_MARKER_RE.sub("", text)
+
+
+def _body_with_preserved_claim_markers(visible_body: str, current_raw_body: str) -> str:
+    if visible_body == _without_draft_claim_markers(current_raw_body):
+        return current_raw_body
+    markers = [match.group(0) for match in _DRAFT_CLAIM_MARKER_RE.finditer(current_raw_body)]
+    if not markers:
+        return visible_body
+    return f"{visible_body.rstrip()}\n\n{' '.join(markers)}"
 
 
 def project_draft_payload(review_root: Path, project_id: str) -> dict[str, Any]:
@@ -2776,7 +3727,10 @@ def project_draft_payload(review_root: Path, project_id: str) -> dict[str, Any]:
         "summary": next((p for p in list_review_projects(review_root) if p["project_id"] == project_id), None),
         "available": manuscript_available,
         "manuscript_version": hashlib.sha256(manuscript_bytes).hexdigest() if manuscript_available else "",
-        "sections": split_manuscript_sections(first_draft_md) if first_draft_md else [],
+        "sections": [
+            {**section, "body": _without_draft_claim_markers(section["body"])}
+            for section in (split_manuscript_sections(first_draft_md) if first_draft_md else [])
+        ],
         "claim_lineage": _draft_claim_lineage(project, project_id, lineage) if manuscript_available else [],
         "revision_status": _draft_revision_status(lineage) if manuscript_available else {
             "needs_evidence_review": False,

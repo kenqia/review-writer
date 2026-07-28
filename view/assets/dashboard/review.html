@@ -103,6 +103,27 @@
             </div>
             <p class="stage-task-lead">请准备一个包含待补论文 MAIN/SI 的 PDF ZIP。上传成功后立即开始核验。</p>
             <div id="source-list" class="source-list"></div>
+            <form id="source-supplement-form" class="source-supplement-form">
+              <div>
+                <p class="section-label">Researcher additions</p>
+                <h4>补充一篇研究</h4>
+                <p>提供 DOI 或论文标题；系统会简要复核，但以您的纳入决定为准。</p>
+              </div>
+              <label>DOI（可选）<input id="source-supplement-doi" name="doi" type="text" inputmode="url" autocomplete="off" placeholder="10.xxxx/xxxxx"></label>
+              <label>论文标题（可选）<input id="source-supplement-title" name="title" type="text" autocomplete="off"></label>
+              <fieldset class="source-supplement-choice">
+                <legend>您的决定</legend>
+                <label><input id="source-supplement-include" name="source-disposition" type="radio" value="include" checked>纳入全文处理</label>
+                <label><input id="source-supplement-exclude" name="source-disposition" type="radio" value="exclude">排除</label>
+              </fieldset>
+              <button class="quiet-action" type="submit">加入来源候选</button>
+            </form>
+            <p id="source-supplement-message" class="inline-message" role="status" aria-live="polite"></p>
+            <div id="source-supplement-list" class="source-supplement-list"></div>
+            <div id="source-unresolved-list" class="source-list">
+              <p class="section-label">确认文件归属</p>
+            </div>
+            <p id="source-mapping-message" class="inline-message" role="status" aria-live="polite"></p>
             <label id="source-drop-zone" class="source-drop-zone" for="source-archive-input">
               <strong>拖入一个 PDF ZIP</strong>
               <span>或点击选择压缩包；无需填写路径或映射表。</span>
@@ -120,6 +141,10 @@
               <strong id="processing-next">—</strong>
             </div>
             <p id="processing-blocker" class="processing-blocker" hidden></p>
+            <dl class="processing-credits" aria-label="Credits 使用情况">
+              <div><dt>实测消耗</dt><dd id="processing-credit-measured">未记录</dd></div>
+              <div><dt>预测用量</dt><dd id="processing-credit-forecast">未估算</dd></div>
+            </dl>
             <ol id="processing-stage-list" class="processing-stage-list"></ol>
             <div id="processing-study-list" class="processing-study-list"></div>
           </section>
@@ -215,6 +240,12 @@
           </header>
           <nav id="section-outline" aria-label="正文章节"></nav>
           <div id="revision-summary" class="revision-summary"></div>
+          <section class="figure-status-panel" aria-labelledby="figure-status-heading">
+            <p class="section-label">Figures</p>
+            <h3 id="figure-status-heading">图件与许可状态</h3>
+            <p id="figure-summary">图件状态待读取</p>
+            <div id="figure-list" class="figure-status-list"></div>
+          </section>
         </aside>
 
         <div class="manuscript-center">
@@ -296,7 +327,9 @@
     let draftPayload = {available:false, sections:[], claim_lineage:[], revision_status:{pending_scientific_edits:[]}};
     let evidencePayload = {cards:[]};
     let riskPayload = {targets:[]};
-    let sourcePayload = {counts:{total:0,ready:0,missing:0}, sources:[], upload_required:false};
+    let figurePayload = {figures:[], summary:{total:0,placeholders:0}};
+    let finalPayload = {final_draft_docx_exists:false, final_draft_docx_path:''};
+    let sourcePayload = {counts:{total:0,ready:0,missing:0}, sources:[], supplements:[], unresolved:[], upload_required:false};
     let progressPayload = {active_stage:'sources', stages:[], studies:[], blocker:'', recommended_next:''};
     let activeSectionId = '';
     let selectedClaimId = '';
@@ -307,6 +340,9 @@
     let projectsRefreshTimer = null;
     let projectsRefreshBusy = false;
     let sourceUploadBusy = false;
+    let sourceSupplementBusy = false;
+    let sourceMappingBusy = false;
+    let exportBusy = false;
     let riskDecisionDirty = false;
     let activeWorkspace = 'cockpit';
 
@@ -347,10 +383,16 @@
 
     function applyWorkbenchBusyState(busy) {
       $('section-editor').disabled = busy;
-      $('project').disabled = busy;
+      $('project').disabled = busy || exportBusy;
       $('save-section').disabled = busy;
       $('restore-verified').disabled = busy;
       $('source-archive-input').disabled = busy || sourceUploadBusy;
+      document.querySelectorAll('#source-supplement-form input, #source-supplement-form button').forEach(control => {
+        control.disabled = busy || sourceSupplementBusy;
+      });
+      document.querySelectorAll('#source-unresolved-list select, #source-unresolved-list button').forEach(control => {
+        control.disabled = busy || sourceMappingBusy;
+      });
       document.querySelectorAll('#risk-stage-panel input, #risk-stage-panel button').forEach(control => {
         control.disabled = busy;
       });
@@ -550,12 +592,57 @@
       if (!(sourcePayload.sources || []).length) {
         $('source-list').append(textElement('p', 'context-empty', '后台正在建立来源清单。'));
       }
+      clear($('source-supplement-list'));
+      (sourcePayload.supplements || []).forEach(source => {
+        const row = document.createElement('article');
+        const citation = source.citation || source.doi || '用户补充研究';
+        row.append(textElement('strong', '', citation));
+        row.append(textElement('span', '', `${source.system_recommendation || '待系统简要复核'} · ${source.researcher_disposition || '等待用户决定'}`));
+        $('source-supplement-list').append(row);
+      });
+      clear($('source-unresolved-list'));
+      const sourceByDownloadId = new Map(
+        (sourcePayload.sources || []).map(source => [source.download_id, source])
+      );
+      (sourcePayload.unresolved || []).forEach(member => {
+        const row = document.createElement('article');
+        row.className = 'source-row missing';
+        const copy = document.createElement('div');
+        copy.append(textElement('strong', '', member.member_display_name || '待确认文件'));
+        copy.append(textElement('span', '', '请选择这份文件对应的来源'));
+        const select = document.createElement('select');
+        select.setAttribute('aria-label', '选择文件归属');
+        (member.download_ids || []).forEach(downloadId => {
+          const source = sourceByDownloadId.get(downloadId);
+          if (!source) return;
+          const option = document.createElement('option');
+          option.value = downloadId;
+          option.textContent = `${source.citation || source.study_id || '研究来源'} · ${source.role || '全文'}`;
+          select.append(option);
+        });
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'quiet-action';
+        button.textContent = '确认文件归属';
+        button.disabled = !select.value;
+        button.addEventListener('click', () => submitSourceMapping(member.member_id, select.value));
+        row.append(copy, select, button);
+        $('source-unresolved-list').append(row);
+      });
     }
 
     function renderProcessingStage() {
       $('processing-next').textContent = progressPayload.recommended_next || '继续处理当前科学阶段';
       $('processing-blocker').hidden = !progressPayload.blocker;
       $('processing-blocker').textContent = progressPayload.blocker || '';
+      const measuredCredits = progressPayload.credits?.measured;
+      const forecastCredits = progressPayload.credits?.forecast;
+      $('processing-credit-measured').textContent = Number.isFinite(measuredCredits)
+        ? `${measuredCredits} credits`
+        : '未记录';
+      $('processing-credit-forecast').textContent = Number.isFinite(forecastCredits)
+        ? `${forecastCredits} credits`
+        : '未估算';
       clear($('processing-stage-list'));
       (progressPayload.stages || []).forEach(stage => {
         const item = document.createElement('li');
@@ -571,6 +658,7 @@
         const row = document.createElement('article');
         row.append(textElement('strong', '', study.label || study.study_id || '研究'));
         row.append(textElement('span', '', study.status || '等待处理'));
+        if (study.next_action) row.append(textElement('p', 'study-next-action', study.next_action));
         $('processing-study-list').append(row);
       });
     }
@@ -621,6 +709,15 @@
         context.append(textElement('blockquote', '', target.source_excerpt || '未提供原文摘录'));
         const location = [target.source_label, target.page ? `第 ${target.page} 页` : ''].filter(Boolean).join(' · ');
         context.append(textElement('p', 'risk-source-location', location || target.evidence_summary || '定位信息待补充'));
+        if (target.locator && target.locator.href) {
+          const locator = document.createElement('a');
+          locator.className = 'risk-source-link';
+          locator.href = target.locator.href;
+          locator.target = '_blank';
+          locator.rel = 'noopener';
+          locator.textContent = '打开原文位置 ↗';
+          context.append(locator);
+        }
 
         const controls = document.createElement('fieldset');
         controls.className = 'risk-decision-controls';
@@ -789,6 +886,71 @@
       container.append(button);
     }
 
+    function parseManuscriptImageTokens(body) {
+      const tokens = [];
+      const pattern = /!\[([^\]]*)\]\((?:<([^>]+)>|([^\s)]+))(?:\s+["'][^"']*["'])?\)/g;
+      for (const match of body.matchAll(pattern)) {
+        tokens.push({start:match.index, end:match.index + match[0].length, alt:match[1] || '综述图件'});
+      }
+      return tokens;
+    }
+
+    function manuscriptFigureOffset(sectionId) {
+      let offset = 0;
+      for (const section of draftPayload.sections || []) {
+        if (section.id === sectionId) break;
+        offset += parseManuscriptImageTokens(section.body || '').length;
+      }
+      return offset;
+    }
+
+    function renderFigureFallback(container, figure, alt, unavailable = false) {
+      const card = document.createElement('aside');
+      card.className = 'figure-placeholder';
+      card.append(textElement('strong', '', unavailable ? '图件暂不可显示' : '图片说明占位符'));
+      card.append(textElement('p', '', figure?.description || alt || '图件说明待科研团队完善。'));
+      container.append(card);
+      return card;
+    }
+
+    function renderManuscriptFigure(container, figure, alt) {
+      if (!figure?.image_url) {
+        renderFigureFallback(container, figure, alt, figure?.state !== '图片说明占位符');
+        return;
+      }
+      const wrapper = document.createElement('figure');
+      wrapper.className = 'manuscript-figure';
+      const image = document.createElement('img');
+      image.src = figure.image_url;
+      image.alt = alt || figure.title || '综述图件';
+      image.loading = 'lazy';
+      image.addEventListener('load', () => {
+        if (image.naturalWidth > 0) return;
+        wrapper.replaceWith(textElement('p', 'figure-placeholder', '图件暂不可显示。'));
+      });
+      image.addEventListener('error', () => {
+        const fallbackHost = document.createDocumentFragment();
+        const fallback = renderFigureFallback(fallbackHost, figure, alt, true);
+        wrapper.replaceWith(fallback);
+      });
+      wrapper.append(image);
+      const caption = [figure.title, figure.description].filter(Boolean).join(' · ');
+      if (caption) wrapper.append(textElement('figcaption', '', caption));
+      container.append(wrapper);
+    }
+
+    function renderReadingContent(container, body, tokens) {
+      let cursor = 0;
+      tokens.forEach(token => {
+        if (token.start < cursor) return;
+        container.append(document.createTextNode(body.slice(cursor, token.start)));
+        if (token.kind === 'claim') appendClaimButton(container, token.claim, token.claim.text_span);
+        else renderManuscriptFigure(container, token.figure, token.alt);
+        cursor = token.end;
+      });
+      container.append(document.createTextNode(body.slice(cursor)));
+    }
+
     function renderSectionReading(body) {
       const reading = $('section-reading');
       clear(reading);
@@ -797,23 +959,21 @@
         return;
       }
       const claims = sectionLineage(activeSectionId)
-        .map(claim => ({claim, start:body.indexOf(claim.text_span || '')}))
+        .map(claim => ({kind:'claim', claim, start:body.indexOf(claim.text_span || ''), end:body.indexOf(claim.text_span || '') + (claim.text_span || '').length}))
         .filter(item => item.claim.text_span && item.start >= 0)
-        .sort((a, b) => a.start - b.start);
-      let cursor = 0;
-      claims.forEach(({claim, start}) => {
-        if (start < cursor) return;
-        reading.append(document.createTextNode(body.slice(cursor, start)));
-        appendClaimButton(reading, claim, claim.text_span);
-        cursor = start + claim.text_span.length;
+      const figureOffset = manuscriptFigureOffset(activeSectionId);
+      const readingFigures = figurePayload.reading_figures || figurePayload.figures || [];
+      const images = parseManuscriptImageTokens(body).map((token, localIndex) => {
+        const figure = readingFigures[figureOffset + localIndex];
+        return {...token, kind:'figure', figure};
       });
-      reading.append(document.createTextNode(body.slice(cursor)));
+      renderReadingContent(reading, body, [...claims, ...images].sort((a, b) => a.start - b.start));
       const unmatched = sectionLineage(activeSectionId).filter(claim => !claim.text_span || !body.includes(claim.text_span));
       if (unmatched.length) {
         const list = document.createElement('div');
         list.className = 'unmatched-claims';
         list.append(textElement('span', '', '原已绑定主张'));
-        unmatched.forEach(claim => appendClaimButton(list, claim, claim.text || claim.claim_id));
+        unmatched.forEach(claim => appendClaimButton(list, claim, claim.text || '证据绑定主张待核对'));
         reading.append(list);
       }
     }
@@ -886,10 +1046,39 @@
       if (pending) (pending.reasons || []).forEach(reason => $('pending-reasons').append(textElement('li', '', reason)));
     }
 
+    function renderFigures() {
+      const rows = figurePayload.figures || [];
+      const safeStates = ['原创生成图', '许可来源图', '图片说明占位符'];
+      clear($('figure-list'));
+      const placeholders = rows.filter(row => row.state === '图片说明占位符').length;
+      $('figure-summary').textContent = rows.length
+        ? `${rows.length} 项图件${placeholders ? ` · ${placeholders} 项仍需完成` : ' · 均已具备可核验来源'}`
+        : '尚无可展示图件；终稿暂不可发布。';
+      rows.forEach(row => {
+        const state = safeStates.includes(row.state) ? row.state : '图件状态待核对';
+        const card = document.createElement('article');
+        card.className = `figure-status-card${state === '图片说明占位符' ? ' placeholder' : ''}`;
+        card.append(textElement('strong', 'figure-state', state));
+        card.append(textElement('h4', '', row.title || '综述图件'));
+        card.append(textElement('p', '', row.description || '科研说明待完善。'));
+        if (state === '许可来源图') {
+          card.append(textElement('small', '', [row.license, row.attribution].filter(Boolean).join(' · ') || '许可说明待核对'));
+        }
+        $('figure-list').append(card);
+      });
+    }
+
+    function renderReleaseControls() {
+      const current = Boolean(finalPayload.final_draft_docx_exists && finalPayload.final_draft_docx_path);
+      $('download-docx').hidden = !current;
+      $('download-docx').href = current ? `/file?path=${encodeURIComponent(finalPayload.final_draft_docx_path)}` : '#';
+    }
+
     function renderDraft() {
       const available = Boolean(draftPayload.available);
       $('manuscript-empty').hidden = available;
       $('manuscript-layout').hidden = !available;
+      renderReleaseControls();
       if (!available) return;
       if (!(draftPayload.sections || []).some(section => section.id === activeSectionId)) {
         activeSectionId = draftPayload.sections?.[0]?.id || '';
@@ -897,6 +1086,7 @@
       const section = getActiveSection();
       renderOutline();
       renderPending();
+      renderFigures();
       if (!section) return;
       $('manuscript-heading').textContent = section.heading;
       $('section-editor').value = section.body || '';
@@ -912,6 +1102,7 @@
       const activeSection = getActiveSection();
       if (!activeSection) return;
       const submittedProjectId = projectId;
+      const submittedGeneration = projectLoadGeneration;
       const submittedSectionId = activeSection.id;
       const submittedBody = body;
       const submittedVersion = draftPayload.manuscript_version;
@@ -925,6 +1116,7 @@
         });
         const editorUnchanged = (
           projectId === submittedProjectId
+          && projectLoadGeneration === submittedGeneration
           && activeSectionId === submittedSectionId
           && $('section-editor').value === submittedBody
         );
@@ -934,17 +1126,31 @@
         $('save-message').textContent = result.needs_evidence_review
           ? `已保存；需要证据复核。${reasons.join('；')}`
           : classification === 'restored' ? '已恢复已验证表述。' : '已保存；证据状态正常。';
-        const refreshedDraft = await getPayload(`/api/project/${encodeURIComponent(submittedProjectId)}/draft`);
+        finalPayload = {final_draft_docx_exists:false, final_draft_docx_path:''};
+        renderReleaseControls();
+        const [refreshedDraft, refreshedFinal] = await Promise.all([
+          getPayload(`/api/project/${encodeURIComponent(submittedProjectId)}/draft`),
+          optionalPayload(
+            `/api/project/${encodeURIComponent(submittedProjectId)}/final`,
+            {final_draft_docx_exists:false,final_draft_docx_path:''},
+          ),
+        ]);
         if (
           projectId !== submittedProjectId
+          || projectLoadGeneration !== submittedGeneration
           || activeSectionId !== submittedSectionId
           || $('section-editor').value !== submittedBody
         ) return;
         draftPayload = refreshedDraft;
+        finalPayload = refreshedFinal;
         activeSectionId = result.section_id;
         editorDirty = false;
         renderDraft();
       } catch (error) {
+        if (
+          projectId !== submittedProjectId
+          || projectLoadGeneration !== submittedGeneration
+        ) return;
         $('save-message').textContent = '保存失败。请重新读取项目后再试。';
       } finally {
         setEditorBusy(false);
@@ -952,27 +1158,45 @@
     }
 
     async function exportDocx() {
-      if (!projectId || editorBusy || projectLoadBusy) return;
+      if (!projectId || editorBusy || projectLoadBusy || exportBusy) return;
       if (editorDirty) {
         $('workbench-message').textContent = '请先保存或撤销当前正文修改，再导出 DOCX。';
         return;
       }
+      const submittedProjectId = projectId;
+      const submittedGeneration = projectLoadGeneration;
       const button = $('export-docx');
+      exportBusy = true;
+      applyWorkbenchBusyState(editorBusy || projectLoadBusy);
       button.disabled = true;
       button.textContent = '正在导出…';
       $('download-docx').hidden = true;
       $('workbench-message').textContent = '正在核对证据状态并生成 DOCX…';
       try {
-        await getPayload(`/api/project/${encodeURIComponent(projectId)}/export-docx`, {method:'POST'});
-        const relative = `review-projects/${projectId}/05_final_audit/final_draft.docx`;
-        $('download-docx').href = `/file?path=${encodeURIComponent(relative)}`;
-        $('download-docx').hidden = false;
+        await getPayload(`/api/project/${encodeURIComponent(submittedProjectId)}/export-docx`, {method:'POST'});
+        if (
+          projectId !== submittedProjectId
+          || projectLoadGeneration !== submittedGeneration
+        ) return;
+        const nextFinalPayload = await getPayload(`/api/project/${encodeURIComponent(submittedProjectId)}/final`);
+        if (
+          projectId !== submittedProjectId
+          || projectLoadGeneration !== submittedGeneration
+        ) return;
+        finalPayload = nextFinalPayload;
+        renderReleaseControls();
         $('workbench-message').textContent = 'DOCX 已生成，可以下载。';
       } catch (error) {
+        if (
+          projectId !== submittedProjectId
+          || projectLoadGeneration !== submittedGeneration
+        ) return;
         $('workbench-message').textContent = 'DOCX 暂不可导出；请先完成待处理的证据复核。';
       } finally {
+        exportBusy = false;
         button.disabled = false;
         button.textContent = '导出 DOCX';
+        applyWorkbenchBusyState(editorBusy || projectLoadBusy);
       }
     }
 
@@ -1013,6 +1237,58 @@
       }
     }
 
+    async function submitSourceSupplement(event) {
+      event.preventDefault();
+      if (sourceSupplementBusy || projectLoadBusy || !projectId) return;
+      const doi = $('source-supplement-doi').value.trim();
+      const title = $('source-supplement-title').value.trim();
+      const disposition = document.querySelector('input[name="source-disposition"]:checked')?.value || 'include';
+      if (!doi && !title) {
+        $('source-supplement-message').textContent = '请填写 DOI 或论文标题。';
+        return;
+      }
+      sourceSupplementBusy = true;
+      applyWorkbenchBusyState(true);
+      $('source-supplement-message').textContent = '正在加入来源候选…';
+      try {
+        await getPayload(`/api/project/${encodeURIComponent(projectId)}/source-supplement`, {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({doi,title,disposition}),
+        });
+        $('source-supplement-doi').value = '';
+        $('source-supplement-title').value = '';
+        $('source-supplement-message').textContent = '已加入；系统将在处理前简要复核。';
+        await loadProject();
+      } catch (error) {
+        $('source-supplement-message').textContent = '未能加入；请检查 DOI 或标题是否已存在。';
+      } finally {
+        sourceSupplementBusy = false;
+        applyWorkbenchBusyState(editorBusy || projectLoadBusy);
+      }
+    }
+
+    async function submitSourceMapping(memberId, downloadId) {
+      if (sourceMappingBusy || projectLoadBusy || !projectId || !memberId || !downloadId) return;
+      sourceMappingBusy = true;
+      applyWorkbenchBusyState(true);
+      $('source-mapping-message').textContent = '正在确认文件归属…';
+      try {
+        await getPayload(`/api/project/${encodeURIComponent(projectId)}/source-mapping`, {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({member_id:memberId,download_id:downloadId}),
+        });
+        $('source-mapping-message').textContent = '文件归属已确认。';
+        await loadProject();
+      } catch (error) {
+        $('source-mapping-message').textContent = '未能确认文件归属，请重新读取来源清单。';
+      } finally {
+        sourceMappingBusy = false;
+        applyWorkbenchBusyState(editorBusy || projectLoadBusy);
+      }
+    }
+
     async function confirmBrief() {
       $('confirm-brief').disabled = true;
       $('confirm-brief-primary').disabled = true;
@@ -1042,7 +1318,7 @@
       $('workbench-message').textContent = '正在读取项目…';
       const encoded = encodeURIComponent(requestedProjectId);
       try {
-        const [nextProjectState, nextCockpitPayload, nextDraftPayload, nextEvidencePayload, nextRiskPayload, nextSourcePayload, nextProgressPayload] = await Promise.all([
+        const [nextProjectState, nextCockpitPayload, nextDraftPayload, nextEvidencePayload, nextRiskPayload, nextSourcePayload, nextProgressPayload, nextFigurePayload, nextFinalPayload] = await Promise.all([
           getPayload(`/api/project/${encoded}/review-state`),
           getPayload(`/api/project/${encoded}/cockpit`),
           getPayload(`/api/project/${encoded}/draft`),
@@ -1050,6 +1326,8 @@
           optionalPayload(`/api/project/${encoded}/risk-packet`, {targets:[]}),
           getPayload(`/api/project/${encoded}/sources`),
           getPayload(`/api/project/${encoded}/progress`),
+          optionalPayload(`/api/project/${encoded}/figures`, {figures:[],summary:{total:0,placeholders:0}}),
+          optionalPayload(`/api/project/${encoded}/final`, {final_draft_docx_exists:false,final_draft_docx_path:''}),
         ]);
         if (
           generation !== projectLoadGeneration
@@ -1062,6 +1340,8 @@
         riskPayload = nextRiskPayload;
         sourcePayload = nextSourcePayload;
         progressPayload = nextProgressPayload;
+        figurePayload = nextFigurePayload;
+        finalPayload = nextFinalPayload;
         editorDirty = false;
         riskDecisionDirty = false;
         activeSectionId = draftPayload.sections?.[0]?.id || '';
@@ -1115,6 +1395,7 @@
             && !editorDirty
             && !editorBusy
             && !projectLoadBusy
+            && !exportBusy
             && !sourceUploadBusy
             && !riskDecisionDirty
           ) return loadProject();
@@ -1168,6 +1449,7 @@
     });
     $('confirm-brief').addEventListener('click', confirmBrief);
     $('confirm-brief-primary').addEventListener('click', confirmBrief);
+    $('source-supplement-form').addEventListener('submit', submitSourceSupplement);
     $('source-archive-input').addEventListener('change', event => uploadSourceArchive(event.target.files?.[0]));
     $('source-drop-zone').addEventListener('dragover', event => {
       event.preventDefault();

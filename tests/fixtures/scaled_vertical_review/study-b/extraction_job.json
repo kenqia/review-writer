@@ -1,7 +1,12 @@
 {
   "schema_version": "sealed-evidence-extraction-job.v2",
-  "job_id": "JOB-STUDY-B",
+  "job_id": "JOB-571ebbb1ef47ee8cc023995d9e7c7f537f6d240c3d81483dbb760e74ece16e42",
   "mode": "EVIDENCE_ATOM_SEMANTIC_DECISION_V1",
+  "semantic_target_contract": {
+    "allowed_target_kinds": ["ELIGIBILITY", "REACTION_UNIT", "CLAIM"],
+    "denied_claim_ids": [],
+    "policy": "ALLOW_EXCEPT_DECLARED_SI_DEPENDENT_CLAIMS"
+  },
   "study": {
     "study_id": "STUDY-B"
   },

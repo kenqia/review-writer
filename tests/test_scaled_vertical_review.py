@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import socket
@@ -28,6 +27,7 @@ from scripts.evidence.validate_evidence_candidate import validate as validate_gr
 
 from review_writer.delivery.project_release import build_project_release  # noqa: E402
 from review_writer.project.vertical_review import (  # noqa: E402
+    apply_risk_decisions,
     benchmark_metrics,
     build_risk_packet,
     build_writer_packet,
@@ -149,12 +149,15 @@ def write_fixture_manuscript(project: Path, writer_packet: dict[str, Any]) -> Pa
     approved_claims = writer_packet["claims"]
     assert len(approved_claims) == 1
     claim = approved_claims[0]
+    figures = writer_packet["figures"]
+    assert len(figures) == 1
+    figure = figures[0]
     manuscript = (
         f"# {fixture['title']}\n\n"
         f"## {fixture['section_heading']}\n\n"
-        f"{claim['text']} [1].\n\n"
-        f"![{fixture['figure_alt']}]({fixture['figure_path']})\n\n"
-        f"{fixture['figure_caption']}\n\n"
+        f"{claim['text']} [1]. <!-- claim_id:{claim['claim_id']} -->\n\n"
+        f"![{fixture['figure_alt']}]({figure['markdown_path']})\n\n"
+        f"{figure['caption']}\n\n"
         "## References\n\n"
         f"{fixture['reference']}\n"
     )
@@ -162,12 +165,6 @@ def write_fixture_manuscript(project: Path, writer_packet: dict[str, Any]) -> Pa
     manuscript_path.parent.mkdir(parents=True, exist_ok=True)
     manuscript_path.write_text(manuscript, encoding="utf-8")
 
-    image_bytes = base64.b64decode(
-        _fixture_path("assets/neutral-response.png.b64").read_text(encoding="ascii")
-    )
-    image_path = project / "assets" / "neutral-response.png"
-    image_path.parent.mkdir(parents=True, exist_ok=True)
-    image_path.write_bytes(image_bytes)
     _write_json(
         project / "04_first_draft" / "manuscript_lineage.json",
         {
@@ -238,10 +235,27 @@ def test_synthetic_three_study_product_acceptance_path(
         "registered_study_count": 3,
     }
 
+    risk_packet = build_risk_packet(project, low_risk_sample_rate=0)
+    assert risk_packet["human_required_count"] == 1
+    assert [target["claim_id"] for target in risk_packet["targets"]] == ["CLAIM-B"]
+    apply_risk_decisions(
+        project,
+        {
+            "packet_digest": risk_packet["packet_digest"],
+            "decisions": [
+                {
+                    "action": "EXCLUDE",
+                    "claim_id": target["claim_id"],
+                    "review_target_digest": target["review_target_digest"],
+                }
+                for target in risk_packet["targets"]
+            ],
+        },
+    )
     writer_packet = build_writer_packet(project)
     assert writer_packet["approved_claim_count"] == 1
-    assert writer_packet["human_required_count"] == 1
-    assert writer_packet["blocked_count"] == 1
+    assert writer_packet["human_required_count"] == 0
+    assert writer_packet["blocked_count"] == 2
     assert [claim["study_id"] for claim in writer_packet["claims"]] == ["STUDY-A"]
     assert [claim["claim_id"] for claim in writer_packet["claims"]] == ["CLAIM-A"]
     assert {row["claim_id"] for row in writer_packet["known_exclusions"]} == {
@@ -249,9 +263,6 @@ def test_synthetic_three_study_product_acceptance_path(
         "CLAIM-C",
     }
 
-    risk_packet = build_risk_packet(project, low_risk_sample_rate=0)
-    assert risk_packet["human_required_count"] == 1
-    assert [target["claim_id"] for target in risk_packet["targets"]] == ["CLAIM-B"]
     risk_surface = project_risk_payload(review_root, "scaled-vertical-review")
     assert risk_surface["coverage"] == {
         "targets": 1,
@@ -274,8 +285,8 @@ def test_synthetic_three_study_product_acceptance_path(
     evidence = project_evidence_payload(review_root, "scaled-vertical-review")
     assert evidence["coverage"] == {
         "studies": 3,
-        "processable": 2,
-        "blocked": 1,
+        "processable": 1,
+        "blocked": 2,
         "claims": 3,
     }
     assert [card["study_id"] for card in evidence["cards"]] == [

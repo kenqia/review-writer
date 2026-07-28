@@ -11,10 +11,16 @@ import sys
 import tempfile
 import threading
 import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from review_writer.delivery.figure_policy import (
+    FigurePolicyError,
+    figure_validation_is_current,
+    validate_figure_policy,
+)
 from review_writer.project.vertical_review import VerticalReviewError, benchmark_metrics
 
 
@@ -501,6 +507,11 @@ def _validate_manuscript_lineage(
             raise ProjectReleaseError("CLAIM_NOT_WHITELISTED", "manuscript lineage references a claim outside the writer whitelist")
         if projected.get("decision") in {"BLOCKED", "HUMAN_REQUIRED"}:
             raise ProjectReleaseError("CLAIM_NOT_APPROVED", "blocked or human-required claims cannot enter the manuscript")
+        if claim_id in referenced:
+            raise ProjectReleaseError(
+                "MANUSCRIPT_LINEAGE_DRIFT",
+                "each lineage claim must appear exactly once",
+            )
         section_id = entry.get("section_id")
         if section_id is not None and section_id not in section_ids:
             raise ProjectReleaseError("MANUSCRIPT_LINEAGE_DRIFT", "lineage references an unknown manuscript section")
@@ -521,9 +532,12 @@ def _validate_manuscript_lineage(
                 )
         referenced.add(claim_id)
 
-    marker_ids = {match.group(1) or match.group(2) for match in _CLAIM_MARKER_RE.finditer(markdown)}
-    if not marker_ids <= referenced:
-        raise ProjectReleaseError("MANUSCRIPT_LINEAGE_DRIFT", "manuscript claim markers are absent from lineage")
+    marker_ids = [match.group(1) or match.group(2) for match in _CLAIM_MARKER_RE.finditer(markdown)]
+    if set(marker_ids) != referenced or len(marker_ids) != len(set(marker_ids)):
+        raise ProjectReleaseError(
+            "MANUSCRIPT_LINEAGE_DRIFT",
+            "manuscript claim markers and lineage claims must match one-to-one",
+        )
 
     visible_markdown = _without_docx_code_blocks(markdown)
     image_paths: list[str] = []
@@ -546,8 +560,10 @@ def _validate_manuscript_lineage(
         "manuscript_sha256": manuscript_sha256,
         "projection_sha256": projection_sha256,
         "claim_reference_count": len(referenced),
+        "approved_claim_ids": sorted(whitelist),
         "reference_count": reference_count,
         "image_count": len(image_paths),
+        "image_paths": image_paths,
     }
 
 
@@ -755,6 +771,107 @@ def _release_status(project: Path) -> str:
     return "DOMAIN_EXPERT_REVIEWED" if "DOMAIN_EXPERT_REVIEWED" in candidates else "AI_REVIEWED_BENCHMARK"
 
 
+def _validate_docx_attributions(docx_path: Path, figure_validation: dict[str, Any]) -> None:
+    required = [
+        row["attribution"]
+        for row in figure_validation.get("figures", [])
+        if isinstance(row, dict)
+        and isinstance(row.get("attribution"), str)
+        and row["attribution"].strip()
+    ]
+    try:
+        with zipfile.ZipFile(docx_path) as archive:
+            names = set(archive.namelist())
+            required_parts = {"[Content_Types].xml", "word/document.xml"}
+            if not required_parts <= names:
+                raise ProjectReleaseError(
+                    "DOCX_EXPORT_FAILED",
+                    "DOCX converter output is missing required document parts",
+                )
+            ET.fromstring(archive.read("[Content_Types].xml"))
+            text_parts = ["".join(ET.fromstring(archive.read("word/document.xml")).itertext())]
+            for name in ("word/footnotes.xml", "word/endnotes.xml"):
+                if name in names:
+                    text_parts.append("".join(ET.fromstring(archive.read(name)).itertext()))
+    except (OSError, KeyError, zipfile.BadZipFile, ET.ParseError) as exc:
+        raise ProjectReleaseError("DOCX_EXPORT_FAILED", "DOCX converter output is invalid") from exc
+    document_text = " ".join("\n".join(text_parts).split())
+    if any(" ".join(attribution.split()) not in document_text for attribution in required):
+        raise ProjectReleaseError(
+            "DOCX_ATTRIBUTION_MISSING",
+            "released DOCX must include every required source attribution",
+        )
+
+
+def _release_figure_validation(
+    project: Path,
+    *,
+    approved_claim_ids: list[str],
+    manuscript_sha256: str,
+    manuscript_image_paths: list[str],
+    manuscript_markdown: str,
+) -> dict[str, Any]:
+    manifest_relative = Path("03_figure_redraw/figure_manifest.json")
+    validate_project_path_components(project, (manifest_relative,))
+    manifest_path = project / manifest_relative
+    if manifest_path.is_file():
+        manifest = _read_json(manifest_path, "FIGURE_POLICY_INVALID")
+    else:
+        manifest = {"schema_version": "review-writer-figure-manifest.v1", "figures": []}
+    image_files_by_markdown_path = {
+        image_path: _validated_image(project, image_path)
+        for image_path in manuscript_image_paths
+    }
+    try:
+        return validate_figure_policy(
+            manifest,
+            approved_claim_ids=approved_claim_ids,
+            manuscript_sha256=manuscript_sha256,
+            manuscript_image_paths=manuscript_image_paths,
+            manuscript_markdown=manuscript_markdown,
+            image_files_by_markdown_path=image_files_by_markdown_path,
+        )
+    except FigurePolicyError as exc:
+        raise ProjectReleaseError(exc.code, str(exc).split(": ", 1)[-1]) from exc
+
+
+def project_figure_validation_is_current(
+    project: Path,
+    validation: Any,
+    *,
+    manuscript_sha256: str,
+) -> bool:
+    """Check whether stored figure validation still binds current manifest and image bytes."""
+    project_path = Path(project)
+    manifest_relative = Path("03_figure_redraw/figure_manifest.json")
+    try:
+        manifest_path = validate_project_file_path(
+            project_path,
+            manifest_relative,
+            "FIGURE_POLICY_INVALID",
+        )
+        manifest = _read_json(manifest_path, "FIGURE_POLICY_INVALID")
+        raw_figures = manifest.get("figures") if isinstance(manifest, dict) else None
+        if not isinstance(raw_figures, list):
+            return False
+        image_files: dict[str, Path] = {}
+        for row in raw_figures:
+            if not isinstance(row, dict) or row.get("figure_type") == "FIGURE_BRIEF_PLACEHOLDER":
+                return False
+            markdown_path = row.get("markdown_path")
+            if not isinstance(markdown_path, str) or not markdown_path:
+                return False
+            image_files[markdown_path] = _validated_image(project_path, markdown_path)
+    except (OSError, ProjectReleaseError):
+        return False
+    return figure_validation_is_current(
+        validation,
+        manuscript_sha256=manuscript_sha256,
+        manifest=manifest,
+        image_files_by_markdown_path=image_files,
+    )
+
+
 def _restore_release(paths: tuple[Path, ...], previous: dict[Path, bytes | None]) -> None:
     for path in paths:
         payload = previous[path]
@@ -788,6 +905,13 @@ def _build_project_release_unlocked(
         raise ProjectReleaseError("MANUSCRIPT_INVALID", "authoritative manuscript must be readable UTF-8") from exc
 
     validation = validate_manuscript_lineage(project_path, markdown)
+    figure_validation = _release_figure_validation(
+        project_path,
+        approved_claim_ids=validation["approved_claim_ids"],
+        manuscript_sha256=validation["manuscript_sha256"],
+        manuscript_image_paths=validation["image_paths"],
+        manuscript_markdown=markdown,
+    )
     stage = project_path / "05_final_audit"
     snapshot = stage / "final_draft.md"
     docx = stage / "final_draft.docx"
@@ -834,6 +958,7 @@ def _build_project_release_unlocked(
             raise ProjectReleaseError("DOCX_EXPORT_FAILED", "DOCX converter did not produce a document")
         if not zipfile.is_zipfile(temporary_docx):
             raise ProjectReleaseError("DOCX_EXPORT_FAILED", "DOCX converter output is invalid")
+        _validate_docx_attributions(temporary_docx, figure_validation)
 
         docx_bytes = temporary_docx.read_bytes()
         docx_sha256 = _sha256_bytes(docx_bytes)
@@ -848,6 +973,7 @@ def _build_project_release_unlocked(
             "release_status": status,
             "manuscript_sha256": validation["manuscript_sha256"],
             "docx_sha256": docx_sha256,
+            "figure_validation": figure_validation,
             "release": {
                 "status": status,
                 "manuscript_sha256": validation["manuscript_sha256"],

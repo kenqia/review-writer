@@ -1,7 +1,12 @@
 {
   "schema_version": "sealed-evidence-extraction-job.v2",
-  "job_id": "SYNTHETIC-ATOM-SLICE",
+  "job_id": "JOB-a3bb831e9e6c0aa96ffcd4fb409643769c61f9b6fed8ba6d35b8d03db273b80b",
   "mode": "EVIDENCE_ATOM_SEMANTIC_DECISION_V1",
+  "semantic_target_contract": {
+    "allowed_target_kinds": ["ELIGIBILITY", "REACTION_UNIT", "CLAIM"],
+    "denied_claim_ids": [],
+    "policy": "ALLOW_EXCEPT_DECLARED_SI_DEPENDENT_CLAIMS"
+  },
   "study": {
     "study_id": "SYNTHETIC_STUDY"
   },
