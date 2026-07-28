@@ -12,6 +12,12 @@ from pathlib import Path
 import pytest
 
 import review_writer.project.vertical_review as vertical_review
+from review_writer.project.parse_quality import (
+    apply_parse_quality_decision,
+    parse_quality_state,
+    write_parse_quality_gate,
+)
+from review_writer.project.source_truth import write_source_truth_bundle
 from review_writer.project.vertical_review import (
     VerticalReviewError,
     apply_risk_decisions,
@@ -177,6 +183,7 @@ def _canonical_prepare_project(
     si_policy: str = "NOT_REQUIRED",
     si_dependent_claim_ids: list[str] | None = None,
     main_pdf_bytes: bytes | None = None,
+    with_parse_gate: bool = True,
 ) -> Path:
     project = _initialize(tmp_path)
     doi = "10.1000/canary.test"
@@ -216,10 +223,30 @@ def _canonical_prepare_project(
         markdown = project / f"01_evidence/mineru/markdown/{source_id}.md"
         markdown.parent.mkdir(parents=True, exist_ok=True)
         markdown.write_text(f"# Parsed {role}\n", encoding="utf-8")
+        parse_markdown = project / f"01_evidence/parses/markdown/{source_id}.md"
+        parse_markdown.parent.mkdir(parents=True, exist_ok=True)
+        parse_markdown.write_text(f"# Parsed {role}\n", encoding="utf-8")
+        extracted = project / f"01_evidence/parses/extracted/{source_id}"
+        extracted.mkdir(parents=True, exist_ok=True)
+        (extracted / "full.md").write_text(f"# Parsed {role}\n", encoding="utf-8")
+        _write_prepare_json(
+            extracted / f"{source_id}_content_list.json",
+            [
+                {
+                    "bbox": [1, 2, 3, 4],
+                    "page_idx": 0,
+                    "text": f"Parsed {role}",
+                    "text_level": 1,
+                    "type": "text",
+                }
+            ],
+        )
+        _write_prepare_json(extracted / "layout.json", {"pages": [{"page_idx": 0}]})
         completed.append({
             "markdown_copy": rf"C:\runtime\mineru\markdown\{source_id}.md",
             "relative_pdf_path": relative_pdf,
             "slug": source_id,
+            "state": "done",
         })
         reading = project / f"01_evidence/text_layers/{source_id}.reading.txt"
         layout = project / f"01_evidence/text_layers/{source_id}.layout.txt"
@@ -300,6 +327,25 @@ def _canonical_prepare_project(
         {"results": [{"doi": doi, "verdict": "PASS"}]},
     )
     _write_prepare_json(
+        project / "00_sources" / "source_coverage.json",
+        {
+            "canonical_artifact": "00_sources/source_coverage.json",
+            "schema_version": "source-coverage.v1",
+            "studies": [
+                {
+                    "available_roles": ["MAIN", "SI"],
+                    "blocked_claim_ids": [],
+                    "blocking_reasons": [],
+                    "limitations": [],
+                    "main_policy": "MAIN_REQUIRED",
+                    "si_policy": si_policy,
+                    "study_id": study_id,
+                    "study_status": "READY",
+                }
+            ],
+        },
+    )
+    _write_prepare_json(
         project / "01_evidence/mineru/manifest.json",
         {"completed": list(reversed(completed)), "failed": []},
     )
@@ -307,6 +353,27 @@ def _canonical_prepare_project(
         project / "01_evidence/text_layers/text_layers.manifest.json",
         {"schema_version": "pdf-text-layers.v1", "sources": list(reversed(text_sources))},
     )
+    if with_parse_gate:
+        write_source_truth_bundle(project, study_id)
+        write_parse_quality_gate(project, study_id)
+        state = parse_quality_state(project, study_id)
+        for row in state["objects"]:
+            if row["status"] == "usable":
+                continue
+            state = apply_parse_quality_decision(
+                project,
+                study_id,
+                {
+                    "action": (
+                        "pdf_locator_only"
+                        if row["status"] in {"incomplete", "failed"}
+                        else "approve_candidate_extraction"
+                    ),
+                    "gate_digest": state["gate_digest"],
+                    "note": "Synthetic fixture verified against its source page.",
+                    "object_id": row["object_id"],
+                },
+            )
     return project
 
 
@@ -318,6 +385,141 @@ def _run_prepare(project: Path, study_id: str) -> subprocess.CompletedProcess[st
         capture_output=True,
         check=False,
     )
+
+
+def _run_source_truth(project: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(CLI), "build-source-truth", "--project", str(project)],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _refresh_and_approve_parse_gate(project: Path, study_id: str) -> dict[str, object]:
+    write_source_truth_bundle(project, study_id)
+    write_parse_quality_gate(project, study_id)
+    state = parse_quality_state(project, study_id)
+    for row in state["objects"]:
+        if row["status"] == "usable":
+            continue
+        state = apply_parse_quality_decision(
+            project,
+            study_id,
+            {
+                "action": (
+                    "pdf_locator_only"
+                    if row["status"] in {"incomplete", "failed"}
+                    else "approve_candidate_extraction"
+                ),
+                "gate_digest": state["gate_digest"],
+                "note": "Synthetic fixture rechecked after source-set change.",
+                "object_id": row["object_id"],
+            },
+        )
+    return state
+
+
+def test_build_source_truth_command_writes_a_gate_per_declared_study(tmp_path: Path) -> None:
+    project = _canonical_prepare_project(tmp_path, with_parse_gate=False)
+
+    result = _run_source_truth(project)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "command": "build-source-truth",
+        "needs_review": 1,
+        "project_id": project.name,
+        "status": "NEEDS_REVIEW",
+        "study_count": 1,
+    }
+    bundle = json.loads(
+        (project / "01_evidence/source_truth/STUDY-CANARY/bundle.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    gate = json.loads(
+        (project / "01_evidence/source_truth/STUDY-CANARY/parse_quality.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert gate["bundle_digest"] == bundle["bundle_digest"]
+
+
+def test_prepare_study_requires_parse_quality_gate(tmp_path: Path) -> None:
+    project = _canonical_prepare_project(tmp_path, with_parse_gate=False)
+    write_source_truth_bundle(project, "STUDY-CANARY")
+
+    result = _run_prepare(project, "STUDY-CANARY")
+
+    assert result.returncode == 3, result.stderr
+    assert json.loads(result.stdout)["reason_code"] == "PARSE_QUALITY_MISSING"
+    assert not (project / "01_evidence/STUDY-CANARY").exists()
+
+
+def test_pdf_locator_decision_never_creates_provider_packet(tmp_path: Path) -> None:
+    project = _canonical_prepare_project(tmp_path)
+    state = parse_quality_state(project, "STUDY-CANARY")
+    target = next(row for row in state["objects"] if row["status"] == "usable_with_review")
+    apply_parse_quality_decision(
+        project,
+        "STUDY-CANARY",
+        {
+            "action": "pdf_locator_only",
+            "gate_digest": state["gate_digest"],
+            "note": "Use only the original PDF for this object.",
+            "object_id": target["object_id"],
+        },
+    )
+
+    result = _run_prepare(project, "STUDY-CANARY")
+
+    assert result.returncode == 3, result.stderr
+    assert json.loads(result.stdout)["reason_code"] == "PARSE_PDF_LOCATOR_ONLY"
+    assert not (project / "01_evidence/STUDY-CANARY").exists()
+
+
+def test_gate_digest_change_invalidates_the_old_sealed_job_id(tmp_path: Path) -> None:
+    project = _canonical_prepare_project(tmp_path)
+    first = _run_prepare(project, "STUDY-CANARY")
+    assert first.returncode == 0, first.stderr
+    packet = project / "01_evidence/STUDY-CANARY"
+    first_job = json.loads((packet / "sealed_job.json").read_text(encoding="utf-8"))
+
+    for relative in (
+        "01_evidence/mineru/markdown/CANARY_MAIN.md",
+        "01_evidence/parses/markdown/CANARY_MAIN.md",
+        "01_evidence/parses/extracted/CANARY_MAIN/full.md",
+    ):
+        (project / relative).write_text("# Parsed MAIN changed\n", encoding="utf-8")
+    write_source_truth_bundle(project, "STUDY-CANARY")
+    write_parse_quality_gate(project, "STUDY-CANARY")
+    state = parse_quality_state(project, "STUDY-CANARY")
+    for row in state["objects"]:
+        if row["status"] != "usable":
+            state = apply_parse_quality_decision(
+                project,
+                "STUDY-CANARY",
+                {
+                    "action": "approve_candidate_extraction",
+                    "gate_digest": state["gate_digest"],
+                    "note": "Rechecked after the parse changed.",
+                    "object_id": row["object_id"],
+                },
+            )
+    for path in packet.iterdir():
+        path.unlink()
+    packet.rmdir()
+
+    second = _run_prepare(project, "STUDY-CANARY")
+
+    assert second.returncode == 0, second.stderr
+    second_job = json.loads((packet / "sealed_job.json").read_text(encoding="utf-8"))
+    assert first_job["semantic_target_contract"]["parse_quality_gate_digest"] != (
+        second_job["semantic_target_contract"]["parse_quality_gate_digest"]
+    )
+    assert first_job["job_id"] != second_job["job_id"]
 
 
 def _authoritative_bytes(project: Path) -> dict[str, bytes]:
@@ -2058,7 +2260,6 @@ def test_prepare_study_builds_current_pre_provider_packet_without_reruns_and_is_
     after = _file_bytes(project)
     assert {path: after[path] for path in before} == before
     assert set(after) - set(before) == {
-        "00_sources/source_coverage.json",
         f"01_evidence/{study_id}/sealed_job.json",
         f"01_evidence/{study_id}/atom_catalog.json",
     }
@@ -2238,6 +2439,7 @@ def test_prepare_job_id_binds_source_hashes_and_the_semantic_target_contract(
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
         receipt["studies"][0].pop("si_pdf")
         _write_prepare_json(receipt_path, receipt)
+        _refresh_and_approve_parse_gate(project, "STUDY-CANARY")
         result = _run_prepare(project, "STUDY-CANARY")
         assert result.returncode == 0, result.stderr
     required_job = json.loads(
@@ -2284,6 +2486,7 @@ def test_prepare_study_persists_canonical_si_policy_without_blocking_the_whole_s
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     receipt["studies"][0].pop("si_pdf")
     _write_prepare_json(receipt_path, receipt)
+    gate = _refresh_and_approve_parse_gate(project, study_id)
 
     result = _run_prepare(project, study_id)
 
@@ -2310,6 +2513,7 @@ def test_prepare_study_persists_canonical_si_policy_without_blocking_the_whole_s
     assert job["semantic_target_contract"] == {
         "allowed_target_kinds": ["ELIGIBILITY", "REACTION_UNIT", "CLAIM"],
         "denied_claim_ids": expected_blocked_claims,
+        "parse_quality_gate_digest": gate["gate_digest"],
         "policy": "ALLOW_EXCEPT_DECLARED_SI_DEPENDENT_CLAIMS",
     }
 
@@ -2339,10 +2543,7 @@ def test_prepare_study_blocks_missing_main_and_records_the_same_canonical_covera
 @pytest.mark.parametrize(
     ("case", "reason_code"),
     (
-        ("missing", "TEXT_LAYER_BINDING_MISSING"),
-        ("ambiguous", "TEXT_LAYER_BINDING_AMBIGUOUS"),
         ("malformed_si", "ACQUISITION_SI_INVALID"),
-        ("wrong_subtree", "TEXT_LAYER_BINDING_INVALID"),
         ("identity_warn", "SOURCE_IDENTITY_NOT_PASS"),
         ("missing_hash", "ACQUISITION_SOURCE_HASH_INVALID"),
     ),
@@ -2386,6 +2587,34 @@ def test_prepare_study_fails_closed_for_missing_or_ambiguous_bindings(
     assert json.loads(result.stdout)["reason_code"] == reason_code
     assert _file_bytes(project) == before
     assert not (project / "01_evidence" / study_id).exists()
+
+
+@pytest.mark.parametrize("case", ("missing", "ambiguous", "wrong_subtree"))
+def test_prepare_uses_the_bundle_when_legacy_text_manifest_drifts(
+    tmp_path: Path,
+    case: str,
+) -> None:
+    project = _canonical_prepare_project(tmp_path)
+    manifest_path = project / "01_evidence/text_layers/text_layers.manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    si_row = next(row for row in manifest["sources"] if row["source_id"] == "CANARY_SI")
+    if case == "missing":
+        manifest["sources"].remove(si_row)
+    elif case == "ambiguous":
+        manifest["sources"].append({**si_row, "source_id": "CANARY_SI_DUPLICATE"})
+    else:
+        wrong = project / "01_evidence/mineru/markdown/CANARY_SI.md"
+        si_row["reading_order_path"] = wrong.relative_to(project).as_posix()
+        si_row["reading_order_sha256"] = _prepare_sha256(wrong)
+    _write_prepare_json(manifest_path, manifest)
+
+    result = _run_prepare(project, "STUDY-CANARY")
+
+    assert result.returncode == 0, result.stderr
+    job = json.loads(
+        (project / "01_evidence/STUDY-CANARY/sealed_job.json").read_text(encoding="utf-8")
+    )
+    assert {row["source_id"] for row in job["source_files"]} == {"CANARY_MAIN", "CANARY_SI"}
 
 
 def test_prepare_batch_persists_ready_studies_independently(tmp_path: Path) -> None:

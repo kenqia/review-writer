@@ -46,6 +46,20 @@ from review_writer.project.vertical_review import (  # noqa: E402
     register_study,
 )
 from review_writer.project.batch_runner import BatchRunnerError, run_batch  # noqa: E402
+from review_writer.project.parse_quality import (  # noqa: E402
+    ParseQualityError,
+    apply_parse_quality_decision,
+    parse_quality_state,
+    require_parse_quality_ready,
+    write_parse_quality_gate,
+)
+from review_writer.project.source_truth import (  # noqa: E402
+    SourceTruthError,
+    build_all_source_truth,
+    build_source_truth_bundle,
+    load_source_truth_bundle,
+    write_source_truth_bundle,
+)
 from review_writer.delivery.project_release import (  # noqa: E402
     ProjectReleaseError,
     bind_authoritative_draft,
@@ -576,54 +590,29 @@ def _verify_source_identity(
         _prepare_block("SOURCE_IDENTITY_NOT_PASS")
 
 
-def _bind_source_layers(project: Path, sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    mineru_root = project / "01_evidence/mineru"
-    mineru = _prepare_manifest(
-        project,
-        "01_evidence/mineru/manifest.json",
-        missing="MINERU_MANIFEST_MISSING",
-        invalid="MINERU_MANIFEST_INVALID",
+def _bind_source_layers(
+    project: Path,
+    sources: list[dict[str, Any]],
+    bundle: dict[str, Any],
+) -> list[dict[str, Any]]:
+    bundle_sources = bundle.get("sources")
+    if not isinstance(bundle_sources, list) or not all(
+        isinstance(row, dict) for row in bundle_sources
+    ):
+        _prepare_block("SOURCE_TRUTH_INVALID")
+    expected = sorted(
+        (source["document_role"], source["pdf_sha256"])
+        for source in sources
     )
-    completed = _prepare_rows(mineru, "completed", "MINERU_MANIFEST_INVALID")
-    completed_paths = [
-        (_bound_file(project, project / "00_sources", row.get("relative_pdf_path"), "MINERU_MANIFEST_INVALID"), row)
-        for row in completed
-    ]
-
-    layer_root = project / "01_evidence/text_layers"
-    layer_manifest = _prepare_manifest(
-        project,
-        "01_evidence/text_layers/text_layers.manifest.json",
-        missing="TEXT_LAYER_MANIFEST_MISSING",
-        invalid="TEXT_LAYER_MANIFEST_INVALID",
+    observed = sorted(
+        (row.get("document_role"), (row.get("pdf") or {}).get("sha256"))
+        for row in bundle_sources
     )
-    layer_rows = _prepare_rows(layer_manifest, "sources", "TEXT_LAYER_MANIFEST_INVALID")
+    if expected != observed:
+        _prepare_block("SOURCE_TRUTH_BINDING_STALE")
     bound: list[dict[str, Any]] = []
     seen_source_ids: set[str] = set()
-    for source in sources:
-        mineru_matches = [row for path, row in completed_paths if path == source["path"]]
-        if len(mineru_matches) != 1:
-            _prepare_block(
-                "MINERU_BINDING_MISSING" if not mineru_matches else "MINERU_BINDING_AMBIGUOUS"
-            )
-        mineru_row = mineru_matches[0]
-        slug = mineru_row.get("slug")
-        markdown_value = (
-            f"markdown/{slug}.md"
-            if isinstance(slug, str)
-            and slug
-            and "/" not in slug
-            and "\\" not in slug
-            else mineru_row.get("markdown_copy")
-        )
-        _bound_file(project, mineru_root, markdown_value, "MINERU_MARKDOWN_MISSING")
-
-        matches = [row for row in layer_rows if row.get("pdf_sha256") == source["pdf_sha256"]]
-        if len(matches) != 1:
-            _prepare_block(
-                "TEXT_LAYER_BINDING_MISSING" if not matches else "TEXT_LAYER_BINDING_AMBIGUOUS"
-            )
-        row = matches[0]
+    for row in bundle_sources:
         source_id = row.get("source_id")
         page_count = row.get("page_count")
         if (
@@ -634,26 +623,96 @@ def _bind_source_layers(project: Path, sources: list[dict[str, Any]]) -> list[di
             or isinstance(page_count, bool)
             or page_count < 1
         ):
-            _prepare_block("TEXT_LAYER_BINDING_INVALID")
+            _prepare_block("SOURCE_TRUTH_INVALID")
         seen_source_ids.add(source_id)
-        reading = _bound_file(project, layer_root, row.get("reading_order_path"), "TEXT_LAYER_BINDING_INVALID")
-        layout = _bound_file(project, layer_root, row.get("layout_path"), "TEXT_LAYER_BINDING_INVALID")
-        if sha256_file(reading) != row.get("reading_order_sha256") or sha256_file(layout) != row.get("layout_sha256"):
-            _prepare_block("TEXT_LAYER_HASH_MISMATCH")
+        reading_descriptor = row.get("reading_layer")
+        layout_descriptor = row.get("layout_layer")
+        pdf_descriptor = row.get("pdf")
+        if not all(
+            isinstance(value, dict)
+            for value in (reading_descriptor, layout_descriptor, pdf_descriptor)
+        ):
+            _prepare_block("SOURCE_TRUTH_INVALID")
+        reading = _bound_file(
+            project,
+            project,
+            reading_descriptor.get("path"),
+            "SOURCE_TRUTH_ASSET_INVALID",
+        )
+        layout = _bound_file(
+            project,
+            project,
+            layout_descriptor.get("path"),
+            "SOURCE_TRUTH_ASSET_INVALID",
+        )
+        pdf = _bound_file(
+            project,
+            project,
+            pdf_descriptor.get("path"),
+            "SOURCE_TRUTH_ASSET_INVALID",
+        )
+        if (
+            sha256_file(reading) != reading_descriptor.get("sha256")
+            or sha256_file(layout) != layout_descriptor.get("sha256")
+            or sha256_file(pdf) != pdf_descriptor.get("sha256")
+        ):
+            _prepare_block("SOURCE_TRUTH_ASSET_DRIFT")
         bound.append(
             {
-                "document_role": source["document_role"],
+                "document_role": row["document_role"],
                 "layout_path": layout.relative_to(project.resolve()).as_posix(),
-                "layout_sha256": row["layout_sha256"],
+                "layout_sha256": layout_descriptor["sha256"],
                 "page_count": page_count,
                 "reading_order_path": reading.relative_to(project.resolve()).as_posix(),
-                "reading_order_sha256": row["reading_order_sha256"],
-                "source_binary_sha256": source["pdf_sha256"],
+                "reading_order_sha256": reading_descriptor["sha256"],
+                "source_binary_sha256": pdf_descriptor["sha256"],
                 "source_id": source_id,
                 "visual_evidence_allowed": False,
             }
         )
-    return bound
+    return sorted(bound, key=lambda item: (item["document_role"], item["source_id"]))
+
+
+def _build_source_truth_status(project: Path, study_id: str | None) -> dict[str, Any]:
+    project = project.resolve(strict=True)
+    pending = (
+        [build_source_truth_bundle(project, study_id)]
+        if study_id is not None
+        else build_all_source_truth(project)
+    )
+    gates: list[dict[str, Any]] = []
+    for bundle in pending:
+        current_study_id = str(bundle["study_id"])
+        write_source_truth_bundle(project, current_study_id)
+        gates.append(write_parse_quality_gate(project, current_study_id))
+    needs_review = sum(not bool(gate["workflow_can_continue"]) for gate in gates)
+    return {
+        "command": "build-source-truth",
+        "needs_review": needs_review,
+        "project_id": project.name,
+        "status": "READY" if needs_review == 0 else "NEEDS_REVIEW",
+        "study_count": len(gates),
+    }
+
+
+def _record_parse_quality_status(args: argparse.Namespace) -> dict[str, Any]:
+    state = apply_parse_quality_decision(
+        args.project,
+        args.study_id,
+        {
+            "action": args.action,
+            "gate_digest": args.gate_digest,
+            "note": args.note,
+            "object_id": args.object_id,
+        },
+    )
+    return {
+        "automatic_extraction_allowed": state["automatic_extraction_allowed"],
+        "command": "record-parse-quality",
+        "status": state["status"],
+        "study_id": args.study_id,
+        "workflow_can_continue": state["workflow_can_continue"],
+    }
 
 
 def _persist_prepare_packet(project: Path, study_id: str, job: dict[str, Any]) -> None:
@@ -772,14 +831,20 @@ def _prepare_status(project: Path, study_id: str) -> dict[str, Any]:
             _persist_source_coverage(project, coverage)
             _prepare_block("MAIN_REQUIRED")
         _verify_source_identity(project, doi=doi, study_id=study_id, title=title)
-        source_files = _bind_source_layers(project, sources)
         _persist_source_coverage(project, coverage)
+        try:
+            gate_digest = require_parse_quality_ready(project, study_id)
+            bundle = load_source_truth_bundle(project, study_id)
+        except (ParseQualityError, SourceTruthError) as exc:
+            _prepare_block(exc.code)
+        source_files = _bind_source_layers(project, sources, bundle)
         study_identity: dict[str, Any] = {"doi": doi, "study_id": study_id}
         if title is not None:
             study_identity["title"] = candidate["title"].strip()
         semantic_target_contract = {
             "allowed_target_kinds": ["ELIGIBILITY", "REACTION_UNIT", "CLAIM"],
             "denied_claim_ids": coverage["blocked_claim_ids"],
+            "parse_quality_gate_digest": gate_digest,
             "policy": "ALLOW_EXCEPT_DECLARED_SI_DEPENDENT_CLAIMS",
         }
         job = {
@@ -896,6 +961,26 @@ def _parser() -> argparse.ArgumentParser:
     reusable_audit = commands.add_parser("audit-reusable-library")
     reusable_audit.add_argument("--project-dir", type=Path, required=True)
 
+    source_truth = commands.add_parser("build-source-truth")
+    source_truth.add_argument("--project", type=Path, required=True)
+    source_truth.add_argument("--study-id")
+
+    parse_decision = commands.add_parser("record-parse-quality")
+    parse_decision.add_argument("--project", type=Path, required=True)
+    parse_decision.add_argument("--study-id", required=True)
+    parse_decision.add_argument("--object-id", required=True)
+    parse_decision.add_argument("--gate-digest", required=True)
+    parse_decision.add_argument(
+        "--action",
+        choices=(
+            "approve_candidate_extraction",
+            "pdf_locator_only",
+            "reparse_required",
+        ),
+        required=True,
+    )
+    parse_decision.add_argument("--note", required=True)
+
     prepare = commands.add_parser("prepare-study")
     prepare.add_argument("--project-dir", type=Path, required=True)
     prepare.add_argument("--study-id", required=True)
@@ -964,6 +1049,12 @@ def _run(args: argparse.Namespace) -> int:
         return 0
     if args.command == "audit-reusable-library":
         _print_summary(_audit_reusable_library(args.project_dir))
+        return 0
+    if args.command == "build-source-truth":
+        _print_summary(_build_source_truth_status(args.project, args.study_id))
+        return 0
+    if args.command == "record-parse-quality":
+        _print_summary(_record_parse_quality_status(args))
         return 0
     if args.command == "prepare-study":
         summary = _prepare_status(args.project_dir, args.study_id)
@@ -1082,7 +1173,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         return _run(args)
-    except (BatchRunnerError, VerticalReviewError) as exc:
+    except (BatchRunnerError, ParseQualityError, SourceTruthError, VerticalReviewError) as exc:
         payload: dict[str, Any] = {
             "command": args.command,
             "error_code": exc.code,

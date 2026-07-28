@@ -298,8 +298,13 @@ def _supplement_completeness(
     issues: list[dict[str, Any]] = []
     status = "usable"
     if policy == "REQUIRED" and not has_si:
-        status = "failed"
-        issues.append(_issue("supplement_missing", "该研究要求 SI，但当前来源集中缺失。", severity="error"))
+        status = "usable_with_review"
+        issues.append(
+            _issue(
+                "supplement_missing",
+                "该研究要求 SI；后续只允许处理不依赖 SI 的主文内容。",
+            )
+        )
     elif policy not in {"NOT_REQUIRED", "REQUIRED", "RECOMMENDED"}:
         status = "usable_with_review"
         issues.append(_issue("supplement_policy_review", "无法确认 SI 完整性策略。"))
