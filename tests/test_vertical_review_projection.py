@@ -14,6 +14,7 @@ import pytest
 import review_writer.project.vertical_review as vertical_review
 from review_writer.project.paper_evidence import (
     apply_paper_evidence_decision,
+    paper_evidence_state,
     register_paper_evidence_candidates,
 )
 from review_writer.project.parse_quality import (
@@ -2943,6 +2944,58 @@ def test_workflow_projection_requires_current_typed_paper_evidence(tmp_path: Pat
     assert after["paper_evidence_ready"] is True
     assert after["active_stage"] == "synthesis"
     assert after["blockers"] == ["SYNTHESIS_NOT_APPROVED"]
+
+
+def test_stale_parse_gate_invalidates_only_evidence_depending_on_changed_source(
+    tmp_path: Path,
+) -> None:
+    project = _canonical_prepare_project(tmp_path, si_policy="NOT_REQUIRED")
+    parse = parse_quality_state(project, "STUDY-CANARY")
+    digests = {
+        (row["source_id"], row["kind"]): row["object_digest"]
+        for row in parse["objects"]
+    }
+    main = {
+        **_typed_paper_candidate(project, evidence_id="EVIDENCE-MAIN"),
+        "bound_parse_object_digests": [digests[("CANARY_MAIN", "body_order")]],
+    }
+    si = {
+        **_typed_paper_candidate(project, evidence_id="EVIDENCE-SI"),
+        "source_id": "CANARY_SI",
+        "statement": "A synthetic SI observation was reported.",
+        "locator": {
+            "source_mode": "parsed_candidate",
+            "page": 1,
+            "section_or_item": "Supporting information",
+            "figure_or_table": None,
+            "exact_quote": "Supporting information paragraph.",
+        },
+        "bound_parse_object_digests": [digests[("CANARY_SI", "formula_chemistry")]],
+    }
+    registered = register_paper_evidence_candidates(
+        project,
+        "STUDY-CANARY",
+        {"candidates": [main, si]},
+    )
+    for row in registered["candidates"]:
+        apply_paper_evidence_decision(project, _paper_decision(row))
+    gate_path = project / "01_evidence/source_truth/STUDY-CANARY/parse_quality.json"
+    gate_before = gate_path.read_bytes()
+
+    si_markdown = project / "01_evidence/mineru/markdown/CANARY_SI.md"
+    si_markdown.write_text("# Parsed SI\nChanged SI formula $x$.\n", encoding="utf-8")
+    write_source_truth_bundle(project, "STUDY-CANARY")
+
+    evidence = paper_evidence_state(project)
+    workflow = workflow_state(project)
+    statuses = {row["evidence_id"]: row["status"] for row in evidence["rows"]}
+
+    assert statuses == {"EVIDENCE-MAIN": "approved", "EVIDENCE-SI": "stale"}
+    assert workflow["parse_ready"] is False
+    assert workflow["paper_evidence_ready"] is False
+    assert workflow["active_stage"] == "parsing"
+    assert workflow["blockers"] == ["PARSE_QUALITY_REVIEW_REQUIRED"]
+    assert gate_path.read_bytes() == gate_before
 
 
 def _run_paper_cli(command: str, project: Path, payload: dict, tmp_path: Path) -> subprocess.CompletedProcess[str]:

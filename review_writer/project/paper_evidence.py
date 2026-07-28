@@ -13,7 +13,11 @@ from typing import Any, Iterable
 
 from jsonschema import Draft202012Validator
 
-from review_writer.project.parse_quality import ParseQualityError, parse_quality_state
+from review_writer.project.parse_quality import (
+    ParseQualityError,
+    build_parse_quality_gate,
+    parse_quality_state,
+)
 from review_writer.project.source_truth import (
     REPO_ROOT,
     SourceTruthError,
@@ -695,18 +699,30 @@ def _freshness(project: Path, candidate: dict[str, Any]) -> tuple[bool, str | No
         return False, "SOURCE_PDF_STALE"
     if candidate["locator"]["source_mode"] == "original_pdf_manual":
         return (not candidate["bound_parse_object_digests"], "MANUAL_PDF_PARSE_BINDING_INVALID")
-    if state.get("status") == "stale":
-        return False, "PARSE_QUALITY_STALE"
-    current_objects = {
+    reviewed_objects = {
         row.get("object_digest"): row
         for row in state["objects"]
         if isinstance(row, dict) and isinstance(row.get("object_digest"), str)
     }
+    if state.get("status") == "stale":
+        try:
+            current_bundle = load_source_truth_bundle(project, candidate["study_id"])
+            current_gate = build_parse_quality_gate(project, current_bundle)
+        except (ParseQualityError, SourceTruthError) as exc:
+            return False, exc.code
+        current_rows = current_gate["objects"]
+    else:
+        current_rows = state["objects"]
+    current_objects = {
+        row.get("object_digest"): row
+        for row in current_rows
+        if isinstance(row, dict) and isinstance(row.get("object_digest"), str)
+    }
     dependencies = set(candidate["bound_parse_object_digests"])
-    if not dependencies.issubset(current_objects):
+    if not dependencies.issubset(current_objects) or not dependencies.issubset(reviewed_objects):
         return False, "PARSE_OBJECT_DIGESTS_STALE"
     for digest in dependencies:
-        dependency = current_objects[digest]
+        dependency = reviewed_objects[digest]
         decision = dependency.get("decision")
         if dependency.get("status") != "usable" and (
             not isinstance(decision, dict)
