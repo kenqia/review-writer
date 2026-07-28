@@ -149,6 +149,51 @@
             <div id="processing-study-list" class="processing-study-list"></div>
           </section>
 
+          <section id="parse-quality-stage-panel" class="stage-task-panel parse-quality-stage-panel" hidden>
+            <div class="stage-task-heading">
+              <div>
+                <p class="section-label">Parse quality review</p>
+                <h3>逐项核对全文解析</h3>
+              </div>
+              <strong id="parse-quality-count">—</strong>
+            </div>
+            <p class="stage-task-lead">先对照原始论文确认正文、图表、公式与参考文献是否可靠，再决定哪些部分可以进入候选证据提取。</p>
+            <ul class="parse-quality-action-key" aria-label="可选决定说明">
+              <li><strong>允许机器从该部分提取候选证据</strong><span>仍需在后续证据工作区逐条核对。</span></li>
+              <li><strong>仅回到原始 PDF 人工定位</strong><span>关闭自动提取，保留人工证据定位路线。</span></li>
+              <li><strong>必须重新解析</strong><span>阻止后续处理，等待新的解析结果。</span></li>
+            </ul>
+            <div class="parse-quality-layout">
+              <div class="parse-quality-review-pane">
+                <nav id="parse-quality-study-list" class="parse-quality-study-list" aria-label="待核对研究"></nav>
+                <header class="parse-quality-selection-heading">
+                  <div>
+                    <p class="section-label">Selected study</p>
+                    <h4 id="parse-quality-study-title">选择一篇研究</h4>
+                  </div>
+                  <span id="parse-quality-study-status" class="parse-quality-status-badge">待读取</span>
+                </header>
+                <div id="parse-quality-object-list" class="parse-quality-object-list"></div>
+              </div>
+              <aside class="parse-quality-preview-pane" aria-labelledby="parse-quality-preview-heading">
+                <header class="parse-quality-preview-toolbar">
+                  <div>
+                    <p class="section-label">Source comparison</p>
+                    <h4 id="parse-quality-preview-heading">原文对照</h4>
+                  </div>
+                  <div class="parse-quality-preview-modes" aria-label="预览来源">
+                    <button id="parse-quality-preview-pdf" type="button" aria-pressed="true">原始 PDF</button>
+                    <button id="parse-quality-preview-markdown" type="button" aria-pressed="false">解析文本</button>
+                  </div>
+                  <a id="parse-quality-open-preview" href="#" target="_blank" rel="noopener">新标签打开 ↗</a>
+                </header>
+                <iframe id="parse-quality-preview" title="论文原文与解析文本预览"></iframe>
+                <p class="parse-quality-mobile-preview">当前屏幕不嵌入论文预览，请使用“新标签打开”核对原文。</p>
+              </aside>
+            </div>
+            <p id="parse-quality-message" class="inline-message" role="status" aria-live="polite"></p>
+          </section>
+
           <section id="risk-stage-panel" class="stage-task-panel risk-stage-panel" hidden>
             <div class="stage-task-heading">
               <div>
@@ -311,6 +356,15 @@
       SUPPORT:'支持', SUPPORTED:'支持', AMBIGUOUS:'证据有限', CONTRADICT:'存在冲突',
       REJECT:'不支持', NEEDS_HUMAN_REVIEW:'需要人工复核'
     };
+    const parseStatusLabels = {
+      usable:'自动检查通过', usable_with_review:'需要人工核对',
+      incomplete:'解析不完整', failed:'解析失败'
+    };
+    const parseActionLabels = {
+      approve_candidate_extraction:{title:'允许机器提取候选证据', detail:'后续仍需逐条核对证据。'},
+      pdf_locator_only:{title:'仅用原始 PDF 人工定位', detail:'该部分不会进入自动证据提取。'},
+      reparse_required:{title:'必须重新解析', detail:'在新解析完成前阻止后续处理。'}
+    };
     const stageFlow = [
       ['review_brief','确认研究范围'],
       ['ready_for_discovery','发现并筛选研究'],
@@ -331,6 +385,12 @@
     let finalPayload = {final_draft_docx_exists:false, final_draft_docx_path:''};
     let sourcePayload = {counts:{total:0,ready:0,missing:0}, sources:[], supplements:[], unresolved:[], upload_required:false};
     let progressPayload = {active_stage:'sources', stages:[], studies:[], blocker:'', recommended_next:''};
+    let parseQualityPayload = {status:'unavailable', workflow_can_continue:false, summary:{}, studies:[]};
+    let parseQualityBusy = new Set();
+    let parseQualityDirty = new Set();
+    let activeParseStudyId = '';
+    let activeParsePreview = 'pdf';
+    let parseQualityNotice = '';
     let activeSectionId = '';
     let selectedClaimId = '';
     let editorDirty = false;
@@ -381,6 +441,13 @@
       return true;
     }
 
+    function confirmDiscardParseQualityDecisions() {
+      if (!parseQualityDirty.size) return true;
+      if (!window.confirm('当前解析核对决定尚未保存。确定要丢弃这些修改吗？')) return false;
+      parseQualityDirty.clear();
+      return true;
+    }
+
     function applyWorkbenchBusyState(busy) {
       $('section-editor').disabled = busy;
       $('project').disabled = busy || exportBusy;
@@ -395,6 +462,10 @@
       });
       document.querySelectorAll('#risk-stage-panel input, #risk-stage-panel button').forEach(control => {
         control.disabled = busy;
+      });
+      document.querySelectorAll('#parse-quality-stage-panel input, #parse-quality-stage-panel textarea, #parse-quality-stage-panel button').forEach(control => {
+        const objectId = control.closest('[data-object-id]')?.dataset.objectId;
+        control.disabled = busy || (objectId ? parseQualityBusy.has(objectId) : false);
       });
       document.querySelectorAll('[data-workspace], .outline-section').forEach(button => {
         button.disabled = busy;
@@ -663,6 +734,216 @@
       });
     }
 
+    function activeParseStudy() {
+      return (parseQualityPayload.studies || []).find(study => study.study_id === activeParseStudyId) || null;
+    }
+
+    function parseStudyState(study) {
+      const objects = study?.objects || [];
+      if (objects.some(row => row.decision?.action === 'reparse_required')) return '等待重新解析';
+      if (objects.some(row => row.decision?.action === 'pdf_locator_only')) return '含人工定位部分';
+      const pending = objects.filter(row => (row.actions || []).length && !row.decision).length;
+      return pending ? `${pending} 项待决定` : '核对已关闭';
+    }
+
+    function parseObjectNode(objectId) {
+      return Array.from(document.querySelectorAll('#parse-quality-object-list [data-object-id]'))
+        .find(node => node.dataset.objectId === objectId) || null;
+    }
+
+    function setParsePreview(kind) {
+      activeParsePreview = kind === 'parsed-markdown' ? 'parsed-markdown' : 'pdf';
+      const study = activeParseStudy();
+      const href = activeParsePreview === 'pdf' ? study?.pdf_href : study?.markdown_href;
+      $('parse-quality-preview-pdf').setAttribute('aria-pressed', String(activeParsePreview === 'pdf'));
+      $('parse-quality-preview-markdown').setAttribute('aria-pressed', String(activeParsePreview === 'parsed-markdown'));
+      $('parse-quality-open-preview').href = href || '#';
+      $('parse-quality-open-preview').setAttribute('aria-disabled', String(!href));
+      if (href) $('parse-quality-preview').src = href;
+      else $('parse-quality-preview').removeAttribute('src');
+    }
+
+    function renderParseQualityStage() {
+      const studies = parseQualityPayload.studies || [];
+      const summary = parseQualityPayload.summary || {};
+      $('parse-quality-count').textContent = `${summary.needs_review || 0} 项待决定`;
+      if (!studies.some(study => study.study_id === activeParseStudyId)) {
+        activeParseStudyId = studies[0]?.study_id || '';
+      }
+      clear($('parse-quality-study-list'));
+      studies.forEach((study, index) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = study.study_id === activeParseStudyId ? 'active' : '';
+        button.setAttribute('aria-pressed', String(study.study_id === activeParseStudyId));
+        button.append(textElement('span', 'parse-quality-study-index', String(index + 1).padStart(2, '0')));
+        const copy = document.createElement('span');
+        copy.append(textElement('strong', '', study.label || study.study_id || '研究'));
+        copy.append(textElement('small', '', parseStudyState(study)));
+        button.append(copy);
+        button.addEventListener('click', () => {
+          if (study.study_id === activeParseStudyId) return;
+          if (!confirmDiscardParseQualityDecisions()) return;
+          activeParseStudyId = study.study_id;
+          renderParseQualityStage();
+        });
+        $('parse-quality-study-list').append(button);
+      });
+
+      const study = activeParseStudy();
+      $('parse-quality-study-title').textContent = study?.label || '解析检查尚未就绪';
+      $('parse-quality-study-status').textContent = study ? parseStudyState(study) : '等待检查';
+      clear($('parse-quality-object-list'));
+      if (!study) {
+        $('parse-quality-object-list').append(textElement('p', 'context-empty', '解析检查正在生成；当前不会进入证据提取。'));
+        setParsePreview(activeParsePreview);
+        $('parse-quality-message').textContent = parseQualityNotice || (
+          parseQualityPayload.status === 'needs_attention' ? '解析记录需要重新生成后再核对。' : ''
+        );
+        return;
+      }
+
+      (study.objects || []).forEach((object, index) => {
+        const row = document.createElement('article');
+        row.className = 'parse-quality-object-row';
+        row.dataset.objectId = object.object_id;
+        const heading = document.createElement('header');
+        const title = document.createElement('div');
+        title.append(textElement('span', 'parse-quality-object-index', String(index + 1).padStart(2, '0')));
+        title.append(textElement('h5', '', object.label || '解析对象'));
+        const badge = textElement('span', `parse-quality-status-badge ${object.automatic_status || ''}`, parseStatusLabels[object.automatic_status] || '状态待核对');
+        heading.append(title, badge);
+        row.append(heading);
+
+        const issues = document.createElement('ul');
+        issues.className = 'parse-quality-issue-list';
+        (object.issues || []).forEach(issue => {
+          const item = document.createElement('li');
+          item.append(textElement('span', '', issue.page ? `第 ${issue.page} 页` : '全文'));
+          item.append(textElement('p', '', issue.message || '需要回看原始论文。'));
+          issues.append(item);
+        });
+        if (!(object.issues || []).length) {
+          issues.append(textElement('li', 'parse-quality-no-issue', '自动检查未发现需要人工处理的问题。'));
+        }
+        row.append(issues);
+
+        if ((object.actions || []).length) {
+          const controls = document.createElement('fieldset');
+          controls.className = 'parse-quality-decision-controls';
+          controls.append(textElement('legend', '', '研究者决定'));
+          (object.actions || []).forEach(action => {
+            const option = document.createElement('label');
+            option.className = 'parse-quality-decision-option';
+            const input = document.createElement('input');
+            input.type = 'radio';
+            input.name = `parse-quality-${object.object_id}`;
+            input.value = action;
+            input.checked = object.decision?.action === action;
+            input.addEventListener('change', () => {
+              parseQualityDirty.add(object.object_id);
+              row.querySelector('.parse-quality-save-note').textContent = '该项决定尚未保存。';
+            });
+            const copy = document.createElement('span');
+            copy.append(textElement('strong', '', parseActionLabels[action]?.title || '记录决定'));
+            copy.append(textElement('small', '', parseActionLabels[action]?.detail || ''));
+            option.append(input, copy);
+            controls.append(option);
+          });
+          const noteLabel = document.createElement('label');
+          noteLabel.className = 'parse-quality-note-field';
+          noteLabel.append(textElement('span', '', '核对理由'));
+          const note = document.createElement('textarea');
+          note.rows = 2;
+          note.maxLength = 2000;
+          note.required = Boolean(object.note_required);
+          note.value = object.decision?.note || '';
+          note.addEventListener('input', () => {
+            parseQualityDirty.add(object.object_id);
+            row.querySelector('.parse-quality-save-note').textContent = '该项决定尚未保存。';
+          });
+          noteLabel.append(note);
+          controls.append(noteLabel);
+          const footer = document.createElement('div');
+          footer.className = 'parse-quality-save-row';
+          footer.append(textElement('p', 'parse-quality-save-note', object.decision ? '已保存，可重新核对后修改。' : '请选择决定并填写理由。'));
+          const save = document.createElement('button');
+          save.type = 'button';
+          save.textContent = '保存该项决定';
+          save.disabled = parseQualityBusy.has(object.object_id);
+          save.addEventListener('click', () => submitParseQualityDecision(study.study_id, object.object_id, object.decision_token));
+          footer.append(save);
+          controls.append(footer);
+          row.append(controls);
+        } else {
+          row.append(textElement('p', 'parse-quality-pass-note', '该项自动检查通过，无需人工决定。'));
+        }
+        $('parse-quality-object-list').append(row);
+      });
+      setParsePreview(activeParsePreview);
+      $('parse-quality-message').textContent = parseQualityNotice;
+      applyWorkbenchBusyState(editorBusy || projectLoadBusy);
+    }
+
+    async function submitParseQualityDecision(studyId, objectId, decisionToken) {
+      if (parseQualityBusy.has(objectId) || projectLoadBusy || !projectId) return;
+      const row = parseObjectNode(objectId);
+      const action = row?.querySelector('input[type="radio"]:checked')?.value || '';
+      const note = row?.querySelector('textarea')?.value.trim() || '';
+      if (!action || !note) {
+        row?.querySelector('.parse-quality-save-note')?.replaceChildren('请选择决定并填写核对理由。');
+        return;
+      }
+      const submittedProjectId = projectId;
+      const submittedGeneration = projectLoadGeneration;
+      parseQualityBusy.add(objectId);
+      row.querySelectorAll('input, textarea, button').forEach(control => { control.disabled = true; });
+      row.querySelector('.parse-quality-save-note').textContent = '正在保存该项决定…';
+      try {
+        const response = await fetch(`/api/project/${encodeURIComponent(submittedProjectId)}/parse-quality`, {
+          method:'PUT',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({study_id:studyId,object_id:objectId,decision_token:decisionToken,action,note}),
+        });
+        if (response.status === 409) {
+          if (projectId !== submittedProjectId || projectLoadGeneration !== submittedGeneration) return;
+          parseQualityNotice = '解析内容已更新，请重新核对';
+          parseQualityDirty.delete(objectId);
+          const [refreshedParseQuality, refreshedProgress] = await Promise.all([
+            getPayload(`/api/project/${encodeURIComponent(submittedProjectId)}/parse-quality`),
+            getPayload(`/api/project/${encodeURIComponent(submittedProjectId)}/progress`),
+          ]);
+          if (projectId !== submittedProjectId || projectLoadGeneration !== submittedGeneration) return;
+          parseQualityPayload = refreshedParseQuality;
+          progressPayload = refreshedProgress;
+          renderStageWorkspace();
+          return;
+        }
+        if (!response.ok) throw new Error('decision rejected');
+        const nextPayload = await response.json();
+        if (projectId !== submittedProjectId || projectLoadGeneration !== submittedGeneration) return;
+        parseQualityPayload = nextPayload;
+        parseQualityDirty.delete(objectId);
+        parseQualityNotice = '该项决定已保存。';
+        progressPayload = await optionalPayload(
+          `/api/project/${encodeURIComponent(submittedProjectId)}/progress`,
+          progressPayload,
+        );
+        renderStageWorkspace();
+      } catch (error) {
+        if (projectId === submittedProjectId && projectLoadGeneration === submittedGeneration) {
+          const current = parseObjectNode(objectId);
+          if (current) current.querySelector('.parse-quality-save-note').textContent = '决定未保存，请重新核对后再试。';
+        }
+      } finally {
+        parseQualityBusy.delete(objectId);
+        if (projectId === submittedProjectId && projectLoadGeneration === submittedGeneration) {
+          const current = parseObjectNode(objectId);
+          current?.querySelectorAll('input, textarea, button').forEach(control => { control.disabled = false; });
+        }
+      }
+    }
+
     function riskDecisionCard(targetId) {
       return Array.from(document.querySelectorAll('.risk-decision-card'))
         .find(card => card.dataset.targetId === targetId);
@@ -806,16 +1087,22 @@
       const needsSourceUpload = hasSourceQueue && sourcePayload.upload_required && !progressPayload.archive_received;
       const sourceBlocked = progressPayload.active_stage === 'sources' && Boolean(progressPayload.blocker);
       const showSource = !awaitingBrief && (needsSourceUpload || sourceBlocked);
-      const showRisk = !awaitingBrief && !showSource && progressPayload.active_stage === 'risk' && Boolean((riskPayload.targets || []).length) && !draftPayload.available;
-      const showProcessing = !awaitingBrief && !showSource && !showRisk && !draftPayload.available;
+      const parseWorkspaceAvailable = Boolean((parseQualityPayload.studies || []).length) || parseQualityPayload.status === 'needs_attention';
+      const showParseQuality = !awaitingBrief && !showSource && !draftPayload.available && parseWorkspaceAvailable && (
+        progressPayload.active_stage === 'parsing' || parseQualityPayload.status === 'needs_attention'
+      );
+      const showRisk = !awaitingBrief && !showSource && !showParseQuality && progressPayload.active_stage === 'risk' && Boolean((riskPayload.targets || []).length) && !draftPayload.available;
+      const showProcessing = !awaitingBrief && !showSource && !showParseQuality && !showRisk && !draftPayload.available;
       $('brief-stage-panel').hidden = !awaitingBrief;
       $('source-stage-panel').hidden = !showSource;
       $('processing-stage-panel').hidden = !showProcessing;
+      $('parse-quality-stage-panel').hidden = !showParseQuality;
       $('risk-stage-panel').hidden = !showRisk;
-      $('cockpit-overview').hidden = awaitingBrief || showSource || showRisk || showProcessing;
+      $('cockpit-overview').hidden = awaitingBrief || showSource || showParseQuality || showRisk || showProcessing;
       renderBriefStage();
       renderSourceStage();
       renderProcessingStage();
+      if (showParseQuality) renderParseQualityStage();
       renderRiskPacket();
     }
 
@@ -1318,7 +1605,7 @@
       $('workbench-message').textContent = '正在读取项目…';
       const encoded = encodeURIComponent(requestedProjectId);
       try {
-        const [nextProjectState, nextCockpitPayload, nextDraftPayload, nextEvidencePayload, nextRiskPayload, nextSourcePayload, nextProgressPayload, nextFigurePayload, nextFinalPayload] = await Promise.all([
+        const [nextProjectState, nextCockpitPayload, nextDraftPayload, nextEvidencePayload, nextRiskPayload, nextSourcePayload, nextProgressPayload, nextParseQualityPayload, nextFigurePayload, nextFinalPayload] = await Promise.all([
           getPayload(`/api/project/${encoded}/review-state`),
           getPayload(`/api/project/${encoded}/cockpit`),
           getPayload(`/api/project/${encoded}/draft`),
@@ -1326,6 +1613,7 @@
           optionalPayload(`/api/project/${encoded}/risk-packet`, {targets:[]}),
           getPayload(`/api/project/${encoded}/sources`),
           getPayload(`/api/project/${encoded}/progress`),
+          optionalPayload(`/api/project/${encoded}/parse-quality`, {status:'unavailable',workflow_can_continue:false,summary:{},studies:[]}),
           optionalPayload(`/api/project/${encoded}/figures`, {figures:[],summary:{total:0,placeholders:0}}),
           optionalPayload(`/api/project/${encoded}/final`, {final_draft_docx_exists:false,final_draft_docx_path:''}),
         ]);
@@ -1340,10 +1628,13 @@
         riskPayload = nextRiskPayload;
         sourcePayload = nextSourcePayload;
         progressPayload = nextProgressPayload;
+        parseQualityPayload = nextParseQualityPayload;
         figurePayload = nextFigurePayload;
         finalPayload = nextFinalPayload;
         editorDirty = false;
         riskDecisionDirty = false;
+        parseQualityDirty.clear();
+        parseQualityNotice = '';
         activeSectionId = draftPayload.sections?.[0]?.id || '';
         selectedClaimId = '';
         renderProjectHeader();
@@ -1398,6 +1689,9 @@
             && !exportBusy
             && !sourceUploadBusy
             && !riskDecisionDirty
+            && !parseQualityDirty.size
+            && !parseQualityBusy.size
+            && !$('parse-quality-stage-panel').contains(document.activeElement)
           ) return loadProject();
           return 'unchanged';
         }
@@ -1439,6 +1733,11 @@
         event.target.value = projectId;
         return;
       }
+      if (!confirmDiscardParseQualityDecisions()) {
+        event.target.value = projectId;
+        return;
+      }
+      activeParseStudyId = '';
       projectId = nextProjectId;
       try {
         const loadResult = await loadProject();
@@ -1462,6 +1761,8 @@
       uploadSourceArchive(event.dataTransfer?.files?.[0]);
     });
     $('submit-risk-decisions').addEventListener('click', submitRiskDecisions);
+    $('parse-quality-preview-pdf').addEventListener('click', () => setParsePreview('pdf'));
+    $('parse-quality-preview-markdown').addEventListener('click', () => setParsePreview('parsed-markdown'));
     $('export-docx').addEventListener('click', exportDocx);
     $('save-section').addEventListener('click', () => saveDraftBody($('section-editor').value));
     $('section-editor').addEventListener('input', event => {
@@ -1478,7 +1779,7 @@
       }
     });
     window.addEventListener('beforeunload', event => {
-      if (!editorDirty && !riskDecisionDirty) return;
+      if (!editorDirty && !riskDecisionDirty && !parseQualityDirty.size) return;
       event.preventDefault();
       event.returnValue = '';
     });

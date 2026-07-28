@@ -4615,6 +4615,51 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
         for forbidden in ("mapping file", "manifest path", "json", "agent", "prompt", "git"):
             self.assertNotIn(forbidden, visible)
 
+    def test_parse_quality_workspace_has_object_controls_and_safe_copy(self) -> None:
+        review_html = (ROOT / "view/assets/dashboard/review.html").read_text(encoding="utf-8")
+        review_css = (ROOT / "view/assets/dashboard/review-ui.css").read_text(encoding="utf-8")
+        parser = VisibleTextParser()
+        parser.feed(review_html)
+
+        for element_id in (
+            "parse-quality-stage-panel",
+            "parse-quality-study-list",
+            "parse-quality-object-list",
+            "parse-quality-preview",
+            "parse-quality-message",
+        ):
+            self.assertIn(f'id="{element_id}"', review_html)
+        for binding in (
+            "renderParseQualityStage",
+            "submitParseQualityDecision",
+            "/parse-quality`",
+            "method:'PUT'",
+            "parseQualityBusy",
+            "response.status === 409",
+            "progressPayload.active_stage === 'parsing'",
+            "parseQualityPayload.status === 'needs_attention'",
+            "parseQualityDirty",
+        ):
+            self.assertIn(binding, review_html)
+        for copy in (
+            "允许机器从该部分提取候选证据",
+            "仅回到原始 PDF 人工定位",
+            "必须重新解析",
+        ):
+            self.assertIn(copy, parser.text)
+        for forbidden in ("Source Truth Bundle", "schema", "digest", "hash", "JSON"):
+            self.assertNotIn(forbidden.casefold(), parser.text.casefold())
+        for style in (
+            ".parse-quality-layout",
+            "grid-template-columns: minmax(410px, 1.2fr) minmax(280px, .8fr)",
+            ".parse-quality-status-badge",
+            ".parse-quality-save-row button",
+            "#parse-quality-preview",
+            "@media (max-width: 640px)",
+            "#parse-quality-preview { display: none; }",
+        ):
+            self.assertIn(style, review_css)
+
     def test_review_workbench_accepts_researcher_source_supplements(self) -> None:
         review_html = (ROOT / "view/assets/dashboard/review.html").read_text(encoding="utf-8")
         parser = VisibleTextParser()
