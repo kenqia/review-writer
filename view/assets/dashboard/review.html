@@ -448,6 +448,20 @@
       return true;
     }
 
+    function parseQualityWorkspaceAvailable() {
+      return Boolean((parseQualityPayload.studies || []).length) || parseQualityPayload.status === 'needs_attention';
+    }
+
+    function parseQualityGateActive() {
+      return parseQualityWorkspaceAvailable() && (
+        progressPayload.active_stage === 'parsing' || parseQualityPayload.status === 'needs_attention'
+      );
+    }
+
+    function authoritativeProgressStage() {
+      return (progressPayload.stages || []).find(stage => stage.id === progressPayload.active_stage) || null;
+    }
+
     function applyWorkbenchBusyState(busy) {
       $('section-editor').disabled = busy;
       $('project').disabled = busy || exportBusy;
@@ -468,7 +482,7 @@
         control.disabled = busy || (objectId ? parseQualityBusy.has(objectId) : false);
       });
       document.querySelectorAll('[data-workspace], .outline-section').forEach(button => {
-        button.disabled = busy;
+        button.disabled = busy || (button.dataset.workspace === 'manuscript' && parseQualityGateActive());
       });
     }
 
@@ -494,7 +508,8 @@
     }
 
     function setWorkspace(workspace) {
-      const selected = workspace === 'manuscript' ? 'manuscript' : 'cockpit';
+      let selected = workspace === 'manuscript' ? 'manuscript' : 'cockpit';
+      if (selected === 'manuscript' && parseQualityGateActive()) selected = 'cockpit';
       const changed = selected !== activeWorkspace;
       activeWorkspace = selected;
       $('cockpit-workspace').hidden = selected !== 'cockpit';
@@ -512,10 +527,20 @@
 
     function renderProjectHeader() {
       const brief = projectState.brief || {};
+      const parseGateActive = parseQualityGateActive();
+      const progressStage = authoritativeProgressStage();
+      const legacyStageLabel = stageLabels[projectState.current_stage] || '进行中';
+      const legacyStatusLabel = statusLabels[projectState.status] || '状态待核对';
+      const stageLabel = parseGateActive ? progressStage?.label || '核对全文解析' : legacyStageLabel;
+      const statusLabel = parseGateActive
+        ? parseQualityPayload.status === 'needs_attention'
+          ? '解析记录需要处理'
+          : `${parseQualityPayload.summary?.needs_review || 0} 项待决定`
+        : legacyStatusLabel;
       $('project-title').textContent = brief.topic || cockpitPayload.topic || '未命名综述项目';
-      $('stage-badge').textContent = stageLabels[projectState.current_stage] || '进行中';
-      $('status-badge').textContent = statusLabels[projectState.status] || '状态待核对';
-      $('cockpit-stage-summary').textContent = `${stageLabels[projectState.current_stage] || '进行中'} · ${statusLabels[projectState.status] || '状态待核对'}`;
+      $('stage-badge').textContent = stageLabel;
+      $('status-badge').textContent = statusLabel;
+      $('cockpit-stage-summary').textContent = `${stageLabel} · ${statusLabel}`;
       $('review-question').textContent = brief.review_question || '—';
       $('review-years').textContent = Number.isInteger(brief.from_year) && Number.isInteger(brief.to_year) ? `${brief.from_year}–${brief.to_year}` : '—';
       $('review-target').textContent = Number.isInteger(brief.target_primary_studies) ? String(brief.target_primary_studies) : '—';
@@ -530,11 +555,35 @@
       $('confirm-brief-primary').disabled = !awaiting;
       $('brief-confirmation-message').textContent = projectState.status === 'BRIEF_CONFIRMED' ? '综述简报已确认。' : '';
       $('brief-stage-message').textContent = projectState.status === 'BRIEF_CONFIRMED' ? '综述简报已确认。' : '';
-      $('draft-availability-note').textContent = draftPayload.available ? '正文已建立，可进入正文工作室。' : '正文尚未建立；当前以证据复核为主。';
+      $('draft-availability-note').textContent = parseGateActive
+        ? draftPayload.available
+          ? '正文已有旧版本；解析核对完成前不可继续写作。'
+          : '解析核对完成前不会进入证据提取或正文写作。'
+        : draftPayload.available ? '正文已建立，可进入正文工作室。' : '正文尚未建立；当前以证据复核为主。';
+      const manuscriptButton = document.querySelector('[data-workspace="manuscript"]');
+      manuscriptButton.disabled = parseGateActive;
+      manuscriptButton.setAttribute('aria-disabled', String(parseGateActive));
+      manuscriptButton.title = parseGateActive ? '完成解析核对后进入正文工作室' : '';
     }
 
     function renderStages() {
       clear($('stage-list'));
+      if (parseQualityGateActive()) {
+        (progressPayload.stages || []).forEach(stage => {
+          const item = document.createElement('li');
+          item.className = stage.status === 'complete' ? 'complete' : ['active', 'blocked'].includes(stage.status) ? 'current' : '';
+          const index = $('stage-list').children.length;
+          item.append(textElement('span', 'stage-index', String(index + 1).padStart(2, '0')));
+          const copy = document.createElement('span');
+          copy.append(textElement('strong', '', stage.label || '科研处理阶段'));
+          copy.append(textElement('small', '', {
+            complete:'已完成', active:'当前阶段', blocked:'需要处理', pending:'待推进'
+          }[stage.status] || '待推进'));
+          item.append(copy);
+          $('stage-list').append(item);
+        });
+        return;
+      }
       const activeIndex = Math.max(0, stageFlow.findIndex(([stage]) => stage === projectState.current_stage));
       stageFlow.forEach(([stage, label], index) => {
         const item = document.createElement('li');
@@ -1087,8 +1136,8 @@
       const needsSourceUpload = hasSourceQueue && sourcePayload.upload_required && !progressPayload.archive_received;
       const sourceBlocked = progressPayload.active_stage === 'sources' && Boolean(progressPayload.blocker);
       const showSource = !awaitingBrief && (needsSourceUpload || sourceBlocked);
-      const parseWorkspaceAvailable = Boolean((parseQualityPayload.studies || []).length) || parseQualityPayload.status === 'needs_attention';
-      const showParseQuality = !awaitingBrief && !showSource && !draftPayload.available && parseWorkspaceAvailable && (
+      const parseWorkspaceAvailable = parseQualityWorkspaceAvailable();
+      const showParseQuality = !awaitingBrief && !showSource && parseWorkspaceAvailable && (
         progressPayload.active_stage === 'parsing' || parseQualityPayload.status === 'needs_attention'
       );
       const showRisk = !awaitingBrief && !showSource && !showParseQuality && progressPayload.active_stage === 'risk' && Boolean((riskPayload.targets || []).length) && !draftPayload.available;

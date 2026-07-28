@@ -2658,7 +2658,13 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
     )
     stages = []
     for index, (stage_id, label, complete) in enumerate(stage_definitions):
-        status = "complete" if complete else "active" if index == active_index else "pending"
+        status = (
+            "complete"
+            if index < active_index or (index == active_index and complete)
+            else "active"
+            if index == active_index
+            else "pending"
+        )
         if status == "active" and blocker:
             status = "blocked"
         stages.append({"id": stage_id, "label": label, "status": status})

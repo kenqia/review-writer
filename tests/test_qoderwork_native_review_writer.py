@@ -998,11 +998,67 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             review_root = Path(temp_dir)
             project = _source_truth_project(review_root)
             write_source_truth_bundle(project, "scholarly-a")
+            manifest_path = project / "00_discovery/acquisition_manifest.json"
+            manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "downloads": [
+                            {
+                                "download_id": "MAIN-A",
+                                "study_id": "scholarly-a",
+                                "document_role": "MAIN",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            receipt_path = project / "00_sources/acquisition_receipt.json"
+            receipt_path.write_text(
+                json.dumps(
+                    {"results": [{"download_id": "MAIN-A", "status": "DOWNLOADED"}]}
+                ),
+                encoding="utf-8",
+            )
+            screening_path = project / "00_discovery/screening_decisions.json"
+            screening_path.parent.mkdir(parents=True, exist_ok=True)
+            screening_path.write_text(
+                json.dumps(
+                    {
+                        "decisions": [
+                            {
+                                "candidate_id": "scholarly-a",
+                                "disposition": "INCLUDE_FOR_FULL_TEXT",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            evidence_path = project / "01_evidence/evidence_cards.jsonl"
+            evidence_path.write_text(
+                json.dumps({"study_id": "scholarly-a", "candidate": {}}) + "\n",
+                encoding="utf-8",
+            )
+            risk_path = project / "03_review/risk_packet.json"
+            risk_path.parent.mkdir(parents=True, exist_ok=True)
+            risk_path.write_text(json.dumps({"targets": []}), encoding="utf-8")
+            draft_path = project / "04_first_draft/first_draft.md"
+            draft_path.parent.mkdir(parents=True, exist_ok=True)
+            draft_path.write_text("# Legacy draft\n", encoding="utf-8")
+            final_path = project / "05_final_audit/final_draft.docx"
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            final_path.write_bytes(b"legacy")
 
             payload = dashboard.project_progress_payload(review_root, "case")
 
             self.assertEqual("parsing", payload["active_stage"])
             self.assertEqual("in_progress", payload["status"])
+            self.assertEqual(
+                ["complete", "active", "pending", "pending", "pending", "pending"],
+                [stage["status"] for stage in payload["stages"]],
+            )
             self.assertNotIn("确认研究范围", json.dumps(payload, ensure_ascii=False))
 
     def test_progress_reports_damaged_parse_gate_as_needs_attention(self) -> None:
@@ -4641,6 +4697,18 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             "parseQualityDirty",
         ):
             self.assertIn(binding, review_html)
+        self.assertIn(
+            "const showParseQuality = !awaitingBrief && !showSource && parseWorkspaceAvailable",
+            review_html,
+        )
+        for gate_binding in (
+            "function parseQualityGateActive()",
+            "const progressStage = authoritativeProgressStage();",
+            "manuscriptButton.disabled = parseGateActive;",
+            "if (selected === 'manuscript' && parseQualityGateActive()) selected = 'cockpit';",
+            "正文已有旧版本；解析核对完成前不可继续写作。",
+        ):
+            self.assertIn(gate_binding, review_html)
         for copy in (
             "允许机器从该部分提取候选证据",
             "仅回到原始 PDF 人工定位",
@@ -4657,6 +4725,15 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             "#parse-quality-preview",
             "@media (max-width: 640px)",
             "#parse-quality-preview { display: none; }",
+            ".stage-list strong { font-size: 14px; }",
+            ".parse-quality-action-key strong { font-size: 13px; }",
+            ".parse-quality-study-list strong { font-size: 12px; }",
+            ".parse-quality-object-row h5 { font-size: 15px; }",
+            ".parse-quality-issue-list p { font-size: 12px; }",
+            ".parse-quality-decision-option strong { font-size: 13px; }",
+            ".parse-quality-decision-option small { font-size: 11px; }",
+            ".parse-quality-note-field textarea { font-size: 14px; line-height: 1.55; }",
+            ".context-item p { font-size: 13px; }",
         ):
             self.assertIn(style, review_css)
 
