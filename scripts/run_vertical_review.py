@@ -53,6 +53,13 @@ from review_writer.project.parse_quality import (  # noqa: E402
     require_parse_quality_ready,
     write_parse_quality_gate,
 )
+from review_writer.project.paper_evidence import (  # noqa: E402
+    PaperEvidenceError,
+    apply_paper_evidence_decision,
+    paper_evidence_state,
+    register_manual_pdf_evidence,
+    register_paper_evidence_candidates,
+)
 from review_writer.project.source_truth import (  # noqa: E402
     SourceTruthError,
     build_all_source_truth,
@@ -95,6 +102,28 @@ def _print_summary(payload: dict[str, Any], *, stream: Any = sys.stdout) -> None
         json.dumps(payload, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")),
         file=stream,
     )
+
+
+def _load_paper_evidence_input(path: Path) -> Any:
+    if not path.is_file() or path.is_symlink():
+        raise PaperEvidenceError("INPUT_INVALID")
+    try:
+        return _load_json(path)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise PaperEvidenceError("INPUT_INVALID") from exc
+
+
+def _paper_evidence_counts(state: dict[str, Any]) -> dict[str, int]:
+    return {
+        key: int(state[key])
+        for key in (
+            "approved_count",
+            "needs_review_count",
+            "rejected_count",
+            "stale_count",
+            "total_count",
+        )
+    }
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -981,6 +1010,19 @@ def _parser() -> argparse.ArgumentParser:
     )
     parse_decision.add_argument("--note", required=True)
 
+    paper_register = commands.add_parser("register-paper-evidence")
+    paper_register.add_argument("--project", type=Path, required=True)
+    paper_register.add_argument("--study-id", required=True)
+    paper_register.add_argument("--input", type=Path, required=True)
+
+    manual_paper = commands.add_parser("register-manual-pdf-evidence")
+    manual_paper.add_argument("--project", type=Path, required=True)
+    manual_paper.add_argument("--input", type=Path, required=True)
+
+    paper_decision = commands.add_parser("record-paper-evidence")
+    paper_decision.add_argument("--project", type=Path, required=True)
+    paper_decision.add_argument("--input", type=Path, required=True)
+
     prepare = commands.add_parser("prepare-study")
     prepare.add_argument("--project-dir", type=Path, required=True)
     prepare.add_argument("--study-id", required=True)
@@ -1055,6 +1097,47 @@ def _run(args: argparse.Namespace) -> int:
         return 0
     if args.command == "record-parse-quality":
         _print_summary(_record_parse_quality_status(args))
+        return 0
+    if args.command == "register-paper-evidence":
+        result = register_paper_evidence_candidates(
+            args.project,
+            args.study_id,
+            _load_paper_evidence_input(args.input),
+        )
+        _print_summary(
+            {
+                "candidate_count": result["registered_count"],
+                "reason_code": "PAPER_EVIDENCE_REGISTERED",
+                "status": "NEEDS_REVIEW",
+            }
+        )
+        return 0
+    if args.command == "register-manual-pdf-evidence":
+        register_manual_pdf_evidence(
+            args.project,
+            _load_paper_evidence_input(args.input),
+        )
+        _print_summary(
+            {
+                "candidate_count": 1,
+                "reason_code": "MANUAL_PDF_EVIDENCE_REGISTERED",
+                "status": "NEEDS_REVIEW",
+            }
+        )
+        return 0
+    if args.command == "record-paper-evidence":
+        apply_paper_evidence_decision(
+            args.project,
+            _load_paper_evidence_input(args.input),
+        )
+        state = paper_evidence_state(args.project)
+        _print_summary(
+            {
+                **_paper_evidence_counts(state),
+                "reason_code": state["reason_code"],
+                "status": "APPROVED" if state["workflow_can_continue"] else "NEEDS_REVIEW",
+            }
+        )
         return 0
     if args.command == "prepare-study":
         summary = _prepare_status(args.project_dir, args.study_id)
@@ -1173,6 +1256,12 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         return _run(args)
+    except PaperEvidenceError as exc:
+        _print_summary(
+            {"error_code": exc.code, "status": "ERROR"},
+            stream=sys.stderr,
+        )
+        return 2
     except (BatchRunnerError, ParseQualityError, SourceTruthError, VerticalReviewError) as exc:
         payload: dict[str, Any] = {
             "command": args.command,

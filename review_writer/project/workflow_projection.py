@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from review_writer.project.paper_evidence import PaperEvidenceError, paper_evidence_state
 from review_writer.project.parse_quality import project_parse_quality_state
 from review_writer.project.source_truth import (
     SOURCE_TRUTH_ROOT,
@@ -96,8 +97,16 @@ def _new_route_state(project: Path) -> dict[str, Any]:
         except (OSError, ValueError, KeyError, TypeError):
             parse_error = True
 
-    # Later tasks replace these closed capabilities with schema-validated domain projections.
     paper_evidence_ready = False
+    paper_evidence_error = False
+    if parse_ready:
+        try:
+            evidence_state = paper_evidence_state(project)
+            paper_evidence_ready = bool(evidence_state.get("workflow_can_continue"))
+        except (PaperEvidenceError, OSError, ValueError, KeyError, TypeError):
+            paper_evidence_error = True
+
+    # Later tasks replace these remaining closed capabilities with validated projections.
     synthesis_ready = False
     section_contracts_ready = False
     manuscript_ready = False
@@ -115,7 +124,11 @@ def _new_route_state(project: Path) -> dict[str, Any]:
         )
     elif not paper_evidence_ready:
         active_stage = "evidence"
-        blockers.append("PAPER_EVIDENCE_NOT_APPROVED")
+        blockers.append(
+            "PAPER_EVIDENCE_INVALID"
+            if paper_evidence_error
+            else "PAPER_EVIDENCE_NOT_APPROVED"
+        )
     elif not synthesis_ready or not section_contracts_ready:
         active_stage = "synthesis"
         blockers.append("SYNTHESIS_NOT_APPROVED")

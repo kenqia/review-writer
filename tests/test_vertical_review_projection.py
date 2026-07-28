@@ -12,6 +12,10 @@ from pathlib import Path
 import pytest
 
 import review_writer.project.vertical_review as vertical_review
+from review_writer.project.paper_evidence import (
+    apply_paper_evidence_decision,
+    register_paper_evidence_candidates,
+)
 from review_writer.project.parse_quality import (
     apply_parse_quality_decision,
     parse_quality_state,
@@ -28,6 +32,7 @@ from review_writer.project.vertical_review import (
     rebuild_projection,
     register_study,
 )
+from review_writer.project.workflow_projection import workflow_state
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -314,6 +319,7 @@ def _canonical_prepare_project(
         {
             "studies": [
                 {
+                    "study_id": study_id,
                     "doi": f"DOI:{doi}",
                     "main_pdf": acquired["MAIN"],
                     "si_pdf": acquired["SI"],
@@ -2875,3 +2881,205 @@ def test_wait_state_times_out_with_concrete_error(tmp_path: Path) -> None:
         "resume_instruction": "完成工作台操作后，在 QoderWork 发送“继续当前综述项目”。",
         "status": "ERROR",
     }
+
+
+def _typed_paper_candidate(project: Path, *, evidence_id: str = "EVIDENCE-CANARY") -> dict:
+    parse = parse_quality_state(project, "STUDY-CANARY")
+    return {
+        "evidence_id": evidence_id,
+        "source_id": "CANARY_MAIN",
+        "epistemic_type": "experimental_observation",
+        "statement": "A synthetic measured outcome was reported.",
+        "locator": {
+            "source_mode": "parsed_candidate",
+            "page": 1,
+            "section_or_item": "Results",
+            "figure_or_table": None,
+            "exact_quote": "Main evidence paragraph.",
+        },
+        "reported_conditions": ["Synthetic condition"],
+        "quantitative_results": ["Synthetic result"],
+        "limitations": ["Synthetic limitation"],
+        "mechanism_grade": "not_applicable",
+        "risk_classes": [],
+        "bound_parse_object_digests": [parse["objects"][0]["object_digest"]],
+    }
+
+
+def _declare_canonical_study(project: Path) -> None:
+    receipt_path = project / "00_sources/acquisition_final_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["studies"][0]["study_id"] = "STUDY-CANARY"
+    _write_prepare_json(receipt_path, receipt)
+
+
+def _paper_decision(row: dict) -> dict:
+    return {
+        "evidence_id": row["evidence_id"],
+        "candidate_digest": row["candidate_digest"],
+        "bound_parse_object_digests": row["bound_parse_object_digests"],
+        "source_pdf_sha256": row["source_pdf_sha256"],
+        "action": "approve",
+        "reason": "Checked against the current source PDF.",
+    }
+
+
+def test_workflow_projection_requires_current_typed_paper_evidence(tmp_path: Path) -> None:
+    project = _canonical_prepare_project(tmp_path, si_policy="NOT_REQUIRED")
+    _declare_canonical_study(project)
+    registered = register_paper_evidence_candidates(
+        project,
+        "STUDY-CANARY",
+        _typed_paper_candidate(project),
+    )
+
+    before = workflow_state(project)
+    apply_paper_evidence_decision(project, _paper_decision(registered["candidates"][0]))
+    after = workflow_state(project)
+
+    assert before["parse_ready"] is True
+    assert before["paper_evidence_ready"] is False
+    assert before["active_stage"] == "evidence"
+    assert after["paper_evidence_ready"] is True
+    assert after["active_stage"] == "synthesis"
+    assert after["blockers"] == ["SYNTHESIS_NOT_APPROVED"]
+
+
+def _run_paper_cli(command: str, project: Path, payload: dict, tmp_path: Path) -> subprocess.CompletedProcess[str]:
+    input_path = tmp_path / f"{command}.json"
+    _write_prepare_json(input_path, payload)
+    args = [
+        sys.executable,
+        str(CLI),
+        command,
+        "--project",
+        str(project),
+        "--input",
+        str(input_path),
+    ]
+    if command == "register-paper-evidence":
+        args.extend(["--study-id", "STUDY-CANARY"])
+    return subprocess.run(
+        args,
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_paper_evidence_cli_reports_only_researcher_safe_summary(
+    tmp_path: Path,
+) -> None:
+    project = _canonical_prepare_project(tmp_path, si_policy="NOT_REQUIRED")
+    _declare_canonical_study(project)
+    candidate = _typed_paper_candidate(project)
+
+    registered = _run_paper_cli("register-paper-evidence", project, candidate, tmp_path)
+
+    assert registered.returncode == 0, registered.stderr
+    register_summary = json.loads(registered.stdout)
+    assert set(register_summary) == {"candidate_count", "reason_code", "status"}
+    assert register_summary == {
+        "candidate_count": 1,
+        "reason_code": "PAPER_EVIDENCE_REGISTERED",
+        "status": "NEEDS_REVIEW",
+    }
+    candidate_set = json.loads(
+        (
+            project
+            / "01_evidence/STUDY-CANARY/paper_evidence_candidates.json"
+        ).read_text(encoding="utf-8")
+    )
+    row = candidate_set["candidates"][0]
+    recorded = _run_paper_cli("record-paper-evidence", project, _paper_decision(row), tmp_path)
+
+    assert recorded.returncode == 0, recorded.stderr
+    record_summary = json.loads(recorded.stdout)
+    assert set(record_summary) == {
+        "approved_count",
+        "needs_review_count",
+        "reason_code",
+        "rejected_count",
+        "stale_count",
+        "status",
+        "total_count",
+    }
+    assert record_summary == {
+        "approved_count": 1,
+        "needs_review_count": 0,
+        "reason_code": "PAPER_EVIDENCE_READY",
+        "rejected_count": 0,
+        "stale_count": 0,
+        "status": "APPROVED",
+        "total_count": 1,
+    }
+    combined = registered.stdout + recorded.stdout
+    for private_value in (
+        candidate["statement"],
+        candidate["locator"]["exact_quote"],
+        str(project),
+        row["candidate_digest"],
+        row["source_pdf_sha256"],
+    ):
+        assert private_value not in combined
+
+
+def test_paper_evidence_cli_failure_uses_stable_safe_code(tmp_path: Path) -> None:
+    project = _canonical_prepare_project(tmp_path, si_policy="NOT_REQUIRED")
+    _declare_canonical_study(project)
+    invalid = {**_typed_paper_candidate(project), "epistemic_type": "review_synthesis"}
+
+    result = _run_paper_cli("register-paper-evidence", project, invalid, tmp_path)
+
+    assert result.returncode == 2
+    assert json.loads(result.stderr) == {
+        "error_code": "EPISTEMIC_TYPE_INVALID",
+        "status": "ERROR",
+    }
+
+
+def test_manual_pdf_evidence_cli_requires_pdf_locator_gate_and_hides_content(
+    tmp_path: Path,
+) -> None:
+    project = _canonical_prepare_project(tmp_path, si_policy="NOT_REQUIRED")
+    _declare_canonical_study(project)
+    state = parse_quality_state(project, "STUDY-CANARY")
+    for row in state["objects"]:
+        if row["status"] == "usable":
+            continue
+        state = apply_parse_quality_decision(
+            project,
+            "STUDY-CANARY",
+            {
+                "object_id": row["object_id"],
+                "object_digest": row["object_digest"],
+                "gate_digest": state["gate_digest"],
+                "action": "pdf_locator_only",
+                "note": "Manual original-PDF evidence is required.",
+            },
+        )
+    payload = {
+        "study_id": "STUDY-CANARY",
+        **_typed_paper_candidate(project),
+        "locator": {
+            "source_mode": "original_pdf_manual",
+            "page": 1,
+            "section_or_item": "Results",
+            "figure_or_table": None,
+            "exact_quote": "Manually verified source wording.",
+        },
+        "bound_parse_object_digests": [],
+    }
+
+    result = _run_paper_cli("register-manual-pdf-evidence", project, payload, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "candidate_count": 1,
+        "reason_code": "MANUAL_PDF_EVIDENCE_REGISTERED",
+        "status": "NEEDS_REVIEW",
+    }
+    assert payload["statement"] not in result.stdout
+    assert payload["locator"]["exact_quote"] not in result.stdout
+    assert str(project) not in result.stdout
