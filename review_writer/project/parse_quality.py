@@ -7,7 +7,6 @@ import json
 import os
 import re
 import tempfile
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +18,12 @@ from review_writer.project.source_truth import (
     SOURCE_TRUTH_ROOT,
     SourceTruthError,
     canonical_digest,
+    declared_study_ids,
     load_source_truth_bundle,
+)
+from review_writer.project.verification_decision import (
+    VerificationDecisionError,
+    verification_decision,
 )
 
 
@@ -34,6 +38,7 @@ PARSE_OBJECT_KINDS = (
     "supplement_completeness",
 )
 AUTOMATIC_STATUSES = frozenset({"usable", "usable_with_review", "incomplete", "failed"})
+ACTOR_TYPES = frozenset({"human_researcher", "simulated_researcher_agent"})
 HUMAN_ACTIONS = frozenset(
     {"approve_candidate_extraction", "pdf_locator_only", "reparse_required"}
 )
@@ -95,12 +100,23 @@ def _object(
     status: str,
     issues: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "object_id": _object_id(study_id, source_id, kind),
         "source_id": source_id,
         "kind": kind,
         "status": status,
         "issues": issues,
+    }
+    return {
+        **payload,
+        "object_digest": canonical_digest(
+            {
+                "source_id": source_id,
+                "kind": kind,
+                "status": status,
+                "issues": issues,
+            }
+        ),
         "decision": None,
     }
 
@@ -344,10 +360,28 @@ def _project(gate: dict[str, Any]) -> dict[str, Any]:
         if row["status"] == "usable":
             continue
         decision = row.get("decision")
-        if not isinstance(decision, dict) or decision.get("bound_gate_digest") != result["gate_digest"]:
+        if (
+            not isinstance(decision, dict)
+            or decision.get("bound_object_digest") != row["object_digest"]
+            or decision.get("bound_gate_digest") != result["gate_digest"]
+            or decision.get("schema_version") != "verification-decision.v1"
+            or decision.get("actor_type") not in ACTOR_TYPES
+            or not isinstance(decision.get("actor_label"), str)
+            or not decision["actor_label"].strip()
+            or not isinstance(decision.get("reason"), str)
+            or not decision["reason"].strip()
+        ):
             pending = True
             continue
         action = decision.get("action")
+        allowed_actions = (
+            HUMAN_ACTIONS
+            if row["status"] == "usable_with_review"
+            else frozenset({"pdf_locator_only", "reparse_required"})
+        )
+        if action not in allowed_actions:
+            pending = True
+            continue
         reparse = reparse or action == "reparse_required"
         pdf_only = pdf_only or action == "pdf_locator_only"
     if reparse:
@@ -364,13 +398,30 @@ def _project(gate: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _validate_gate(gate: dict[str, Any]) -> None:
+def _validate_gate(
+    gate: dict[str, Any],
+    *,
+    allow_legacy_object_digest: bool = False,
+) -> None:
     schema = _read_json(PARSE_QUALITY_SCHEMA, "PARSE_QUALITY_SCHEMA_INVALID")
     errors = sorted(Draft202012Validator(schema).iter_errors(gate), key=lambda error: list(error.path))
     if errors:
         raise ParseQualityError("PARSE_QUALITY_SCHEMA_INVALID")
     if _assessment_digest(gate) != gate.get("gate_digest"):
         raise ParseQualityError("PARSE_QUALITY_DIGEST_MISMATCH")
+    for row in gate["objects"]:
+        expected = canonical_digest(
+            {
+                "source_id": row["source_id"],
+                "kind": row["kind"],
+                "status": row["status"],
+                "issues": row["issues"],
+            }
+        )
+        if allow_legacy_object_digest and row.get("object_digest") is None:
+            continue
+        if row.get("object_digest") != expected:
+            raise ParseQualityError("PARSE_OBJECT_DIGEST_MISMATCH")
 
 
 def build_parse_quality_gate(project: Path, bundle: dict[str, object]) -> dict[str, object]:
@@ -452,15 +503,17 @@ def write_parse_quality_gate(project: Path, study_id: str) -> dict[str, object]:
         previous = _read_json(path, "PARSE_QUALITY_INVALID")
         if not isinstance(previous, dict):
             raise ParseQualityError("PARSE_QUALITY_INVALID")
-        _validate_gate(previous)
+        _validate_gate(previous, allow_legacy_object_digest=True)
         if previous["gate_digest"] == gate["gate_digest"]:
             decisions = {
-                row["object_id"]: row.get("decision")
+                (row["object_id"], row.get("object_digest")): row.get("decision")
                 for row in previous["objects"]
                 if isinstance(row.get("decision"), dict)
+                and row.get("object_digest") is not None
+                and row["decision"].get("bound_object_digest") == row["object_digest"]
             }
             for row in gate["objects"]:
-                row["decision"] = decisions.get(row["object_id"])
+                row["decision"] = decisions.get((row["object_id"], row["object_digest"]))
             gate = _project(gate)
     _validate_gate(gate)
     _atomic_json(path, gate)
@@ -493,19 +546,34 @@ def apply_parse_quality_decision(
     payload: object,
 ) -> dict[str, object]:
     project = project.resolve(strict=True)
-    if not isinstance(payload, dict) or set(payload) != {"object_id", "gate_digest", "action", "note"}:
+    required = {"object_id", "gate_digest", "action", "note"}
+    optional = {"object_digest", "actor_type", "actor_label"}
+    if (
+        not isinstance(payload, dict)
+        or not required.issubset(payload)
+        or not set(payload).issubset(required | optional)
+        or (("actor_type" in payload) != ("actor_label" in payload))
+    ):
         raise ParseQualityError("DECISION_INVALID")
     object_id = payload.get("object_id")
     gate_digest = payload.get("gate_digest")
+    object_digest = payload.get("object_digest")
     action = payload.get("action")
     note_value = payload.get("note")
     note = note_value.strip() if isinstance(note_value, str) else ""
+    actor_type = payload.get("actor_type", "human_researcher")
+    actor_label_value = payload.get("actor_label", "local-researcher")
+    actor_label = actor_label_value.strip() if isinstance(actor_label_value, str) else ""
     if (
         not isinstance(object_id, str)
         or not isinstance(gate_digest, str)
+        or (object_digest is not None and not isinstance(object_digest, str))
         or action not in HUMAN_ACTIONS
         or not note
         or len(note) > 2000
+        or actor_type not in ACTOR_TYPES
+        or not actor_label
+        or len(actor_label) > 200
     ):
         raise ParseQualityError("DECISION_INVALID")
     gate = parse_quality_state(project, study_id)
@@ -515,16 +583,24 @@ def apply_parse_quality_decision(
     if len(matches) != 1:
         raise ParseQualityError("PARSE_OBJECT_NOT_FOUND")
     row = matches[0]
+    if object_digest is not None and object_digest != row["object_digest"]:
+        raise ParseQualityError("PARSE_QUALITY_STALE")
     if row["status"] == "usable":
         raise ParseQualityError("ACTION_NOT_REQUIRED")
     if row["status"] in {"incomplete", "failed"} and action == "approve_candidate_extraction":
         raise ParseQualityError("ACTION_NOT_ALLOWED")
-    row["decision"] = {
-        "action": action,
-        "note": note,
-        "decided_at": datetime.now(UTC).isoformat(),
-        "bound_gate_digest": gate["gate_digest"],
-    }
+    try:
+        decision = verification_decision(
+            actor_type=actor_type,
+            actor_label=actor_label,
+            action=str(action),
+            reason=note,
+            bound_object_digest=str(row["object_digest"]),
+            bound_gate_digest=str(gate["gate_digest"]),
+        )
+    except VerificationDecisionError as exc:
+        raise ParseQualityError("DECISION_INVALID") from exc
+    row["decision"] = {**decision, "note": note}
     gate = _project(gate)
     _validate_gate(gate)
     _atomic_json(_gate_path(project, study_id), gate)
@@ -534,7 +610,33 @@ def apply_parse_quality_decision(
 def project_parse_quality_state(project: Path) -> dict[str, object]:
     project = project.resolve(strict=True)
     root = project / SOURCE_TRUTH_ROOT
-    study_ids = sorted(path.name for path in root.iterdir() if path.is_dir() and not path.is_symlink()) if root.is_dir() else []
+    try:
+        study_ids = declared_study_ids(project)
+    except SourceTruthError as exc:
+        return {
+            "status": "needs_attention",
+            "reason_code": exc.code,
+            "workflow_can_continue": False,
+            "automatic_extraction_allowed": False,
+            "studies": [],
+        }
+    actual_study_ids = (
+        sorted(
+            path.name
+            for path in root.iterdir()
+            if path.is_dir() and not path.is_symlink()
+        )
+        if root.is_dir() and not root.is_symlink()
+        else []
+    )
+    if actual_study_ids != study_ids:
+        return {
+            "status": "needs_attention",
+            "reason_code": "SOURCE_TRUTH_STUDY_SET_MISMATCH",
+            "workflow_can_continue": False,
+            "automatic_extraction_allowed": False,
+            "studies": [],
+        }
     if not study_ids:
         return {
             "status": "needs_review",

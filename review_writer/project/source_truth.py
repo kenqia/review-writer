@@ -420,7 +420,20 @@ def _declared_study_ids(project: Path) -> list[str]:
         "ACQUISITION_FINAL_RECEIPT_INVALID",
     )
     studies = _rows(receipt, "studies", "ACQUISITION_FINAL_RECEIPT_INVALID")
-    identifiers = {row.get("study_id") for row in studies if isinstance(row.get("study_id"), str)}
+    receipt_ids = [row.get("study_id") for row in studies]
+    if receipt_ids:
+        if any(
+            not isinstance(value, str)
+            or not value
+            or value != value.strip()
+            or value in {".", ".."}
+            or "/" in value
+            or "\\" in value
+            or "\0" in value
+            for value in receipt_ids
+        ) or len(set(receipt_ids)) != len(receipt_ids):
+            raise SourceTruthError("ACQUISITION_FINAL_RECEIPT_INVALID")
+    identifiers = set(receipt_ids)
     if not identifiers:
         identifiers = {
             row.get("candidate_id") or row.get("study_id")
@@ -430,6 +443,13 @@ def _declared_study_ids(project: Path) -> list[str]:
     if not identifiers:
         raise SourceTruthError("STUDY_ID_MISSING")
     return sorted(identifiers)
+
+
+def declared_study_ids(project: Path) -> list[str]:
+    """Return the complete study set declared by the current acquisition record."""
+
+    project = project.resolve(strict=True)
+    return _declared_study_ids(project)
 
 
 def build_all_source_truth(project: Path) -> list[dict[str, object]]:

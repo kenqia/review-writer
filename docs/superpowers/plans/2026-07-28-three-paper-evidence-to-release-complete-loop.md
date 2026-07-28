@@ -70,7 +70,7 @@ vis-light-olefin-difunctionalization-complete-loop-v1/
 
 | Milestone | Implemented | Target tests | Real case | Playwright | Owner-visible result |
 | --- | --- | --- | --- | --- | --- |
-| M1 authority + parse closure | in progress (Task 1 complete) | Task 1: 11 passed | clean project + standards archived | pending Task 3 | pending |
+| M1 authority + parse closure | in progress (Tasks 1-2 complete) | Task 1: 11 passed; Task 2: 32 passed | clean project + standards archived | pending Task 3 | authoritative projection ready |
 | M2 evidence + figures | pending | pending | pending | pending | pending |
 | M3 synthesis + section contracts | pending | pending | pending | pending | pending |
 | M4 manuscript + internal DOCX | pending | pending | pending | pending | pending |
@@ -199,7 +199,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/review/archive_standard_corpus.py \
   --source "$standards_source" --source-zip 标准.zip --target "$standards_target"
 ```
 
-脚本先在同级临时目录复制并生成 `standard_corpus_manifest.json`，再原子发布目标；要求 14/14 PDF、1,071 个文件和所有文件 hash 一致。临时源不存在时停止本 Step，报告 `STANDARD_PARSE_SOURCE_MISSING`；不得用旧文档中的 `/home/ps/...` 路径代替。
+脚本先在同级临时目录复制并生成 `standard_corpus_manifest.json`，再原子发布目标；要求 14/14 PDF、1,071 个文件和所有文件 hash 一致。临时源不存在时停止本 Step，报告 `STANDARD_PARSE_SOURCE_MISSING`；不得用旧文档中的 `<LEGACY_USER_HOME>/...` 路径代替。
 
 - [x] **Step 6: 验证并提交**
 
@@ -221,13 +221,16 @@ git commit -m "feat: bootstrap clean three-paper review loop"
 **Files:**
 
 - Create: `schemas/project/verification_decision.v1.schema.json`
+- Create: `review_writer/project/verification_decision.py`
 - Create: `review_writer/project/workflow_projection.py`
 - Create: `tests/test_workflow_projection.py`
 - Modify: `review_writer/project/parse_quality.py`
+- Modify: `review_writer/project/source_truth.py`
 - Modify: `schemas/evidence/parse_quality_gate.v1.schema.json`
 - Modify: `tests/test_parse_quality.py`
+- Modify: `tests/test_source_truth.py`
 
-- [ ] **Step 1: 写失败测试锁定模拟 actor、对象级失效和 fail-closed 投影**
+- [x] **Step 1: 写失败测试锁定模拟 actor、对象级失效和 fail-closed 投影**
 
 ```python
 def test_simulated_agent_decision_records_actor_without_impersonating_owner() -> None:
@@ -261,7 +264,7 @@ def test_source_truth_project_never_uses_legacy_files_as_completion(
     assert state["internal_draft_export_ready"] is False
 ```
 
-- [ ] **Step 2: 运行失败测试**
+- [x] **Step 2: 运行失败测试**
 
 ```zsh
 PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider \
@@ -270,7 +273,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider \
 
 Expected: FAIL，object digest 与统一 projection 尚不存在。
 
-- [ ] **Step 3: 为 Parse object 增加稳定 digest**
+- [x] **Step 3: 为 Parse object 增加稳定 digest**
 
 每个对象新增：
 
@@ -285,7 +288,7 @@ object_digest = canonical_digest({
 
 决定同时绑定 `gate_digest` 与 `object_digest`。兼容读取旧决定时，缺 `object_digest` 一律视为 stale；不得自动升级。
 
-- [ ] **Step 4: 实现唯一权威投影**
+- [x] **Step 4: 实现唯一权威投影**
 
 `workflow_state(project)` 固定返回：
 
@@ -306,17 +309,19 @@ object_digest = canonical_digest({
 }
 ```
 
-含 `01_evidence/source_truth/` 的项目强制走新路线；任何未知、损坏、缺失或 stale 状态均 fail-closed。legacy 项目保持旧逻辑，但新路线模块禁止调用 legacy completion 推断。
+含 `01_evidence/source_truth/` 的项目强制走新路线；任何未知、损坏、缺失或 stale 状态均 fail-closed。receipt 声明的研究集合必须与 Source Truth 目录严格一致。legacy 项目保持旧逻辑，但新路线模块禁止调用 legacy completion 推断。在 Paper Evidence、Synthesis、Manuscript 和 Release 各自的正式 schema validator 接入前，对应 capability 固定为 `False`，不得按同名文件存在或浅层字段猜测完成。
 
-- [ ] **Step 5: 验证并提交**
+- [x] **Step 5: 验证并提交**
 
 ```zsh
 PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider \
   tests/test_parse_quality.py tests/test_workflow_projection.py
 git add -- schemas/project/verification_decision.v1.schema.json \
   schemas/evidence/parse_quality_gate.v1.schema.json \
-  review_writer/project/parse_quality.py review_writer/project/workflow_projection.py \
-  tests/test_parse_quality.py tests/test_workflow_projection.py
+  review_writer/project/verification_decision.py \
+  review_writer/project/parse_quality.py review_writer/project/source_truth.py \
+  review_writer/project/workflow_projection.py tests/test_parse_quality.py \
+  tests/test_source_truth.py tests/test_workflow_projection.py
 git diff --cached --check
 git commit -m "feat: add authoritative review workflow projection"
 ```

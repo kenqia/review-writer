@@ -11,6 +11,7 @@ from review_writer.project.source_truth import (
     build_all_source_truth,
     build_source_truth_bundle,
     canonical_digest,
+    declared_study_ids,
     load_source_truth_bundle,
     source_truth_asset,
     write_source_truth_bundle,
@@ -189,6 +190,29 @@ def test_bundle_closes_study_slug_and_source_id_by_verified_pdf(tmp_path: Path) 
     )
     body = {key: value for key, value in bundle.items() if key != "bundle_digest"}
     assert bundle["bundle_digest"] == canonical_digest(body)
+
+
+@pytest.mark.parametrize(
+    "invalid_row",
+    (
+        {},
+        {"study_id": ""},
+        {"study_id": "../escape"},
+        {"study_id": "scholarly-a"},
+    ),
+)
+def test_declared_study_ids_rejects_malformed_or_duplicate_receipt_rows(
+    tmp_path: Path,
+    invalid_row: dict[str, object],
+) -> None:
+    project = _source_truth_project(tmp_path)
+    receipt_path = project / "00_sources/acquisition_final_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["studies"].append(invalid_row)
+    _write_json(receipt_path, receipt)
+
+    with pytest.raises(SourceTruthError, match="ACQUISITION_FINAL_RECEIPT_INVALID"):
+        declared_study_ids(project)
 
 
 def test_bundle_ignores_absolute_parse_manifest_paths(tmp_path: Path) -> None:

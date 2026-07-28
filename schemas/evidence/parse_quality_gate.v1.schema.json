@@ -44,20 +44,35 @@
       "additionalProperties": false,
       "required": ["action", "note", "decided_at", "bound_gate_digest"],
       "properties": {
+        "schema_version": {"const": "verification-decision.v1"},
+        "actor_type": {
+          "enum": ["human_researcher", "simulated_researcher_agent"]
+        },
+        "actor_label": {"type": "string", "minLength": 1, "maxLength": 200},
         "action": {
           "enum": ["approve_candidate_extraction", "pdf_locator_only", "reparse_required"]
         },
         "note": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 2000},
         "decided_at": {"type": "string", "minLength": 1},
-        "bound_gate_digest": {"$ref": "#/$defs/sha256"}
+        "bound_gate_digest": {"$ref": "#/$defs/sha256"},
+        "bound_object_digest": {"$ref": "#/$defs/sha256"}
       }
     },
     "object": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["object_id", "source_id", "kind", "status", "issues", "decision"],
+      "required": [
+        "object_id",
+        "source_id",
+        "kind",
+        "status",
+        "issues",
+        "decision"
+      ],
       "properties": {
         "object_id": {"type": "string", "pattern": "^[0-9a-f]{24}$"},
+        "object_digest": {"$ref": "#/$defs/sha256"},
         "source_id": {"type": "string", "minLength": 1},
         "kind": {
           "enum": [
