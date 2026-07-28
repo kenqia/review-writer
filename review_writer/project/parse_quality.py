@@ -7,6 +7,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,7 @@ ACTOR_TYPES = frozenset({"human_researcher", "simulated_researcher_agent"})
 HUMAN_ACTIONS = frozenset(
     {"approve_candidate_extraction", "pdf_locator_only", "reparse_required"}
 )
+PARSE_QUALITY_LOCK = threading.RLock()
 FRONT_MATTER_MARKERS = (
     "digital academic repository",
     "general rights",
@@ -55,6 +57,11 @@ class ParseQualityError(ValueError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+def parse_decision_revision(decision: object) -> str:
+    """Return the optimistic-concurrency revision for one parse decision."""
+    return canonical_digest({"decision": decision if isinstance(decision, dict) else None})
 
 
 def _read_json(path: Path, code: str) -> Any:
@@ -545,9 +552,18 @@ def apply_parse_quality_decision(
     study_id: str,
     payload: object,
 ) -> dict[str, object]:
+    with PARSE_QUALITY_LOCK:
+        return _apply_parse_quality_decision_unlocked(project, study_id, payload)
+
+
+def _apply_parse_quality_decision_unlocked(
+    project: Path,
+    study_id: str,
+    payload: object,
+) -> dict[str, object]:
     project = project.resolve(strict=True)
     required = {"object_id", "gate_digest", "action", "note"}
-    optional = {"object_digest", "actor_type", "actor_label"}
+    optional = {"object_digest", "decision_revision", "actor_type", "actor_label"}
     if (
         not isinstance(payload, dict)
         or not required.issubset(payload)
@@ -558,6 +574,7 @@ def apply_parse_quality_decision(
     object_id = payload.get("object_id")
     gate_digest = payload.get("gate_digest")
     object_digest = payload.get("object_digest")
+    decision_revision = payload.get("decision_revision")
     action = payload.get("action")
     note_value = payload.get("note")
     note = note_value.strip() if isinstance(note_value, str) else ""
@@ -568,6 +585,13 @@ def apply_parse_quality_decision(
         not isinstance(object_id, str)
         or not isinstance(gate_digest, str)
         or (object_digest is not None and not isinstance(object_digest, str))
+        or (
+            decision_revision is not None
+            and (
+                not isinstance(decision_revision, str)
+                or re.fullmatch(r"[0-9a-f]{64}", decision_revision) is None
+            )
+        )
         or action not in HUMAN_ACTIONS
         or not note
         or len(note) > 2000
@@ -584,6 +608,11 @@ def apply_parse_quality_decision(
         raise ParseQualityError("PARSE_OBJECT_NOT_FOUND")
     row = matches[0]
     if object_digest is not None and object_digest != row["object_digest"]:
+        raise ParseQualityError("PARSE_QUALITY_STALE")
+    if (
+        decision_revision is not None
+        and decision_revision != parse_decision_revision(row.get("decision"))
+    ):
         raise ParseQualityError("PARSE_QUALITY_STALE")
     if row["status"] == "usable":
         raise ParseQualityError("ACTION_NOT_REQUIRED")

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -169,6 +172,45 @@ def test_simulated_agent_decision_records_actor_without_impersonating_owner(
     assert saved["decision"]["actor_label"] == "playwright-reviewer-round-1"
     assert saved["decision"]["bound_object_digest"] == target["object_digest"]
     assert "kenqia" not in json.dumps(saved["decision"]).casefold()
+
+
+def test_concurrent_object_decisions_do_not_overwrite_each_other(tmp_path: Path) -> None:
+    import review_writer.project.parse_quality as parse_quality_module
+
+    project = _parse_project(tmp_path)
+    gate = write_parse_quality_gate(project, "scholarly-a")
+    targets = [row for row in gate["objects"] if row["status"] == "usable_with_review"]
+    assert len(targets) >= 2
+    original_atomic_json = parse_quality_module._atomic_json
+
+    def delayed_atomic_json(path: Path, payload: object) -> None:
+        time.sleep(0.05)
+        original_atomic_json(path, payload)
+
+    def decide(row: dict[str, object]) -> None:
+        apply_parse_quality_decision(
+            project,
+            "scholarly-a",
+            {
+                "object_id": row["object_id"],
+                "object_digest": row["object_digest"],
+                "gate_digest": gate["gate_digest"],
+                "action": "approve_candidate_extraction",
+                "note": f"Checked {row['kind']} against the PDF.",
+            },
+        )
+
+    with patch.object(parse_quality_module, "_atomic_json", side_effect=delayed_atomic_json):
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            list(executor.map(decide, targets[:2]))
+
+    saved = parse_quality_state(project, "scholarly-a")
+    decisions = {
+        row["object_id"]
+        for row in saved["objects"]
+        if isinstance(row.get("decision"), dict)
+    }
+    assert decisions.issuperset(row["object_id"] for row in targets[:2])
 
 
 def test_legacy_decision_without_object_digest_is_stale_not_upgraded(

@@ -22,6 +22,7 @@ from review_writer.delivery.figure_policy import (
     validate_figure_policy,
 )
 from review_writer.project.vertical_review import VerticalReviewError, benchmark_metrics
+from review_writer.project.workflow_projection import NEW_ROUTE, workflow_state
 
 
 _ATX_HEADING_RE = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
@@ -895,6 +896,18 @@ def _build_project_release_unlocked(
     python_executable: Path,
 ) -> dict[str, Any]:
     project_path = Path(project)
+    workflow = workflow_state(project_path)
+    if workflow["route"] == NEW_ROUTE:
+        if not workflow["parse_ready"]:
+            raise ProjectReleaseError(
+                "PARSE_QUALITY_NOT_READY",
+                "source-truth parse review must close before release",
+            )
+        if not workflow["internal_draft_export_ready"]:
+            raise ProjectReleaseError(
+                "REVIEW_WORKFLOW_NOT_READY",
+                "evidence-to-release review must close before release",
+            )
     source = validate_project_file_path(
         project_path, Path("04_first_draft/first_draft.md"), "MANUSCRIPT_INVALID"
     )

@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import re
+import shutil
 import threading
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -194,6 +195,81 @@ def test_release_snapshots_exact_authoritative_bytes(tmp_path: Path) -> None:
     assert report["figure_validation"]["manuscript_sha256"] == result["manuscript_sha256"]
     assert report["figure_validation"]["figures"][0]["figure_type"] == "ORIGINAL_GENERATED"
     assert report["figure_validation"]["figures"][0]["source_claim_ids"] == [APPROVED_CLAIM_ID]
+
+
+def test_source_truth_project_export_rejects_incomplete_parse_without_touching_release(
+    tmp_path: Path,
+) -> None:
+    from review_writer.delivery.project_release import (
+        ProjectReleaseError,
+        build_project_release,
+    )
+    from review_writer.project.parse_quality import write_parse_quality_gate
+    from review_writer.project.source_truth import write_source_truth_bundle
+    from test_source_truth import _source_truth_project
+
+    project = make_release_ready_project(tmp_path)
+    source_project = _source_truth_project(tmp_path / "source-input")
+    for relative in (
+        "00_sources",
+        "01_evidence/mineru",
+        "01_evidence/parses",
+        "01_evidence/text_layers",
+    ):
+        shutil.copytree(source_project / relative, project / relative, dirs_exist_ok=True)
+    write_source_truth_bundle(project, "scholarly-a")
+    write_parse_quality_gate(project, "scholarly-a")
+    stage = project / "05_final_audit"
+    stage.mkdir(parents=True, exist_ok=True)
+    release_paths = tuple(stage / name for name in ("final_draft.md", "final_draft.docx", "quality_report.json"))
+    for index, path in enumerate(release_paths):
+        path.write_bytes(f"sentinel-{index}".encode("ascii"))
+    before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in release_paths}
+
+    with pytest.raises(ProjectReleaseError, match="PARSE_QUALITY_NOT_READY"):
+        build_project_release(project)
+
+    assert {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in release_paths} == before
+
+
+def test_source_truth_project_export_rejects_incomplete_review_without_touching_release(
+    tmp_path: Path,
+) -> None:
+    from review_writer.delivery.project_release import (
+        ProjectReleaseError,
+        build_project_release,
+    )
+    from review_writer.project.parse_quality import write_parse_quality_gate
+    from review_writer.project.source_truth import write_source_truth_bundle
+    from test_parse_quality import _decide_all
+    from test_source_truth import _source_truth_project
+
+    project = make_release_ready_project(tmp_path)
+    source_project = _source_truth_project(tmp_path / "source-input")
+    for relative in (
+        "00_sources",
+        "01_evidence/mineru",
+        "01_evidence/parses",
+        "01_evidence/text_layers",
+    ):
+        shutil.copytree(source_project / relative, project / relative, dirs_exist_ok=True)
+    write_source_truth_bundle(project, "scholarly-a")
+    write_parse_quality_gate(project, "scholarly-a")
+    assert _decide_all(project)["workflow_can_continue"] is True
+    stage = project / "05_final_audit"
+    stage.mkdir(parents=True, exist_ok=True)
+    release_paths = tuple(
+        stage / name
+        for name in ("final_draft.md", "final_draft.docx", "quality_report.json")
+    )
+    for index, path in enumerate(release_paths):
+        path.write_bytes(f"sentinel-{index}".encode("ascii"))
+    before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in release_paths}
+
+    with pytest.raises(ProjectReleaseError, match="REVIEW_WORKFLOW_NOT_READY"):
+        build_project_release(project)
+
+    assert {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in release_paths} == before
 
 
 def test_release_accepts_licensed_source_with_explicit_license_and_attribution(tmp_path: Path) -> None:

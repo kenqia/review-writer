@@ -185,6 +185,7 @@
                     <button id="parse-quality-preview-pdf" type="button" aria-pressed="true">原始 PDF</button>
                     <button id="parse-quality-preview-markdown" type="button" aria-pressed="false">解析文本</button>
                   </div>
+                  <label class="parse-quality-preview-page">页码 <input id="parse-quality-preview-page" type="number" min="1" max="999" value="1" inputmode="numeric"></label>
                   <a id="parse-quality-open-preview" href="#" target="_blank" rel="noopener">新标签打开 ↗</a>
                 </header>
                 <iframe id="parse-quality-preview" title="论文原文与解析文本预览"></iframe>
@@ -384,7 +385,7 @@
     let figurePayload = {figures:[], summary:{total:0,placeholders:0}};
     let finalPayload = {final_draft_docx_exists:false, final_draft_docx_path:''};
     let sourcePayload = {counts:{total:0,ready:0,missing:0}, sources:[], supplements:[], unresolved:[], upload_required:false};
-    let progressPayload = {active_stage:'sources', stages:[], studies:[], blocker:'', recommended_next:''};
+    let progressPayload = {active_stage:'sources', stages:[], studies:[], blocker:'', recommended_next:'', release_capabilities:{internal_draft_export_ready:false,verified_release_ready:false}};
     let parseQualityPayload = {status:'unavailable', workflow_can_continue:false, summary:{}, studies:[]};
     let parseQualityBusy = new Set();
     let parseQualityDirty = new Set();
@@ -396,6 +397,8 @@
     let editorDirty = false;
     let editorBusy = false;
     let projectLoadGeneration = 0;
+    let progressCapabilityProjectId = '';
+    let progressCapabilityGeneration = -1;
     let projectLoadBusy = false;
     let projectsRefreshTimer = null;
     let projectsRefreshBusy = false;
@@ -484,6 +487,11 @@
       document.querySelectorAll('[data-workspace], .outline-section').forEach(button => {
         button.disabled = busy || (button.dataset.workspace === 'manuscript' && parseQualityGateActive());
       });
+      const releaseCapabilities = (
+        progressCapabilityProjectId === projectId
+        && progressCapabilityGeneration === projectLoadGeneration
+      ) ? progressPayload.release_capabilities || {} : {};
+      $('export-docx').disabled = busy || exportBusy || !releaseCapabilities.internal_draft_export_ready;
     }
 
     function setEditorBusy(busy) {
@@ -803,11 +811,20 @@
     function setParsePreview(kind) {
       activeParsePreview = kind === 'parsed-markdown' ? 'parsed-markdown' : 'pdf';
       const study = activeParseStudy();
-      const href = activeParsePreview === 'pdf' ? study?.pdf_href : study?.markdown_href;
+      const rawPage = Number.parseInt($('parse-quality-preview-page').value, 10);
+      const pageCount = Number.isInteger(study?.pdf_page_count) ? study.pdf_page_count : 1;
+      const page = Number.isInteger(rawPage) && rawPage >= 1 && rawPage <= pageCount ? rawPage : 1;
+      $('parse-quality-preview-page').value = String(page);
+      $('parse-quality-preview-page').max = String(pageCount);
+      $('parse-quality-preview-page').disabled = activeParsePreview !== 'pdf';
+      const href = activeParsePreview === 'pdf' && study?.pdf_page_href
+        ? `${study.pdf_page_href}?page=${encodeURIComponent(String(page))}`
+        : study?.markdown_href;
+      const openHref = activeParsePreview === 'pdf' ? study?.pdf_href : study?.markdown_href;
       $('parse-quality-preview-pdf').setAttribute('aria-pressed', String(activeParsePreview === 'pdf'));
       $('parse-quality-preview-markdown').setAttribute('aria-pressed', String(activeParsePreview === 'parsed-markdown'));
-      $('parse-quality-open-preview').href = href || '#';
-      $('parse-quality-open-preview').setAttribute('aria-disabled', String(!href));
+      $('parse-quality-open-preview').href = openHref || '#';
+      $('parse-quality-open-preview').setAttribute('aria-disabled', String(!openHref));
       if (href) $('parse-quality-preview').src = href;
       else $('parse-quality-preview').removeAttribute('src');
     }
@@ -834,6 +851,7 @@
           if (study.study_id === activeParseStudyId) return;
           if (!confirmDiscardParseQualityDecisions()) return;
           activeParseStudyId = study.study_id;
+          $('parse-quality-preview-page').value = '1';
           renderParseQualityStage();
         });
         $('parse-quality-study-list').append(button);
@@ -945,6 +963,9 @@
       }
       const submittedProjectId = projectId;
       const submittedGeneration = projectLoadGeneration;
+      progressCapabilityProjectId = '';
+      progressCapabilityGeneration = -1;
+      renderReleaseControls();
       parseQualityBusy.add(objectId);
       row.querySelectorAll('input, textarea, button').forEach(control => { control.disabled = true; });
       row.querySelector('.parse-quality-save-note').textContent = '正在保存该项决定…';
@@ -965,6 +986,8 @@
           if (projectId !== submittedProjectId || projectLoadGeneration !== submittedGeneration) return;
           parseQualityPayload = refreshedParseQuality;
           progressPayload = refreshedProgress;
+          progressCapabilityProjectId = submittedProjectId;
+          progressCapabilityGeneration = submittedGeneration;
           renderStageWorkspace();
           return;
         }
@@ -974,10 +997,18 @@
         parseQualityPayload = nextPayload;
         parseQualityDirty.delete(objectId);
         parseQualityNotice = '该项决定已保存。';
-        progressPayload = await optionalPayload(
-          `/api/project/${encodeURIComponent(submittedProjectId)}/progress`,
-          progressPayload,
-        );
+        try {
+          const refreshedProgress = await getPayload(
+            `/api/project/${encodeURIComponent(submittedProjectId)}/progress`,
+          );
+          if (projectId !== submittedProjectId || projectLoadGeneration !== submittedGeneration) return;
+          progressPayload = refreshedProgress;
+          progressCapabilityProjectId = submittedProjectId;
+          progressCapabilityGeneration = submittedGeneration;
+        } catch (_) {
+          if (projectId !== submittedProjectId || projectLoadGeneration !== submittedGeneration) return;
+          parseQualityNotice = '决定已保存，但流程状态刷新失败；导出保持锁定，请刷新项目。';
+        }
         renderStageWorkspace();
       } catch (error) {
         if (projectId === submittedProjectId && projectLoadGeneration === submittedGeneration) {
@@ -1405,6 +1436,13 @@
     }
 
     function renderReleaseControls() {
+      const button = $('export-docx');
+      const releaseCapabilities = (
+        progressCapabilityProjectId === projectId
+        && progressCapabilityGeneration === projectLoadGeneration
+      ) ? progressPayload.release_capabilities || {} : {};
+      button.disabled = !releaseCapabilities.internal_draft_export_ready;
+      if (editorBusy || projectLoadBusy || exportBusy) button.disabled = true;
       const current = Boolean(finalPayload.final_draft_docx_exists && finalPayload.final_draft_docx_path);
       $('download-docx').hidden = !current;
       $('download-docx').href = current ? `/file?path=${encodeURIComponent(finalPayload.final_draft_docx_path)}` : '#';
@@ -1495,6 +1533,15 @@
 
     async function exportDocx() {
       if (!projectId || editorBusy || projectLoadBusy || exportBusy) return;
+      const releaseCapabilities = (
+        progressCapabilityProjectId === projectId
+        && progressCapabilityGeneration === projectLoadGeneration
+      ) ? progressPayload.release_capabilities || {} : {};
+      if (!releaseCapabilities.internal_draft_export_ready) {
+        $('workbench-message').textContent = '当前科学流程尚未达到内部稿导出条件。';
+        renderReleaseControls();
+        return;
+      }
       if (editorDirty) {
         $('workbench-message').textContent = '请先保存或撤销当前正文修改，再导出 DOCX。';
         return;
@@ -1527,11 +1574,16 @@
           projectId !== submittedProjectId
           || projectLoadGeneration !== submittedGeneration
         ) return;
+        progressCapabilityProjectId = '';
+        progressCapabilityGeneration = -1;
         $('workbench-message').textContent = 'DOCX 暂不可导出；请先完成待处理的证据复核。';
       } finally {
         exportBusy = false;
-        button.disabled = false;
         button.textContent = '导出 DOCX';
+        if (
+          projectId === submittedProjectId
+          && projectLoadGeneration === submittedGeneration
+        ) renderReleaseControls();
         applyWorkbenchBusyState(editorBusy || projectLoadBusy);
       }
     }
@@ -1650,6 +1702,8 @@
       const requestedProjectId = projectId;
       if (!requestedProjectId) return 'empty';
       const generation = ++projectLoadGeneration;
+      progressCapabilityProjectId = '';
+      progressCapabilityGeneration = -1;
       setProjectLoadBusy(true);
       $('workbench-message').textContent = '正在读取项目…';
       const encoded = encodeURIComponent(requestedProjectId);
@@ -1677,6 +1731,8 @@
         riskPayload = nextRiskPayload;
         sourcePayload = nextSourcePayload;
         progressPayload = nextProgressPayload;
+        progressCapabilityProjectId = requestedProjectId;
+        progressCapabilityGeneration = generation;
         parseQualityPayload = nextParseQualityPayload;
         figurePayload = nextFigurePayload;
         finalPayload = nextFinalPayload;
@@ -1812,6 +1868,7 @@
     $('submit-risk-decisions').addEventListener('click', submitRiskDecisions);
     $('parse-quality-preview-pdf').addEventListener('click', () => setParsePreview('pdf'));
     $('parse-quality-preview-markdown').addEventListener('click', () => setParsePreview('parsed-markdown'));
+    $('parse-quality-preview-page').addEventListener('change', () => setParsePreview('pdf'));
     $('export-docx').addEventListener('click', exportDocx);
     $('save-section').addEventListener('click', () => saveDraftBody($('section-editor').value));
     $('section-editor').addEventListener('input', event => {

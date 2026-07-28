@@ -70,7 +70,7 @@ vis-light-olefin-difunctionalization-complete-loop-v1/
 
 | Milestone | Implemented | Target tests | Real case | Playwright | Owner-visible result |
 | --- | --- | --- | --- | --- | --- |
-| M1 authority + parse closure | in progress (Tasks 1-2 complete) | Task 1: 11 passed; Task 2: 32 passed | clean project + standards archived | pending Task 3 | authoritative projection ready |
+| M1 authority + parse closure | complete (Tasks 1-3) | Task 3 target set: 270 passed; smoke + quality-check pass | clean project + standards archived; 11/11 parse decisions persisted | pre/post-restart pass | parse closed; release still blocked by downstream workflow |
 | M2 evidence + figures | pending | pending | pending | pending | pending |
 | M3 synthesis + section contracts | pending | pending | pending | pending | pending |
 | M4 manuscript + internal DOCX | pending | pending | pending | pending | pending |
@@ -339,7 +339,7 @@ git commit -m "feat: add authoritative review workflow projection"
 - Modify: `tests/test_qoderwork_native_review_writer.py`
 - Create: `docs/qa/three-paper-parse-closure-playwright.md`
 
-- [ ] **Step 1: 写后端和前端失败测试**
+- [x] **Step 1: 写后端和前端失败测试**
 
 ```python
 def test_source_truth_project_export_rejects_incomplete_parse_without_touching_release(
@@ -358,7 +358,7 @@ def test_export_button_uses_server_capability_and_stays_disabled() -> None:
     assert "button.disabled = !releaseCapabilities.internal_draft_export_ready" in html
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 ```zsh
 PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider \
@@ -366,11 +366,11 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider \
   tests/test_qoderwork_native_review_writer.py -k 'parse or export'
 ```
 
-- [ ] **Step 3: 在前后端接入 workflow projection**
+- [x] **Step 3: 在前后端接入 workflow projection**
 
 新路线 `build_project_release()` 首行读取 `workflow_state()`；`internal_draft_export_ready=False` 时抛稳定 code 且不创建、覆盖或更新时间戳。Dashboard API 把 `release_capabilities` 投影给 UI，前端 `finally` 不得无条件重新启用按钮。
 
-- [ ] **Step 4: 编写 Parse closure Playwright 合同**
+- [x] **Step 4: 编写 Parse closure Playwright 合同**
 
 协议允许 `simulated_researcher_agent` 在真实新项目中逐项比较 PDF 与解析文本并保存全部异常对象决定。每项可选：
 
@@ -380,13 +380,13 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider \
 
 每个决定必须有具体理由；禁止批量全选同一动作、禁止读取内部 JSON、禁止直接调用 API。
 
-- [ ] **Step 5: 派发独立 Playwright Agent 关闭三篇 gate**
+- [x] **Step 5: 派发独立 Playwright Agent 关闭三篇 gate**
 
-只给 Agent：URL、项目名、模拟研究者 persona、协议。Agent 完成 10 个剩余异常对象，刷新后验证，再向主 Agent报告 `READY_FOR_SERVER_RESTART`。主 Agent只重启自己启动的 dashboard，Agent 再验证持久化。
+只给 Agent：URL、项目名、模拟研究者 persona、协议。Agent 完成 11 个异常对象，刷新后验证，再向主 Agent报告 `READY_FOR_SERVER_RESTART`。主 Agent只重启自己启动的 dashboard，Agent 再验证持久化。
 
 Expected: 3 studies、21 objects、`needs_review=0`、`workflow_can_continue=true`；`automatic_extraction_allowed` 可因 `pdf_locator_only` 保持部分 false。
 
-- [ ] **Step 6: 验证并提交**
+- [x] **Step 6: 验证并提交**
 
 ```zsh
 PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider \

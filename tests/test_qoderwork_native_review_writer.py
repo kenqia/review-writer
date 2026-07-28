@@ -765,9 +765,10 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             )
             study = payload["studies"][0]
             self.assertEqual(
-                {"study_id", "label", "pdf_href", "markdown_href", "objects"},
+                {"study_id", "label", "pdf_href", "pdf_page_href", "pdf_page_count", "markdown_href", "objects"},
                 set(study),
             )
+            self.assertEqual(1, study["pdf_page_count"])
             parse_object = study["objects"][0]
             self.assertEqual(
                 {
@@ -854,6 +855,48 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
                 if path.is_file()
             }
             self.assertEqual(before, after)
+
+    def test_parse_quality_put_rejects_reused_token_without_overwriting_decision(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from test_source_truth import _source_truth_project
+        from review_writer.project.parse_quality import ParseQualityError, write_parse_quality_gate
+        from review_writer.project.source_truth import write_source_truth_bundle
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir)
+            project = _source_truth_project(review_root)
+            write_source_truth_bundle(project, "scholarly-a")
+            write_parse_quality_gate(project, "scholarly-a")
+            public = dashboard.project_parse_quality_payload(review_root, "case")
+            target = next(
+                row
+                for row in public["studies"][0]["objects"]
+                if row["automatic_status"] == "usable_with_review"
+            )
+            first = {
+                "study_id": "scholarly-a",
+                "object_id": target["object_id"],
+                "decision_token": target["decision_token"],
+                "action": "approve_candidate_extraction",
+                "note": "First reviewer compared the candidate with the original PDF.",
+            }
+            dashboard.write_project_parse_quality_decision(review_root, "case", first)
+            gate_path = project / "01_evidence/source_truth/scholarly-a/parse_quality.json"
+            first_saved = gate_path.read_bytes()
+
+            with self.assertRaisesRegex(ParseQualityError, "PARSE_QUALITY_STALE"):
+                dashboard.write_project_parse_quality_decision(
+                    review_root,
+                    "case",
+                    {
+                        **first,
+                        "action": "pdf_locator_only",
+                        "note": "Second reviewer attempted to overwrite with a stale tab.",
+                    },
+                )
+
+            self.assertEqual(first_saved, gate_path.read_bytes())
 
     def test_parse_quality_put_treats_missing_gate_as_conflict(self) -> None:
         sys.path.insert(0, str(ROOT))
@@ -966,6 +1009,17 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
                 review_root,
                 b"GET /api/project/case/source/stud-a/pdf HTTP/1.1\r\nHost: localhost\r\n\r\n",
             )
+            with patch.object(dashboard, "render_pdf_page", return_value=b"\x89PNG\r\n\x1a\npage") as render:
+                page_status, page_headers, page = self._request(
+                    dashboard,
+                    review_root,
+                    b"GET /api/project/case/source/stud-a/pdf-page?page=1 HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                )
+                invalid_page_status, _, _ = self._request(
+                    dashboard,
+                    review_root,
+                    b"GET /api/project/case/source/stud-a/pdf-page?page=2 HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                )
 
             self.assertEqual(200, status)
             saved = next(
@@ -974,6 +1028,14 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
                 if row["object_id"] == target["object_id"]
             )
             self.assertEqual("approve_candidate_extraction", saved["decision"]["action"])
+            persisted = dashboard.parse_quality_state(project, "scholarly-a")
+            persisted_decision = next(
+                row["decision"]
+                for row in persisted["objects"]
+                if row["object_id"] == target["object_id"]
+            )
+            self.assertEqual("simulated_researcher_agent", persisted_decision["actor_type"])
+            self.assertEqual("dashboard-playwright-reviewer", persisted_decision["actor_label"])
             self.assertEqual(200, markdown_status)
             self.assertEqual("nosniff", markdown_headers["X-Content-Type-Options"])
             self.assertTrue(markdown_headers["Content-Disposition"].startswith("inline;"))
@@ -981,12 +1043,45 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             self.assertEqual(200, pdf_status)
             self.assertEqual("application/pdf", pdf_headers["Content-Type"])
             self.assertEqual(b"%PDF-main-a", pdf)
+            self.assertEqual(200, page_status)
+            self.assertEqual("image/png", page_headers["Content-Type"])
+            self.assertEqual(b"\x89PNG\r\n\x1a\npage", page)
+            self.assertEqual(400, invalid_page_status)
+            render.assert_called_once_with(project / "00_sources/papers/paper-a.pdf", 1)
             escape_status, _, _ = self._request(
                 dashboard,
                 review_root,
                 b"GET /api/project/case/source/..%2F..%2F00_sources/pdf HTTP/1.1\r\nHost: localhost\r\n\r\n",
             )
             self.assertEqual(404, escape_status)
+
+    def test_parse_quality_pdf_page_route_accepts_authoritative_four_digit_page(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from test_source_truth import _source_truth_project
+        from review_writer.project.source_truth import write_source_truth_bundle
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir)
+            project = _source_truth_project(review_root)
+            write_source_truth_bundle(project, "scholarly-a")
+            request = (
+                b"GET /api/project/case/source/stud-a/pdf-page?page=1000 HTTP/1.1\r\n"
+                b"Host: localhost\r\n\r\n"
+            )
+            with (
+                patch.object(dashboard, "project_parse_source_page_count", return_value=1000),
+                patch.object(dashboard, "render_pdf_page", return_value=b"\x89PNG\r\n\x1a\npage-1000") as render,
+            ):
+                status, headers, body = self._request(dashboard, review_root, request)
+
+            self.assertEqual(200, status)
+            self.assertEqual("image/png", headers["Content-Type"])
+            self.assertEqual(b"\x89PNG\r\n\x1a\npage-1000", body)
+            render.assert_called_once_with(
+                project / "00_sources/papers/paper-a.pdf",
+                1000,
+            )
 
     def test_progress_uses_parse_gate_when_source_truth_exists(self) -> None:
         sys.path.insert(0, str(ROOT))
@@ -1059,6 +1154,8 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
                 ["complete", "active", "pending", "pending", "pending", "pending"],
                 [stage["status"] for stage in payload["stages"]],
             )
+            self.assertFalse(payload["release_capabilities"]["internal_draft_export_ready"])
+            self.assertFalse(payload["release_capabilities"]["verified_release_ready"])
             self.assertNotIn("确认研究范围", json.dumps(payload, ensure_ascii=False))
 
     def test_progress_reports_damaged_parse_gate_as_needs_attention(self) -> None:
@@ -4737,6 +4834,66 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
         ):
             self.assertIn(style, review_css)
 
+    def test_review_export_button_uses_server_release_capability(self) -> None:
+        review_html = (ROOT / "view/assets/dashboard/review.html").read_text(encoding="utf-8")
+        export_function = re.search(
+            r"^    async function exportDocx\(\) \{[\s\S]*?^    \}",
+            review_html,
+            flags=re.MULTILINE,
+        )
+
+        self.assertIsNotNone(export_function)
+        self.assertIn("progressPayload.release_capabilities", review_html)
+        self.assertIn(
+            "button.disabled = !releaseCapabilities.internal_draft_export_ready;",
+            review_html,
+        )
+        self.assertNotIn("button.disabled = false;", export_function.group(0))
+
+    def test_parse_quality_pdf_preview_uses_server_rendered_pages(self) -> None:
+        review_html = (ROOT / "view/assets/dashboard/review.html").read_text(encoding="utf-8")
+
+        self.assertIn('id="parse-quality-preview-page"', review_html)
+        self.assertIn("study?.pdf_page_href", review_html)
+        self.assertIn("study?.pdf_page_count", review_html)
+        self.assertIn("encodeURIComponent(String(page))", review_html)
+
+    def test_pdf_page_renderer_fails_closed_when_poppler_is_missing(self) -> None:
+        from view import serve_review_dashboard as dashboard
+
+        with patch.object(dashboard.shutil, "which", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "pdftoppm"):
+                dashboard.render_pdf_page(Path("paper.pdf"), 1)
+
+    def test_pdf_page_renderer_rejects_nonzero_process_exit(self) -> None:
+        from view import serve_review_dashboard as dashboard
+
+        completed = subprocess.CompletedProcess(["pdftoppm"], 1)
+        with (
+            patch.object(dashboard.shutil, "which", return_value="/usr/bin/pdftoppm"),
+            patch.object(dashboard.subprocess, "run", return_value=completed),
+        ):
+            with self.assertRaisesRegex(ValueError, "could not be rendered"):
+                dashboard.render_pdf_page(Path("paper.pdf"), 1)
+
+    def test_pdf_page_renderer_rejects_oversized_output_before_reading(self) -> None:
+        from view import serve_review_dashboard as dashboard
+
+        def oversized_output(args, **_kwargs):
+            rendered = Path(args[-1]).with_suffix(".png")
+            with rendered.open("wb") as handle:
+                handle.seek(25 * 1024 * 1024)
+                handle.write(b"0")
+            return subprocess.CompletedProcess(args, 0)
+
+        with (
+            patch.object(dashboard.shutil, "which", return_value="/usr/bin/pdftoppm"),
+            patch.object(dashboard.subprocess, "run", side_effect=oversized_output),
+            patch.object(Path, "read_bytes", side_effect=AssertionError("oversized output was read")),
+        ):
+            with self.assertRaisesRegex(ValueError, "invalid output"):
+                dashboard.render_pdf_page(Path("paper.pdf"), 1)
+
     def test_review_workbench_accepts_researcher_source_supplements(self) -> None:
         review_html = (ROOT / "view/assets/dashboard/review.html").read_text(encoding="utf-8")
         parser = VisibleTextParser()
@@ -5091,10 +5248,15 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
                 "  'manuscript-empty': {hidden:true},",
                 "  'manuscript-layout': {hidden:false},",
                 "  'download-docx': {hidden:false, href:'/file?path=stale.docx'},",
+                "  'export-docx': {disabled:false},",
                 "};",
                 "const $ = id => nodes[id];",
                 "let draftPayload = {available:false, sections:[]};",
                 "let finalPayload = {final_draft_docx_exists:false, final_draft_docx_path:''};",
+                "let progressPayload = {release_capabilities:{internal_draft_export_ready:false,verified_release_ready:false}};",
+                "let projectId = '', projectLoadGeneration = 0;",
+                "let progressCapabilityProjectId = '', progressCapabilityGeneration = -1;",
+                "let editorBusy = false, projectLoadBusy = false, exportBusy = false;",
                 "let activeSectionId = '';",
                 "let selectedClaimId = '';",
                 *functions,
@@ -5138,6 +5300,8 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
                 "let projectId = 'project-a';",
                 "let projectLoadGeneration = 7;",
                 "let editorBusy = false, projectLoadBusy = false, editorDirty = false, exportBusy = false;",
+                "let progressPayload = {release_capabilities:{internal_draft_export_ready:true,verified_release_ready:false}};",
+                "let progressCapabilityProjectId = 'project-a', progressCapabilityGeneration = 7;",
                 "let sourceUploadBusy = false, sourceSupplementBusy = false, sourceMappingBusy = false;",
                 "let finalPayload = {marker:'project-a-old'};",
                 "let releaseRenderCount = 0;",
@@ -5161,8 +5325,72 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
                 "if (!projectDisabledDuringExport) throw new Error('project switch was enabled during export');",
                 "if (calls.length !== 1 || calls[0].url !== '/api/project/project-a/export-docx') throw new Error(JSON.stringify(calls));",
                 "if (releaseRenderCount !== 0 || finalPayload.marker !== 'project-a-old') throw new Error('stale export rendered');",
-                "if (nodes['project'].disabled || nodes['export-docx'].disabled) throw new Error('controls were not restored');",
+                "if (nodes['project'].disabled || !nodes['export-docx'].disabled) throw new Error('stale capability enabled export');",
                 "if (nodes['export-docx'].textContent !== '导出 DOCX') throw new Error('export label was not restored');",
+                "})().catch(error => { console.error(error); process.exit(1); });",
+            ]
+        )
+
+        completed = subprocess.run(
+            [node, "-e", runtime],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+
+    def test_parse_decision_invalidates_release_capability_until_progress_refresh_succeeds(self) -> None:
+        review_html = (ROOT / "view" / "assets" / "dashboard" / "review.html").read_text(encoding="utf-8")
+        submit_match = re.search(
+            r"^    async function submitParseQualityDecision\([^)]*\) \{[\s\S]*?^    \}",
+            review_html,
+            flags=re.MULTILINE,
+        )
+        self.assertIsNotNone(submit_match)
+        node = shutil.which("node")
+        self.assertIsNotNone(node)
+        runtime = "\n".join(
+            [
+                "(async () => {",
+                "const nodes = {'export-docx': {disabled:false}};",
+                "const $ = id => nodes[id];",
+                "let projectId = 'project-a', projectLoadGeneration = 7, projectLoadBusy = false;",
+                "let progressPayload = {release_capabilities:{internal_draft_export_ready:true}};",
+                "let progressCapabilityProjectId = 'project-a', progressCapabilityGeneration = 7;",
+                "let parseQualityPayload = {marker:'before'}, parseQualityNotice = '';",
+                "const parseQualityBusy = new Set(), parseQualityDirty = new Set(['object-a']);",
+                "const noteNode = {textContent:''};",
+                "const controls = [{disabled:false}, {disabled:false}, {disabled:false}];",
+                "const row = {",
+                "  querySelector(selector) {",
+                "    if (selector.includes('radio')) return {value:'approve_candidate_extraction'};",
+                "    if (selector === 'textarea') return {value:'Compared against the original PDF.'};",
+                "    if (selector === '.parse-quality-save-note') return noteNode;",
+                "    return null;",
+                "  },",
+                "  querySelectorAll() { return controls; },",
+                "};",
+                "const parseObjectNode = () => row;",
+                "const renderReleaseControls = () => {",
+                "  nodes['export-docx'].disabled = !(progressCapabilityProjectId === projectId && progressCapabilityGeneration === projectLoadGeneration);",
+                "};",
+                "const renderStageWorkspace = renderReleaseControls;",
+                "let resolvePut;",
+                "const putPending = new Promise(resolve => { resolvePut = resolve; });",
+                "const fetch = async () => putPending;",
+                "const getPayload = async () => { throw new Error('progress unavailable'); };",
+                "const optionalPayload = async (_url, fallback) => fallback;",
+                submit_match.group(0),
+                "const saving = submitParseQualityDecision('study-a', 'object-a', 'token-a');",
+                "await Promise.resolve();",
+                "if (progressCapabilityProjectId !== '' || progressCapabilityGeneration !== -1) throw new Error('capability owner survived mutation start');",
+                "if (!nodes['export-docx'].disabled) throw new Error('export stayed enabled during mutation');",
+                "resolvePut({status:200, ok:true, json:async () => ({marker:'saved'})});",
+                "await saving;",
+                "if (parseQualityPayload.marker !== 'saved') throw new Error('saved parse state was not retained');",
+                "if (progressCapabilityProjectId !== '' || progressCapabilityGeneration !== -1) throw new Error('failed refresh rebound stale capability');",
+                "if (!nodes['export-docx'].disabled) throw new Error('failed refresh enabled export');",
                 "})().catch(error => { console.error(error); process.exit(1); });",
             ]
         )
@@ -5200,6 +5428,8 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
                 "const document = {querySelectorAll:() => []};",
                 "let projectId = 'project-a', projectLoadGeneration = 10, activeSectionId = 'results';",
                 "let editorBusy = false, projectLoadBusy = false, editorDirty = false, exportBusy = false;",
+                "let progressPayload = {release_capabilities:{internal_draft_export_ready:true,verified_release_ready:true}};",
+                "let progressCapabilityProjectId = 'project-a', progressCapabilityGeneration = 10;",
                 "let sourceUploadBusy = false, sourceSupplementBusy = false, sourceMappingBusy = false;",
                 "let draftPayload = {manuscript_version:'v1', marker:'before-save'};",
                 "let finalPayload = {final_draft_docx_exists:true, final_draft_docx_path:'project-a/old.docx', marker:'old-release'};",

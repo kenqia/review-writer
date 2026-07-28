@@ -45,7 +45,7 @@ def _finalize(state: dict[str, Any]) -> dict[str, Any]:
 def _legacy_state(project: Path) -> dict[str, Any]:
     evidence_ready = bool(_read_jsonl(project, "01_evidence/evidence_cards.jsonl"))
     manuscript_ready = _regular_file(project, "04_first_draft/first_draft.md")
-    export_ready = _regular_file(project, "05_final_audit/final_draft.docx")
+    verified_release_ready = _regular_file(project, "05_final_audit/final_draft.docx")
     if manuscript_ready:
         active_stage = "final"
     elif evidence_ready:
@@ -64,8 +64,8 @@ def _legacy_state(project: Path) -> dict[str, Any]:
             "synthesis_ready": evidence_ready,
             "section_contracts_ready": manuscript_ready,
             "manuscript_ready": manuscript_ready,
-            "internal_draft_export_ready": export_ready,
-            "verified_release_ready": export_ready,
+            "internal_draft_export_ready": manuscript_ready,
+            "verified_release_ready": verified_release_ready,
             "blockers": [],
         }
     )
