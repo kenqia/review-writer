@@ -54,6 +54,19 @@ from review_writer.delivery.project_release import (  # noqa: E402
     _validated_image,
 )
 from review_writer.delivery.figure_policy import FigurePolicyError, _image_binding  # noqa: E402
+from review_writer.project.parse_quality import (  # noqa: E402
+    HUMAN_ACTIONS,
+    ParseQualityError,
+    apply_parse_quality_decision,
+    parse_quality_state,
+    project_parse_quality_state,
+)
+from review_writer.project.source_truth import (  # noqa: E402
+    SOURCE_TRUTH_ROOT,
+    SourceTruthError,
+    load_source_truth_bundle,
+    source_truth_asset,
+)
 
 
 _RESEARCHER_SHA256_RE = re.compile(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{64}(?![0-9A-Fa-f])")
@@ -205,7 +218,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.handle_project_draft_get(project_id)
         elif parsed.path.startswith("/api/project/"):
             parts = parsed.path.strip("/").split("/")
-            if len(parts) == 4:
+            if len(parts) == 6 and parts[3] == "source" and parts[5] in {"pdf", "parsed-markdown"}:
+                self.handle_project_parse_asset_get(
+                    unquote(parts[2]),
+                    unquote(parts[4]),
+                    unquote(parts[5]),
+                )
+            elif len(parts) == 4:
                 project_id = unquote(parts[2])
                 stage = unquote(parts[3])
                 self.handle_project_stage_get(project_id, stage)
@@ -246,6 +265,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
                 return
             self.handle_project_draft_put(project_id)
+            return
+        if parsed.path.startswith("/api/project/") and parsed.path.endswith("/parse-quality"):
+            project_id = project_id_from_route(parsed.path, "parse-quality")
+            if project_id is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                return
+            self.handle_project_parse_quality_put(project_id)
             return
         if parsed.path.startswith("/api/project/") and parsed.path.endswith("/risk-decisions"):
             project_id = project_id_from_route(parsed.path, "risk-decisions")
@@ -626,6 +652,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self.send_file(source, "application/pdf")
 
+    def handle_project_parse_asset_get(
+        self,
+        project_id: str,
+        source_id: str,
+        kind: str,
+    ) -> None:
+        try:
+            project = project_dir(self.review_root, project_id)
+            path = project_parse_source_asset(project, source_id, kind)
+        except (OSError, ParseQualityError, SourceTruthError, ValueError):
+            self.send_error(HTTPStatus.NOT_FOUND, "source asset is unavailable")
+            return
+        content_type = "application/pdf" if kind == "pdf" else "text/markdown; charset=utf-8"
+        self.send_file(
+            path,
+            content_type,
+            extra_headers={
+                "Content-Disposition": f"inline; filename*=UTF-8''{quote(path.name, safe='')}",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
     def handle_project_review_state_get(self, project_id: str) -> None:
         try:
             project = project_dir(self.review_root, project_id)
@@ -701,6 +749,42 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self.send_json(result)
 
+    def handle_project_parse_quality_put(self, project_id: str) -> None:
+        try:
+            project = project_dir(self.review_root, project_id)
+        except ValueError:
+            self.send_json({"error": "项目不可用"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        if not project.is_dir():
+            self.send_json({"error": "项目不存在"}, status=HTTPStatus.NOT_FOUND)
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            if length <= 0 or length > 16 * 1024:
+                raise ValueError("invalid body size")
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
+            result = write_project_parse_quality_decision(self.review_root, project_id, data)
+        except (json.JSONDecodeError, UnicodeError):
+            self.send_json({"error": "决定内容无法读取"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        except ParseQualityError as exc:
+            if exc.code in {
+                "PARSE_QUALITY_MISSING",
+                "PARSE_QUALITY_STALE",
+                "SOURCE_TRUTH_MISSING",
+            }:
+                self.send_json(
+                    {"error": "解析内容已更新，请重新核对"},
+                    status=HTTPStatus.CONFLICT,
+                )
+            else:
+                self.send_json({"error": "决定未保存，请检查后重试"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        except (SourceTruthError, ValueError):
+            self.send_json({"error": "决定未保存，请检查后重试"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        self.send_json(result)
+
     def handle_project_stage_get(self, project_id: str, stage: str) -> None:
         try:
             project = project_dir(self.review_root, project_id)
@@ -714,6 +798,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "cockpit": project_cockpit_payload,
             "sources": project_source_handoff_payload,
             "progress": project_progress_payload,
+            "parse-quality": project_parse_quality_payload,
             "evidence": project_evidence_payload,
             "risk-packet": project_risk_payload,
             "matrix": project_matrix_payload,
@@ -886,12 +971,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    def send_file(self, path: Path, content_type: str) -> None:
+    def send_file(
+        self,
+        path: Path,
+        content_type: str,
+        *,
+        extra_headers: dict[str, str] | None = None,
+    ) -> None:
         try:
             size = path.stat().st_size
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(size))
+            for key, value in (extra_headers or {}).items():
+                self.send_header(key, value)
             self.end_headers()
             with path.open("rb") as f:
                 shutil.copyfileobj(f, self.wfile)
@@ -2178,8 +2271,219 @@ def _researcher_batch_blocker(reason_code: str, last_completed_stage: str) -> di
     }
 
 
+_PARSE_OBJECT_LABELS = {
+    "body_order": "正文阅读顺序",
+    "section_boundaries": "章节边界",
+    "figure_caption_links": "图与图注对应",
+    "table_structure": "表格结构",
+    "formula_chemistry": "公式与化学符号",
+    "reference_boundary": "参考文献边界",
+    "supplement_completeness": "补充信息完整性",
+}
+
+
+def _parse_decision_token(
+    project_id: str,
+    study_id: str,
+    object_id: str,
+    gate_digest: str,
+) -> str:
+    material = "\0".join((project_id, study_id, object_id, gate_digest)).encode("utf-8")
+    return hashlib.sha256(material).hexdigest()
+
+
+def _parse_object_actions(status: str) -> list[str]:
+    if status == "usable_with_review":
+        return sorted(HUMAN_ACTIONS)
+    if status in {"incomplete", "failed"}:
+        return ["pdf_locator_only", "reparse_required"]
+    return []
+
+
+def project_parse_quality_payload(review_root: Path, project_id: str) -> dict[str, Any]:
+    project = project_dir(review_root, project_id)
+    state = project_parse_quality_state(project)
+    studies: list[dict[str, Any]] = []
+    object_count = 0
+    needs_review = 0
+    approved = 0
+    pdf_locator_only = 0
+    reparse_required = 0
+    for gate in state.get("studies", []):
+        if not isinstance(gate, dict):
+            continue
+        study_id = visible_text(gate.get("study_id"))
+        gate_digest = visible_text(gate.get("gate_digest"))
+        if not study_id or not gate_digest:
+            continue
+        bundle = load_source_truth_bundle(project, study_id)
+        identity = bundle.get("study_identity")
+        identity = identity if isinstance(identity, dict) else {}
+        label = visible_text(identity.get("title")) or visible_text(identity.get("doi")) or study_id
+        sources = bundle.get("sources") if isinstance(bundle.get("sources"), list) else []
+        primary = next(
+            (row for row in sources if isinstance(row, dict) and row.get("document_role") == "MAIN"),
+            next((row for row in sources if isinstance(row, dict)), None),
+        )
+        if not isinstance(primary, dict) or not visible_text(primary.get("source_id")):
+            raise SourceTruthError("SOURCE_ID_NOT_FOUND")
+        source_id = visible_text(primary["source_id"])
+        base_href = (
+            f"/api/project/{quote(project_id, safe='')}/source/"
+            f"{quote(source_id, safe='')}"
+        )
+        objects: list[dict[str, Any]] = []
+        for row in gate.get("objects", []):
+            if not isinstance(row, dict):
+                continue
+            object_id = visible_text(row.get("object_id"))
+            kind = visible_text(row.get("kind"))
+            automatic_status = visible_text(row.get("status"))
+            actions = _parse_object_actions(automatic_status)
+            raw_decision = row.get("decision")
+            decision = None
+            if isinstance(raw_decision, dict):
+                action = visible_text(raw_decision.get("action"))
+                note = visible_text(raw_decision.get("note"))
+                decision = {"action": action, "note": note}
+                approved += action == "approve_candidate_extraction"
+                pdf_locator_only += action == "pdf_locator_only"
+                reparse_required += action == "reparse_required"
+            elif actions:
+                needs_review += 1
+            issues = [
+                {
+                    "severity": visible_text(issue.get("severity")),
+                    "message": visible_text(issue.get("message")),
+                    "page": issue.get("page") if isinstance(issue.get("page"), int) else None,
+                }
+                for issue in row.get("issues", [])
+                if isinstance(issue, dict) and visible_text(issue.get("message"))
+            ]
+            objects.append(
+                {
+                    "object_id": object_id,
+                    "kind": kind,
+                    "label": _PARSE_OBJECT_LABELS.get(kind, "解析对象"),
+                    "automatic_status": automatic_status,
+                    "issues": issues,
+                    "decision": decision,
+                    "actions": actions,
+                    "note_required": bool(actions),
+                    "decision_token": _parse_decision_token(
+                        project_id,
+                        study_id,
+                        object_id,
+                        gate_digest,
+                    ),
+                }
+            )
+        object_count += len(objects)
+        studies.append(
+            {
+                "study_id": study_id,
+                "label": label,
+                "pdf_href": f"{base_href}/pdf",
+                "markdown_href": f"{base_href}/parsed-markdown",
+                "objects": objects,
+            }
+        )
+    status = visible_text(state.get("status")) or "needs_review"
+    return {
+        "project_id": project_id,
+        "status": status,
+        "workflow_can_continue": bool(state.get("workflow_can_continue")),
+        "summary": {
+            "studies": len(studies),
+            "objects": object_count,
+            "needs_review": needs_review,
+            "approved": approved,
+            "pdf_locator_only": pdf_locator_only,
+            "reparse_required": reparse_required,
+        },
+        "studies": studies,
+    }
+
+
+def write_project_parse_quality_decision(
+    review_root: Path,
+    project_id: str,
+    data: Any,
+) -> dict[str, Any]:
+    if not isinstance(data, dict) or set(data) != {
+        "study_id",
+        "object_id",
+        "decision_token",
+        "action",
+        "note",
+    }:
+        raise ParseQualityError("DECISION_INVALID")
+    study_id = visible_text(data.get("study_id"))
+    object_id = visible_text(data.get("object_id"))
+    decision_token = visible_text(data.get("decision_token"))
+    action = visible_text(data.get("action"))
+    note = visible_text(data.get("note"))
+    if not all(isinstance(data.get(key), str) for key in data) or not all(
+        (study_id, object_id, decision_token, action, note)
+    ):
+        raise ParseQualityError("DECISION_INVALID")
+    project = project_dir(review_root, project_id)
+    gate = parse_quality_state(project, study_id)
+    gate_digest = visible_text(gate.get("gate_digest"))
+    expected = _parse_decision_token(project_id, study_id, object_id, gate_digest)
+    if decision_token != expected:
+        raise ParseQualityError("PARSE_QUALITY_STALE")
+    apply_parse_quality_decision(
+        project,
+        study_id,
+        {
+            "object_id": object_id,
+            "gate_digest": gate_digest,
+            "action": action,
+            "note": note,
+        },
+    )
+    return project_parse_quality_payload(review_root, project_id)
+
+
+def project_parse_source_asset(project: Path, source_id: str, kind: str) -> Path:
+    if not source_id or kind not in {"pdf", "parsed-markdown"}:
+        raise SourceTruthError("SOURCE_ASSET_KIND_INVALID")
+    root = project / SOURCE_TRUTH_ROOT
+    matches: list[str] = []
+    if root.is_dir() and not root.is_symlink():
+        for study_dir in sorted(root.iterdir()):
+            if not study_dir.is_dir() or study_dir.is_symlink():
+                continue
+            bundle = load_source_truth_bundle(project, study_dir.name)
+            if any(
+                isinstance(row, dict) and row.get("source_id") == source_id
+                for row in bundle.get("sources", [])
+            ):
+                matches.append(study_dir.name)
+    if len(matches) != 1:
+        raise SourceTruthError("SOURCE_ID_NOT_FOUND")
+    return source_truth_asset(project, matches[0], source_id, kind)
+
+
 def project_progress_payload(review_root: Path, project_id: str) -> dict[str, Any]:
     project = project_dir(review_root, project_id)
+    source_truth_root = project / SOURCE_TRUTH_ROOT
+    source_truth_managed = source_truth_root.is_dir() and any(
+        path.is_file() and not path.parent.is_symlink()
+        for path in source_truth_root.glob("*/bundle.json")
+    )
+    parse_projection = project_parse_quality_state(project) if source_truth_managed else None
+    parse_reason = (
+        visible_text(parse_projection.get("reason_code"))
+        if isinstance(parse_projection, dict)
+        else ""
+    )
+    parse_needs_attention = bool(
+        isinstance(parse_projection, dict)
+        and parse_projection.get("status") == "needs_attention"
+        and parse_reason != "PARSE_QUALITY_MISSING"
+    )
     state = read_json_if_exists(project / "00_brief/review_state.json") or {}
     source_payload = project_source_handoff_payload(review_root, project_id)
     screening = read_json_if_exists(project / "00_discovery/screening_decisions.json") or {}
@@ -2271,6 +2575,9 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
     main_sources = [row for row in source_payload["sources"] if visible_text(row.get("role")).upper() == "MAIN"]
     sources_complete = bool(main_sources) and all(row.get("status") == "已获得" for row in main_sources)
     parsing_complete = sources_complete and len(completed_parse) >= source_ready
+    if source_truth_managed:
+        sources_complete = True
+        parsing_complete = bool(parse_projection and parse_projection.get("workflow_can_continue"))
     evidence_complete = bool(included_ids) and included_ids.issubset(reviewed_ids)
     risk_packet_present = os.path.lexists(project / "03_review/risk_packet.json")
     risk_complete = evidence_complete and risk_packet_present and open_risks == 0
@@ -2337,7 +2644,9 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
     ]
     batch_recovery = batch_recoveries[0] if batch_recoveries else None
     blocker = (
-        "上传的压缩包未通过来源核验，请按缺失清单修正后重新上传。"
+        "解析质量记录不可读取，请重新生成后再核对原始 PDF。"
+        if parse_needs_attention
+        else "上传的压缩包未通过来源核验，请按缺失清单修正后重新上传。"
         if source_invalid
         else "项目来源清单与后续证据状态不一致，请在 QoderWork 中恢复后继续。"
         if pipeline_state_inconsistent
@@ -2460,18 +2769,44 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
         "drafting": "开始撰写证据约束正文",
         "final": "检查正文并导出 DOCX",
     }[active_stage]
-    if pipeline_state_inconsistent:
+    parse_pdf_locator_only = bool(
+        parse_projection
+        and any(
+            isinstance(row, dict)
+            and any(
+                isinstance(obj, dict)
+                and isinstance(obj.get("decision"), dict)
+                and obj["decision"].get("action") == "pdf_locator_only"
+                for obj in row.get("objects", [])
+            )
+            for row in parse_projection.get("studies", [])
+        )
+    )
+    if parse_needs_attention:
+        recommended = "重新生成解析质量记录"
+    elif source_truth_managed and active_stage == "parsing":
+        recommended = (
+            "生成并核对解析质量"
+            if parse_reason == "PARSE_QUALITY_MISSING"
+            else "核对解析质量后继续"
+        )
+    elif parse_pdf_locator_only and active_stage == "evidence":
+        recommended = "从原始 PDF 人工定位证据"
+    elif pipeline_state_inconsistent:
         recommended = "在 QoderWork 中恢复项目来源状态"
     elif batch_recovery:
         recommended = batch_recovery["action"]
     return {
         "project_id": project_id,
+        "status": "needs_attention" if parse_needs_attention else "in_progress",
         "active_stage": active_stage,
         "stages": stages,
         "studies": studies,
         "blocker": blocker,
         "blocker_code": (
-            "SOURCE_ARCHIVE_INVALID"
+            "PARSING_RECORD_INVALID"
+            if parse_needs_attention
+            else "SOURCE_ARCHIVE_INVALID"
             if source_invalid
             else "PIPELINE_STATE_INCONSISTENT"
             if pipeline_state_inconsistent

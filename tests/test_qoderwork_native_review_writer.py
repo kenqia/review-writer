@@ -744,6 +744,289 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
         headers = dict(line.split(": ", 1) for line in lines[1:] if ": " in line)
         return int(lines[0].split()[1]), headers, body
 
+    def test_parse_quality_api_is_researcher_safe_and_object_level(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from test_source_truth import _source_truth_project
+        from review_writer.project.parse_quality import write_parse_quality_gate
+        from review_writer.project.source_truth import write_source_truth_bundle
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir)
+            project = _source_truth_project(review_root)
+            write_source_truth_bundle(project, "scholarly-a")
+            write_parse_quality_gate(project, "scholarly-a")
+
+            payload = dashboard.project_parse_quality_payload(review_root, "case")
+
+            self.assertEqual(
+                {"project_id", "status", "workflow_can_continue", "summary", "studies"},
+                set(payload),
+            )
+            study = payload["studies"][0]
+            self.assertEqual(
+                {"study_id", "label", "pdf_href", "markdown_href", "objects"},
+                set(study),
+            )
+            parse_object = study["objects"][0]
+            self.assertEqual(
+                {
+                    "object_id",
+                    "kind",
+                    "label",
+                    "automatic_status",
+                    "issues",
+                    "decision",
+                    "actions",
+                    "note_required",
+                    "decision_token",
+                },
+                set(parse_object),
+            )
+            visible = json.dumps(payload, ensure_ascii=False)
+            for forbidden in (
+                "sha256",
+                "schema_version",
+                "gate_digest",
+                ".json",
+                "/home/",
+                "C:\\\\",
+                "Agent",
+                "Prompt",
+            ):
+                self.assertNotIn(forbidden, visible)
+            status, _, body = self._request(
+                dashboard,
+                review_root,
+                b"GET /api/project/case/parse-quality HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            )
+            self.assertEqual(200, status)
+            self.assertEqual(payload, json.loads(body))
+
+    def test_parse_quality_put_rejects_stale_token_without_writing(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from test_source_truth import _source_truth_project
+        from review_writer.project.parse_quality import write_parse_quality_gate
+        from review_writer.project.source_truth import write_source_truth_bundle
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir)
+            project = _source_truth_project(review_root)
+            write_source_truth_bundle(project, "scholarly-a")
+            write_parse_quality_gate(project, "scholarly-a")
+            public = dashboard.project_parse_quality_payload(review_root, "case")
+            target = next(
+                row
+                for row in public["studies"][0]["objects"]
+                if row["automatic_status"] == "usable_with_review"
+            )
+            before = {
+                path.relative_to(project).as_posix(): path.read_bytes()
+                for path in project.rglob("*")
+                if path.is_file()
+            }
+            body = json.dumps(
+                {
+                    "study_id": "scholarly-a",
+                    "object_id": target["object_id"],
+                    "decision_token": "stale",
+                    "action": "pdf_locator_only",
+                    "note": "版面顺序异常，后续只回到 PDF 页面定位。",
+                },
+                ensure_ascii=False,
+            ).encode("utf-8")
+            request = (
+                b"PUT /api/project/case/parse-quality HTTP/1.1\r\n"
+                b"Host: localhost\r\nContent-Type: application/json\r\nContent-Length: "
+                + str(len(body)).encode("ascii")
+                + b"\r\n\r\n"
+                + body
+            )
+
+            status, _, response = self._request(dashboard, review_root, request)
+
+            self.assertEqual(409, status)
+            self.assertEqual({"error": "解析内容已更新，请重新核对"}, json.loads(response))
+            after = {
+                path.relative_to(project).as_posix(): path.read_bytes()
+                for path in project.rglob("*")
+                if path.is_file()
+            }
+            self.assertEqual(before, after)
+
+    def test_parse_quality_put_treats_missing_gate_as_conflict(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from test_source_truth import _source_truth_project
+        from review_writer.project.parse_quality import write_parse_quality_gate
+        from review_writer.project.source_truth import write_source_truth_bundle
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir)
+            project = _source_truth_project(review_root)
+            write_source_truth_bundle(project, "scholarly-a")
+            write_parse_quality_gate(project, "scholarly-a")
+            public = dashboard.project_parse_quality_payload(review_root, "case")
+            target = next(
+                row
+                for row in public["studies"][0]["objects"]
+                if row["automatic_status"] == "usable_with_review"
+            )
+            (project / "01_evidence/source_truth/scholarly-a/parse_quality.json").unlink()
+            body = json.dumps(
+                {
+                    "study_id": "scholarly-a",
+                    "object_id": target["object_id"],
+                    "decision_token": target["decision_token"],
+                    "action": "pdf_locator_only",
+                    "note": "回到原始 PDF 定位。",
+                },
+                ensure_ascii=False,
+            ).encode("utf-8")
+            request = (
+                b"PUT /api/project/case/parse-quality HTTP/1.1\r\n"
+                b"Host: localhost\r\nContent-Type: application/json\r\nContent-Length: "
+                + str(len(body)).encode("ascii")
+                + b"\r\n\r\n"
+                + body
+            )
+
+            status, _, response = self._request(dashboard, review_root, request)
+
+            self.assertEqual(409, status)
+            self.assertEqual({"error": "解析内容已更新，请重新核对"}, json.loads(response))
+
+    def test_parse_quality_put_rejects_invalid_utf8(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from test_source_truth import _source_truth_project
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir)
+            _source_truth_project(review_root)
+            request = (
+                b"PUT /api/project/case/parse-quality HTTP/1.1\r\n"
+                b"Host: localhost\r\nContent-Type: application/json\r\n"
+                b"Content-Length: 1\r\n\r\n\xff"
+            )
+
+            status, _, response = self._request(dashboard, review_root, request)
+
+            self.assertEqual(400, status)
+            self.assertEqual({"error": "决定内容无法读取"}, json.loads(response))
+
+    def test_parse_quality_put_persists_and_bound_assets_are_served(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from test_source_truth import _source_truth_project
+        from review_writer.project.parse_quality import write_parse_quality_gate
+        from review_writer.project.source_truth import write_source_truth_bundle
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir)
+            project = _source_truth_project(review_root)
+            write_source_truth_bundle(project, "scholarly-a")
+            write_parse_quality_gate(project, "scholarly-a")
+            public = dashboard.project_parse_quality_payload(review_root, "case")
+            target = next(
+                row
+                for row in public["studies"][0]["objects"]
+                if row["automatic_status"] == "usable_with_review"
+            )
+            body = json.dumps(
+                {
+                    "study_id": "scholarly-a",
+                    "object_id": target["object_id"],
+                    "decision_token": target["decision_token"],
+                    "action": "approve_candidate_extraction",
+                    "note": "已与原始 PDF 对照。",
+                },
+                ensure_ascii=False,
+            ).encode("utf-8")
+            request = (
+                b"PUT /api/project/case/parse-quality HTTP/1.1\r\n"
+                b"Host: localhost\r\nContent-Type: application/json\r\nContent-Length: "
+                + str(len(body)).encode("ascii")
+                + b"\r\n\r\n"
+                + body
+            )
+
+            status, _, _ = self._request(dashboard, review_root, request)
+            import importlib
+
+            restored = importlib.reload(dashboard).project_parse_quality_payload(review_root, "case")
+            markdown_status, markdown_headers, markdown = self._request(
+                dashboard,
+                review_root,
+                b"GET /api/project/case/source/stud-a/parsed-markdown HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            )
+            pdf_status, pdf_headers, pdf = self._request(
+                dashboard,
+                review_root,
+                b"GET /api/project/case/source/stud-a/pdf HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            )
+
+            self.assertEqual(200, status)
+            saved = next(
+                row
+                for row in restored["studies"][0]["objects"]
+                if row["object_id"] == target["object_id"]
+            )
+            self.assertEqual("approve_candidate_extraction", saved["decision"]["action"])
+            self.assertEqual(200, markdown_status)
+            self.assertEqual("nosniff", markdown_headers["X-Content-Type-Options"])
+            self.assertTrue(markdown_headers["Content-Disposition"].startswith("inline;"))
+            self.assertIn(b"# Canonical", markdown)
+            self.assertEqual(200, pdf_status)
+            self.assertEqual("application/pdf", pdf_headers["Content-Type"])
+            self.assertEqual(b"%PDF-main-a", pdf)
+            escape_status, _, _ = self._request(
+                dashboard,
+                review_root,
+                b"GET /api/project/case/source/..%2F..%2F00_sources/pdf HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            )
+            self.assertEqual(404, escape_status)
+
+    def test_progress_uses_parse_gate_when_source_truth_exists(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from test_source_truth import _source_truth_project
+        from review_writer.project.source_truth import write_source_truth_bundle
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir)
+            project = _source_truth_project(review_root)
+            write_source_truth_bundle(project, "scholarly-a")
+
+            payload = dashboard.project_progress_payload(review_root, "case")
+
+            self.assertEqual("parsing", payload["active_stage"])
+            self.assertEqual("in_progress", payload["status"])
+            self.assertNotIn("确认研究范围", json.dumps(payload, ensure_ascii=False))
+
+    def test_progress_reports_damaged_parse_gate_as_needs_attention(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from test_source_truth import _source_truth_project
+        from review_writer.project.parse_quality import write_parse_quality_gate
+        from review_writer.project.source_truth import write_source_truth_bundle
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir)
+            project = _source_truth_project(review_root)
+            write_source_truth_bundle(project, "scholarly-a")
+            write_parse_quality_gate(project, "scholarly-a")
+            gate_path = project / "01_evidence/source_truth/scholarly-a/parse_quality.json"
+            gate_path.write_text("{}\n", encoding="utf-8")
+
+            payload = dashboard.project_progress_payload(review_root, "case")
+
+            self.assertEqual("parsing", payload["active_stage"])
+            self.assertEqual("needs_attention", payload["status"])
+            self.assertTrue(payload["blocker"])
+            self.assertNotIn("PARSE_QUALITY", json.dumps(payload, ensure_ascii=False))
+
     @staticmethod
     def _real_source_mapping_fixture(review_root: Path) -> tuple[Path, dict[str, str]]:
         from review_writer.acquisition.manual_archive import import_manual_archive
