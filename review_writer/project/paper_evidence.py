@@ -721,6 +721,10 @@ def _freshness(project: Path, candidate: dict[str, Any]) -> tuple[bool, str | No
     dependencies = set(candidate["bound_parse_object_digests"])
     if not dependencies.issubset(current_objects) or not dependencies.issubset(reviewed_objects):
         return False, "PARSE_OBJECT_DIGESTS_STALE"
+    for digest in dependencies:
+        decision = reviewed_objects[digest].get("decision")
+        if isinstance(decision, dict) and decision.get("action") != "approve_candidate_extraction":
+            return False, "PARSE_OBJECT_DECISION_STALE"
     return True, None
 
 

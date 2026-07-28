@@ -3027,6 +3027,55 @@ def test_stale_parse_gate_invalidates_only_evidence_depending_on_changed_source(
     assert refreshed_workflow["blockers"] == ["PARSE_QUALITY_REVIEW_REQUIRED"]
 
 
+def test_explicit_parse_decision_downgrade_stales_dependent_parsed_evidence(
+    tmp_path: Path,
+) -> None:
+    project = _canonical_prepare_project(tmp_path, si_policy="NOT_REQUIRED")
+    parse = parse_quality_state(project, "STUDY-CANARY")
+    dependency = next(
+        row
+        for row in parse["objects"]
+        if row["source_id"] == "CANARY_MAIN" and row["kind"] == "reference_boundary"
+    )
+    candidate = {
+        **_typed_paper_candidate(project),
+        "bound_parse_object_digests": [dependency["object_digest"]],
+    }
+    registered = register_paper_evidence_candidates(
+        project,
+        "STUDY-CANARY",
+        candidate,
+    )["candidates"][0]
+    apply_paper_evidence_decision(project, _paper_decision(registered))
+
+    downgraded = apply_parse_quality_decision(
+        project,
+        "STUDY-CANARY",
+        {
+            "object_id": dependency["object_id"],
+            "object_digest": dependency["object_digest"],
+            "gate_digest": parse["gate_digest"],
+            "action": "pdf_locator_only",
+            "note": "Parsed evidence is no longer authorized for this object.",
+        },
+    )
+    downgraded_dependency = next(
+        row for row in downgraded["objects"] if row["object_id"] == dependency["object_id"]
+    )
+    assert downgraded_dependency["decision"]["action"] == "pdf_locator_only"
+
+    evidence = paper_evidence_state(project)
+    workflow = workflow_state(project)
+
+    assert evidence["rows"][0]["status"] == "stale"
+    assert evidence["rows"][0]["reason_code"] == "PARSE_OBJECT_DECISION_STALE"
+    assert evidence["workflow_can_continue"] is False
+    assert workflow["parse_ready"] is True
+    assert workflow["paper_evidence_ready"] is False
+    assert workflow["active_stage"] == "evidence"
+    assert workflow["blockers"] == ["PAPER_EVIDENCE_NOT_APPROVED"]
+
+
 def _run_paper_cli(command: str, project: Path, payload: dict, tmp_path: Path) -> subprocess.CompletedProcess[str]:
     input_path = tmp_path / f"{command}.json"
     _write_prepare_json(input_path, payload)
