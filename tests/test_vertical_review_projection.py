@@ -2957,7 +2957,7 @@ def test_stale_parse_gate_invalidates_only_evidence_depending_on_changed_source(
     }
     main = {
         **_typed_paper_candidate(project, evidence_id="EVIDENCE-MAIN"),
-        "bound_parse_object_digests": [digests[("CANARY_MAIN", "body_order")]],
+        "bound_parse_object_digests": [digests[("CANARY_MAIN", "reference_boundary")]],
     }
     si = {
         **_typed_paper_candidate(project, evidence_id="EVIDENCE-SI"),
@@ -2986,16 +2986,45 @@ def test_stale_parse_gate_invalidates_only_evidence_depending_on_changed_source(
     si_markdown.write_text("# Parsed SI\nChanged SI formula $x$.\n", encoding="utf-8")
     write_source_truth_bundle(project, "STUDY-CANARY")
 
-    evidence = paper_evidence_state(project)
-    workflow = workflow_state(project)
-    statuses = {row["evidence_id"]: row["status"] for row in evidence["rows"]}
+    intermediate_evidence = paper_evidence_state(project)
+    intermediate_workflow = workflow_state(project)
+    intermediate_statuses = {
+        row["evidence_id"]: row["status"] for row in intermediate_evidence["rows"]
+    }
 
-    assert statuses == {"EVIDENCE-MAIN": "approved", "EVIDENCE-SI": "stale"}
-    assert workflow["parse_ready"] is False
-    assert workflow["paper_evidence_ready"] is False
-    assert workflow["active_stage"] == "parsing"
-    assert workflow["blockers"] == ["PARSE_QUALITY_REVIEW_REQUIRED"]
+    assert intermediate_statuses == {
+        "EVIDENCE-MAIN": "approved",
+        "EVIDENCE-SI": "stale",
+    }
+    assert intermediate_workflow["parse_ready"] is False
+    assert intermediate_workflow["paper_evidence_ready"] is False
+    assert intermediate_workflow["active_stage"] == "parsing"
+    assert intermediate_workflow["blockers"] == ["PARSE_QUALITY_REVIEW_REQUIRED"]
     assert gate_path.read_bytes() == gate_before
+
+    refreshed_gate = write_parse_quality_gate(project, "STUDY-CANARY")
+    refreshed_main = next(
+        row
+        for row in refreshed_gate["objects"]
+        if row["source_id"] == "CANARY_MAIN" and row["kind"] == "reference_boundary"
+    )
+    assert refreshed_main["object_digest"] == digests[("CANARY_MAIN", "reference_boundary")]
+    assert refreshed_main["status"] == "usable_with_review"
+    assert refreshed_main["decision"] is None
+
+    refreshed_evidence = paper_evidence_state(project)
+    refreshed_workflow = workflow_state(project)
+    refreshed_statuses = {
+        row["evidence_id"]: row["status"] for row in refreshed_evidence["rows"]
+    }
+    assert refreshed_statuses == {
+        "EVIDENCE-MAIN": "approved",
+        "EVIDENCE-SI": "stale",
+    }
+    assert refreshed_workflow["parse_ready"] is False
+    assert refreshed_workflow["paper_evidence_ready"] is False
+    assert refreshed_workflow["active_stage"] == "parsing"
+    assert refreshed_workflow["blockers"] == ["PARSE_QUALITY_REVIEW_REQUIRED"]
 
 
 def _run_paper_cli(command: str, project: Path, payload: dict, tmp_path: Path) -> subprocess.CompletedProcess[str]:
