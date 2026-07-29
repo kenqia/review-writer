@@ -426,3 +426,78 @@ def record_credit_event(
             post_write_check=lambda: _assert_directory_handle(storage),
         )
         return event
+
+
+def _validated_ledger_rows(project: Path) -> list[dict[str, Any]]:
+    """Read an existing ledger through a directory handle without creating files."""
+    project_path = _safe_project(project)
+    parent_path = project_path / CREDIT_LEDGER_PATH.parent
+    ledger_path = project_path / CREDIT_LEDGER_PATH
+    _assert_project_path(project_path, parent_path)
+    _assert_project_path(project_path, ledger_path)
+    if not os.path.lexists(ledger_path):
+        return []
+    if _is_reparse(parent_path) or not parent_path.is_dir():
+        raise CreditLedgerError("CREDIT_LEDGER_INVALID")
+    directory_flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        directory_flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        directory_flags |= os.O_NOFOLLOW
+    try:
+        parent_fd = os.open(parent_path, directory_flags)
+    except OSError as exc:
+        raise CreditLedgerError("CREDIT_LEDGER_INVALID") from exc
+    storage = _LedgerStorage(parent_fd, parent_path, None)
+    try:
+        _assert_directory_handle(storage)
+        identity = _ledger_identity(ledger_path, parent_fd=parent_fd)
+        if identity is None:
+            return []
+        rows = _read_ledger(
+            ledger_path,
+            parent_fd=parent_fd,
+            expected_identity=identity,
+        )
+        _assert_directory_handle(storage)
+        if _ledger_identity(ledger_path, parent_fd=parent_fd) != identity:
+            raise CreditLedgerError("CREDIT_LEDGER_INVALID")
+        return rows
+    finally:
+        os.close(parent_fd)
+
+
+def credit_ledger_summary(project: Path) -> dict[str, Any]:
+    """Project validated measurements while making missing operation data explicit."""
+    rows = _validated_ledger_rows(project)
+    if not rows:
+        return {
+            "status": "unavailable",
+            "continuity": "unavailable",
+            "event_count": 0,
+            "measured": None,
+            "forecast": None,
+            "forecast_variance": None,
+            "remaining": None,
+            "cache": {"status": "unavailable", "hits": None, "misses": None},
+            "retries": {"status": "unavailable", "count": None, "events": []},
+        }
+    first = rows[0]
+    last = rows[-1]
+    consumed = first["before"] - last["after"]
+    forecast = last["forecast"]
+    return {
+        "status": "available",
+        "continuity": "verified",
+        "event_count": len(rows),
+        "measured": {
+            "before": first["before"],
+            "after": last["after"],
+            "consumed": consumed,
+        },
+        "forecast": forecast,
+        "forecast_variance": consumed - forecast if forecast is not None else None,
+        "remaining": last["after"],
+        "cache": {"status": "unavailable", "hits": None, "misses": None},
+        "retries": {"status": "unavailable", "count": None, "events": []},
+    }

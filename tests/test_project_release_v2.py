@@ -213,6 +213,18 @@ def test_new_route_internal_release_reads_only_manuscript_v2_and_writes_release_
     assert snapshot["lineage_digest"] == LINEAGE_DIGEST
     assert snapshot["integrity"]["markdown_roundtrip_match"] is True
     assert snapshot["integrity"]["attribution_complete"] is True
+    assert snapshot["integrity"]["provenance_valid"] is True
+
+    from docx import Document
+
+    document = Document(result["docx"])
+    assert document.core_properties.title == "new-route - SELF_REVIEWED_DRAFT"
+    assert document.core_properties.subject == "review-writer project new-route"
+    assert document.core_properties.author == "review-writer"
+    assert document.core_properties.last_modified_by == "review-writer"
+    assert document.core_properties.keywords == (
+        "new-route; SELF_REVIEWED_DRAFT; review-writer"
+    )
 
 
 def test_expert_release_rejects_pending_placeholder_without_overwrite(
@@ -447,6 +459,31 @@ def test_new_route_export_api_contract_passes_release_level_as_strict_json(
     assert json.loads(response) == expected
     export.assert_called_once_with(
         tmp_path, "project-a", release_level="EXPERT_REVIEWED_RELEASE"
+    )
+
+
+def test_current_release_download_has_unambiguous_attachment_filename(
+    new_route_project: Path,
+) -> None:
+    from review_writer.delivery.project_release import build_project_release
+    from view import serve_review_dashboard as dashboard
+
+    result = build_project_release(
+        new_route_project, release_level="SELF_REVIEWED_DRAFT"
+    )
+    docx = Path(result["docx"])
+    request = (
+        f"GET /file?path={quote(str(docx), safe='')} HTTP/1.1\r\n"
+        "Host: localhost\r\n\r\n"
+    ).encode("ascii")
+
+    status, headers, _ = _dashboard_request(
+        dashboard, new_route_project.parents[1], request
+    )
+
+    assert status == 200
+    assert headers["Content-Disposition"] == (
+        "attachment; filename*=UTF-8''self_reviewed_draft.docx"
     )
 
 

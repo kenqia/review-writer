@@ -1133,6 +1133,10 @@ def _new_route_release(
                     str(staged[snapshot]),
                     "--output",
                     str(temporary_docx),
+                    "--project-id",
+                    project.name,
+                    "--release-level",
+                    release_level,
                 ],
                 capture_output=True,
                 text=True,
@@ -1154,6 +1158,8 @@ def _new_route_release(
                 workflow_digest=workflow_digest,
                 snapshot_workflow_digest=workflow_digest,
                 legacy_docx=legacy_docx if legacy_docx.is_file() and not legacy_docx.is_symlink() else None,
+                expected_project_id=project.name,
+                expected_release_level=release_level,
             )
         except DocxIntegrityError as exc:
             raise ProjectReleaseError(exc.code, str(exc).split(": ", 1)[-1]) from exc
@@ -1369,6 +1375,8 @@ def new_route_release_docx_is_current(docx_path: Path) -> bool:
             required_attributions=figure_validation["required_attributions"],
             workflow_digest=workflow_digest,
             snapshot_workflow_digest=snapshot["workflow_digest"],
+            expected_project_id=project.name,
+            expected_release_level=release_level,
             legacy_docx=(
                 legacy_docx
                 if legacy_docx.is_file() and not legacy_docx.is_symlink()
@@ -1469,6 +1477,10 @@ def _build_project_release_unlocked(
                     str(snapshot),
                     "--output",
                     str(temporary_docx),
+                    "--project-id",
+                    project_path.name,
+                    "--release-level",
+                    "SELF_REVIEWED_DRAFT",
                 ],
                 capture_output=True,
                 text=True,

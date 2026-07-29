@@ -60,6 +60,14 @@ from review_writer.delivery.project_release import (  # noqa: E402
     _validated_image,
 )
 from review_writer.delivery.figure_policy import FigurePolicyError, _image_binding  # noqa: E402
+from review_writer.evaluation.review_benchmark import (  # noqa: E402
+    BenchmarkError,
+    validate_report as validate_benchmark_report,
+)
+from review_writer.project.credit_ledger import (  # noqa: E402
+    CreditLedgerError,
+    credit_ledger_summary,
+)
 from review_writer.project.parse_quality import (  # noqa: E402
     HUMAN_ACTIONS,
     ParseQualityError,
@@ -1218,7 +1226,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not path.exists() or not path.is_file():
             self.send_error(HTTPStatus.NOT_FOUND, "file not found")
             return
-        if is_project_release_docx(path, self.review_root):
+        release_docx = is_project_release_docx(path, self.review_root)
+        if release_docx:
             try:
                 current = project_release_docx_is_current(path)
             except ValueError:
@@ -1227,7 +1236,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_error(HTTPStatus.FORBIDDEN, "release DOCX is outdated")
                 return
         ctype = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
-        self.send_file(path, ctype)
+        self.send_file(
+            path,
+            ctype,
+            extra_headers=(
+                {
+                    "Content-Disposition": (
+                        f"attachment; filename*=UTF-8''{quote(path.name, safe='')}"
+                    ),
+                    "X-Content-Type-Options": "nosniff",
+                }
+                if release_docx
+                else None
+            ),
+        )
 
     def load_meta(self, paper_id: str) -> dict | None:
         path = self.metadata_dir / f"{paper_id}.metadata.json"
@@ -3443,6 +3465,7 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
         recommended = batch_recovery["action"]
     elif new_route and active_stage == "final" and final_complete:
         recommended = "内部评审 DOCX 已生成；继续黄金标准评估"
+    evaluation = project_evaluation_payload(project)
     return {
         "project_id": project_id,
         "route": authoritative_workflow.get("route", "legacy"),
@@ -3471,6 +3494,7 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
         "recommended_next": recommended,
         "archive_received": archive_received,
         "credits": {"measured": measured_credits, "forecast": forecast_credits},
+        "credit_ledger": evaluation["credit_ledger"],
         "release_capabilities": {
             "internal_draft_export_ready": bool(
                 authoritative_workflow["internal_draft_export_ready"]
@@ -3479,6 +3503,75 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
                 authoritative_workflow["verified_release_ready"]
             ),
         },
+    }
+
+
+def _unavailable_credit_ledger(*, invalid: bool = False) -> dict[str, Any]:
+    return {
+        "status": "invalid" if invalid else "unavailable",
+        "continuity": "invalid" if invalid else "unavailable",
+        "event_count": 0,
+        "measured": None,
+        "forecast": None,
+        "forecast_variance": None,
+        "remaining": None,
+        "cache": {"status": "unavailable", "hits": None, "misses": None},
+        "retries": {"status": "unavailable", "count": None, "events": []},
+    }
+
+
+def _project_benchmark_payload(project: Path) -> dict[str, Any]:
+    report_relative = Path("06_evaluation/review_benchmark_report.json")
+    snapshot_relative = Path("05_release/release_snapshot.json")
+    try:
+        validate_project_path_components(project, (report_relative, snapshot_relative))
+    except (OSError, ValueError):
+        return {"status": "invalid", "reason_code": "BENCHMARK_REPORT_INVALID"}
+    report_path = project / report_relative
+    if not os.path.lexists(report_path):
+        return {"status": "unavailable", "reason_code": "BENCHMARK_REPORT_MISSING"}
+    if report_path.is_symlink() or not report_path.is_file():
+        return {"status": "invalid", "reason_code": "BENCHMARK_REPORT_INVALID"}
+    try:
+        report = validate_benchmark_report(read_json_if_exists(report_path))
+    except (BenchmarkError, OSError, UnicodeError, ValueError):
+        return {"status": "invalid", "reason_code": "BENCHMARK_REPORT_INVALID"}
+    snapshot_path = project / snapshot_relative
+    snapshot = read_json_if_exists(snapshot_path)
+    binding = report["release_binding"]
+    if (
+        not isinstance(snapshot, dict)
+        or report.get("project_id") != project.name
+        or report.get("release_level") != snapshot.get("release_level")
+        or binding.get("manuscript_sha256") != snapshot.get("manuscript_sha256")
+        or binding.get("release_sha256") != snapshot.get("docx_sha256")
+    ):
+        return {"status": "stale", "reason_code": "BENCHMARK_RELEASE_STALE"}
+    return {
+        "status": "available",
+        "release_level": report["release_level"],
+        "benchmark_status": report["status"],
+        "score": report["score"],
+        "tier": report["tier"],
+        "expert_release_ready": report["expert_release_ready"],
+        "rubric": report["rubric"],
+        "hard_fails": report["hard_fails"],
+        "issues": report["issues"],
+        "human_review_required": report["human_review_required"],
+        "disclaimer": report["disclaimer"],
+    }
+
+
+def project_evaluation_payload(project: Path) -> dict[str, Any]:
+    try:
+        credits = credit_ledger_summary(project)
+    except (CreditLedgerError, OSError, ValueError):
+        credits = _unavailable_credit_ledger(invalid=True)
+    return {
+        "schema_version": "release-evaluation.v1",
+        "project_id": project.name,
+        "benchmark": _project_benchmark_payload(project),
+        "credit_ledger": credits,
     }
 
 
@@ -4858,6 +4951,7 @@ def project_final_payload(review_root: Path, project_id: str) -> dict[str, Any]:
         "final_audit_report_md": researcher_safe_markdown(read_text_if_exists(stage / "final_audit_report.md")),
         "quality_report_md": researcher_safe_markdown(read_text_if_exists(stage / "quality_report.md")),
         "quality_report": visible_quality_report,
+        "evaluation": project_evaluation_payload(project),
         "checkpoint_log": {"checkpoints": visible_checkpoints},
         "release_report_md": researcher_safe_markdown(read_text_if_exists(stage / "release_report.md")),
         "final_draft_docx_path": docx_relative if current_docx_exists else "",

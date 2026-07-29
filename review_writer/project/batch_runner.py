@@ -39,6 +39,7 @@ from review_writer.project.vertical_review import (  # noqa: E402
     VerticalReviewError,
     register_study,
 )
+from review_writer.project.credit_ledger import record_credit_event  # noqa: E402
 from scripts.evidence.validate_evidence_candidate import (  # noqa: E402
     validate as validate_evidence_candidate,
 )
@@ -808,6 +809,20 @@ def run_batch(
             "status": status,
             "studies": studies,
         }
+        if credits_before is not None and credits_after is not None:
+            record_credit_event(
+                project_path,
+                stage="run_batch",
+                before=credits_before,
+                after=credits_after,
+                source="vertical_review_cli",
+                study_ids=identifiers,
+                forecast=(
+                    credits["forecast"]["estimated_credits"]
+                    if isinstance(credits.get("forecast"), dict)
+                    else None
+                ),
+            )
         _atomic_write_bytes(
             progress_path,
             _json_bytes(summary),
