@@ -6,6 +6,7 @@
   <title>动态科研综述工作台</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/assets/dashboard/review-ui.css">
+  <link rel="stylesheet" href="/assets/dashboard/review-evidence.css">
 </head>
 <body class="page-review">
   <a class="skip-link" href="#primary-workspace">跳到主要工作区</a>
@@ -193,6 +194,16 @@
               </aside>
             </div>
             <p id="parse-quality-message" class="inline-message" role="status" aria-live="polite"></p>
+          </section>
+
+          <section id="evidence-synthesis-workspace" class="stage-task-panel evidence-synthesis-workspace" hidden aria-labelledby="evidence-workspace-heading">
+            <header class="stage-task-heading">
+              <div><p class="section-label">Evidence centre</p><h3 id="evidence-workspace-heading">证据与综合判断工作台</h3></div>
+              <span id="evidence-workspace-status" class="state-badge">读取中</span>
+            </header>
+            <p id="evidence-workspace-message" class="stage-task-lead">只显示当前新路线的可审查内容。</p>
+            <div id="evidence-workspace-root"></div>
+            <div id="synthesis-workspace-root"></div>
           </section>
 
           <section id="risk-stage-panel" class="stage-task-panel risk-stage-panel" hidden>
@@ -1894,5 +1905,7 @@
     });
     startProjectsRefresh();
   </script>
+  <script src="/assets/dashboard/review-evidence.js" defer></script>
+  <script src="/assets/dashboard/review-synthesis.js" defer></script>
 </body>
 </html>

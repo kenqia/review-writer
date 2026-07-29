@@ -93,6 +93,7 @@ from review_writer.project.review_figures import (  # noqa: E402
 from review_writer.project.source_truth import (  # noqa: E402
     SOURCE_TRUTH_ROOT,
     SourceTruthError,
+    canonical_digest,
     load_source_truth_bundle,
     source_truth_asset,
 )
@@ -157,6 +158,10 @@ SOURCE_ARCHIVE_SUCCESS_STATUSES = frozenset({"DOWNLOADED", "IMPORTED", "VERIFIED
 SOURCE_SUPPLEMENT_MAX_BODY_BYTES = 16 * 1024
 SOURCE_SUPPLEMENT_MAX_DOI_CHARS = 512
 SOURCE_SUPPLEMENT_MAX_TITLE_CHARS = 2_000
+
+
+class WorkspaceStaleError(ValueError):
+    """Optimistic-concurrency conflict for the evidence workspace."""
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -916,6 +921,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 raise ValueError("invalid body size")
             data = json.loads(self.rfile.read(length).decode("utf-8"))
             result = write_project_workspace_decision(self.review_root, project_id, kind, data)
+        except WorkspaceStaleError:
+            self.send_json({"error": "内容已更新，请刷新后重新核对"}, status=HTTPStatus.CONFLICT)
+            return
         except (json.JSONDecodeError, UnicodeError, ValueError):
             self.send_json({"error": "决定内容无法读取"}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -2857,7 +2865,7 @@ def project_workspace_payload(review_root: Path, project_id: str, kind: str) -> 
 def _require_workspace_token(kind: str, identifier: str, value: object, payload: dict[str, Any]) -> None:
     token = payload.get("version_token", payload.get("token"))
     if not isinstance(token, str) or token != _workspace_token(kind, identifier, value):
-        raise ValueError("WORKSPACE_STALE")
+        raise WorkspaceStaleError("WORKSPACE_STALE")
 
 
 def write_project_workspace_decision(review_root: Path, project_id: str, kind: str, payload: object) -> dict[str, Any]:
@@ -2898,7 +2906,18 @@ def write_project_workspace_decision(review_root: Path, project_id: str, kind: s
         status = payload.get("selection_status")
         if status not in {"selected", "available", "rejected"}: raise ReviewFigureError("FIGURE_SELECTION_INVALID")
         row["selection_status"] = status
-        target = project / "03_figures/source_figure_registry.json"; target.write_text(json.dumps(registry, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        registry["registry_digest"] = canonical_digest(registry.get("figures", []))
+        target = project / "03_figures/source_figure_registry.json"
+        if target.is_symlink() or (target.exists() and not target.is_file()):
+            raise ReviewFigureError("FIGURE_STATE_INVALID")
+        fd, temporary = tempfile.mkstemp(prefix=".source_figure_registry.", suffix=".tmp", dir=target.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(registry, handle, ensure_ascii=False, sort_keys=True, indent=2)
+                handle.write("\n"); handle.flush(); os.fsync(handle.fileno())
+            os.replace(temporary, target)
+        finally:
+            if os.path.exists(temporary): os.unlink(temporary)
         return project_review_figures_workspace_payload(review_root, project_id)
     raise ValueError("unknown workspace")
 
