@@ -1183,7 +1183,8 @@
         progressPayload.active_stage === 'parsing' || parseQualityPayload.status === 'needs_attention'
       );
       const showRisk = !awaitingBrief && !showSource && !showParseQuality && progressPayload.active_stage === 'risk' && Boolean((riskPayload.targets || []).length) && !draftPayload.available;
-      const showProcessing = !awaitingBrief && !showSource && !showParseQuality && !showRisk && !draftPayload.available;
+      const evidenceRoute = progressPayload.route === 'evidence-to-release.v1';
+      const showProcessing = !evidenceRoute && !awaitingBrief && !showSource && !showParseQuality && !showRisk && !draftPayload.available;
       $('brief-stage-panel').hidden = !awaitingBrief;
       $('source-stage-panel').hidden = !showSource;
       $('processing-stage-panel').hidden = !showProcessing;

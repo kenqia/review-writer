@@ -2962,6 +2962,7 @@ def write_project_workspace_decision(review_root: Path, project_id: str, kind: s
 def project_progress_payload(review_root: Path, project_id: str) -> dict[str, Any]:
     project = project_dir(review_root, project_id)
     authoritative_workflow = workflow_state(project)
+    new_route = authoritative_workflow.get("route") == "evidence-to-release.v1"
     source_truth_root = project / SOURCE_TRUTH_ROOT
     source_truth_managed = source_truth_root.is_dir() and any(
         path.is_file() and not path.parent.is_symlink()
@@ -3072,14 +3073,23 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
     if source_truth_managed:
         sources_complete = True
         parsing_complete = bool(parse_projection and parse_projection.get("workflow_can_continue"))
-    evidence_complete = bool(included_ids) and included_ids.issubset(reviewed_ids)
+    if new_route:
+        # The evidence-to-release route has its own hash-bound registry. Legacy
+        # evidence_cards.jsonl is intentionally not an authority for this path.
+        evidence_complete = bool(authoritative_workflow.get("paper_evidence_ready"))
+    else:
+        evidence_complete = bool(included_ids) and included_ids.issubset(reviewed_ids)
     risk_packet_present = os.path.lexists(project / "03_review/risk_packet.json")
     risk_complete = evidence_complete and risk_packet_present and open_risks == 0
     draft_complete = project_regular_file_exists(project, Path("04_first_draft/first_draft.md"))
     final_complete = project_regular_file_exists(project, Path("05_final_audit/final_draft.docx"))
 
     archive_received = project_regular_file_exists(project, SOURCE_ARCHIVE_RELATIVE)
-    if not sources_complete:
+    if new_route and evidence_complete and not authoritative_workflow.get("synthesis_ready"):
+        active_stage = "synthesis"
+    elif new_route and authoritative_workflow.get("synthesis_ready") and not authoritative_workflow.get("manuscript_ready"):
+        active_stage = "drafting"
+    elif not sources_complete:
         active_stage = "sources"
     elif not parsing_complete:
         active_stage = "parsing"
@@ -3092,13 +3102,22 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
     else:
         active_stage = "final"
 
-    stage_definitions = (
+    stage_definitions = [
         ("sources", "整理文献来源", sources_complete),
         ("parsing", "解析全文与补充信息", parsing_complete),
         ("evidence", "提取并核对逐研究证据", evidence_complete),
-        ("risk", "汇总科学风险", risk_complete),
-        ("drafting", "撰写证据约束正文", draft_complete),
-        ("final", "完成终稿与 DOCX", final_complete),
+    ]
+    if new_route:
+        stage_definitions.append(
+            ("synthesis", "完成比较协议与综合判断", bool(authoritative_workflow.get("synthesis_ready")))
+        )
+    else:
+        stage_definitions.append(("risk", "汇总科学风险", risk_complete))
+    stage_definitions.extend(
+        [
+            ("drafting", "撰写证据约束正文", draft_complete),
+            ("final", "完成终稿与 DOCX", final_complete),
+        ]
     )
     active_index = next(
         (index for index, (stage_id, _, _) in enumerate(stage_definitions) if stage_id == active_stage),
@@ -3265,6 +3284,7 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
         "sources": "正在核验您上传的来源" if archive_received else "上传一次 PDF ZIP",
         "parsing": "等待全文解析完成",
         "evidence": "继续处理下一篇研究证据",
+        "synthesis": "核对比较协议与综合判断",
         "risk": "检查集中科学风险",
         "drafting": "开始撰写证据约束正文",
         "final": "检查正文并导出 DOCX",
@@ -3298,6 +3318,7 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
         recommended = batch_recovery["action"]
     return {
         "project_id": project_id,
+        "route": authoritative_workflow.get("route", "legacy"),
         "status": "needs_attention" if parse_needs_attention else "in_progress",
         "active_stage": active_stage,
         "stages": stages,
