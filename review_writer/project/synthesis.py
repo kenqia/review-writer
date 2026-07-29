@@ -159,7 +159,7 @@ def comparison_protocol_state(project: Path) -> dict[str, Any]:
     if not isinstance(digest, str) or digest != canonical_digest(unsigned):
         return {"status": "needs_review", "workflow_can_continue": False, "reason_code": "COMPARISON_PROTOCOL_STALE"}
     decision = value.get("decision") or {}
-    ok = decision.get("action") == "approve" and decision.get("bound_object_digest") == digest and value.get("paper_evidence_projection_digest") == paper_evidence_state(_root(project)).get("projection_digest")
+    ok = _valid_decision(decision, digest) and decision.get("action") == "approve" and value.get("paper_evidence_projection_digest") == paper_evidence_state(_root(project)).get("projection_digest")
     return {"status": "approved" if ok else "needs_review", "workflow_can_continue": ok, "reason_code": "COMPARISON_PROTOCOL_APPROVED" if ok else "COMPARISON_PROTOCOL_NOT_APPROVED", "protocol_digest": value.get("protocol_digest"), "value": value}
 
 
