@@ -7,6 +7,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zipfile import BadZipFile, ZipFile
 
 from jsonschema import Draft202012Validator
 
@@ -17,6 +18,8 @@ from review_writer.project.source_truth import canonical_digest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REPORT_SCHEMA = REPO_ROOT / "schemas/quality/review_benchmark_report.v1.schema.json"
 PLACEHOLDER_SCHEMA = REPO_ROOT / "schemas/figures/synthesis_figure_placeholder.v1.schema.json"
+FIGURE_VERIFICATION_PATH = Path("03_figures/synthesis_figure_verification.json")
+VERIFICATION_DECISION_SCHEMA = REPO_ROOT / "schemas/project/verification_decision.v1.schema.json"
 RUBRIC_DIMENSIONS = (
     ("scope_and_question_value", 10),
     ("source_set_coverage", 15),
@@ -86,6 +89,102 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _sha256(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(
+        character in "0123456789abcdef" for character in value
+    )
+
+
+def _verified_figure_state(
+    project: Path,
+    placeholders: list[dict[str, Any]],
+    *,
+    placeholder_digest: str,
+    lineage_digest: object,
+    manuscript_text: str,
+    docx_path: Path | None,
+) -> bool:
+    verified = [row for row in placeholders if row.get("status") == "verified"]
+    if not verified:
+        return True
+    try:
+        payload = _read_json(project / FIGURE_VERIFICATION_PATH, "FIGURE_VERIFICATION_INVALID")
+        decision_schema = _read_json(VERIFICATION_DECISION_SCHEMA, "BENCHMARK_SCHEMA_INVALID")
+    except BenchmarkError:
+        return False
+    if not isinstance(payload, dict) or set(payload) != {"verifications"}:
+        return False
+    records = payload.get("verifications")
+    if not isinstance(records, list) or not all(isinstance(row, dict) for row in records):
+        return False
+    validator = Draft202012Validator(decision_schema)
+    for placeholder in verified:
+        placeholder_id = placeholder.get("placeholder_id")
+        matches = [row for row in records if row.get("placeholder_id") == placeholder_id]
+        if len(matches) != 1:
+            return False
+        record = matches[0]
+        if set(record) != {
+            "placeholder_id",
+            "asset_path",
+            "asset_sha256",
+            "placeholder_digest",
+            "lineage_digest",
+            "verification",
+        }:
+            return False
+        if (
+            record["placeholder_digest"] != placeholder_digest
+            or record["lineage_digest"] != lineage_digest
+            or not isinstance(record["asset_path"], str)
+            or not _sha256(record["asset_sha256"])
+            or not isinstance(record["verification"], dict)
+        ):
+            return False
+        verification = record["verification"]
+        verification_object = {
+            "placeholder_digest": record["placeholder_digest"],
+            "placeholder_id": record["placeholder_id"],
+            "asset_path": record["asset_path"],
+            "asset_sha256": record["asset_sha256"],
+            "lineage_digest": record["lineage_digest"],
+        }
+        if (
+            list(validator.iter_errors(verification))
+            or verification.get("actor_type") != "human_researcher"
+            or verification.get("action") != "verify"
+            or verification.get("bound_object_digest") != canonical_digest(verification_object)
+            or verification.get("bound_gate_digest") != lineage_digest
+        ):
+            return False
+        asset = project / record["asset_path"]
+        try:
+            resolved = asset.resolve(strict=True)
+            resolved.relative_to(project)
+            if asset.is_symlink() or not resolved.is_file():
+                return False
+            if _sha256_file(resolved) != record["asset_sha256"]:
+                return False
+            if f"HUMAN_SYNTHESIS_FIGURE: {record['asset_path']}" not in manuscript_text:
+                return False
+            if docx_path is None:
+                return False
+            with ZipFile(docx_path) as package:
+                media = [
+                    name
+                    for name in package.namelist()
+                    if name.startswith("word/media/") and not name.endswith("/")
+                ]
+                if not any(
+                    hashlib.sha256(package.read(name)).hexdigest() == record["asset_sha256"]
+                    for name in media
+                ):
+                    return False
+        except (OSError, ValueError, BadZipFile, KeyError):
+            return False
+    return True
+
+
 def _release_payload(release: Path, release_level: str | None) -> dict[str, Any]:
     """Read a release and bind the report to canonical, on-disk state."""
     if not isinstance(release, Path) or release.is_symlink() or not release.is_dir():
@@ -98,7 +197,10 @@ def _release_payload(release: Path, release_level: str | None) -> dict[str, Any]
     if not isinstance(snapshot, dict):
         raise BenchmarkError("BENCHMARK_RELEASE_INVALID")
     project_id = snapshot.get("project_id", project.name)
-    level = release_level or snapshot.get("release_level") or snapshot.get("status")
+    authoritative_level = snapshot.get("release_level") or snapshot.get("status")
+    if release_level is not None and release_level != authoritative_level:
+        raise BenchmarkError("BENCHMARK_RELEASE_LEVEL_MISMATCH")
+    level = authoritative_level
     if level not in RELEASE_LEVELS or not isinstance(project_id, str) or not project_id:
         raise BenchmarkError("BENCHMARK_RELEASE_INVALID")
 
@@ -108,20 +210,17 @@ def _release_payload(release: Path, release_level: str | None) -> dict[str, Any]
     state: dict[str, Any]
     try:
         state = manuscript_state(project)
-    except Exception:
-        state = {"workflow_can_continue": False}
-        divergence = True
+    except Exception as exc:
+        raise BenchmarkError("BENCHMARK_MANUSCRIPT_NOT_APPROVED") from exc
     if state.get("workflow_can_continue") is not True:
-        divergence = True
+        raise BenchmarkError("BENCHMARK_MANUSCRIPT_NOT_APPROVED")
     try:
-        actual_manuscript_sha256 = _sha256_file(manuscript_path) if manuscript_path.is_file() else None
+        actual_manuscript_sha256 = _sha256_file(manuscript_path)
         lineage = _read_json(lineage_path, "BENCHMARK_RELEASE_INVALID")
         if not isinstance(lineage, dict):
             raise BenchmarkError("BENCHMARK_RELEASE_INVALID")
-    except (OSError, BenchmarkError):
-        actual_manuscript_sha256 = None
-        lineage = {}
-        divergence = True
+    except (OSError, BenchmarkError) as exc:
+        raise BenchmarkError("BENCHMARK_MANUSCRIPT_NOT_APPROVED") from exc
     state_manuscript_sha256 = state.get("manuscript_sha256")
     state_lineage_digest = state.get("lineage_digest")
     if (
@@ -170,11 +269,10 @@ def _release_payload(release: Path, release_level: str | None) -> dict[str, Any]
     if lineage.get("synthesis_figure_placeholder_digest") != placeholder_digest:
         divergence = True
     manuscript_text = ""
-    if manuscript_path.is_file():
-        try:
-            manuscript_text = manuscript_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError):
-            divergence = True
+    try:
+        manuscript_text = manuscript_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise BenchmarkError("BENCHMARK_MANUSCRIPT_NOT_APPROVED") from exc
     for row in placeholders:
         if isinstance(row, dict) and row.get("status") != "verified":
             placeholder_id = row.get("placeholder_id")
@@ -183,6 +281,17 @@ def _release_payload(release: Path, release_level: str | None) -> dict[str, Any]
                 or f"SYNTHESIS_FIGURE_PLACEHOLDER: {placeholder_id}" not in manuscript_text
             ):
                 divergence = True
+
+    verified_figure_ready = _verified_figure_state(
+        project,
+        placeholders,
+        placeholder_digest=placeholder_digest,
+        lineage_digest=state_lineage_digest,
+        manuscript_text=manuscript_text,
+        docx_path=docx_path,
+    )
+    if not verified_figure_ready:
+        divergence = True
 
     signals = snapshot.get("hard_fail_signals", [])
     if not isinstance(signals, list) or not all(isinstance(code, str) for code in signals):
@@ -198,6 +307,7 @@ def _release_payload(release: Path, release_level: str | None) -> dict[str, Any]
         "manuscript_sha256": actual_manuscript_sha256 if not divergence else None,
         "release_sha256": docx_sha256 if not divergence else None,
         "placeholders": placeholders,
+        "verified_figure_ready": verified_figure_ready,
         "hard_fail_signals": signals,
     }
 
@@ -313,7 +423,10 @@ def evaluate_review(
     binding = _release_payload(release, release_level)
     rubric = _rubric_rows(rubric_scores)
     score = sum(row["score"] for row in rubric)
-    pending = any(row.get("status") != "verified" for row in binding["placeholders"])
+    pending = (
+        any(row.get("status") != "verified" for row in binding["placeholders"])
+        or not binding["verified_figure_ready"]
+    )
     issues = ["SYNTHESIS_FIGURE_PENDING"] if pending else []
     all_hard_fails = list(hard_fails) + binding["hard_fail_signals"]
     if binding["release_level"] == "EXPERT_REVIEWED_RELEASE" and pending:

@@ -4,6 +4,7 @@ import hashlib
 import json
 import subprocess
 import sys
+from argparse import Namespace
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -24,6 +25,7 @@ from review_writer.evaluation.standard_corpus import (
     load_standard_corpus,
 )
 from review_writer.project.source_truth import canonical_digest
+from scripts.validators import validate_review_benchmark as benchmark_validator
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,6 +77,7 @@ def _project_release(
     placeholders: list[dict[str, object]] | None = None,
     authoritative: bool = True,
     snapshot_manuscript_sha256: str | None = None,
+    embed_verified_figures: bool = True,
 ) -> Path:
     placeholders = list(placeholders or [])
     manuscript = "# Synthetic review\n"
@@ -102,6 +105,46 @@ def _project_release(
             "synthesis_figure_placeholder_digest": canonical_digest(placeholders),
         }
         lineage_path.write_text(json.dumps(lineage) + "\n", encoding="utf-8")
+        if any(row.get("status") == "verified" for row in placeholders):
+            asset_path = root / "03_figures/synthesis-figure-01.png"
+            asset_path.write_bytes(b"human-verified-synthesis-figure")
+            if embed_verified_figures:
+                manuscript_path.write_text(
+                    manuscript
+                    + "\nHUMAN_SYNTHESIS_FIGURE: 03_figures/synthesis-figure-01.png\n",
+                    encoding="utf-8",
+                )
+                lineage["manuscript_sha256"] = _sha256(manuscript_path)
+                lineage_path.write_text(json.dumps(lineage) + "\n", encoding="utf-8")
+            verification = {
+                "placeholder_id": "synthesis-figure-01",
+                "asset_path": asset_path.relative_to(root).as_posix(),
+                "asset_sha256": _sha256(asset_path),
+                "placeholder_digest": canonical_digest(placeholders),
+                "lineage_digest": lineage["lineage_digest"],
+                "verification": {
+                    "schema_version": "verification-decision.v1",
+                    "actor_type": "human_researcher",
+                    "actor_label": "test-human",
+                    "action": "verify",
+                    "reason": "Human verified the uploaded synthesis figure against the brief.",
+                    "decided_at": "2026-07-29T00:00:00Z",
+                    "bound_object_digest": canonical_digest(
+                        {
+                            "placeholder_digest": canonical_digest(placeholders),
+                            "placeholder_id": "synthesis-figure-01",
+                            "asset_path": asset_path.relative_to(root).as_posix(),
+                            "asset_sha256": _sha256(asset_path),
+                            "lineage_digest": lineage["lineage_digest"],
+                        }
+                    ),
+                    "bound_gate_digest": lineage["lineage_digest"],
+                },
+            }
+            (root / "03_figures/synthesis_figure_verification.json").write_text(
+                json.dumps({"verifications": [verification]}) + "\n",
+                encoding="utf-8",
+            )
         if monkeypatch is not None:
             monkeypatch.setattr(
                 review_benchmark,
@@ -114,7 +157,12 @@ def _project_release(
                 },
             )
     docx_path.parent.mkdir(parents=True, exist_ok=True)
-    docx_path.write_bytes(b"synthetic-docx")
+    if any(row.get("status") == "verified" for row in placeholders) and embed_verified_figures:
+        with ZipFile(docx_path, "w") as package:
+            package.writestr("word/document.xml", manuscript_path.read_text(encoding="utf-8"))
+            package.writestr("word/media/synthesis-figure-01.png", b"human-verified-synthesis-figure")
+    else:
+        docx_path.write_bytes(b"synthetic-docx")
     snapshot = {
         "project_id": root.name,
         "release_level": level,
@@ -249,6 +297,20 @@ def test_expert_release_hard_fails_while_required_synthesis_figure_is_pending(
     assert report["hard_fails"] == ["SYNTHESIS_FIGURE_PENDING"]
 
 
+def test_release_level_cannot_override_authoritative_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _project_release(tmp_path / "project", monkeypatch)
+
+    with pytest.raises(BenchmarkError, match="BENCHMARK_RELEASE_LEVEL_MISMATCH"):
+        evaluate_review(
+            project,
+            _scores((10, 15, 20, 20, 15, 10, 10)),
+            release_level="EXPERT_REVIEWED_RELEASE",
+        )
+
+
 def test_standard_corpus_loader_binds_hashes_and_expected_layers(tmp_path: Path) -> None:
     corpus_root = _standard_corpus(tmp_path / "standards")
 
@@ -306,6 +368,21 @@ def test_standard_corpus_loader_rejects_manifest_with_1072_files(tmp_path: Path)
         load_standard_corpus(corpus_root)
 
 
+def test_standard_corpus_loader_recounts_actual_pdf_files(tmp_path: Path) -> None:
+    corpus_root = _standard_corpus(tmp_path / "standards")
+    filler = next((corpus_root / "mineru-outputs/sidecars").glob("filler-*.json"))
+    renamed = filler.with_suffix(".pdf")
+    filler.rename(renamed)
+    manifest_path = corpus_root / "standard_corpus_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    row = next(item for item in manifest["files"] if item["path"] == filler.relative_to(corpus_root).as_posix())
+    row["path"] = renamed.relative_to(corpus_root).as_posix()
+    manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+
+    with pytest.raises(StandardCorpusError, match="STANDARD_CORPUS_MINERU_INCOMPLETE"):
+        load_standard_corpus(corpus_root)
+
+
 def test_missing_authoritative_manuscript_is_stable_hard_fail(tmp_path: Path) -> None:
     project = _project_release(
         tmp_path / "project",
@@ -313,15 +390,11 @@ def test_missing_authoritative_manuscript_is_stable_hard_fail(tmp_path: Path) ->
         authoritative=False,
     )
 
-    report = evaluate_review(
-        project,
-        _scores((10, 15, 20, 20, 15, 10, 10)),
-    )
-
-    assert report["status"] == "fail"
-    assert report["score"] == 100
-    assert "STATE_SURFACE_DIVERGENCE" in report["hard_fails"]
-    assert report["release_binding"]["manuscript_sha256"] is None
+    with pytest.raises(BenchmarkError, match="BENCHMARK_MANUSCRIPT_NOT_APPROVED"):
+        evaluate_review(
+            project,
+            _scores((10, 15, 20, 20, 15, 10, 10)),
+        )
 
 
 def test_snapshot_manuscript_digest_drift_is_hard_fail(
@@ -408,6 +481,156 @@ def test_expert_release_accepts_complete_verified_placeholder_record(
 
     assert report["status"] == "pass_expert"
     assert report["expert_release_ready"] is True
+
+
+def test_expert_release_rejects_verified_placeholder_without_human_asset_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _project_release(
+        tmp_path / "project",
+        monkeypatch,
+        level="EXPERT_REVIEWED_RELEASE",
+        placeholders=[_placeholder(status="verified")],
+        embed_verified_figures=False,
+    )
+    (project / "03_figures/synthesis_figure_verification.json").unlink()
+
+    report = evaluate_review(project, _scores((10, 15, 20, 20, 15, 10, 10)))
+
+    assert report["status"] == "fail"
+    assert "SYNTHESIS_FIGURE_PENDING" in report["hard_fails"]
+    assert report["expert_release_ready"] is False
+
+
+def test_expert_release_rejects_verified_figure_detached_from_manuscript_and_docx(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _project_release(
+        tmp_path / "project",
+        monkeypatch,
+        level="EXPERT_REVIEWED_RELEASE",
+        placeholders=[_placeholder(status="verified")],
+        embed_verified_figures=False,
+    )
+
+    report = evaluate_review(project, _scores((10, 15, 20, 20, 15, 10, 10)))
+
+    assert report["status"] == "fail"
+    assert "SYNTHESIS_FIGURE_PENDING" in report["hard_fails"]
+
+
+def test_expert_release_rejects_asset_replaced_after_human_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _project_release(
+        tmp_path / "project",
+        monkeypatch,
+        level="EXPERT_REVIEWED_RELEASE",
+        placeholders=[_placeholder(status="verified")],
+    )
+    asset = project / "03_figures/synthesis-figure-01.png"
+    replacement = b"replacement-not-human-verified"
+    asset.write_bytes(replacement)
+    verification_path = project / "03_figures/synthesis_figure_verification.json"
+    verification = json.loads(verification_path.read_text(encoding="utf-8"))
+    verification["verifications"][0]["asset_sha256"] = _sha256(asset)
+    verification_path.write_text(json.dumps(verification) + "\n", encoding="utf-8")
+    docx = project / "05_release/expert_reviewed_release.docx"
+    with ZipFile(docx, "w") as package:
+        package.writestr("word/document.xml", (project / "04_manuscript/manuscript.md").read_text())
+        package.writestr("word/media/synthesis-figure-01.png", replacement)
+    snapshot_path = project / "05_release/release_snapshot.json"
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    snapshot["docx_sha256"] = _sha256(docx)
+    snapshot_path.write_text(json.dumps(snapshot) + "\n", encoding="utf-8")
+
+    report = evaluate_review(project, _scores((10, 15, 20, 20, 15, 10, 10)))
+
+    assert report["status"] == "fail"
+    assert "SYNTHESIS_FIGURE_PENDING" in report["hard_fails"]
+
+
+def test_validator_rejects_report_only_forgery_without_project_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = evaluate_review(
+        _project_release(tmp_path / "project", monkeypatch),
+        _scores((9, 13, 17, 17, 12, 8, 8)),
+    )
+    report_path = tmp_path / "forged-report.json"
+    report_path.write_text(json.dumps(report) + "\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, str(VALIDATOR), "--report", str(report_path)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert str(report_path) not in result.stdout
+    assert str(report_path) not in result.stderr
+    assert json.loads(result.stderr)["error_code"] == "BENCHMARK_ARGUMENTS_INVALID"
+
+
+def test_validator_rejects_report_that_removed_authoritative_hard_fail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    standards = tmp_path / "standards"
+    standards.mkdir()
+    score_input = {
+        "rubric": _scores((9, 13, 17, 17, 12, 8, 8)),
+        "hard_fails": ["WRONG_SOURCE_BINDING"],
+    }
+    score_path = project / "06_evaluation/review_benchmark_scores.json"
+    score_path.parent.mkdir(parents=True, exist_ok=True)
+    score_path.write_text(json.dumps(score_input) + "\n", encoding="utf-8")
+    report = {
+        "rubric": score_input["rubric"],
+        "hard_fails": [],
+        "release_level": "SELF_REVIEWED_DRAFT",
+        "status": "pass_internal",
+    }
+    report_path = tmp_path / "forged-report.json"
+    report_path.write_text(json.dumps(report) + "\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(benchmark_validator, "validate_report", lambda value: value)
+    monkeypatch.setattr(benchmark_validator, "load_standard_corpus", lambda _path: {})
+
+    def fake_evaluate(
+        _project: Path,
+        rubric: object,
+        *,
+        hard_fails: object,
+        release_level: str,
+        standard_corpus: object,
+    ) -> dict[str, object]:
+        captured.update(rubric=rubric, hard_fails=hard_fails)
+        return {**report, "hard_fails": list(hard_fails)}
+
+    monkeypatch.setattr(benchmark_validator, "evaluate_review", fake_evaluate)
+    args = Namespace(
+        report=report_path,
+        project=project,
+        standards=standards,
+        release_level=None,
+        scores=None,
+        output=None,
+    )
+
+    with pytest.raises(BenchmarkError, match="BENCHMARK_REPORT_MISMATCH"):
+        benchmark_validator._run(args)
+
+    assert captured["hard_fails"] == ["WRONG_SOURCE_BINDING"]
 
 
 def test_report_schema_and_validator_reject_inconsistent_status(

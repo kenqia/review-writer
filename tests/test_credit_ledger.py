@@ -177,8 +177,8 @@ def test_credit_ledger_rechecks_containment_after_ledger_parse(
     outside.mkdir()
     original_read = credit_ledger._read_ledger
 
-    def swap_parent_after_parse(path: Path) -> list[dict[str, object]]:
-        rows = original_read(path)
+    def swap_parent_after_parse(path: Path, **kwargs: object) -> list[dict[str, object]]:
+        rows = original_read(path, **kwargs)
         evaluation = project / "06_evaluation"
         (evaluation / ".credit_ledger.lock").unlink()
         evaluation.rmdir()
@@ -198,3 +198,176 @@ def test_credit_ledger_rechecks_containment_after_ledger_parse(
 
     assert list(outside.iterdir()) == []
     assert os.path.lexists(project / "06_evaluation")
+
+
+def test_credit_ledger_rejects_hardlinked_ledger_without_external_writes(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    record_credit_event(
+        project,
+        stage="source_review",
+        before=2004,
+        after=1351,
+        source="manual_dashboard",
+    )
+    ledger = project / CREDIT_LEDGER_PATH
+    outside = tmp_path / "outside-ledger.jsonl"
+    os.link(ledger, outside)
+    before = outside.read_bytes()
+
+    with pytest.raises(CreditLedgerError, match="CREDIT_LEDGER_INVALID"):
+        record_credit_event(
+            project,
+            stage="synthesis",
+            before=1351,
+            after=1300,
+            source="manual_dashboard",
+        )
+
+    assert outside.read_bytes() == before
+
+
+def test_credit_ledger_rejects_hardlinked_lock_without_external_writes(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    record_credit_event(
+        project,
+        stage="source_review",
+        before=2004,
+        after=1351,
+        source="manual_dashboard",
+    )
+    lock = project / "06_evaluation/.credit_ledger.lock"
+    outside = tmp_path / "outside-lock"
+    os.link(lock, outside)
+    before = outside.read_bytes()
+
+    with pytest.raises(CreditLedgerError, match="CREDIT_LEDGER_INVALID"):
+        record_credit_event(
+            project,
+            stage="synthesis",
+            before=1351,
+            after=1300,
+            source="manual_dashboard",
+        )
+
+    assert outside.read_bytes() == before
+
+
+def test_credit_ledger_rolls_back_partial_append_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    record_credit_event(
+        project,
+        stage="source_review",
+        before=2004,
+        after=1351,
+        source="manual_dashboard",
+    )
+    before = _ledger_bytes(project)
+    original_write = credit_ledger.os.write
+    calls = 0
+
+    def partial_then_fail(descriptor: int, content: bytes) -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return original_write(descriptor, content[:1])
+        raise OSError("injected append failure")
+
+    monkeypatch.setattr(credit_ledger.os, "write", partial_then_fail)
+
+    with pytest.raises(CreditLedgerError, match="CREDIT_LEDGER_WRITE_FAILED"):
+        record_credit_event(
+            project,
+            stage="synthesis",
+            before=1351,
+            after=1300,
+            source="manual_dashboard",
+        )
+
+    assert _ledger_bytes(project) == before
+
+
+def test_credit_ledger_rolls_back_when_post_append_validation_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    record_credit_event(
+        project,
+        stage="source_review",
+        before=2004,
+        after=1351,
+        source="manual_dashboard",
+    )
+    before = _ledger_bytes(project)
+    original_assert = credit_ledger._assert_directory_handle
+    calls = 0
+
+    def fail_post_append(storage: object) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 5:
+            raise CreditLedgerError("CREDIT_LEDGER_INVALID")
+        original_assert(storage)
+
+    monkeypatch.setattr(credit_ledger, "_assert_directory_handle", fail_post_append)
+
+    with pytest.raises(CreditLedgerError, match="CREDIT_LEDGER_INVALID"):
+        record_credit_event(
+            project,
+            stage="synthesis",
+            before=1351,
+            after=1300,
+            source="manual_dashboard",
+        )
+
+    assert _ledger_bytes(project) == before
+
+
+def test_credit_ledger_rejects_file_replacement_between_read_and_append(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    record_credit_event(
+        project,
+        stage="source_review",
+        before=2004,
+        after=1351,
+        source="manual_dashboard",
+    )
+    ledger = project / CREDIT_LEDGER_PATH
+    original = ledger.read_bytes()
+    displaced = tmp_path / "displaced-ledger.jsonl"
+    original_read = credit_ledger._read_ledger
+
+    def replace_after_read(path: Path, **kwargs: object) -> list[dict[str, object]]:
+        rows = original_read(path, **kwargs)
+        path.rename(displaced)
+        path.write_bytes(b"")
+        return rows
+
+    monkeypatch.setattr(credit_ledger, "_read_ledger", replace_after_read)
+
+    with pytest.raises(CreditLedgerError, match="CREDIT_LEDGER_INVALID"):
+        record_credit_event(
+            project,
+            stage="synthesis",
+            before=1351,
+            after=1300,
+            source="manual_dashboard",
+        )
+
+    assert displaced.read_bytes() == original
+    assert ledger.read_bytes() == b""

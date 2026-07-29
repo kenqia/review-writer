@@ -213,6 +213,8 @@ def load_standard_corpus(root: Path) -> dict[str, Any]:
     ):
         raise StandardCorpusError("STANDARD_CORPUS_MINERU_INCOMPLETE")
     declared = _validate_manifest_files(corpus_root, manifest)
+    if sum(path.casefold().endswith(".pdf") for path in declared) != 14:
+        raise StandardCorpusError("STANDARD_CORPUS_MINERU_INCOMPLETE")
     review_count, guide_count = _validate_layers(corpus_root, declared)
     stylesheet_count = _validate_source_zip(corpus_root, manifest)
     return {

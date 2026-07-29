@@ -8,7 +8,7 @@ import math
 import os
 import re
 import stat
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,6 +36,13 @@ class CreditLedgerError(ValueError):
     def __init__(self, code: str, message: str = "") -> None:
         super().__init__(f"{code}: {message}" if message else code)
         self.code = code
+
+
+class _LedgerStorage:
+    def __init__(self, parent_fd: int, parent_path: Path, lock: Any) -> None:
+        self.parent_fd = parent_fd
+        self.parent_path = parent_path
+        self.lock = lock
 
 
 def _canonical_bytes(payload: object) -> bytes:
@@ -106,6 +113,36 @@ def _assert_project_path(project: Path, path: Path) -> None:
         raise CreditLedgerError("CREDIT_LEDGER_INVALID") from exc
 
 
+def _assert_directory_handle(storage: _LedgerStorage) -> None:
+    _assert_project_path(storage.parent_path.parent, storage.parent_path)
+    try:
+        path_stat = storage.parent_path.stat(follow_symlinks=False)
+        fd_stat = os.fstat(storage.parent_fd)
+    except OSError as exc:
+        raise CreditLedgerError("CREDIT_LEDGER_INVALID") from exc
+    if (
+        not stat.S_ISDIR(path_stat.st_mode)
+        or not stat.S_ISDIR(fd_stat.st_mode)
+        or (path_stat.st_dev, path_stat.st_ino) != (fd_stat.st_dev, fd_stat.st_ino)
+    ):
+        raise CreditLedgerError("CREDIT_LEDGER_INVALID")
+
+
+def _ledger_identity(path: Path, *, parent_fd: int | None = None) -> tuple[int, int] | None:
+    try:
+        if parent_fd is not None and os.stat in getattr(os, "supports_dir_fd", ()):
+            metadata = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        else:
+            metadata = path.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise CreditLedgerError("CREDIT_LEDGER_INVALID") from exc
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        raise CreditLedgerError("CREDIT_LEDGER_INVALID")
+    return metadata.st_dev, metadata.st_ino
+
+
 def _validate_inputs(
     *,
     stage: str,
@@ -151,42 +188,100 @@ def _validate_inputs(
 
 
 @contextmanager
-def _ledger_lock(project: Path) -> Iterator[None]:
-    lock_path = project / _LOCK_PATH
-    _assert_project_path(project, lock_path)
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    _assert_project_path(project, lock_path)
-    if lock_path.is_symlink() or (os.path.lexists(lock_path) and not lock_path.is_file()):
-        raise CreditLedgerError("CREDIT_LEDGER_INVALID")
-    with lock_path.open("a+b") as lock:
-        if os.name == "nt":
-            lock.seek(0, os.SEEK_END)
-            if lock.tell() == 0:
-                lock.write(b"\0")
-                lock.flush()
-                os.fsync(lock.fileno())
-            lock.seek(0)
-            msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
-            try:
-                yield
-            finally:
-                lock.seek(0)
-                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-
-
-def _read_ledger(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    if path.is_symlink() or not path.is_file():
-        raise CreditLedgerError("CREDIT_LEDGER_INVALID")
+def _ledger_lock(project: Path) -> Iterator[_LedgerStorage]:
+    parent_path = project / _LOCK_PATH.parent
+    _assert_project_path(project, parent_path)
+    parent_path.mkdir(parents=True, exist_ok=True)
+    _assert_project_path(project, parent_path)
+    directory_flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        directory_flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        directory_flags |= os.O_NOFOLLOW
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        parent_fd = os.open(parent_path, directory_flags)
+    except OSError as exc:
+        raise CreditLedgerError("CREDIT_LEDGER_INVALID") from exc
+    storage = _LedgerStorage(parent_fd, parent_path, None)
+    lock_file = None
+    try:
+        _assert_directory_handle(storage)
+        lock_flags = os.O_RDWR | os.O_CREAT
+        if hasattr(os, "O_NOFOLLOW"):
+            lock_flags |= os.O_NOFOLLOW
+        if os.open in getattr(os, "supports_dir_fd", ()):
+            lock_fd = os.open(_LOCK_PATH.name, lock_flags, 0o600, dir_fd=parent_fd)
+        else:
+            lock_fd = os.open(parent_path / _LOCK_PATH.name, lock_flags, 0o600)
+        lock_file = os.fdopen(lock_fd, "a+b")
+        storage.lock = lock_file
+        if os.fstat(lock_fd).st_nlink != 1:
+            raise CreditLedgerError("CREDIT_LEDGER_INVALID")
+        _assert_directory_handle(storage)
+        if os.name == "nt":
+            lock_file.seek(0, os.SEEK_END)
+            if lock_file.tell() == 0:
+                lock_file.write(b"\0")
+                lock_file.flush()
+                os.fsync(lock_file.fileno())
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield storage
+            finally:
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield storage
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    except CreditLedgerError:
+        raise
+    except OSError as exc:
+        raise CreditLedgerError("CREDIT_LEDGER_INVALID") from exc
+    finally:
+        if lock_file is not None:
+            lock_file.close()
+        else:
+            os.close(parent_fd)
+        if lock_file is not None:
+            os.close(parent_fd)
+
+
+def _read_ledger(
+    path: Path,
+    *,
+    parent_fd: int | None = None,
+    expected_identity: tuple[int, int] | None = None,
+) -> list[dict[str, Any]]:
+    try:
+        if parent_fd is None:
+            if not path.exists():
+                return []
+            if path.is_symlink() or not path.is_file():
+                raise CreditLedgerError("CREDIT_LEDGER_INVALID")
+            lines = path.read_text(encoding="utf-8").splitlines()
+        else:
+            flags = os.O_RDONLY
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            try:
+                descriptor = os.open(path.name, flags, dir_fd=parent_fd)
+            except FileNotFoundError:
+                return []
+            with os.fdopen(descriptor, "rb") as handle:
+                metadata = os.fstat(handle.fileno())
+                identity = (metadata.st_dev, metadata.st_ino)
+                if (
+                    not stat.S_ISREG(metadata.st_mode)
+                    or metadata.st_nlink != 1
+                    or expected_identity is None
+                    or identity != expected_identity
+                ):
+                    raise CreditLedgerError("CREDIT_LEDGER_INVALID")
+                lines = handle.read().decode("utf-8").splitlines()
     except (OSError, UnicodeError) as exc:
         raise CreditLedgerError("CREDIT_LEDGER_INVALID") from exc
     rows: list[dict[str, Any]] = []
@@ -209,22 +304,59 @@ def _read_ledger(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def _append_line(path: Path, event: dict[str, Any]) -> None:
-    if path.is_symlink() or (os.path.lexists(path) and not path.is_file()):
+def _append_line(
+    path: Path,
+    event: dict[str, Any],
+    *,
+    parent_fd: int | None = None,
+    expected_identity: tuple[int, int] | None = None,
+    post_write_check: Callable[[], None] | None = None,
+) -> None:
+    if parent_fd is None and (path.is_symlink() or (os.path.lexists(path) and not path.is_file())):
         raise CreditLedgerError("CREDIT_LEDGER_INVALID")
     content = _canonical_bytes(event) + b"\n"
-    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+    flags = os.O_WRONLY | os.O_APPEND
+    flags |= os.O_CREAT | os.O_EXCL if expected_identity is None else 0
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
-        descriptor = os.open(path, flags, 0o600)
+        if parent_fd is None:
+            descriptor = os.open(path, flags, 0o600)
+        else:
+            descriptor = os.open(path.name, flags, 0o600, dir_fd=parent_fd)
         try:
-            offset = 0
-            while offset < len(content):
-                offset += os.write(descriptor, content[offset:])
-            os.fsync(descriptor)
+            metadata = os.fstat(descriptor)
+            identity = (metadata.st_dev, metadata.st_ino)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+                or (expected_identity is not None and identity != expected_identity)
+            ):
+                raise CreditLedgerError("CREDIT_LEDGER_INVALID")
+            initial_size = metadata.st_size
+            try:
+                offset = 0
+                while offset < len(content):
+                    written = os.write(descriptor, content[offset:])
+                    if written <= 0:
+                        raise OSError("credit ledger append made no progress")
+                    offset += written
+                os.fsync(descriptor)
+                if post_write_check is not None:
+                    post_write_check()
+            except (CreditLedgerError, OSError) as exc:
+                try:
+                    os.ftruncate(descriptor, initial_size)
+                    os.fsync(descriptor)
+                except OSError as rollback_exc:
+                    raise CreditLedgerError("CREDIT_LEDGER_ROLLBACK_FAILED") from rollback_exc
+                if isinstance(exc, CreditLedgerError):
+                    raise
+                raise CreditLedgerError("CREDIT_LEDGER_WRITE_FAILED") from exc
         finally:
             os.close(descriptor)
+    except CreditLedgerError:
+        raise
     except OSError as exc:
         raise CreditLedgerError("CREDIT_LEDGER_WRITE_FAILED") from exc
 
@@ -255,9 +387,17 @@ def record_credit_event(
     project_path = _safe_project(project)
     ledger_path = project_path / CREDIT_LEDGER_PATH
     _assert_project_path(project_path, ledger_path)
-    with _ledger_lock(project_path):
+    with _ledger_lock(project_path) as storage:
+        _assert_directory_handle(storage)
         _assert_project_path(project_path, ledger_path)
-        rows = _read_ledger(ledger_path)
+        ledger_identity = _ledger_identity(ledger_path, parent_fd=storage.parent_fd)
+        rows = _read_ledger(
+            ledger_path,
+            parent_fd=storage.parent_fd,
+            expected_identity=ledger_identity,
+        )
+        _assert_directory_handle(storage)
+        _assert_project_path(project_path, ledger_path)
         _assert_project_path(project_path, ledger_path)
         if rows and before != rows[-1]["after"]:
             raise CreditLedgerError("CREDIT_CONTINUITY_INVALID")
@@ -278,5 +418,11 @@ def record_credit_event(
         }
         event["event_id"] = _event_id(event)
         _validate_event(event)
-        _append_line(ledger_path, event)
+        _append_line(
+            ledger_path,
+            event,
+            parent_fd=storage.parent_fd,
+            expected_identity=ledger_identity,
+            post_write_check=lambda: _assert_directory_handle(storage),
+        )
         return event

@@ -83,11 +83,38 @@ def _summary(payload: dict[str, Any], *, stream: Any = sys.stdout) -> None:
 
 def _run(args: argparse.Namespace) -> int:
     if args.report is not None:
-        if any(value is not None for value in (args.project, args.standards, args.release_level, args.scores, args.output)):
-            raise BenchmarkError("BENCHMARK_ARGUMENTS_INVALID")
         report = validate_report(_read_json(args.report, "BENCHMARK_REPORT_INVALID"))
-        _summary({"score": report["score"], "status": report["status"], "validation": "VALID"})
-        return 0
+        if (
+            args.project is None
+            or args.standards is None
+            or any(value is not None for value in (args.release_level, args.scores, args.output))
+        ):
+            raise BenchmarkError("BENCHMARK_ARGUMENTS_INVALID")
+        score_input = _read_json(
+            args.project.resolve() / "06_evaluation/review_benchmark_scores.json",
+            "BENCHMARK_SCORE_INPUT_MISSING",
+        )
+        if not isinstance(score_input, dict):
+            raise BenchmarkError("BENCHMARK_SCORES_INVALID")
+        canonical = evaluate_review(
+            args.project.resolve(),
+            score_input.get("rubric", score_input),
+            hard_fails=score_input.get("hard_fails", []),
+            release_level=report["release_level"],
+            standard_corpus=load_standard_corpus(args.standards),
+        )
+        comparable_report = {key: value for key, value in report.items() if key != "evaluated_at"}
+        comparable_canonical = {key: value for key, value in canonical.items() if key != "evaluated_at"}
+        if comparable_report != comparable_canonical:
+            raise BenchmarkError("BENCHMARK_REPORT_MISMATCH")
+        _summary(
+            {
+                "score": canonical["score"],
+                "status": canonical["status"],
+                "reason_code": "REPORT_CANONICAL_MATCH",
+            }
+        )
+        return 0 if canonical["status"] != "fail" else 3
     if args.project is None or args.standards is None or args.release_level is None:
         raise BenchmarkError("BENCHMARK_ARGUMENTS_INVALID")
     project = args.project.resolve()
@@ -104,7 +131,13 @@ def _run(args: argparse.Namespace) -> int:
         standard_corpus=load_standard_corpus(args.standards),
     )
     _atomic_json(output, report)
-    _summary({"output": str(output), "score": report["score"], "status": report["status"]})
+    _summary(
+        {
+            "score": report["score"],
+            "status": report["status"],
+            "reason_code": "REPORT_WRITTEN",
+        }
+    )
     return 0 if report["status"] != "fail" else 3
 
 
