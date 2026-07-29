@@ -3085,7 +3085,14 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
     final_complete = project_regular_file_exists(project, Path("05_final_audit/final_draft.docx"))
 
     archive_received = project_regular_file_exists(project, SOURCE_ARCHIVE_RELATIVE)
-    if new_route and evidence_complete and not authoritative_workflow.get("synthesis_ready"):
+    if (
+        new_route
+        and evidence_complete
+        and (
+            not authoritative_workflow.get("synthesis_ready")
+            or not authoritative_workflow.get("section_contracts_ready")
+        )
+    ):
         active_stage = "synthesis"
     elif (
         new_route
