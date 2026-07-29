@@ -366,6 +366,11 @@ def _result_scope(root: Path, result: dict[str, Any]) -> None:
                 raise ContentAgentError("RESULT_CONTENT_INVALID")
             if any(key in row for key in ("decision", "status", "selection_status")):
                 raise ContentAgentError("CONTENT_AGENT_CANNOT_APPROVE")
+            if any(any(token in str(key).casefold() for token in ("auth", "prompt", "session")) for key in row):
+                raise ContentAgentError("RESULT_CONTENT_OUT_OF_SCOPE")
+            for item in row.values():
+                if isinstance(item, str) and (item.startswith("/") or re.match(r"^[A-Za-z]:[\\/]", item)):
+                    raise ContentAgentError("RESULT_CONTENT_OUT_OF_SCOPE")
             if not isinstance(row.get("source_id"), str) or not row["source_id"].strip():
                 raise ContentAgentError("RESULT_CONTENT_INVALID")
             if not isinstance(row.get("page"), int) or isinstance(row.get("page"), bool) or row["page"] < 1:
