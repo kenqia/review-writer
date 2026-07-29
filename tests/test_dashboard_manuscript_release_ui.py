@@ -166,3 +166,95 @@ def test_synthesis_ui_does_not_render_raw_json() -> None:
     source = (DASHBOARD / "review-synthesis.js").read_text(encoding="utf-8")
     assert "JSON.stringify(axis)" not in source
     assert "JSON.stringify(item.figure_plan" not in source
+
+
+def test_project_polling_preserves_loaded_project_without_full_reload() -> None:
+    html = (DASHBOARD / "review.html").read_text(encoding="utf-8")
+    match = re.search(
+        r"^    async function refreshProjects\(\) \{[\s\S]*?^    \}",
+        html,
+        flags=re.MULTILINE,
+    )
+    assert match is not None
+    _run_node(
+        "\n".join(
+            [
+                "const select={value:'case',append:()=>{}};",
+                "const nodes={project:select,'project-waiting-message':{textContent:''},'workbench-message':{textContent:''}};",
+                "const $=id=>nodes[id];",
+                "const document={createElement:()=>({value:'',textContent:''})};",
+                "const clear=()=>{}; const setEmptyProjectWorkspace=()=>{}; const setWorkspace=()=>{};",
+                "let projectsRefreshBusy=false, projects=[], projectId='case', activeWorkspace='cockpit';",
+                "let editorDirty=false, editorBusy=false, projectLoadBusy=false, exportBusy=false;",
+                "let sourceUploadBusy=false, riskDecisionDirty=false;",
+                "let parseQualityDirty=new Set(), parseQualityBusy=new Set();",
+                "let loadCount=0; const loadProject=async()=>{loadCount+=1; return 'loaded';};",
+                "const getPayload=async()=>[{project_id:'case',topic:'Case'}];",
+                match.group(0),
+                "refreshProjects().then(result=>{",
+                "  if(result!=='unchanged') throw new Error(`unexpected result ${result}`);",
+                "  if(loadCount!==0) throw new Error(`poll triggered ${loadCount} full reloads`);",
+                "}).catch(error=>{console.error(error);process.exit(1);});",
+            ]
+        )
+    )
+
+
+def test_audit_component_keeps_closure_visible_without_internal_ids() -> None:
+    html = (DASHBOARD / "review.html").read_text(encoding="utf-8")
+    parser = _DashboardParser()
+    parser.feed(html)
+    assert "review-audit" in parser.attributes
+    assert parser.attributes["review-audit"].get("aria-labelledby") == "review-audit-heading"
+    assert "/assets/dashboard/review-audit.js" in html
+    assert "/assets/dashboard/review-audit.css" in html
+
+    module_path = json.dumps(str(DASHBOARD / "review-audit.js"))
+    _run_node(
+        "\n".join(
+            [
+                f"const ui=require({module_path});",
+                "const dimensions=Array.from({length:7},(_,index)=>({name:`维度 ${index+1}`,score:4,rationale:`理由 ${index+1}`}));",
+                "const model=ui.buildAuditModel({",
+                " parseQuality:{status:'approved',workflow_can_continue:true,summary:{studies:3,objects:21,needs_review:0,approved:3,pdf_locator_only:8,reparse_required:0},studies:[{study_id:'scholarly-0792992b4e71861e',objects:[{decision:{action:'pdf_locator_only'}}]}]},",
+                " protocol:{status:'approved',protocol:{comparison_objects:['scholarly-0792992b4e71861e'],normalization_rules:['保留原始单位'],missing_value_policy:'缺失值不插补',incomparability_rules:['不同终点不排名'],counterevidence_rules:['保留失败结果'],claim_strength:'有边界综合',decision:{action:'approve',reason:'已核对',actor_label:'李研究员'}}},",
+                " synthesis:{coverage:{corpus_kind:'calibration_corpus',axes:[{axis_id:'scope_and_limits',question:'范围如何不同',counterevidence_ids:['PE-SECRET'],incomparable_items:['终点不同'],impact_on_conclusion:'不排名'}]}},",
+                " figures:{summary:{source_count:32,placeholder_count:1},source_figures:[{figure_id:'scholarly-secret:figure-1',study_id:'scholarly-secret',figure_label:'Figure 1'}],placeholders:[{placeholder_id:'placeholder-scope-v1',scientific_question:'哪些范围不可比？',reader_takeaway:'保持论文特异边界',status:'awaiting_human_figure'}]},",
+                " progress:{credits:{measured:null,forecast:null}},",
+                " final:{evaluation:{score:82,dimensions,hard_fails:['缺少署名'],issues:['一项待修复']}}",
+                "});",
+                "const encoded=JSON.stringify(model);",
+                "for(const secret of ['scholarly-','calibration_corpus','placeholder-scope-v1','PE-SECRET','scope_and_limits']) if(encoded.includes(secret)) throw new Error(`leaked ${secret}: ${encoded}`);",
+                "for(const label of ['解析质量','归一化规则','缺失值规则','不可比规则','反证规则','决策者：李研究员','来源署名与复用权利未提供','缺口原因未提供','实测消耗：未记录','预测用量：未估算','Hard Fails','缺少署名','一项待修复']) if(!encoded.includes(label)) throw new Error(`missing ${label}: ${encoded}`);",
+                "if(model.evaluation.dimensions.length!==7 || model.evaluation.score!=='82') throw new Error(encoded);",
+            ]
+        )
+    )
+
+
+def test_audit_component_does_not_invent_missing_evaluation() -> None:
+    module_path = json.dumps(str(DASHBOARD / "review-audit.js"))
+    _run_node(
+        "\n".join(
+            [
+                f"const ui=require({module_path});",
+                "const model=ui.buildAuditModel({final:{quality_report:{status:'SELF_REVIEWED_DRAFT',errors:[],warnings:[]}}});",
+                "const encoded=JSON.stringify(model.evaluation);",
+                "if(model.evaluation.available) throw new Error(encoded);",
+                "if(!encoded.includes('评估数据未提供')) throw new Error(encoded);",
+                "if(encoded.includes('通过') || encoded.includes('100') || encoded.includes('0分')) throw new Error(`invented verdict: ${encoded}`);",
+            ]
+        )
+    )
+
+
+def test_research_workspaces_do_not_render_opaque_identifiers() -> None:
+    evidence = (DASHBOARD / "review-evidence.js").read_text(encoding="utf-8")
+    synthesis = (DASHBOARD / "review-synthesis.js").read_text(encoding="utf-8")
+    assert "item.study_id ||" not in evidence
+    assert "coverage.corpus_kind" not in synthesis
+    assert "item.placeholder_id" not in synthesis
+    assert "item.section_id" not in synthesis
+    assert "item.supporting_evidence_ids || []).join" not in synthesis
+    for label in ("归一化规则", "缺失值规则", "不可比规则", "反证规则"):
+        assert label in synthesis

@@ -14,6 +14,12 @@
     return node;
   };
   const list = value => Array.isArray(value) && value.length ? value.join("、") : "—";
+  const label = (value, fallback) => window.ReviewAuditUI.researcherLabel(value, fallback);
+  const epistemicLabels = {
+    experimental_observation: "实验观察",
+    author_interpretation: "作者解释",
+    proposed_mechanism: "提出的机制",
+  };
   const api = (id, suffix, options) => fetch(`/api/project/${encodeURIComponent(id)}/${suffix}`, options).then(response => {
     if (!response.ok) throw new Error(response.status === 409 ? "内容已更新，请刷新后重新核对。" : "工作台暂不可用。");
     return response.json();
@@ -26,19 +32,24 @@
     const legacyRisk = document.getElementById("risk-stage-panel");
     if (legacyRisk && payload.route === "evidence-to-release.v1") legacyRisk.hidden = true;
     if (shell.hidden) return;
-    status.textContent = payload.status === "approved" ? "已闭合" : "需要核对";
-    message.textContent = payload.reason || "证据决定不会自动授权综合判断。";
+    status.textContent = window.ReviewAuditUI.humanStatus(payload.status);
+    message.textContent = "证据决定不会自动授权综合判断。";
     const items = payload.items || [];
     if (!items.length) { root.append(text("p", "尚未导入候选证据。", "workspace-empty")); return; }
     const listNode = document.createElement("div"); listNode.className = "evidence-card-list";
-    items.forEach(item => {
+    items.forEach((item, index) => {
       const card = document.createElement("article"); card.className = "evidence-card";
       const heading = document.createElement("header");
-      heading.append(text("strong", item.statement), text("span", item.status, "workspace-status")); card.append(heading);
-      card.append(text("p", `${item.study_id || "研究"} · ${item.epistemic_type || "证据"} · 第 ${item.locator?.page || "?"} 页`, "evidence-meta"));
+      heading.append(text("strong", item.statement), text("span", window.ReviewAuditUI.humanStatus(item.status), "workspace-status")); card.append(heading);
+      const studyLabel = label(item.study_label || item.citation || item.title, `研究 ${index + 1}`);
+      card.append(text("p", `${studyLabel} · ${epistemicLabels[item.epistemic_type] || "证据"} · 第 ${item.locator?.page || "?"} 页`, "evidence-meta"));
       card.append(text("p", `条件：${list(item.reported_conditions)}；定量结果：${list(item.quantitative_results)}`));
-      card.append(text("p", `机制等级：${item.mechanism_grade || "—"}；风险：${list(item.risk_classes)}`));
+      card.append(text("p", `机制证据等级：${item.mechanism_grade ? "已记录" : "未提供"}；科学风险：${(item.risk_classes || []).length} 类`));
       if (item.locator?.exact_quote) card.append(text("blockquote", item.locator.exact_quote));
+      if (item.decision) {
+        const actor = {actor_type:item.decision.actor_type, actor_label:item.decision.actor_label};
+        card.append(text("p", `${window.ReviewAuditUI.humanStatus(item.decision.action)} · ${window.ReviewAuditUI.decisionActor(actor)} · ${label(item.decision.reason, "理由未提供")}`, "decision-line"));
+      }
       const references = document.createElement("p"); references.className = "evidence-links";
       [[item.pdf_page_url, "打开原论文页"], [item.parsed_text_url, "打开解析正文"]].forEach(([href, label]) => { if (!href) return; const link = document.createElement("a"); link.href = href; link.target = "_blank"; link.rel = "noopener"; link.textContent = label; references.append(link); });
       card.append(references);

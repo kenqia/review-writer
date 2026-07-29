@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/assets/dashboard/review-evidence.css">
   <link rel="stylesheet" href="/assets/dashboard/review-manuscript.css">
   <link rel="stylesheet" href="/assets/dashboard/review-release.css">
+  <link rel="stylesheet" href="/assets/dashboard/review-audit.css">
 </head>
 <body class="page-review">
   <a class="skip-link" href="#primary-workspace">跳到主要工作区</a>
@@ -276,6 +277,17 @@
             </div>
           </section>
           </div>
+
+          <section id="review-audit" class="review-audit" aria-labelledby="review-audit-heading" hidden>
+            <header class="review-audit-heading">
+              <div>
+                <p class="section-label">Review closure</p>
+                <h2 id="review-audit-heading">审查闭环与发布评估</h2>
+              </div>
+              <p>持续显示解析、比较协议、综合覆盖、图件披露、credits 与发布评估；缺失数据保持显式未知。</p>
+            </header>
+            <div id="review-audit-root" class="review-audit-grid" aria-live="polite"></div>
+          </section>
         </div>
 
         <aside class="context-column" aria-labelledby="context-heading">
@@ -397,6 +409,7 @@
 
   <script src="/assets/dashboard/review-manuscript.js"></script>
   <script src="/assets/dashboard/review-release.js"></script>
+  <script src="/assets/dashboard/review-audit.js"></script>
   <script>
     const $ = id => document.getElementById(id);
     const stageLabels = {
@@ -445,6 +458,7 @@
     let manuscriptEvidencePayload = {items:[]};
     let manuscriptSynthesisPayload = {items:[]};
     let reviewFigurePayload = {source_figures:[], placeholders:[]};
+    let comparisonProtocolPayload = {status:'unavailable', protocol:{}};
     let finalPayload = {final_draft_docx_exists:false, final_draft_docx_path:''};
     let sourcePayload = {counts:{total:0,ready:0,missing:0}, sources:[], supplements:[], unresolved:[], upload_required:false};
     let progressPayload = {active_stage:'sources', stages:[], studies:[], blocker:'', recommended_next:'', release_capabilities:{internal_draft_export_ready:false,verified_release_ready:false}};
@@ -750,11 +764,11 @@
         article.append(textElement('p', '', risk.source_excerpt || risk.evidence_summary || '证据摘要待补充'));
         target.append(article);
       });
-      cards.slice(0, 2).forEach(card => {
+      cards.slice(0, 2).forEach((card, index) => {
         const article = document.createElement('article');
         article.className = 'context-item evidence-context';
         article.append(textElement('span', 'context-type', '已复核研究'));
-        article.append(textElement('h3', '', card.citation || card.study_id || '研究记录'));
+        article.append(textElement('h3', '', card.citation || `研究 ${index + 1}`));
         article.append(textElement('p', '', card.source_excerpt || '原文摘录已记录'));
         target.append(article);
       });
@@ -773,11 +787,11 @@
       const counts = sourcePayload.counts || {};
       $('source-coverage').textContent = `${counts.ready || 0} / ${counts.total || 0} 已就绪`;
       clear($('source-list'));
-      (sourcePayload.sources || []).forEach(source => {
+      (sourcePayload.sources || []).forEach((source, index) => {
         const row = document.createElement('article');
         row.className = `source-row${source.status === '已获得' ? ' ready' : ' missing'}`;
         const copy = document.createElement('div');
-        copy.append(textElement('strong', '', source.citation || source.study_id || '研究来源'));
+        copy.append(textElement('strong', '', source.citation || `研究来源 ${index + 1}`));
         copy.append(textElement('span', '', `${source.role || '全文'} · ${source.message || source.status || '待核验'}`));
         row.append(copy, textElement('b', '', source.status || '待核验'));
         if (source.download_url && source.status !== '已获得') {
@@ -818,7 +832,7 @@
           if (!source) return;
           const option = document.createElement('option');
           option.value = downloadId;
-          option.textContent = `${source.citation || source.study_id || '研究来源'} · ${source.role || '全文'}`;
+          option.textContent = `${source.citation || '研究来源'} · ${source.role || '全文'}`;
           select.append(option);
         });
         const button = document.createElement('button');
@@ -855,9 +869,9 @@
         $('processing-stage-list').append(item);
       });
       clear($('processing-study-list'));
-      (progressPayload.studies || []).forEach(study => {
+      (progressPayload.studies || []).forEach((study, index) => {
         const row = document.createElement('article');
-        row.append(textElement('strong', '', study.label || study.study_id || '研究'));
+        row.append(textElement('strong', '', study.label || `研究 ${index + 1}`));
         row.append(textElement('span', '', study.status || '等待处理'));
         if (study.next_action) row.append(textElement('p', 'study-next-action', study.next_action));
         $('processing-study-list').append(row);
@@ -917,7 +931,7 @@
         button.setAttribute('aria-pressed', String(study.study_id === activeParseStudyId));
         button.append(textElement('span', 'parse-quality-study-index', String(index + 1).padStart(2, '0')));
         const copy = document.createElement('span');
-        copy.append(textElement('strong', '', study.label || study.study_id || '研究'));
+        copy.append(textElement('strong', '', study.label || `研究 ${index + 1}`));
         copy.append(textElement('small', '', parseStudyState(study)));
         button.append(copy);
         button.addEventListener('click', () => {
@@ -1273,6 +1287,22 @@
       renderModeCoverage();
       renderCockpitContext();
       renderStageWorkspace();
+      renderReviewAudit();
+    }
+
+    function renderReviewAudit() {
+      const panel = $('review-audit');
+      const visible = progressPayload.route === 'evidence-to-release.v1';
+      panel.hidden = !visible;
+      if (!visible) return;
+      ReviewAuditUI.renderAudit($('review-audit-root'), {
+        parseQuality:parseQualityPayload,
+        protocol:comparisonProtocolPayload,
+        synthesis:manuscriptSynthesisPayload,
+        figures:reviewFigurePayload,
+        progress:progressPayload,
+        final:finalPayload,
+      });
     }
 
     function sectionLineage(sectionId) {
@@ -1334,7 +1364,7 @@
       context.source_figures.forEach(item => {
         const record = document.createElement('article'); record.className = 'context-record figure-record';
         record.append(textElement('strong', '', item.title || '原论文图片'));
-        record.append(textElement('span', '', [item.study_id, item.page_label, item.caption].filter(Boolean).join(' · ') || '图片说明待核对'));
+        record.append(textElement('span', '', [item.page_label, item.caption].filter(Boolean).join(' · ') || '图片说明待核对'));
         if (item.image_url) {
           const image = document.createElement('img'); image.src = item.image_url; image.alt = item.caption || item.title || '原论文图片'; image.loading = 'lazy'; record.append(image);
         }
@@ -1513,7 +1543,7 @@
       const study = document.createElement('section');
       study.className = 'chain-node';
       study.append(textElement('span', 'chain-step', '01 · 研究'));
-      study.append(textElement('h4', '', card.citation || card.study_id || '研究记录'));
+      study.append(textElement('h4', '', card.citation || '研究记录'));
       inspector.append(study);
 
       const evidenceList = detail.evidence || claim.evidence || [];
@@ -2007,9 +2037,11 @@
           optionalPayload(`/api/project/${encoded}/paper-evidence`, {items:[]}),
           optionalPayload(`/api/project/${encoded}/synthesis`, {items:[]}),
           optionalPayload(`/api/project/${encoded}/review-figures`, {source_figures:[],placeholders:[]}),
+          optionalPayload(`/api/project/${encoded}/comparison-protocol`, {status:'unavailable',protocol:{}}),
         ]);
         const [nextProjectState, nextCockpitPayload, nextDraftPayload, nextEvidencePayload, nextRiskPayload, nextSourcePayload, nextProgressPayload, nextParseQualityPayload, nextFigurePayload, nextFinalPayload] = projectPayloads;
         const [nextManuscriptEvidencePayload, nextManuscriptSynthesisPayload, nextReviewFigurePayload] = projectPayloads.slice(10);
+        const nextComparisonProtocolPayload = projectPayloads[13];
         if (
           generation !== projectLoadGeneration
           || projectId !== requestedProjectId
@@ -2029,6 +2061,7 @@
         manuscriptEvidencePayload = nextManuscriptEvidencePayload;
         manuscriptSynthesisPayload = nextManuscriptSynthesisPayload;
         reviewFigurePayload = nextReviewFigurePayload;
+        comparisonProtocolPayload = nextComparisonProtocolPayload;
         editorDirty = false;
         riskDecisionDirty = false;
         parseQualityDirty.clear();
@@ -2063,10 +2096,10 @@
       try {
         projects = await getPayload('/api/projects');
         clear($('project'));
-        projects.forEach(project => {
+        projects.forEach((project, index) => {
           const option = document.createElement('option');
           option.value = project.project_id;
-          option.textContent = project.topic || project.project_id;
+          option.textContent = project.topic || `综述项目 ${index + 1}`;
           $('project').append(option);
         });
         if (!projects.length) {
@@ -2079,18 +2112,6 @@
           $('project').value = projectId;
           setEmptyProjectWorkspace(false);
           setWorkspace(activeWorkspace);
-          if (
-            activeWorkspace === 'cockpit'
-            && !editorDirty
-            && !editorBusy
-            && !projectLoadBusy
-            && !exportBusy
-            && !sourceUploadBusy
-            && !riskDecisionDirty
-            && !parseQualityDirty.size
-            && !parseQualityBusy.size
-            && !$('parse-quality-stage-panel').contains(document.activeElement)
-          ) return loadProject();
           return 'unchanged';
         }
         projectId = projects[0].project_id;
