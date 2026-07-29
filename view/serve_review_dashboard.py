@@ -78,6 +78,7 @@ from review_writer.project.synthesis import (  # noqa: E402
     apply_comparison_protocol_decision,
     apply_synthesis_decision,
     comparison_protocol_state,
+    coverage_map_state,
     synthesis_state,
 )
 from review_writer.project.section_contract import (  # noqa: E402
@@ -2803,19 +2804,22 @@ def project_comparison_protocol_payload(review_root: Path, project_id: str) -> d
     visible = {key: value.get(key) for key in ("comparison_id", "comparison_objects", "axes", "normalization_rules", "missing_value_policy", "incomparability_rules", "counterevidence_rules", "claim_strength") if key in value}
     visible["decision"] = _safe_decision(value.get("decision"))
     visible["version_token"] = _workspace_token("comparison-protocol", str(value.get("comparison_id") or "protocol"), value.get("protocol_digest"))
-    return {"route": "evidence-to-release.v1", "status": state.get("status", "needs_review"), "reason": state.get("reason_code"), "workflow_can_continue": bool(state.get("workflow_can_continue")), "protocol": visible}
+    return {"route": "evidence-to-release.v1", "status": state.get("status", "needs_review"), "reason": state.get("reason_code"), "workflow_can_continue": bool(state.get("workflow_can_continue")), "evidence_ready": bool(workflow.get("paper_evidence_ready")), "protocol": visible}
 
 
 def project_synthesis_payload(review_root: Path, project_id: str) -> dict[str, Any]:
     project = project_dir(review_root, project_id); workflow = workflow_state(project)
     if workflow.get("route") != "evidence-to-release.v1":
         return {"route": workflow.get("route", "legacy"), "status": "legacy", "items": []}
-    state = synthesis_state(project); items = []
+    state = synthesis_state(project); coverage = coverage_map_state(project); items = []
     for row in state.get("rows", []):
         if not isinstance(row, dict): continue
         item = {key: row.get(key) for key in ("synthesis_id", "proposition", "comparison_axis", "supporting_evidence_ids", "counter_evidence_ids", "applicability_boundary", "mechanism_evidence_grade", "uncertainty", "risk_class", "single_study", "status", "reason_code")}
         item["decision"] = _safe_decision(row.get("decision")); item["version_token"] = _workspace_token("synthesis", str(row.get("synthesis_id")), row.get("synthesis_digest")); items.append(item)
-    return {"route": "evidence-to-release.v1", "status": state.get("status", "needs_review"), "reason": state.get("reason_code"), "workflow_can_continue": bool(state.get("workflow_can_continue")), "items": items}
+    coverage_value = coverage.get("value") if isinstance(coverage.get("value"), dict) else {}
+    safe_coverage = {key: coverage_value.get(key) for key in ("comparison_id", "corpus_kind", "axes", "known_omissions") if key in coverage_value}
+    safe_coverage.update({"status": coverage.get("status"), "reason": coverage.get("reason_code")})
+    return {"route": "evidence-to-release.v1", "status": state.get("status", "needs_review"), "reason": state.get("reason_code"), "workflow_can_continue": bool(state.get("workflow_can_continue")), "protocol_ready": bool(comparison_protocol_state(project).get("workflow_can_continue")), "items": items, "coverage": safe_coverage}
 
 
 def project_section_contracts_payload(review_root: Path, project_id: str) -> dict[str, Any]:
@@ -2827,7 +2831,7 @@ def project_section_contracts_payload(review_root: Path, project_id: str) -> dic
         if not isinstance(row, dict): continue
         item = {key: row.get(key) for key in ("section_id", "research_question", "comparison_axes", "expected_synthesis", "counterevidence_and_limitations", "evidence_budget", "synthesis_budget", "figure_plan", "allowed_wording_strength", "status", "reason_code")}
         item["decision"] = _safe_decision(row.get("decision")); item["version_token"] = _workspace_token("section-contract", str(row.get("section_id")), row.get("contract_digest")); items.append(item)
-    return {"route": "evidence-to-release.v1", "status": state.get("status", "needs_review"), "reason": state.get("reason_code"), "workflow_can_continue": bool(state.get("workflow_can_continue")), "items": items}
+    return {"route": "evidence-to-release.v1", "status": state.get("status", "needs_review"), "reason": state.get("reason_code"), "workflow_can_continue": bool(state.get("workflow_can_continue")), "synthesis_ready": bool(synthesis_state(project).get("workflow_can_continue")), "items": items}
 
 
 def project_review_figures_workspace_payload(review_root: Path, project_id: str) -> dict[str, Any]:

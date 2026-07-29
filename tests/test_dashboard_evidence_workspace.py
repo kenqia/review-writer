@@ -89,3 +89,6 @@ def test_review_html_loads_split_workspace_modules_and_hides_new_route_risk() ->
     assert "evidence-to-release.v1" in evidence
     assert "原论文图片" in synthesis
     assert "综合图制图任务" in synthesis
+    assert "Coverage Map" in synthesis
+    assert "protocol.evidence_ready" in synthesis
+    assert "button.disabled = !synthesis.protocol_ready" in synthesis

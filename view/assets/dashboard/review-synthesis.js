@@ -17,19 +17,25 @@
     protocolPanel.append(text("p", `结论强度：${p.claim_strength || "—"}`));
     if (p.decision) protocolPanel.append(text("p", `决定：${p.decision.action} · ${p.decision.reason || ""}`, "decision-line"));
     if (!p.decision) {
-      const protocolButton = document.createElement("button"); protocolButton.type = "button"; protocolButton.textContent = "批准比较协议";
+      const protocolButton = document.createElement("button"); protocolButton.type = "button"; protocolButton.textContent = "批准比较协议"; protocolButton.disabled = !protocol.evidence_ready;
+      if (!protocol.evidence_ready) protocolButton.title = "先完成 Paper Evidence 审查";
       protocolButton.addEventListener("click", () => decide("comparison-protocol", {version_token: p.version_token})); protocolPanel.append(protocolButton);
     }
+    const coveragePanel = section("Coverage Map");
+    const coverage = synthesis.coverage || {};
+    coveragePanel.append(text("p", `语料库：${coverage.corpus_kind || "—"}；状态：${coverage.status || "needs_review"}`));
+    (coverage.axes || []).forEach(axis => coveragePanel.append(text("p", typeof axis === "object" ? JSON.stringify(axis) : axis)));
+    if (coverage.known_omissions?.length) coveragePanel.append(text("p", `已知遗漏：${coverage.known_omissions.join("、")}`));
     const claimPanel = section("Synthesis Claims");
     (synthesis.items || []).forEach(item => {
       const card = document.createElement("article"); card.className = "synthesis-card";
       card.append(text("strong", item.proposition), text("p", `比较轴：${item.comparison_axis}；边界：${item.applicability_boundary}`));
       card.append(text("p", `支持证据：${(item.supporting_evidence_ids || []).join("、") || "—"}；反证：${(item.counter_evidence_ids || []).join("、") || "—"}`));
       card.append(text("p", `不确定性：${item.uncertainty}；风险：${item.risk_class}`, "evidence-meta"));
-      const button = document.createElement("button"); button.type = "button"; button.textContent = "记录决定"; button.addEventListener("click", () => decide("synthesis", item)); card.append(button); claimPanel.append(card);
+      const button = document.createElement("button"); button.type = "button"; button.textContent = "记录决定"; button.disabled = !synthesis.protocol_ready; if (!synthesis.protocol_ready) button.title = "先批准 Comparison Protocol"; button.addEventListener("click", () => decide("synthesis", item)); card.append(button); claimPanel.append(card);
     });
     const contractPanel = section("Section Contracts");
-    (contracts.items || []).forEach(item => { const card = document.createElement("article"); card.className = "synthesis-card"; card.append(text("strong", item.section_id), text("p", item.research_question), text("p", `预期综合判断：${item.expected_synthesis}`), text("p", `图计划：${JSON.stringify(item.figure_plan || [])}`)); const button = document.createElement("button"); button.type = "button"; button.textContent = "记录决定"; button.addEventListener("click", () => decide("section-contracts", item)); card.append(button); contractPanel.append(card); });
+    (contracts.items || []).forEach(item => { const card = document.createElement("article"); card.className = "synthesis-card"; card.append(text("strong", item.section_id), text("p", item.research_question), text("p", `预期综合判断：${item.expected_synthesis}`), text("p", `图计划：${JSON.stringify(item.figure_plan || [])}`)); const button = document.createElement("button"); button.type = "button"; button.textContent = "记录决定"; button.disabled = !contracts.synthesis_ready; if (!contracts.synthesis_ready) button.title = "先完成 Synthesis Claims 审查"; button.addEventListener("click", () => decide("section-contracts", item)); card.append(button); contractPanel.append(card); });
     const figurePanel = section("原论文图片");
     (figures.source_figures || []).forEach(item => {
       const row = document.createElement("div"); row.className = "figure-source-row";
@@ -39,7 +45,7 @@
     });
     figurePanel.append(text("h4", "综合图制图任务", "placeholder-heading"));
     (figures.placeholders || []).forEach(item => figurePanel.append(text("p", `${item.placeholder_id}：${item.reader_takeaway}（${item.status}）`, "figure-placeholder-row")));
-    root.append(protocolPanel, claimPanel, contractPanel, figurePanel);
+    root.append(protocolPanel, coveragePanel, claimPanel, contractPanel, figurePanel);
   }
   async function decide(kind, item) {
     if (busy) return; busy = true; const reason = window.prompt("请记录这项决定的理由", item.decision?.reason || "研究者核对后决定");
