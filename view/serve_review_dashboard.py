@@ -2103,6 +2103,39 @@ def _open_scientific_risk_count(packet: Any, decision_payload: Any) -> int:
 
 def project_cockpit_payload(review_root: Path, project_id: str) -> dict[str, Any]:
     project = project_dir(review_root, project_id)
+    workflow = workflow_state(project)
+    if workflow.get("route") == "evidence-to-release.v1":
+        evidence = paper_evidence_state(project)
+        study_rows: dict[str, list[dict[str, Any]]] = {}
+        for row in evidence.get("rows", []):
+            if not isinstance(row, dict):
+                continue
+            study_id = visible_text(row.get("study_id"))
+            if study_id:
+                study_rows.setdefault(study_id, []).append(row)
+        reviewed_studies = sum(
+            bool(rows)
+            and all(row.get("status") in {"approved", "rejected"} for row in rows)
+            for rows in study_rows.values()
+        )
+        study_count = evidence.get("study_count", 0)
+        if isinstance(study_count, bool) or not isinstance(study_count, int) or study_count < 0:
+            study_count = 0
+        blockers = workflow.get("blockers")
+        blockers = blockers if isinstance(blockers, list) else []
+        progress = project_progress_payload(review_root, project_id)
+        return {
+            "project_id": project_id,
+            "current_stage": progress["active_stage"],
+            "metrics": {
+                "included_studies": study_count,
+                "full_text_main_coverage": study_count if workflow.get("parse_ready") else 0,
+                "reviewed_studies": reviewed_studies,
+                "scientific_risks": len(blockers),
+            },
+            "recommended_next": progress["recommended_next"],
+            "mode_coverage": [],
+        }
     state = read_json_if_exists(project / "00_brief" / "review_state.json") or {}
     screening = read_json_if_exists(project / "00_discovery" / "screening_decisions.json") or {}
     decisions = screening.get("decisions") if isinstance(screening, dict) else None
@@ -2872,6 +2905,9 @@ def _safe_decision(value: object) -> dict[str, Any] | None:
         result["reason"] = reason
     if isinstance(value.get("decided_at"), str):
         result["decided_at"] = value["decided_at"]
+    for key in ("actor_type", "actor_label"):
+        if isinstance(value.get(key), str):
+            result[key] = value[key]
     return result
 
 
@@ -2944,6 +2980,38 @@ def project_synthesis_payload(review_root: Path, project_id: str) -> dict[str, A
         item["decision"] = _safe_decision(row.get("decision")); item["version_token"] = _workspace_token("synthesis", str(row.get("synthesis_id")), row.get("synthesis_digest")); items.append(item)
     coverage_value = coverage.get("value") if isinstance(coverage.get("value"), dict) else {}
     safe_coverage = {key: coverage_value.get(key) for key in ("comparison_id", "corpus_kind", "axes", "known_omissions") if key in coverage_value}
+    axes = coverage_value.get("axes") if isinstance(coverage_value.get("axes"), list) else []
+    conflict_register = []
+    conflict_check_complete = bool(axes)
+    for axis in axes:
+        if not isinstance(axis, dict):
+            conflict_check_complete = False
+            continue
+        counterevidence = axis.get("counterevidence_ids")
+        incomparable = axis.get("incomparable_items")
+        if not isinstance(counterevidence, list) or not isinstance(incomparable, list):
+            conflict_check_complete = False
+            continue
+        if counterevidence or incomparable:
+            conflict_register.append(
+                {
+                    key: axis.get(key)
+                    for key in (
+                        "axis_id",
+                        "counterevidence_ids",
+                        "incomparable_items",
+                        "impact_on_conclusion",
+                    )
+                }
+            )
+    safe_coverage["conflict_status"] = (
+        "registered"
+        if conflict_register
+        else "checked_no_conflicts"
+        if conflict_check_complete
+        else "not_checked"
+    )
+    safe_coverage["conflict_register"] = conflict_register
     safe_coverage.update({"status": coverage.get("status"), "reason": coverage.get("reason_code")})
     return {"route": "evidence-to-release.v1", "status": state.get("status", "needs_review"), "reason": state.get("reason_code"), "workflow_can_continue": bool(state.get("workflow_can_continue")), "protocol_ready": bool(comparison_protocol_state(project).get("workflow_can_continue")), "items": items, "coverage": safe_coverage}
 
@@ -2968,10 +3036,66 @@ def project_review_figures_workspace_payload(review_root: Path, project_id: str)
     registry = read_json_if_exists(registry_path)
     if not isinstance(registry, dict):
         registry = build_source_figure_registry(project)
+    pool = read_json_if_exists(project / "00_discovery/candidate_pool.json") or {}
+    candidates = pool.get("candidates") if isinstance(pool, dict) else []
+    publication_by_study = {}
+    for candidate in candidates if isinstance(candidates, list) else []:
+        if not isinstance(candidate, dict):
+            continue
+        study_id = visible_text(candidate.get("candidate_id") or candidate.get("study_id"))
+        if not study_id:
+            continue
+        authors = candidate.get("authors")
+        publication_by_study[study_id] = {
+            "title": visible_text(candidate.get("title")),
+            "authors": [visible_text(author) for author in authors if visible_text(author)]
+            if isinstance(authors, list)
+            else [],
+            "year": candidate.get("year")
+            if isinstance(candidate.get("year"), int) and not isinstance(candidate.get("year"), bool)
+            else visible_text(candidate.get("year")),
+            "journal": visible_text(candidate.get("journal")),
+            "doi": visible_text(candidate.get("doi")),
+        }
     source_figures = []
     for row in registry.get("figures", []):
         if not isinstance(row, dict): continue
         item = {key: row.get(key) for key in ("figure_id", "study_id", "source_id", "page", "figure_label", "caption", "evidence_ids", "selection_status")}
+        publication = publication_by_study.get(visible_text(row.get("study_id")), {})
+        item["publication_identity"] = publication
+        attribution_parts = []
+        if publication.get("authors"):
+            attribution_parts.append(", ".join(publication["authors"]))
+        if publication.get("title"):
+            attribution_parts.append(publication["title"])
+        journal_year = " ".join(
+            str(value) for value in (publication.get("journal"), publication.get("year")) if value
+        )
+        if journal_year:
+            attribution_parts.append(journal_year)
+        if publication.get("doi"):
+            attribution_parts.append(f"DOI: {publication['doi']}")
+        figure_locator = " ".join(
+            str(value)
+            for value in (row.get("figure_label"), f"page {row.get('page')}" if row.get("page") else "")
+            if value
+        )
+        if figure_locator:
+            attribution_parts.append(figure_locator)
+        item["attribution"] = ". ".join(attribution_parts)
+        rights_status = row.get("rights_status")
+        rights_status = rights_status if rights_status in {"unknown", "cleared"} else "unknown"
+        item["rights_context"] = {
+            "status": rights_status,
+            "license": visible_text(row.get("rights_license")),
+            "evidence_reference": visible_text(row.get("rights_evidence_reference")),
+            "reuse_scope": "publication_reuse_permitted" if rights_status == "cleared" else "internal_review_only",
+            "notice": (
+                "Publication reuse rights are marked cleared in the source figure registry."
+                if rights_status == "cleared"
+                else "Internal review only; publication reuse rights are not cleared."
+            ),
+        }
         item["version_token"] = _workspace_token("review-figure", str(row.get("figure_id")), row.get("asset_sha256"))
         item["image_url"] = f"/api/project/{quote(project_id, safe='')}/source-figure?figure_id={quote(str(row.get('figure_id')), safe='')}"
         item["pdf_page_url"] = f"/api/project/{quote(project_id, safe='')}/source/{quote(str(row.get('source_id')), safe='')}/pdf-page?page={int(row.get('page') or 1)}"
@@ -2979,6 +3103,19 @@ def project_review_figures_workspace_payload(review_root: Path, project_id: str)
     placeholders = []
     for row in synthesis_figure_placeholders(project):
         item = {key: row.get(key) for key in ("placeholder_id", "scientific_question", "reader_takeaway", "panels", "comparison_axis", "required_labels_units", "counter_evidence", "forbidden_overclaims", "unresolved_uncertainties", "caption_draft", "target_size", "status")}
+        question = visible_text(row.get("scientific_question"))
+        uncertainties = row.get("unresolved_uncertainties")
+        uncertainties = (
+            [visible_text(value) for value in uncertainties if visible_text(value)]
+            if isinstance(uncertainties, list)
+            else []
+        )
+        gap_parts = [
+            "Purpose-built cross-study synthesis figure required",
+            question,
+            "Unresolved uncertainties: " + "; ".join(uncertainties) if uncertainties else "",
+        ]
+        item["gap_reason"] = ". ".join(part for part in gap_parts if part)
         item["version_token"] = _workspace_token("review-placeholder", str(row.get("placeholder_id")), row)
         placeholders.append(item)
     return {"route": "evidence-to-release.v1", "figure_policy": "source_figures_or_synthesis_placeholders_only", "source_figures": source_figures, "placeholders": placeholders, "summary": {"source_count": len(source_figures), "placeholder_count": len(placeholders)}}

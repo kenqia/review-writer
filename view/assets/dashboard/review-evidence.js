@@ -39,6 +39,7 @@
       card.append(text("p", `条件：${list(item.reported_conditions)}；定量结果：${list(item.quantitative_results)}`));
       card.append(text("p", `机制等级：${item.mechanism_grade || "—"}；风险：${list(item.risk_classes)}`));
       if (item.locator?.exact_quote) card.append(text("blockquote", item.locator.exact_quote));
+      if (item.decision) card.append(text("p", `决定：${item.decision.action}；执行者：${item.decision.actor_type || "—"} / ${item.decision.actor_label || "—"}；理由：${item.decision.reason || "—"}`, "decision-line"));
       const references = document.createElement("p"); references.className = "evidence-links";
       [[item.pdf_page_url, "打开原论文页"], [item.parsed_text_url, "打开解析正文"]].forEach(([href, label]) => { if (!href) return; const link = document.createElement("a"); link.href = href; link.target = "_blank"; link.rel = "noopener"; link.textContent = label; references.append(link); });
       card.append(references);
