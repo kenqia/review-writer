@@ -527,8 +527,8 @@ git commit -m "feat: add typed paper evidence review"
 
 **Task 4 completion record (2026-07-29):** Implemented and hardened in `d132dc1`.
 Focused regression: 239 passed; workflow projection: 5 passed; implementation report: 244 passed.
-Project checks: `make smoke`, `make quality-check`, `git diff --check` passed. Specification review passed.
-Code-quality review was requested against the final commit; Windows-native `msvcrt` execution remains a static-review gap.
+Project checks: `make smoke`, `make quality-check`, `git diff --check` passed. Specification and code-quality reviews passed.
+Two non-blocking Minor candidates remain (narrow lock/output-parent symlink-swap TOCTOU and defensive duplicate event rejection); Windows-native `msvcrt` execution remains a static-review gap.
 
 ---
 
