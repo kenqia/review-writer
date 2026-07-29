@@ -268,6 +268,12 @@ def build_content_task_package(project: Path, request: object, output_dir: Path 
         raise ContentAgentError("PACKAGE_FORBIDDEN_INPUT")
     if output_dir is not None:
         destination = Path(output_dir)
+        try:
+            destination.resolve(strict=False).relative_to(root)
+        except ValueError:
+            pass
+        else:
+            raise ContentAgentError("PACKAGE_OUTPUT_IN_PROJECT")
         if destination.exists() and (destination.is_symlink() or not destination.is_dir()):
             raise ContentAgentError("PACKAGE_OUTPUT_INVALID")
         destination.mkdir(parents=True, exist_ok=True)
