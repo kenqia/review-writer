@@ -938,16 +938,16 @@ git commit -m "test(product): add three-study vertical acceptance path"
 **Why:** Starts the actual benchmark rather than another synthetic/demo loop. This task writes only ignored project data.
 
 **Runtime paths:**
-- Windows-native QoderWork repository workspace: `C:\Users\26960\QW-RW\review-writer\`
-- Windows-native ignored project: `C:\Users\26960\QW-RW\review-writer\review-projects\case-02-katritzky-deaminative-functionalization\`
+- Windows-native QoderWork repository workspace: `<WINDOWS_REPO>`
+- Windows-native ignored project: `<WINDOWS_REPO>\review-projects\case-02-katritzky-deaminative-functionalization\`
 
 - [ ] **Step 1: Create or refresh one Windows-native runtime clone without remote writes**
 
 Use the local implementation branch as source so QoderWork receives an ordinary `C:\` workspace even before remote integration:
 
 ```bash
-SOURCE_REPO=/home/kenqia/my_folder/review-writer/.worktrees/qoderwork-native-review-workbench
-WINDOWS_REPO=/mnt/c/Users/26960/QW-RW/review-writer
+SOURCE_REPO="<REPO_ROOT>"
+WINDOWS_REPO="<WINDOWS_REPO>"
 if [ ! -e "$WINDOWS_REPO/.git" ]; then
   git clone --no-local --branch feat/qoderwork-native-review-workbench "$SOURCE_REPO" "$WINDOWS_REPO"
 else
@@ -961,7 +961,7 @@ If the existing Windows clone is dirty or cannot fast-forward, stop and preserve
 
 - [ ] **Step 2: Build and install the current Expert Kit once**
 
-Inside the Windows-native clone, run `make qoderwork-plugin-package`. Upload the resulting Expert Kit to QoderWork CN only if version `0.2.0` is not already installed. This one-time UI installation is the only setup action exposed to the user; select `C:\Users\26960\QW-RW\review-writer` as the task workspace.
+Inside the Windows-native clone, run `make qoderwork-plugin-package`. Upload the resulting Expert Kit to QoderWork CN only if version `0.2.0` is not already installed. This one-time UI installation is the only setup action exposed to the user; select `<WINDOWS_REPO>` as the task workspace.
 
 - [ ] **Step 3: Obtain one Case 02 job-level authorization before the first Qoder run**
 
@@ -1002,7 +1002,7 @@ Create a scientist-readable brief input with:
 The researcher starts “科研综述专家” once with the approved topic. The Expert Kit, not the researcher, runs:
 
 ```bash
-WINDOWS_REPO=/mnt/c/Users/26960/QW-RW/review-writer
+WINDOWS_REPO="<WINDOWS_REPO>"
 CASE02_PROJECT_ID=case-02-katritzky-deaminative-functionalization
 cd "$WINDOWS_REPO"
 python3 scripts/run_vertical_review.py init \
@@ -1038,7 +1038,7 @@ These are runtime data, not production constants.
 - [ ] **Step 7: Run public discovery**
 
 ```bash
-WINDOWS_REPO=/mnt/c/Users/26960/QW-RW/review-writer
+WINDOWS_REPO="<WINDOWS_REPO>"
 CASE02_PROJECT="$WINDOWS_REPO/review-projects/case-02-katritzky-deaminative-functionalization"
 cd "$WINDOWS_REPO"
 python3 scripts/discovery/discover_scholarly_corpus.py \
@@ -1056,7 +1056,7 @@ Qwen screens titles/abstracts into `INCLUDE_FOR_FULL_TEXT`, `EXCLUDE_TITLE_ABSTR
 - [ ] **Step 9: Acquire public sources and inspect the single missing-source queue**
 
 ```bash
-WINDOWS_REPO=/mnt/c/Users/26960/QW-RW/review-writer
+WINDOWS_REPO="<WINDOWS_REPO>"
 CASE02_PROJECT="$WINDOWS_REPO/review-projects/case-02-katritzky-deaminative-functionalization"
 cd "$WINDOWS_REPO"
 python3 scripts/acquisition/acquire_public_corpus.py \
@@ -1085,7 +1085,7 @@ Choose three studies spanning at least three activation modes and differing in S
 For each selected study, use the Task 4 product command so source paths are resolved from registered SourceRecords rather than copied into user prompts:
 
 ```bash
-WINDOWS_REPO=/mnt/c/Users/26960/QW-RW/review-writer
+WINDOWS_REPO="<WINDOWS_REPO>"
 CASE02_PROJECT="$WINDOWS_REPO/review-projects/case-02-katritzky-deaminative-functionalization"
 cd "$WINDOWS_REPO"
 python3 scripts/run_vertical_review.py prepare-batch \
@@ -1186,7 +1186,7 @@ If first-pass pass-or-explicit-exception coverage drops below 90%, stop adding s
 Run:
 
 ```bash
-WINDOWS_REPO=/mnt/c/Users/26960/QW-RW/review-writer
+WINDOWS_REPO="<WINDOWS_REPO>"
 CASE02_PROJECT="$WINDOWS_REPO/review-projects/case-02-katritzky-deaminative-functionalization"
 cd "$WINDOWS_REPO"
 python3 scripts/run_vertical_review.py build-risk-packet --project-dir "$CASE02_PROJECT"
@@ -1227,7 +1227,7 @@ Record active review time and decisions. If the reviewer is unavailable, continu
 - [ ] **Step 4: Apply decisions and regenerate only affected consumers**
 
 ```bash
-WINDOWS_REPO=/mnt/c/Users/26960/QW-RW/review-writer
+WINDOWS_REPO="<WINDOWS_REPO>"
 CASE02_PROJECT="$WINDOWS_REPO/review-projects/case-02-katritzky-deaminative-functionalization"
 cd "$WINDOWS_REPO"
 python3 scripts/run_vertical_review.py apply-risk-decisions --project-dir "$CASE02_PROJECT" --decisions "$CASE02_PROJECT/03_review/risk_decisions.json"

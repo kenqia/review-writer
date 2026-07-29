@@ -1150,6 +1150,8 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
 
             self.assertEqual("parsing", payload["active_stage"])
             self.assertEqual("in_progress", payload["status"])
+            self.assertEqual("", payload["blocker"])
+            self.assertEqual("", payload["blocker_code"])
             self.assertEqual(
                 ["complete", "active", "pending", "pending", "pending", "pending"],
                 [stage["status"] for stage in payload["stages"]],

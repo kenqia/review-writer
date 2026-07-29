@@ -162,6 +162,29 @@ def test_narrow_transition_sentence_may_remain_unmarked(project: Path) -> None:
     assert draft["status"] == "needs_review"
 
 
+def test_reference_entries_are_bibliographic_metadata_not_unmarked_claims(
+    project: Path,
+) -> None:
+    draft = register_section_draft(
+        project,
+        _draft(
+            "The experiment reported the product. [evidence:evidence-low]\n\n"
+            "## References\n\n"
+            "[1] Example, A.; Researcher, B. Example reaction study. "
+            "J. Test Chem. 2024, 1, 1-8. https://doi.org/10.0000/example."
+        ),
+    )
+
+    assert draft["status"] == "needs_review"
+    assert draft["claim_bindings"] == [
+        {
+            "marker": "[evidence:evidence-low]",
+            "paper_evidence_ids": ["evidence-low"],
+            "synthesis_ids": [],
+        }
+    ]
+
+
 def test_high_risk_claim_requires_simulated_human_edit_decision(project: Path) -> None:
     draft = register_section_draft(
         project,
@@ -204,6 +227,38 @@ def test_high_risk_edit_records_original_replacement_actor_and_upstream(project:
     assert approved["decision"]["original_expression"] == original
     assert approved["decision"]["edited_expression"] == replacement
     assert approved["decision"]["upstream_digest"]
+
+
+def test_approved_section_can_be_revised_and_reapproved(project: Path) -> None:
+    draft = register_section_draft(
+        project,
+        _draft("The experiment reported the product. [evidence:evidence-low]"),
+    )
+    approved = approve_section(
+        project,
+        draft["section_id"],
+        actor=_actor(),
+        reason="Checked the approved evidence.",
+    )
+    replacement = (
+        "The experiment reported the bounded product outcome. "
+        "[evidence:evidence-low]"
+    )
+
+    revised = approve_section(
+        project,
+        draft["section_id"],
+        actor=_actor(),
+        edited_body=replacement,
+        reason="Narrowed the wording during the release-readiness review.",
+        expected_draft_digest=approved["draft_digest"],
+    )
+
+    assert revised["status"] == "approved"
+    assert revised["body"] == replacement
+    assert revised["draft_digest"] != approved["draft_digest"]
+    assert revised["decision"]["original_expression"] == approved["body"]
+    assert revised["decision"]["edited_expression"] == replacement
 
 
 def test_approved_sections_merge_to_authoritative_manuscript_and_lineage(project: Path) -> None:

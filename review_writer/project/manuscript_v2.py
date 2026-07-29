@@ -57,6 +57,7 @@ _TRANSITION_ONLY = re.compile(
     r"the discussion (?:next|now) turns to)\b",
     flags=re.IGNORECASE,
 )
+_REFERENCE_ENTRY = re.compile(r"^\s*(?:\[\d+\]|\d+[.)])\s+\S")
 
 
 class ManuscriptV2Error(ValueError):
@@ -221,6 +222,8 @@ def _approved_objects(
 
 
 def _line_has_science(value: str) -> bool:
+    if _REFERENCE_ENTRY.match(value):
+        return False
     cleaned = _MARKER.sub("", value)
     cleaned = re.sub(r"[`*_>#\-]", " ", cleaned)
     cleaned = " ".join(cleaned.split())
@@ -426,7 +429,8 @@ def approve_section(
             evidence, synthesis, contracts
         ):
             raise ManuscriptV2Error("SECTION_DRAFT_STALE")
-        return copy.deepcopy(row)
+        if edited_body is None or edited_body == row.get("body"):
+            return copy.deepcopy(row)
     actor_type, actor_label = _actor(actor)
     original = row["body"]
     replacement = edited_body if edited_body is not None else original

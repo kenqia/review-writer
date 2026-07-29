@@ -23,7 +23,7 @@ WORKFLOW_DIGEST = "a" * 64
 LINEAGE_DIGEST = "b" * 64
 SOURCE_ATTRIBUTION = (
     "Source Figure Attribution: source-figure-1 | source-a | page 3 | "
-    "Figure 1 | Reaction scope."
+    "Figure 1"
 )
 
 

@@ -92,6 +92,12 @@ from review_writer.project.review_figures import (  # noqa: E402
     build_source_figure_registry,
     synthesis_figure_placeholders,
 )
+from review_writer.project.manuscript_v2 import (  # noqa: E402
+    ManuscriptV2Error,
+    approve_section,
+    build_manuscript_workspace,
+    merge_authoritative_manuscript,
+)
 from review_writer.project.source_truth import (  # noqa: E402
     SOURCE_TRUTH_ROOT,
     SourceTruthError,
@@ -1118,6 +1124,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             data = json.loads(self.rfile.read(length).decode("utf-8"))
             result = write_project_draft_sections(self.review_root, project_id, data)
+        except WorkspaceStaleError:
+            self.send_json(
+                {"ok": False, "error_code": "WORKSPACE_STALE"},
+                status=HTTPStatus.CONFLICT,
+            )
+            return
         except (ValueError, json.JSONDecodeError) as exc:
             self.send_error(HTTPStatus.BAD_REQUEST, f"invalid draft payload: {exc}")
             return
@@ -3166,24 +3178,27 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
     risk_complete = evidence_complete and risk_packet_present and open_risks == 0
     draft_complete = project_regular_file_exists(project, Path("04_first_draft/first_draft.md"))
     final_complete = project_regular_file_exists(project, Path("05_final_audit/final_draft.docx"))
+    if new_route:
+        draft_complete = bool(authoritative_workflow.get("manuscript_ready"))
+        try:
+            final_complete = bool(
+                _project_release_artifact_state(project).get("integrity_valid")
+            )
+        except (OSError, ValueError, ProjectReleaseError):
+            final_complete = False
 
     archive_received = project_regular_file_exists(project, SOURCE_ARCHIVE_RELATIVE)
-    if (
-        new_route
-        and evidence_complete
-        and (
-            not authoritative_workflow.get("synthesis_ready")
-            or not authoritative_workflow.get("section_contracts_ready")
-        )
-    ):
-        active_stage = "synthesis"
-    elif (
-        new_route
-        and authoritative_workflow.get("synthesis_ready")
-        and authoritative_workflow.get("section_contracts_ready")
-        and not authoritative_workflow.get("manuscript_ready")
-    ):
-        active_stage = "drafting"
+    if new_route:
+        active_stage = visible_text(authoritative_workflow.get("active_stage"))
+        if active_stage not in {
+            "sources",
+            "parsing",
+            "evidence",
+            "synthesis",
+            "drafting",
+            "final",
+        }:
+            active_stage = "sources"
     elif not sources_complete:
         active_stage = "sources"
     elif not parsing_complete:
@@ -3218,8 +3233,20 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
         (index for index, (stage_id, _, _) in enumerate(stage_definitions) if stage_id == active_stage),
         0,
     )
-    raw_blockers = state.get("blockers") if isinstance(state, dict) else []
+    raw_blockers = (
+        authoritative_workflow.get("blockers")
+        if new_route
+        else state.get("blockers") if isinstance(state, dict) else []
+    )
     raw_blockers = raw_blockers if isinstance(raw_blockers, list) else []
+    authoritative_invalid = (
+        new_route
+        and parse_reason != "PARSE_QUALITY_MISSING"
+        and any(
+            isinstance(item, str) and item.endswith("_INVALID")
+            for item in raw_blockers
+        )
+    )
     source_invalid = any(
         isinstance(item, str) and item.startswith(("SOURCE_ARCHIVE_", "MANUAL_ARCHIVE_"))
         for item in raw_blockers
@@ -3261,7 +3288,7 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
         else batch_recovery["message"]
         if batch_recovery
         else "当前阶段需要补充信息，请查看推荐操作。"
-        if raw_blockers
+        if authoritative_invalid
         else ""
     )
     stages = []
@@ -3374,6 +3401,9 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
             }
         )
     studies.sort(key=lambda row: row["study_id"])
+    if new_route and authoritative_workflow.get("paper_evidence_ready"):
+        for row in studies:
+            row["status"] = "已完成"
 
     recommended = {
         "sources": "正在核验您上传的来源" if archive_received else "上传一次 PDF ZIP",
@@ -3411,10 +3441,18 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
         recommended = "在 QoderWork 中恢复项目来源状态"
     elif batch_recovery:
         recommended = batch_recovery["action"]
+    elif new_route and active_stage == "final" and final_complete:
+        recommended = "内部评审 DOCX 已生成；继续黄金标准评估"
     return {
         "project_id": project_id,
         "route": authoritative_workflow.get("route", "legacy"),
-        "status": "needs_attention" if parse_needs_attention else "in_progress",
+        "status": (
+            "needs_attention"
+            if parse_needs_attention
+            else "complete"
+            if new_route and final_complete
+            else "in_progress"
+        ),
         "active_stage": active_stage,
         "stages": stages,
         "studies": studies,
@@ -3427,7 +3465,7 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
             else "PIPELINE_STATE_INCONSISTENT"
             if pipeline_state_inconsistent
             else "PROJECT_BLOCKED"
-            if raw_blockers
+            if authoritative_invalid
             else ""
         ),
         "recommended_next": recommended,
@@ -4038,7 +4076,125 @@ def _scientific_edit_reasons(
 
 def write_project_draft_sections(review_root: Path, project_id: str, data: Any) -> dict[str, Any]:
     with PROJECT_RELEASE_LOCK:
+        project = project_dir(review_root, project_id)
+        if workflow_state(project).get("route") == "evidence-to-release.v1":
+            return _write_new_route_draft_section(review_root, project_id, data)
         return _write_project_draft_sections_unlocked(review_root, project_id, data)
+
+
+def _new_route_section_payload(row: object) -> dict[str, Any]:
+    if not isinstance(row, dict):
+        raise ValueError("manuscript section is invalid")
+    section_id = row.get("section_id")
+    draft_digest = row.get("draft_digest")
+    if not isinstance(section_id, str) or not isinstance(draft_digest, str):
+        raise ValueError("manuscript section is invalid")
+    bindings: list[dict[str, Any]] = []
+    for binding in row.get("claim_bindings", []):
+        if not isinstance(binding, dict):
+            raise ValueError("manuscript section binding is invalid")
+        bindings.append(
+            {
+                "paper_evidence_ids": visible_text_list(
+                    binding.get("paper_evidence_ids")
+                ),
+                "synthesis_ids": visible_text_list(binding.get("synthesis_ids")),
+            }
+        )
+    return {
+        "section_id": section_id,
+        "heading": researcher_safe_markdown(visible_text(row.get("heading"))),
+        "body": str(row.get("body") or ""),
+        "status": visible_text(row.get("status")),
+        "reason": visible_text(row.get("reason_code")),
+        "version_token": _workspace_token(
+            "manuscript-section", section_id, draft_digest
+        ),
+        "risk_classes": visible_text_list(row.get("high_risk_reasons")),
+        "claim_bindings": bindings,
+        "decision": _safe_decision(row.get("decision")),
+    }
+
+
+def _new_route_draft_payload(review_root: Path, project_id: str) -> dict[str, Any]:
+    project = project_dir(review_root, project_id)
+    try:
+        workspace = build_manuscript_workspace(project)
+    except ManuscriptV2Error as exc:
+        raise ValueError(exc.code) from exc
+    sections = [
+        _new_route_section_payload(row) for row in workspace.get("sections", [])
+    ]
+    return {
+        "project_id": project_id,
+        "route": "evidence-to-release.v1",
+        "status": visible_text(workspace.get("status")),
+        "reason": visible_text(workspace.get("reason_code")),
+        "available": bool(sections),
+        "sections": sections,
+        "claim_lineage": [],
+        "revision_status": {
+            "needs_evidence_review": any(
+                row["status"] in {"needs_human_edit", "needs_review", "stale"}
+                for row in sections
+            ),
+            "pending_scientific_edits": [],
+        },
+        "redrawn_figures": [],
+    }
+
+
+def _write_new_route_draft_section(
+    review_root: Path, project_id: str, data: Any
+) -> dict[str, Any]:
+    if not isinstance(data, dict) or set(data) != {
+        "section_id",
+        "edited_body",
+        "reason",
+        "version_token",
+        "actor_type",
+        "actor_label",
+    }:
+        raise ValueError("new-route draft payload is invalid")
+    if data.get("actor_type") != "simulated_researcher_agent":
+        raise ValueError("new-route dashboard actor is invalid")
+    project = project_dir(review_root, project_id)
+    with SOURCE_TRANSACTION_LOCK:
+        workspace = build_manuscript_workspace(project)
+        section_id = data.get("section_id")
+        row = next(
+            (
+                item
+                for item in workspace.get("sections", [])
+                if isinstance(item, dict) and item.get("section_id") == section_id
+            ),
+            None,
+        )
+        if row is None:
+            raise ValueError("manuscript section is unavailable")
+        draft_digest = row.get("draft_digest")
+        if data.get("version_token") != _workspace_token(
+            "manuscript-section", str(section_id), draft_digest
+        ):
+            raise WorkspaceStaleError("WORKSPACE_STALE")
+        try:
+            approve_section(
+                project,
+                str(section_id),
+                {
+                    "actor_type": data["actor_type"],
+                    "actor_label": data["actor_label"],
+                },
+                edited_body=data.get("edited_body"),
+                reason=data.get("reason"),
+                expected_draft_digest=str(draft_digest),
+            )
+            merge_authoritative_manuscript(project)
+        except ManuscriptV2Error as exc:
+            if exc.code == "SECTION_DRAFT_STALE":
+                raise WorkspaceStaleError("WORKSPACE_STALE") from exc
+            raise ValueError(exc.code) from exc
+    return _new_route_draft_payload(review_root, project_id)
 
 
 def _write_project_draft_sections_unlocked(
@@ -4265,9 +4421,7 @@ def _project_figure_rows(project: Path) -> list[dict[str, Any]]:
     for index, row in enumerate(raw_figures, start=1):
         if not isinstance(row, dict):
             continue
-        state = state_labels.get(
-            visible_text(row.get("figure_type")) or visible_text(row.get("license"))
-        )
+        state = state_labels.get(_legacy_project_figure_type(row))
         if state is None:
             continue
         figure_id = visible_text(row.get("figure_id"))
@@ -4284,12 +4438,24 @@ def _project_figure_rows(project: Path) -> list[dict[str, Any]]:
     return figures
 
 
+def _legacy_project_figure_type(row: dict[str, Any]) -> str:
+    figure_type = visible_text(row.get("figure_type")) or visible_text(
+        row.get("license")
+    )
+    if figure_type:
+        return figure_type
+    source_pointers = row.get("source_pointer_files")
+    if isinstance(source_pointers, list) and source_pointers:
+        return "FIGURE_BRIEF_PLACEHOLDER"
+    return ""
+
+
 def project_figure_image(project: Path, index: int) -> tuple[Path, str]:
     rows = _project_figure_rows(project)
     if index < 0 or index >= len(rows):
         raise ValueError("figure index is unavailable")
     row = rows[index]
-    figure_type = visible_text(row.get("figure_type")) or visible_text(row.get("license"))
+    figure_type = _legacy_project_figure_type(row)
     if figure_type == "FIGURE_BRIEF_PLACEHOLDER":
         raise ValueError("figure placeholder has no image")
     markdown_path = visible_text(row.get("markdown_path"))
@@ -4343,6 +4509,82 @@ def _project_figure_image_is_available(project: Path, row: dict[str, Any]) -> bo
 
 def project_figures_payload(review_root: Path, project_id: str) -> dict[str, Any]:
     project = project_dir(review_root, project_id)
+    if workflow_state(project).get("route") == "evidence-to-release.v1":
+        workspace = project_review_figures_workspace_payload(review_root, project_id)
+        registry = read_json_if_exists(
+            project / "03_figures/source_figure_registry.json"
+        )
+        registry_rows = registry.get("figures", []) if isinstance(registry, dict) else []
+        safe_by_id = {
+            row.get("figure_id"): row
+            for row in workspace.get("source_figures", [])
+            if isinstance(row, dict) and row.get("selection_status") == "selected"
+        }
+        figures: list[dict[str, Any]] = []
+        by_markdown_path: dict[str, dict[str, Any]] = {}
+        for row in registry_rows:
+            if not isinstance(row, dict) or row.get("selection_status") != "selected":
+                continue
+            safe = safe_by_id.get(row.get("figure_id"))
+            asset_path = row.get("asset_path")
+            if not isinstance(safe, dict) or not isinstance(asset_path, str):
+                continue
+            markdown_path = Path(
+                os.path.relpath(project / asset_path, project / "04_manuscript")
+            ).as_posix()
+            figure = {
+                "state": "原论文图",
+                "title": researcher_safe_markdown(
+                    visible_text(safe.get("figure_label")) or "原论文图片"
+                ),
+                "description": researcher_safe_markdown(
+                    visible_text(safe.get("caption")) or "原论文图片说明待核对。"
+                ),
+                "image_url": safe.get("image_url"),
+                "study_id": visible_text(safe.get("study_id")),
+                "page": safe.get("page"),
+            }
+            figures.append(figure)
+            by_markdown_path[markdown_path] = figure
+        for row in workspace.get("placeholders", []):
+            if not isinstance(row, dict):
+                continue
+            figures.append(
+                {
+                    "state": "图片说明占位符",
+                    "title": researcher_safe_markdown(
+                        visible_text(row.get("scientific_question"))
+                        or "综合图制图任务"
+                    ),
+                    "description": researcher_safe_markdown(
+                        visible_text(row.get("caption_draft"))
+                        or "等待用户自行制作综合图。"
+                    ),
+                }
+            )
+        manuscript = read_text_if_exists(project / "04_manuscript/manuscript.md")
+        reading_figures = []
+        for match in _DASHBOARD_IMAGE_RE.finditer(manuscript):
+            markdown_path = match.group("angle") or match.group("plain") or ""
+            reading_figures.append(
+                dict(by_markdown_path[markdown_path])
+                if markdown_path in by_markdown_path
+                else {
+                    "state": "图件状态待核对",
+                    "title": "图件暂不可显示",
+                    "description": "正文图件与 Source Truth 尚未完成绑定。",
+                }
+            )
+        placeholders = sum(
+            row.get("state") == "图片说明占位符" for row in figures
+        )
+        return {
+            "project_id": project_id,
+            "topic": infer_project_topic(project),
+            "figures": figures,
+            "reading_figures": reading_figures,
+            "summary": {"total": len(figures), "placeholders": placeholders},
+        }
     rows = _project_figure_rows(project)
     figures: list[dict[str, str]] = []
     safe_figure_by_markdown_path: dict[str, dict[str, str]] = {}
@@ -4352,13 +4594,11 @@ def project_figures_payload(review_root: Path, project_id: str) -> dict[str, Any
         "FIGURE_BRIEF_PLACEHOLDER": "图片说明占位符",
     }
     for index, row in enumerate(rows):
-        state = state_labels.get(
-            visible_text(row.get("figure_type")) or visible_text(row.get("license"))
-        )
+        state = state_labels.get(_legacy_project_figure_type(row))
         if state is None:
             continue
         description = visible_text(
-            row.get("brief")
+            row.get("brief") or row.get("note") or row.get("caption")
             if state == "图片说明占位符"
             else row.get("caption") or row.get("description")
         )
@@ -4376,7 +4616,9 @@ def project_figures_payload(review_root: Path, project_id: str) -> dict[str, Any
         markdown_path = visible_text(row.get("markdown_path"))
         if markdown_path:
             safe_figure_by_markdown_path[markdown_path] = figure
-    manuscript = read_text_if_exists(project / "04_first_draft" / "first_draft.md")
+    manuscript = read_text_if_exists(
+        project / "04_first_draft" / "first_draft.md"
+    ) or read_text_if_exists(project / "04_first_draft" / "final_draft.md")
     reading_figures = []
     for match in _DASHBOARD_IMAGE_RE.finditer(manuscript):
         markdown_path = match.group("angle") or match.group("plain") or ""
@@ -4482,13 +4724,28 @@ def _project_release_artifact_state(project: Path) -> dict[str, Any]:
             "integrity_valid": integrity_valid,
         }
 
-    authoritative_relative = Path("04_first_draft/first_draft.md")
+    canonical_authoritative_relative = Path("04_first_draft/first_draft.md")
+    preview_authoritative_relative = Path("04_first_draft/final_draft.md")
     snapshot_relative = Path("05_final_audit/final_draft.md")
     docx_relative = Path("05_final_audit/final_draft.docx")
     quality_relative = Path("05_final_audit/quality_report.json")
     validate_project_path_components(
         project_path,
-        (authoritative_relative, snapshot_relative, docx_relative, quality_relative),
+        (
+            canonical_authoritative_relative,
+            preview_authoritative_relative,
+            snapshot_relative,
+            docx_relative,
+            quality_relative,
+        ),
+    )
+    preview_only = not os.path.lexists(
+        project_path / canonical_authoritative_relative
+    ) and os.path.lexists(project_path / preview_authoritative_relative)
+    authoritative_relative = (
+        preview_authoritative_relative
+        if preview_only
+        else canonical_authoritative_relative
     )
     authoritative_path = validate_project_file_path(
         project_path, authoritative_relative, "MANUSCRIPT_INVALID"
@@ -4497,7 +4754,7 @@ def _project_release_artifact_state(project: Path) -> dict[str, Any]:
     docx_path = project_path / docx_relative
     quality_path = project_path / quality_relative
     authoritative_bytes = authoritative_path.read_bytes()
-    snapshot_exists = snapshot_path.is_file()
+    snapshot_exists = snapshot_path.is_file() and not preview_only
     snapshot_bytes = snapshot_path.read_bytes() if snapshot_exists else b""
     docx_exists = docx_path.is_file()
     docx_bytes = docx_path.read_bytes() if docx_exists else b""
@@ -4733,6 +4990,8 @@ def _body_with_preserved_claim_markers(visible_body: str, current_raw_body: str)
 
 def project_draft_payload(review_root: Path, project_id: str) -> dict[str, Any]:
     project = project_dir(review_root, project_id)
+    if workflow_state(project).get("route") == "evidence-to-release.v1":
+        return _new_route_draft_payload(review_root, project_id)
     stage_dir = project / "04_first_draft"
     project_relative = project.relative_to(Path(review_root).resolve())
     stage_relative = (project_relative / "04_first_draft").as_posix()

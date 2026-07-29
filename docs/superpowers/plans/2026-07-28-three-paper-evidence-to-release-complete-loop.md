@@ -71,10 +71,10 @@ vis-light-olefin-difunctionalization-complete-loop-v1/
 | Milestone | Implemented | Target tests | Real case | Playwright | Owner-visible result |
 | --- | --- | --- | --- | --- | --- |
 | M1 authority + parse closure | complete (Tasks 1-3) | Task 3 target set: 270 passed; smoke + quality-check pass | clean project + standards archived; 11/11 parse decisions persisted | pre/post-restart pass | parse closed; release still blocked by downstream workflow |
-| M2 evidence + figures | pending | pending | pending | pending | pending |
-| M3 synthesis + section contracts | pending | pending | pending | pending | pending |
-| M4 manuscript + internal DOCX | pending | pending | pending | pending | pending |
-| M5 benchmark + independent regression | pending | pending | pending | pending | pending |
+| M2 evidence + figures | complete (Tasks 4-5, 8 evidence) | integrated target sets pass | three-paper evidence and 5 selected Source Figures current | persisted decisions ready for independent QA | evidence and figure workspace complete |
+| M3 synthesis + section contracts | complete (Tasks 6-8) | integrated target sets pass | protocol, coverage, synthesis, and 5 section contracts approved | persisted decisions ready for independent QA | synthesis workspace complete |
+| M4 manuscript + internal DOCX | complete (Tasks 9-12) | release/manuscript target sets pass | 5 approved sections, 5 Source Figures, 2 placeholders, internal DOCX | Round 1 pending | `SELF_REVIEWED_DRAFT` generated; expert release blocked |
+| M5 benchmark + independent regression | in progress (Task 12 complete; Tasks 13-14 pending) | benchmark validator passes at 83/100 | standard corpus bound; no internal Hard Fail | Round 1 and Round 2 pending | `MANUSCRIPT_READY`; independent regression not started |
 
 ---
 
@@ -86,8 +86,8 @@ vis-light-olefin-difunctionalization-complete-loop-v1/
 - Create: `scripts/review/archive_standard_corpus.py`
 - Create: `schemas/quality/standard_corpus_manifest.v1.schema.json`
 - Create: `tests/test_three_paper_complete_loop_bootstrap.py`
-- Create external: `/home/kenqia/my_folder/review-writer-data/review-projects/vis-light-olefin-difunctionalization-complete-loop-v1`
-- Create external: `/home/kenqia/my_folder/review-writer-data/template-papers/standards/20260728/`
+- Create external: `<DATA_ROOT>/review-projects/vis-light-olefin-difunctionalization-complete-loop-v1`
+- Create external: `<DATA_ROOT>/template-papers/standards/20260728/`
 
 - [x] **Step 1: 写失败测试锁定复制白名单和旧产物隔离**
 
@@ -162,8 +162,8 @@ FORBIDDEN_ROOTS = (
 - [x] **Step 4: 创建真实新项目并重新构建 Source Truth/Parse Gate**
 
 ```zsh
-source_case=/home/kenqia/my_folder/review-writer-data/review-projects/vis-light-olefin-difunctionalization-wsl-v1
-target_case=/home/kenqia/my_folder/review-writer-data/review-projects/vis-light-olefin-difunctionalization-complete-loop-v1
+source_case="<DATA_ROOT>/review-projects/vis-light-olefin-difunctionalization-wsl-v1"
+target_case="<DATA_ROOT>/review-projects/vis-light-olefin-difunctionalization-complete-loop-v1"
 test -d "$source_case"
 test ! -e "$target_case"
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/review/create_three_paper_complete_loop.py \
@@ -192,7 +192,7 @@ Expected SHA-256:
 
 ```zsh
 standards_source=/tmp/review-writer-standards.UO9hi7/mineru-outputs
-standards_target=/home/kenqia/my_folder/review-writer-data/template-papers/standards/20260728
+standards_target="<DATA_ROOT>/template-papers/standards/20260728"
 test -d "$standards_source"
 test ! -e "$standards_target"
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/review/archive_standard_corpus.py \
@@ -845,19 +845,19 @@ Playwright Agent 只能把该请求发给主 Agent。主 Agent校验当前 UI/�
 **Task 8 handoff record (2026-07-29):** Steps 1–3 implemented in `5414fdb`, `2bfe767`, `011d99f`, and `7cb5c0d`.
 The bounded package/result boundary is implemented and verified; real three-paper evidence/synthesis execution and Playwright persistence remain in Steps 4–6.
 
-- [ ] **Step 4: 完成三篇真实 Paper Evidence**
+- [x] **Step 4: 完成三篇真实 Paper Evidence**
 
 主 Agent按 study 顺序派发三个独立 evidence Content Agent；每个生成候选 evidence 和 Source Figure 建议。导入后由 Playwright 模拟研究者在 Dashboard 中逐项核对、修改并批准。任何 `pdf_locator_only` 对象只允许人工 PDF evidence 路径。
 
-- [ ] **Step 5: 完成真实 Comparison Protocol、Synthesis Claims 和 Section Contracts**
+- [x] **Step 5: 完成真实 Comparison Protocol、Synthesis Claims 和 Section Contracts**
 
 证据全部闭合后派发独立 synthesis Content Agent；导入 Comparison Protocol、Coverage Map、候选 Synthesis Claims、outline、Section Contracts 和 5–8 个图位计划。Playwright 模拟研究者逐项批准；高风险或冲突对象必须有具体理由，不得批量静默批准。
 
-- [ ] **Step 6: 记录刷新和重启持久化**
+- [x] **Step 6: 记录刷新和重启持久化**
 
 Evidence 批次完成后重启一次 Dashboard；Synthesis 批次完成后再重启一次。每次由同一 Playwright Agent 刷新确认决定、理由、actor 和状态仍一致。
 
-- [ ] **Step 7: 验证并提交代码**
+- [x] **Step 7: 验证并提交代码**
 
 ```zsh
 PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider \
@@ -887,7 +887,7 @@ git commit -m "feat: add bounded content agent handoff"
 - Modify: `tests/test_project_release.py`
 - Modify: `tests/test_qoderwork_native_review_writer.py`
 
-- [ ] **Step 1: 写失败测试锁定旧稿隔离和高风险编辑**
+- [x] **Step 1: 写失败测试锁定旧稿隔离和高风险编辑**
 
 ```python
 def test_new_route_draft_never_reads_legacy_first_draft(tmp_path: Path) -> None:
@@ -909,19 +909,19 @@ def test_high_risk_claim_requires_simulated_human_edit_decision() -> None:
         approve_section(PROJECT, draft["section_id"], actor=None)
 ```
 
-- [ ] **Step 2: 定义 lineage v2**
+- [x] **Step 2: 定义 lineage v2**
 
 lineage 必须绑定 route、workflow digest、每项 parse object digest、Paper Evidence projection digest、Synthesis projection digest、Section Contract digest、section draft digest、Source Figure/Placeholder digest、generation Content Agent result digest、每个 manuscript claim 的 evidence/synthesis IDs 和当前 section approval。
 
-- [ ] **Step 3: 实现按节导入和批准**
+- [x] **Step 3: 实现按节导入和批准**
 
 Content Agent 每次只得到一个 approved Section Writer Packet。`register_section_draft()` 验证所有科学句的 claim marker 均指向已批准 Paper Evidence 或 Synthesis Claim；纯过渡句可无 marker但不得包含新科学事实。高风险规则触发时状态强制 `needs_human_edit`。
 
-- [ ] **Step 4: 实现 Dashboard 高风险编辑**
+- [x] **Step 4: 实现 Dashboard 高风险编辑**
 
 研究者直接修改正文、查看关联证据/综合判断/Source Figure、保存并批准。决定 actor 为 `simulated_researcher_agent`，同时记录原表述、新表述、理由、上游 digest 和时间。刷新/并发版本冲突返回 409，不静默覆盖。
 
-- [ ] **Step 5: 合并 authoritative manuscript**
+- [x] **Step 5: 合并 authoritative manuscript**
 
 只有所有 Section Contract 与 section draft 当前且已批准时，原子生成：
 
@@ -932,7 +932,7 @@ Content Agent 每次只得到一个 approved Section Writer Packet。`register_s
 
 旧 `04_first_draft/first_draft.md` 不读取、不复制、不覆盖，仅由 evaluation 读取 hash 做差距基线。
 
-- [ ] **Step 6: 验证并提交**
+- [x] **Step 6: 验证并提交**
 
 ```zsh
 PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider \
@@ -962,7 +962,7 @@ git commit -m "feat: add evidence bound manuscript v2"
 - Modify: `tests/test_project_release.py`
 - Modify: `tests/test_qoderwork_native_review_writer.py`
 
-- [ ] **Step 1: 写失败测试锁定双层发布和新旧稿差异**
+- [x] **Step 1: 写失败测试锁定双层发布和新旧稿差异**
 
 ```python
 def test_internal_draft_allows_attributed_source_figures_and_visible_placeholders() -> None:
@@ -983,7 +983,7 @@ def test_new_docx_internal_document_and_images_differ_from_legacy() -> None:
     assert result["legacy_repackage_only"] is False
 ```
 
-- [ ] **Step 2: 扩展内部图政策**
+- [x] **Step 2: 扩展内部图政策**
 
 新 figure types：
 
@@ -995,7 +995,7 @@ HUMAN_SYNTHESIS_FIGURE
 
 内部稿允许前两者；Source Figure 必须有完整 attribution 和 lineage，placeholder 必须在正文中明显显示科学问题、制图任务和未完成状态。专家发布只接受 rights-cleared Source Figure 与已验证人工综合图。
 
-- [ ] **Step 3: 改造 release 读取路径**
+- [x] **Step 3: 改造 release 读取路径**
 
 新路线只读 `04_manuscript/manuscript.md` 与 lineage v2，输出：
 
@@ -1008,15 +1008,15 @@ HUMAN_SYNTHESIS_FIGURE
 
 legacy 路径保持原文件名与测试兼容。
 
-- [ ] **Step 4: 实现 DOCX 内容完整性检查**
+- [x] **Step 4: 实现 DOCX 内容完整性检查**
 
 检查 ZIP 结构、`word/document.xml` 文本、relationships、media hash、figure attribution、当前 Markdown 正文规范化匹配和当前 workflow digest。外层 DOCX SHA 改变但 `document.xml` 与旧稿相同必须标记 `LEGACY_REPACKAGE_ONLY` 并拒绝新路线成功状态。
 
-- [ ] **Step 5: 实现下载失效和两个按钮**
+- [x] **Step 5: 实现下载失效和两个按钮**
 
 UI 分别显示“导出内部评审 DOCX”和“生成已验证发布稿”。后者在 placeholder 未解决时禁用。任何上游改变后 release snapshot stale，`/file` 返回 403；失败导出不得改写现有 DOCX、snapshot 或 quality report。
 
-- [ ] **Step 6: 验证并提交**
+- [x] **Step 6: 验证并提交**
 
 ```zsh
 PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider \
@@ -1137,19 +1137,19 @@ git commit -m "feat: add review benchmark and credit ledger"
 - External modify: 新三篇项目的 `04_manuscript/`、`05_release/`、`06_evaluation/`
 - Review only: 旧项目的 `04_first_draft/`、`05_final_audit/`
 
-- [ ] **Step 1: 派发逐节 Content Agents**
+- [x] **Step 1: 派发逐节 Content Agents**
 
 每节使用独立或全新上下文的 drafting Agent，只接收当前 Section Writer Packet。目标正文必须包含比较、反例、局限与适用边界，不得成为逐篇摘要串联。每节 result 经 deterministic importer 注册后由 Playwright 模拟研究者直接编辑和批准高风险表述。
 
-- [ ] **Step 2: 完成图位**
+- [x] **Step 2: 完成图位**
 
 在正文中放入已选 Source Figures 与 caption/attribution；保持三篇至少各 1 张原图。需要跨论文综合表达的位置插入明显 placeholder，不生成综合图片。Dashboard 显示图位总数、Source Figure 数、placeholder 数和缺口理由。
 
-- [ ] **Step 3: 导出内部 DOCX**
+- [x] **Step 3: 导出内部 DOCX**
 
 从 Dashboard 点击“导出内部评审 DOCX”。Expected：新路线所有门禁闭合，生成 `SELF_REVIEWED_DRAFT`；专家稿按钮因 placeholder 保持禁用。
 
-- [ ] **Step 4: 验证不是旧稿重新打包**
+- [x] **Step 4: 验证不是旧稿重新打包**
 
 记录并比较：
 
@@ -1164,18 +1164,18 @@ new Markdown ↔ DOCX normalized text match
 
 所有“新”内容指标必须来自当前 manuscript lineage v2；DOCX 外层 SHA 不作为充分证据。
 
-- [ ] **Step 5: 运行黄金标准评估**
+- [x] **Step 5: 运行黄金标准评估**
 
 ```zsh
-case_root=/home/kenqia/my_folder/review-writer-data/review-projects/vis-light-olefin-difunctionalization-complete-loop-v1
-standards_root=/home/kenqia/my_folder/review-writer-data/template-papers/standards/20260728
+case_root="<DATA_ROOT>/review-projects/vis-light-olefin-difunctionalization-complete-loop-v1"
+standards_root="<DATA_ROOT>/template-papers/standards/20260728"
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/validators/validate_review_benchmark.py \
   --project "$case_root" --standards "$standards_root" --release-level SELF_REVIEWED_DRAFT
 ```
 
 Expected: score ≥ 80，无 internal Hard Fail；若失败，保留报告并回到具体 Evidence/Synthesis/Section，不整体重启项目。
 
-- [ ] **Step 6: 渲染并检查 DOCX 页面**
+- [x] **Step 6: 渲染并检查 DOCX 页面**
 
 使用工作区可用的文档/PDF工具将 DOCX 渲染为页面图像，逐页检查文字裁切、空白页、标题层级、公式/化学符号、图片清晰度、caption、分页、引用和 placeholder 可见性。无法渲染时报告 `ENVIRONMENT_UNDETERMINED`，不得用 XML 检查冒充视觉验收。
 
@@ -1188,11 +1188,11 @@ Expected: score ≥ 80，无 internal Hard Fail；若失败，保留报告并回
 - Create: `docs/qa/three-paper-evidence-to-release-playwright.md`
 - Create external screenshots: `/tmp/review-writer-e2r-round1/`
 
-- [ ] **Step 1: 写完整黑盒协议**
+- [x] **Step 1: 写完整黑盒协议**
 
 新 Reviewer 未参与实现，只获得 URL、项目名、`simulated_researcher` persona 和协议。它只用 Playwright navigation、snapshot/find、click、fill/type、keyboard、resize、screenshot、console、network list、wait 和 close；不得读仓库、shell、storage、内部 JSON 或 request/response body。
 
-- [ ] **Step 2: 固定全流程序列**
+- [x] **Step 2: 固定全流程序列**
 
 Reviewer 必须从当前项目阶段开始，依次验证：
 
@@ -1207,11 +1207,11 @@ Reviewer 必须从当前项目阶段开始，依次验证：
 9. `1440×1000`、`1024×900`、`390×844`；
 10. keyboard focus、console 零 warning/error、计划内请求均成功。
 
-- [ ] **Step 3: 内容缺口请求协议**
+- [x] **Step 3: 内容缺口请求协议**
 
 如果 UI 缺少候选内容，Reviewer 返回 `CONTENT_AGENT_REQUEST` 并暂停；主 Agent派发独立 Content Agent、校验导入并回复继续。Reviewer 不自行生成内容，也不因请求而失去独立性。
 
-- [ ] **Step 4: Pass rule**
+- [x] **Step 4: Pass rule**
 
 零 P0/P1；影响科学决定的 P2 阻断；无横向滚动/重叠；决定与 actor 持久；普通 UI 不暴露 path/hash/schema/JSON/Prompt；新 DOCX 可下载且不是旧稿；Source Figures/placeholder 含义清晰；磁盘/API/UI/release/evaluation 一致。
 

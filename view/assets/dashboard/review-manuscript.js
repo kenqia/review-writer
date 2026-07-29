@@ -36,7 +36,7 @@
       status: string(row.status),
       reason: string(row.reason || row.reason_code),
       version_token: string(row.version_token),
-      risk_classes: array(row.risk_classes).map(string).filter(Boolean),
+      risk_classes: array(row.risk_classes || row.high_risk_reasons).map(string).filter(Boolean),
       claim_bindings: array(row.claim_bindings).map(binding),
       decision: decision(row.decision),
     };
@@ -78,7 +78,7 @@
       page_label: row.page ? `第 ${row.page} 页` : "",
       image_url: url(row.image_url),
       pdf_page_url: url(row.pdf_page_url),
-      linked_evidence_ids: array(row.linked_evidence_ids).map(string).filter(Boolean),
+      linked_evidence_ids: array(row.linked_evidence_ids || row.evidence_ids).map(string).filter(Boolean),
     };
   }
 

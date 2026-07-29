@@ -115,6 +115,36 @@ def test_integrity_checks_zip_xml_relationships_media_attribution_and_roundtrip(
     assert report["legacy_repackage_only"] is False
 
 
+def test_integrity_normalizes_internal_claim_markers_on_both_sides(
+    tmp_path: Path,
+) -> None:
+    markdown = (
+        "# Current review\n\n"
+        "First supported sentence. [evidence:evidence-one] "
+        "Second supported sentence.\n\n"
+        f"{ATTRIBUTION}\n"
+    )
+    docx = _write_docx(
+        tmp_path / "claim-marker.docx",
+        document_xml=_document_xml(
+            "Current review",
+            "First supported sentence. [evidence:evidence-one] Second supported sentence.",
+            ATTRIBUTION,
+        ),
+    )
+
+    report = validate_docx_integrity(
+        docx,
+        markdown=markdown,
+        expected_media_sha256=[hashlib.sha256(IMAGE_BYTES).hexdigest()],
+        required_attributions=[ATTRIBUTION],
+        workflow_digest=WORKFLOW_DIGEST,
+        snapshot_workflow_digest=WORKFLOW_DIGEST,
+    )
+
+    assert report["markdown_roundtrip_match"] is True
+
+
 def test_integrity_rejects_unrelated_or_missing_media_relationship(tmp_path: Path) -> None:
     docx = _write_docx(tmp_path / "broken.docx", include_relationship=False)
 

@@ -1560,7 +1560,7 @@
 
     function renderFigures() {
       const rows = figurePayload.figures || [];
-      const safeStates = ['原创生成图', '许可来源图', '图片说明占位符'];
+      const safeStates = ['原创生成图', '许可来源图', '原论文图', '图片说明占位符'];
       clear($('figure-list'));
       const placeholders = rows.filter(row => row.state === '图片说明占位符').length;
       $('figure-summary').textContent = rows.length

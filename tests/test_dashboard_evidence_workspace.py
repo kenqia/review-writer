@@ -76,6 +76,295 @@ def test_workspace_stale_token_raises_before_writing(monkeypatch: pytest.MonkeyP
     assert list(project.iterdir()) == []
 
 
+def test_new_route_draft_payload_and_edit_use_manuscript_v2_contract(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    project = tmp_path / "review-projects" / "new-route"
+    (project / "01_evidence/source_truth/study-a").mkdir(parents=True)
+    section = {
+        "section_id": "section-one",
+        "heading": "Evidence synthesis",
+        "body": "Bounded statement. [evidence:E-1]",
+        "status": "approved",
+        "draft_digest": "a" * 64,
+        "high_risk_reasons": ["paper_evidence:E-1"],
+        "claim_bindings": [
+            {
+                "marker": "[evidence:E-1]",
+                "paper_evidence_ids": ["E-1"],
+                "synthesis_ids": [],
+            }
+        ],
+        "decision": {
+            "action": "approve",
+            "reason": "Checked.",
+            "actor_type": "simulated_researcher_agent",
+            "actor_label": "dashboard-playwright-reviewer",
+        },
+    }
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        dashboard,
+        "workflow_state",
+        lambda _project: {"route": "evidence-to-release.v1"},
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "build_manuscript_workspace",
+        lambda _project: {
+            "route": "evidence-to-release.v1",
+            "status": "approved",
+            "reason_code": "MANUSCRIPT_APPROVED",
+            "sections": [section],
+        },
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "approve_section",
+        lambda _project, section_id, actor, **kwargs: captured.update(
+            section_id=section_id, actor=actor, **kwargs
+        )
+        or section,
+    )
+    monkeypatch.setattr(
+        dashboard, "merge_authoritative_manuscript", lambda _project: {"status": "approved"}
+    )
+
+    payload = dashboard.project_draft_payload(tmp_path, "new-route")
+    projected = payload["sections"][0]
+    assert payload["route"] == "evidence-to-release.v1"
+    assert projected["risk_classes"] == ["paper_evidence:E-1"]
+    assert projected["claim_bindings"][0]["paper_evidence_ids"] == ["E-1"]
+    assert "draft_digest" not in json.dumps(payload)
+
+    result = dashboard.write_project_draft_sections(
+        tmp_path,
+        "new-route",
+        {
+            "section_id": "section-one",
+            "edited_body": "Narrowed statement. [evidence:E-1]",
+            "reason": "Narrowed after source review.",
+            "version_token": projected["version_token"],
+            "actor_type": "simulated_researcher_agent",
+            "actor_label": "dashboard-playwright-reviewer",
+        },
+    )
+
+    assert captured["expected_draft_digest"] == "a" * 64
+    assert captured["edited_body"] == "Narrowed statement. [evidence:E-1]"
+    assert captured["actor"] == {
+        "actor_type": "simulated_researcher_agent",
+        "actor_label": "dashboard-playwright-reviewer",
+    }
+    assert result["route"] == "evidence-to-release.v1"
+
+
+def test_new_route_draft_edit_rejects_stale_version_before_approval(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    project = tmp_path / "review-projects" / "new-route"
+    (project / "01_evidence/source_truth/study-a").mkdir(parents=True)
+    monkeypatch.setattr(
+        dashboard,
+        "workflow_state",
+        lambda _project: {"route": "evidence-to-release.v1"},
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "build_manuscript_workspace",
+        lambda _project: {
+            "route": "evidence-to-release.v1",
+            "status": "approved",
+            "reason_code": "MANUSCRIPT_APPROVED",
+            "sections": [
+                {
+                    "section_id": "section-one",
+                    "heading": "Evidence synthesis",
+                    "body": "Bounded statement. [evidence:E-1]",
+                    "status": "approved",
+                    "draft_digest": "a" * 64,
+                    "high_risk_reasons": ["paper_evidence:E-1"],
+                    "claim_bindings": [],
+                    "decision": None,
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "approve_section",
+        lambda *_args, **_kwargs: pytest.fail("stale edit reached approval"),
+    )
+
+    with pytest.raises(dashboard.WorkspaceStaleError):
+        dashboard.write_project_draft_sections(
+            tmp_path,
+            "new-route",
+            {
+                "section_id": "section-one",
+                "edited_body": "Narrowed statement. [evidence:E-1]",
+                "reason": "Narrowed after source review.",
+                "version_token": "stale",
+                "actor_type": "simulated_researcher_agent",
+                "actor_label": "dashboard-playwright-reviewer",
+            },
+        )
+
+
+def test_new_route_figure_payload_uses_selected_source_figures_and_placeholders(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    project = tmp_path / "review-projects" / "new-route"
+    manuscript = project / "04_manuscript/manuscript.md"
+    manuscript.parent.mkdir(parents=True)
+    manuscript.write_text(
+        "![Selected source](../01_evidence/images/source-one.png)\n",
+        encoding="utf-8",
+    )
+    registry = {
+        "figures": [
+            {
+                "figure_id": "figure-one",
+                "asset_path": "01_evidence/images/source-one.png",
+                "selection_status": "selected",
+            },
+            {
+                "figure_id": "figure-two",
+                "asset_path": "01_evidence/images/source-two.png",
+                "selection_status": "available",
+            },
+        ]
+    }
+    registry_path = project / "03_figures/source_figure_registry.json"
+    registry_path.parent.mkdir(parents=True)
+    registry_path.write_text(json.dumps(registry) + "\n", encoding="utf-8")
+    monkeypatch.setattr(
+        dashboard,
+        "workflow_state",
+        lambda _project: {"route": "evidence-to-release.v1"},
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "project_review_figures_workspace_payload",
+        lambda _root, _project_id: {
+            "source_figures": [
+                {
+                    "figure_id": "figure-one",
+                    "figure_label": "Figure 1",
+                    "caption": "Selected source figure.",
+                    "selection_status": "selected",
+                    "image_url": "/api/project/new-route/source-figure?figure_id=figure-one",
+                    "study_id": "study-one",
+                    "page": 3,
+                },
+                {
+                    "figure_id": "figure-two",
+                    "figure_label": "Figure 2",
+                    "caption": "Unselected source figure.",
+                    "selection_status": "available",
+                    "image_url": "/api/project/new-route/source-figure?figure_id=figure-two",
+                },
+            ],
+            "placeholders": [
+                {
+                    "placeholder_id": "placeholder-one",
+                    "scientific_question": "How should the studies be compared?",
+                    "caption_draft": "User-owned synthesis figure brief.",
+                    "status": "awaiting_human_figure",
+                }
+            ],
+        },
+    )
+
+    payload = dashboard.project_figures_payload(tmp_path, "new-route")
+
+    assert payload["summary"] == {"total": 2, "placeholders": 1}
+    assert [row["state"] for row in payload["figures"]] == [
+        "原论文图",
+        "图片说明占位符",
+    ]
+    assert payload["reading_figures"][0]["state"] == "原论文图"
+    assert "asset_path" not in json.dumps(payload)
+
+
+def test_new_route_progress_uses_authoritative_final_stage_not_legacy_risk(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    project = tmp_path / "review-projects" / "new-route"
+    bundle = project / "01_evidence/source_truth/study-one/bundle.json"
+    bundle.parent.mkdir(parents=True)
+    bundle.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(dashboard, "project_dir", lambda _root, _project_id: project)
+    monkeypatch.setattr(
+        dashboard,
+        "workflow_state",
+        lambda _project: {
+            "route": "evidence-to-release.v1",
+            "active_stage": "final",
+            "parse_ready": True,
+            "paper_evidence_ready": True,
+            "synthesis_ready": True,
+            "section_contracts_ready": True,
+            "manuscript_ready": True,
+            "internal_draft_export_ready": True,
+            "verified_release_ready": False,
+            "blockers": [],
+        },
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "project_parse_quality_state",
+        lambda _project: {
+            "status": "approved",
+            "reason_code": "PARSE_QUALITY_READY",
+            "workflow_can_continue": True,
+            "studies": [],
+        },
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "project_source_handoff_payload",
+        lambda _root, _project_id: {
+            "counts": {"total": 1, "ready": 1},
+            "sources": [
+                {
+                    "study_id": "study-one",
+                    "citation": "Study one",
+                    "role": "MAIN",
+                    "status": "已获得",
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "_project_release_artifact_state",
+        lambda _project: {"integrity_valid": False},
+    )
+
+    payload = dashboard.project_progress_payload(tmp_path, "new-route")
+
+    assert payload["active_stage"] == "final"
+    assert [row["status"] for row in payload["stages"]] == [
+        "complete",
+        "complete",
+        "complete",
+        "complete",
+        "complete",
+        "active",
+    ]
+    assert payload["studies"][0]["status"] == "已完成"
+    assert payload["recommended_next"] == "检查正文并导出 DOCX"
+
+
 def test_review_html_loads_split_workspace_modules_and_hides_new_route_risk() -> None:
     from pathlib import Path
 

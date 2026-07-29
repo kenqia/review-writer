@@ -357,7 +357,7 @@ def source_figure_attribution(row: dict[str, Any]) -> str:
     return (
         f"Source Figure Attribution: {_required_text(row, 'figure_id')} | "
         f"{_required_text(row, 'source_id')} | page {row.get('page')} | "
-        f"{_required_text(row, 'figure_label')} | {_required_text(row, 'caption')}"
+        f"{_required_text(row, 'figure_label')}"
     )
 
 
@@ -423,6 +423,7 @@ def validate_new_route_figure_policy(
             raise FigurePolicyError("FIGURE_IMAGE_INVALID", "source figure hash is stale")
         markdown_path = Path(os.path.relpath(resolved, project / "04_manuscript")).as_posix()
         expected_paths.add(markdown_path)
+        _required_text(row, "caption")
         attribution = source_figure_attribution(row)
         if attribution not in manuscript_markdown:
             raise FigurePolicyError("FIGURE_ATTRIBUTION_MISSING", "source attribution is absent")

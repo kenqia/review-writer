@@ -28,13 +28,13 @@
 只读来源：
 
 ```text
-/mnt/c/Users/26960/QW-RW/review-writer-e2e-acceptance-20260728-01/review-projects/vis-light-olefin-difunctionalization
+<WINDOWS_ACCEPTANCE_ROOT>/review-projects/vis-light-olefin-difunctionalization
 ```
 
 WSL 外部副本：
 
 ```text
-/home/kenqia/my_folder/review-writer-data/review-projects/vis-light-olefin-difunctionalization-wsl-v1
+<DATA_ROOT>/review-projects/vis-light-olefin-difunctionalization-wsl-v1
 ```
 
 三篇主文固定为：
@@ -124,7 +124,7 @@ HUMAN_ACTIONS = frozenset({
 **Files:**
 
 - Preserve: 当前 34 modified + 5 untracked 既有成果
-- External create: `/home/kenqia/my_folder/review-writer-data/review-projects/vis-light-olefin-difunctionalization-wsl-v1`
+- External create: `<DATA_ROOT>/review-projects/vis-light-olefin-difunctionalization-wsl-v1`
 
 - [ ] **Step 1: 重新确认精确基线**
 
@@ -175,11 +175,11 @@ Expected: 只有审查过的既有成果进入提交；不包含本计划、真�
 - [ ] **Step 5: 创建不覆盖的 WSL 副本**
 
 ```zsh
-source_case=/mnt/c/Users/26960/QW-RW/review-writer-e2e-acceptance-20260728-01/review-projects/vis-light-olefin-difunctionalization
-wsl_case=/home/kenqia/my_folder/review-writer-data/review-projects/vis-light-olefin-difunctionalization-wsl-v1
+source_case="<WINDOWS_ACCEPTANCE_ROOT>/review-projects/vis-light-olefin-difunctionalization"
+wsl_case="<DATA_ROOT>/review-projects/vis-light-olefin-difunctionalization-wsl-v1"
 test -d "$source_case"
 test ! -e "$wsl_case"
-mkdir -p /home/kenqia/my_folder/review-writer-data/review-projects
+mkdir -p "<DATA_ROOT>/review-projects"
 cp -a "$source_case" "$wsl_case"
 find "$wsl_case/00_sources/papers" -maxdepth 1 -type f -name '*.pdf' | wc -l
 du -sh "$wsl_case"
@@ -714,7 +714,7 @@ Expected: PASS。
 - [ ] **Step 2: 在 WSL 副本构建三项研究 artifact**
 
 ```zsh
-case_root=/home/kenqia/my_folder/review-writer-data/review-projects/vis-light-olefin-difunctionalization-wsl-v1
+case_root="<DATA_ROOT>/review-projects/vis-light-olefin-difunctionalization-wsl-v1"
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/run_vertical_review.py \
   build-source-truth --project "$case_root"
 ```
@@ -740,7 +740,7 @@ Expected: 全部 PASS。
 
 ```zsh
 python3 view/serve_review_dashboard.py \
-  --review-root /home/kenqia/my_folder/review-writer-data \
+  --review-root "<DATA_ROOT>" \
   --host 127.0.0.1 \
   --port 52738
 ```

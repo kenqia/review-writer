@@ -317,7 +317,9 @@ def validate_docx_integrity(
     document_text = current["document_text"]
     if any(_normalize_text(value) not in document_text for value in attributions):
         raise DocxIntegrityError("DOCX_ATTRIBUTION_MISSING")
-    roundtrip_text = re.sub(r"[*_`]+", "", document_text)
+    roundtrip_text = _normalize_text(
+        _CLAIM_MARKER_RE.sub("", re.sub(r"[*_`]+", "", document_text))
+    )
     cursor = 0
     for chunk in _visible_markdown_chunks(markdown):
         position = roundtrip_text.find(chunk, cursor)
