@@ -403,8 +403,8 @@ def test_review_simulation_actor_is_exact_query_opt_in() -> None:
     assert 'actor_label: "dashboard-playwright-reviewer"' in session
     assert "window.reviewDecisionActor" in evidence
     assert "window.reviewDecisionActor" in synthesis
-    assert "actor_label" not in evidence
-    assert "actor_label" not in synthesis
+    assert "actor_label" in evidence
+    assert "actor_label" in synthesis
 
 
 @pytest.mark.parametrize(
