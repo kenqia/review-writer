@@ -616,10 +616,10 @@ git diff --cached --check
 git commit -m "feat: prefer source figures and synthesis briefs"
 ```
 
-**Task 5 completion record (2026-07-29):** Implemented in `37f7629`.
-Focused regression: 179 passed (`tests/test_review_figures.py` and `tests/test_vertical_review_projection.py`).
-The new route emits source-figure references and human-owned synthesis placeholders only; legacy comparative bitmap behavior remains outside the new route.
-Independent review is pending; no automatic image generation was added.
+**Task 5 completion record (2026-07-29):** Implemented and hardened in `37f7629` + `c68222c`.
+Focused regression: 182 passed (`tests/test_review_figures.py` and `tests/test_vertical_review_projection.py`); broader Paper Evidence + projection set: 211 passed.
+The new route emits source-figure references and human-owned synthesis placeholders only; current content-list hashes and `images/` containment are revalidated, and legacy comparative bitmap behavior remains outside the new route.
+Independent review passed. Non-blocking follow-up: persist per-paper/section human figure selection and bind placeholder `verified` to release-gate asset/hash acceptance.
 
 ---
 
