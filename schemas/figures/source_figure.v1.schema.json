@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://review-writer.local/schemas/figures/source_figure.v1.schema.json",
+  "title": "Source Figure registry entry v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["figure_id", "study_id", "source_id", "page", "figure_label", "caption", "asset_path", "asset_sha256", "source_pdf_sha256", "evidence_ids", "selection_status"],
+  "properties": {
+    "figure_id": {"type": "string", "minLength": 1},
+    "study_id": {"type": "string", "minLength": 1},
+    "source_id": {"type": "string", "minLength": 1},
+    "page": {"type": "integer", "minimum": 1},
+    "figure_label": {"type": "string", "minLength": 1},
+    "caption": {"type": "string", "minLength": 1},
+    "asset_path": {"type": "string", "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"},
+    "asset_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source_pdf_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "evidence_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "selection_status": {"enum": ["selected", "available", "rejected"]},
+    "selection_reason": {"type": "string", "minLength": 1}
+  }
+}

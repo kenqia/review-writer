@@ -1047,6 +1047,34 @@ def apply_risk_decisions(project: Path, decisions: dict) -> list[dict]:
 def build_writer_packet(project: Path) -> dict:
     """Write the only claim whitelist that manuscript generation may consume."""
     project_path = Path(project)
+    # The evidence-to-release route owns its figure policy.  Keep the legacy
+    # Pillow comparison map available for old projects, but never let it run
+    # when a Source Truth bundle identifies the new route.
+    if os.path.lexists(project_path / "01_evidence/source_truth"):
+        from review_writer.project.review_figures import (
+            FIGURE_POLICY,
+            ReviewFigureError,
+            build_source_figure_registry,
+            synthesis_figure_placeholders,
+        )
+
+        try:
+            registry = build_source_figure_registry(project_path)
+            placeholders = synthesis_figure_placeholders(project_path)
+        except ReviewFigureError as exc:
+            _fail(exc.code, str(exc))
+        return {
+            "approved_claim_count": 0,
+            "blocked_count": 0,
+            "claims": [],
+            "figure_policy": FIGURE_POLICY,
+            "figures": registry["figures"],
+            "synthesis_figure_placeholders": placeholders,
+            "human_required_count": 0,
+            "known_exclusions": [],
+            "project_id": project_path.name,
+            "schema_version": "evidence-to-release-writer-packet.v1",
+        }
     state = _project_state(project_path)
     # Detect projection tampering before reporting workflow readiness.
     projection = _load_projection(project_path)

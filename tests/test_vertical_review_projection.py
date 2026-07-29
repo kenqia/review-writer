@@ -3235,3 +3235,21 @@ def test_manual_pdf_evidence_cli_requires_pdf_locator_gate_and_hides_content(
     assert payload["statement"] not in result.stdout
     assert payload["locator"]["exact_quote"] not in result.stdout
     assert str(project) not in result.stdout
+
+
+def test_new_route_writer_packet_exposes_source_figures_and_no_generated_map(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _source_truth_project(tmp_path)
+    write_source_truth_bundle(project, "scholarly-a")
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("new route must not call the legacy Pillow renderer")
+
+    monkeypatch.setattr(vertical_review, "_build_comparative_evidence_figure", forbidden)
+    packet = build_writer_packet(project)
+
+    assert packet["figure_policy"] == "source_figures_or_synthesis_placeholders_only"
+    assert packet["figures"]
+    assert not (project / "03_figure_redraw/comparative_evidence_map.png").exists()
