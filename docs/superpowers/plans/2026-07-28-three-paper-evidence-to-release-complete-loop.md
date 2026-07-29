@@ -799,7 +799,7 @@ Validation: `tests/test_dashboard_evidence_workspace.py` 3 passed, native dashbo
 - Create: `tests/test_content_agent_handoff.py`
 - External modify: 新三篇项目的 `01_evidence/` 与 `02_synthesis/`
 
-- [ ] **Step 1: 写失败测试锁定角色隔离和有界输入**
+- [x] **Step 1: 写失败测试锁定角色隔离和有界输入**
 
 ```python
 def test_content_task_package_contains_only_bound_project_artifacts(tmp_path: Path) -> None:
@@ -817,7 +817,7 @@ def test_import_rejects_unrequested_objects_without_project_change(tmp_path: Pat
     assert project_snapshot(PROJECT) == before
 ```
 
-- [ ] **Step 2: 定义浏览器 Agent 的请求格式**
+- [x] **Step 2: 定义浏览器 Agent 的请求格式**
 
 ```json
 {
@@ -831,7 +831,7 @@ def test_import_rejects_unrequested_objects_without_project_change(tmp_path: Pat
 
 Playwright Agent 只能把该请求发给主 Agent。主 Agent校验当前 UI/项目状态后，派发未参与实现的 Content Agent。
 
-- [ ] **Step 3: 定义 Content Agent 运行边界**
+- [x] **Step 3: 定义 Content Agent 运行边界**
 
 每个 Content Agent：
 
@@ -841,6 +841,9 @@ Playwright Agent 只能把该请求发给主 Agent。主 Agent校验当前 UI/�
 - 不直接写项目、不启动浏览器、不批准自己的候选；
 - evidence Agent、synthesis Agent、section drafting Agent 分开派发；
 - 输出必须经过 schema、digest、locator 和作用域校验后原子导入。
+
+**Task 8 handoff record (2026-07-29):** Steps 1–3 implemented in `5414fdb`, `2bfe767`, `011d99f`, and `7cb5c0d`.
+The bounded package/result boundary is implemented and verified; real three-paper evidence/synthesis execution and Playwright persistence remain in Steps 4–6.
 
 - [ ] **Step 4: 完成三篇真实 Paper Evidence**
 
