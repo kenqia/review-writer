@@ -155,6 +155,17 @@ def register_coverage_map(project: Path, payload: object) -> dict[str, Any]:
     return value
 
 
+def coverage_map_state(project: Path) -> dict[str, Any]:
+    project = _root(project); value = _read_json(project, COVERAGE_PATH); protocol = comparison_protocol_state(project)
+    if not isinstance(value, dict):
+        return {"status": "needs_review", "workflow_can_continue": False, "reason_code": "COVERAGE_MAP_MISSING"}
+    try: _validate(value, "coverage_map.v1.schema.json", "COVERAGE_MAP_INVALID")
+    except SynthesisError as exc:
+        return {"status": "needs_review", "workflow_can_continue": False, "reason_code": exc.code}
+    ok = protocol.get("workflow_can_continue") and value.get("comparison_protocol_digest") == protocol.get("protocol_digest")
+    return {"status": "approved" if ok else "needs_review", "workflow_can_continue": bool(ok), "reason_code": "COVERAGE_MAP_APPROVED" if ok else "COVERAGE_MAP_STALE", "value": value}
+
+
 def _approved_evidence(project: Path) -> dict[str, dict[str, Any]]:
     state = paper_evidence_state(project)
     return {row["evidence_id"]: row for row in state.get("rows", []) if row.get("status") == "approved"}
