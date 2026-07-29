@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import math
@@ -67,6 +68,28 @@ from review_writer.project.parse_quality import (  # noqa: E402
     project_parse_quality_state,
 )
 from review_writer.project.workflow_projection import workflow_state  # noqa: E402
+from review_writer.project.paper_evidence import (  # noqa: E402
+    PaperEvidenceError,
+    apply_paper_evidence_decision,
+    paper_evidence_state,
+)
+from review_writer.project.synthesis import (  # noqa: E402
+    SynthesisError,
+    apply_comparison_protocol_decision,
+    apply_synthesis_decision,
+    comparison_protocol_state,
+    synthesis_state,
+)
+from review_writer.project.section_contract import (  # noqa: E402
+    SectionContractError,
+    apply_section_contract_decision,
+    section_contract_state,
+)
+from review_writer.project.review_figures import (  # noqa: E402
+    ReviewFigureError,
+    build_source_figure_registry,
+    synthesis_figure_placeholders,
+)
 from review_writer.project.source_truth import (  # noqa: E402
     SOURCE_TRUTH_ROOT,
     SourceTruthError,
@@ -216,6 +239,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
                 return
             self.handle_project_review_state_get(project_id)
+        elif parsed.path.startswith("/api/project/") and parsed.path.endswith("/paper-evidence"):
+            project_id = project_id_from_route(parsed.path, "paper-evidence")
+            if project_id is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                return
+            self.handle_project_workspace_get(project_id, "paper-evidence")
+        elif parsed.path.startswith("/api/project/") and parsed.path.endswith("/comparison-protocol"):
+            project_id = project_id_from_route(parsed.path, "comparison-protocol")
+            if project_id is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                return
+            self.handle_project_workspace_get(project_id, "comparison-protocol")
+        elif parsed.path.startswith("/api/project/") and parsed.path.endswith("/synthesis"):
+            project_id = project_id_from_route(parsed.path, "synthesis")
+            if project_id is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                return
+            self.handle_project_workspace_get(project_id, "synthesis")
+        elif parsed.path.startswith("/api/project/") and parsed.path.endswith("/section-contracts"):
+            project_id = project_id_from_route(parsed.path, "section-contracts")
+            if project_id is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                return
+            self.handle_project_workspace_get(project_id, "section-contracts")
+        elif parsed.path.startswith("/api/project/") and parsed.path.endswith("/review-figures"):
+            project_id = project_id_from_route(parsed.path, "review-figures")
+            if project_id is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                return
+            self.handle_project_workspace_get(project_id, "review-figures")
         elif parsed.path.startswith("/api/project/") and parsed.path.endswith("/draft"):
             project_id = project_id_from_route(parsed.path, "draft")
             if project_id is None:
@@ -306,6 +359,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             self.handle_project_review_state_put(project_id)
             return
+        for action in ("paper-evidence", "comparison-protocol", "synthesis", "section-contracts", "review-figures"):
+            if parsed.path.startswith("/api/project/") and parsed.path.endswith(f"/{action}"):
+                project_id = project_id_from_route(parsed.path, action)
+                if project_id is None:
+                    self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                    return
+                self.handle_project_workspace_put(project_id, action)
+                return
         if parsed.path.startswith("/api/discovery/"):
             project_id = unquote(parsed.path.rsplit("/", 1)[-1])
             query = parse_qs(parsed.query)
@@ -831,6 +892,37 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         except (SourceTruthError, ValueError):
             self.send_json({"error": "决定未保存，请检查后重试"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        self.send_json(result)
+
+    def handle_project_workspace_get(self, project_id: str, kind: str) -> None:
+        try:
+            project = project_dir(self.review_root, project_id)
+            if not project.is_dir():
+                raise ValueError("project not found")
+            payload = project_workspace_payload(self.review_root, project_id, kind)
+        except (ValueError, PaperEvidenceError, SynthesisError, SectionContractError, ReviewFigureError, SourceTruthError):
+            self.send_json({"error": "工作台数据暂不可用"}, status=HTTPStatus.NOT_FOUND)
+            return
+        self.send_json(payload)
+
+    def handle_project_workspace_put(self, project_id: str, kind: str) -> None:
+        try:
+            project = project_dir(self.review_root, project_id)
+            if not project.is_dir():
+                raise ValueError("project not found")
+            length = int(self.headers.get("Content-Length") or 0)
+            if length <= 0 or length > 64 * 1024:
+                raise ValueError("invalid body size")
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
+            result = write_project_workspace_decision(self.review_root, project_id, kind, data)
+        except (json.JSONDecodeError, UnicodeError, ValueError):
+            self.send_json({"error": "决定内容无法读取"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        except (PaperEvidenceError, SynthesisError, SectionContractError, ReviewFigureError) as exc:
+            code = getattr(exc, "code", "WORKSPACE_INVALID")
+            status = HTTPStatus.CONFLICT if code.endswith("STALE") or code == "WORKSPACE_STALE" else HTTPStatus.BAD_REQUEST
+            self.send_json({"error": "内容已更新，请刷新后重新核对" if status == HTTPStatus.CONFLICT else "决定未保存，请检查后重试"}, status=status)
             return
         self.send_json(result)
 
@@ -2626,6 +2718,189 @@ def render_pdf_page(path: Path, page: int) -> bytes:
     if not payload.startswith(b"\x89PNG\r\n\x1a\n"):
         raise ValueError("PDF page renderer returned invalid output")
     return payload
+
+
+def _workspace_token(kind: str, identifier: str, value: object) -> str:
+    """Opaque optimistic-concurrency token; never expose the bound digest itself."""
+    material = json.dumps({"kind": kind, "id": identifier, "value": value}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(hashlib.sha256(material).digest()).decode("ascii").rstrip("=")
+
+
+def _safe_decision(value: object) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    action = value.get("action")
+    reason = value.get("reason")
+    if not isinstance(action, str):
+        return None
+    result = {"action": action}
+    if isinstance(reason, str):
+        result["reason"] = reason
+    if isinstance(value.get("decided_at"), str):
+        result["decided_at"] = value["decided_at"]
+    return result
+
+
+def _safe_evidence_row(project_id: str, row: dict[str, Any]) -> dict[str, Any]:
+    locator = row.get("locator") if isinstance(row.get("locator"), dict) else {}
+    safe_locator = {
+        key: locator.get(key)
+        for key in ("source_mode", "page", "section_or_item", "figure_or_table", "exact_quote")
+        if locator.get(key) is not None
+    }
+    result = {
+        "evidence_id": row.get("evidence_id"),
+        "study_id": row.get("study_id"),
+        "source_id": row.get("source_id"),
+        "epistemic_type": row.get("epistemic_type"),
+        "statement": row.get("statement"),
+        "locator": safe_locator,
+        "reported_conditions": row.get("reported_conditions", []),
+        "quantitative_results": row.get("quantitative_results", []),
+        "limitations": row.get("limitations", []),
+        "mechanism_grade": row.get("mechanism_grade"),
+        "risk_classes": row.get("risk_classes", []),
+        "status": row.get("status", "needs_review"),
+        "reason_code": row.get("reason_code"),
+        "decision": _safe_decision(row.get("decision")),
+    }
+    evidence_id = str(result["evidence_id"])
+    result["version_token"] = _workspace_token("paper-evidence", evidence_id, row.get("candidate_digest"))
+    result["pdf_page_url"] = f"/api/project/{quote(project_id, safe='')}/source/{quote(str(row.get('source_id')), safe='')}/pdf-page?page={int(locator.get('page') or 1)}"
+    return result
+
+
+def project_paper_evidence_payload(review_root: Path, project_id: str) -> dict[str, Any]:
+    project = project_dir(review_root, project_id)
+    workflow = workflow_state(project)
+    if workflow.get("route") != "evidence-to-release.v1":
+        return {"route": workflow.get("route", "legacy"), "status": "legacy", "items": [], "workflow_can_continue": False}
+    state = paper_evidence_state(project)
+    items = [_safe_evidence_row(project_id, row) for row in state.get("rows", []) if isinstance(row, dict)]
+    return {
+        "route": "evidence-to-release.v1",
+        "status": state.get("status", "needs_review"),
+        "reason": state.get("reason_code"),
+        "workflow_can_continue": bool(state.get("workflow_can_continue")),
+        "summary": {key: state.get(key, 0) for key in ("study_count", "total_count", "approved_count", "needs_review_count", "stale_count", "rejected_count")},
+        "items": items,
+    }
+
+
+def project_comparison_protocol_payload(review_root: Path, project_id: str) -> dict[str, Any]:
+    project = project_dir(review_root, project_id); workflow = workflow_state(project)
+    if workflow.get("route") != "evidence-to-release.v1":
+        return {"route": workflow.get("route", "legacy"), "status": "legacy", "available": False}
+    state = comparison_protocol_state(project); value = state.get("value") if isinstance(state.get("value"), dict) else {}
+    visible = {key: value.get(key) for key in ("comparison_id", "comparison_objects", "axes", "normalization_rules", "missing_value_policy", "incomparability_rules", "counterevidence_rules", "claim_strength") if key in value}
+    visible["decision"] = _safe_decision(value.get("decision"))
+    visible["version_token"] = _workspace_token("comparison-protocol", str(value.get("comparison_id") or "protocol"), value.get("protocol_digest"))
+    return {"route": "evidence-to-release.v1", "status": state.get("status", "needs_review"), "reason": state.get("reason_code"), "workflow_can_continue": bool(state.get("workflow_can_continue")), "protocol": visible}
+
+
+def project_synthesis_payload(review_root: Path, project_id: str) -> dict[str, Any]:
+    project = project_dir(review_root, project_id); workflow = workflow_state(project)
+    if workflow.get("route") != "evidence-to-release.v1":
+        return {"route": workflow.get("route", "legacy"), "status": "legacy", "items": []}
+    state = synthesis_state(project); items = []
+    for row in state.get("rows", []):
+        if not isinstance(row, dict): continue
+        item = {key: row.get(key) for key in ("synthesis_id", "proposition", "comparison_axis", "supporting_evidence_ids", "counter_evidence_ids", "applicability_boundary", "mechanism_evidence_grade", "uncertainty", "risk_class", "single_study", "status", "reason_code")}
+        item["decision"] = _safe_decision(row.get("decision")); item["version_token"] = _workspace_token("synthesis", str(row.get("synthesis_id")), row.get("synthesis_digest")); items.append(item)
+    return {"route": "evidence-to-release.v1", "status": state.get("status", "needs_review"), "reason": state.get("reason_code"), "workflow_can_continue": bool(state.get("workflow_can_continue")), "items": items}
+
+
+def project_section_contracts_payload(review_root: Path, project_id: str) -> dict[str, Any]:
+    project = project_dir(review_root, project_id); workflow = workflow_state(project)
+    if workflow.get("route") != "evidence-to-release.v1":
+        return {"route": workflow.get("route", "legacy"), "status": "legacy", "items": []}
+    state = section_contract_state(project); items = []
+    for row in state.get("rows", []):
+        if not isinstance(row, dict): continue
+        item = {key: row.get(key) for key in ("section_id", "research_question", "comparison_axes", "expected_synthesis", "counterevidence_and_limitations", "evidence_budget", "synthesis_budget", "figure_plan", "allowed_wording_strength", "status", "reason_code")}
+        item["decision"] = _safe_decision(row.get("decision")); item["version_token"] = _workspace_token("section-contract", str(row.get("section_id")), row.get("contract_digest")); items.append(item)
+    return {"route": "evidence-to-release.v1", "status": state.get("status", "needs_review"), "reason": state.get("reason_code"), "workflow_can_continue": bool(state.get("workflow_can_continue")), "items": items}
+
+
+def project_review_figures_workspace_payload(review_root: Path, project_id: str) -> dict[str, Any]:
+    project = project_dir(review_root, project_id); workflow = workflow_state(project)
+    if workflow.get("route") != "evidence-to-release.v1":
+        return {"route": workflow.get("route", "legacy"), "status": "legacy", "source_figures": [], "placeholders": []}
+    registry_path = project / "03_figures/source_figure_registry.json"
+    registry = read_json_if_exists(registry_path)
+    if not isinstance(registry, dict):
+        registry = build_source_figure_registry(project)
+    source_figures = []
+    for row in registry.get("figures", []):
+        if not isinstance(row, dict): continue
+        item = {key: row.get(key) for key in ("figure_id", "study_id", "source_id", "page", "figure_label", "caption", "evidence_ids", "selection_status")}
+        item["version_token"] = _workspace_token("review-figure", str(row.get("figure_id")), row.get("asset_sha256"))
+        source_figures.append(item)
+    placeholders = []
+    for row in synthesis_figure_placeholders(project):
+        item = {key: row.get(key) for key in ("placeholder_id", "scientific_question", "reader_takeaway", "panels", "comparison_axis", "required_labels_units", "counter_evidence", "forbidden_overclaims", "unresolved_uncertainties", "caption_draft", "target_size", "status")}
+        item["version_token"] = _workspace_token("review-placeholder", str(row.get("placeholder_id")), row)
+        placeholders.append(item)
+    return {"route": "evidence-to-release.v1", "figure_policy": "source_figures_or_synthesis_placeholders_only", "source_figures": source_figures, "placeholders": placeholders, "summary": {"source_count": len(source_figures), "placeholder_count": len(placeholders)}}
+
+
+def project_workspace_payload(review_root: Path, project_id: str, kind: str) -> dict[str, Any]:
+    return {
+        "paper-evidence": project_paper_evidence_payload,
+        "comparison-protocol": project_comparison_protocol_payload,
+        "synthesis": project_synthesis_payload,
+        "section-contracts": project_section_contracts_payload,
+        "review-figures": project_review_figures_workspace_payload,
+    }[kind](review_root, project_id)
+
+
+def _require_workspace_token(kind: str, identifier: str, value: object, payload: dict[str, Any]) -> None:
+    token = payload.get("version_token", payload.get("token"))
+    if not isinstance(token, str) or token != _workspace_token(kind, identifier, value):
+        raise ValueError("WORKSPACE_STALE")
+
+
+def write_project_workspace_decision(review_root: Path, project_id: str, kind: str, payload: object) -> dict[str, Any]:
+    if not isinstance(payload, dict): raise ValueError("invalid workspace payload")
+    project = project_dir(review_root, project_id)
+    if kind == "paper-evidence":
+        state = paper_evidence_state(project); eid = payload.get("evidence_id"); row = next((r for r in state.get("rows", []) if r.get("evidence_id") == eid), None)
+        if not isinstance(row, dict): raise PaperEvidenceError("EVIDENCE_ID_NOT_FOUND")
+        _require_workspace_token(kind, str(eid), row.get("candidate_digest"), payload)
+        internal = {"evidence_id": eid, "candidate_digest": row.get("candidate_digest"), "bound_parse_object_digests": row.get("bound_parse_object_digests", []), "source_pdf_sha256": row.get("source_pdf_sha256"), "action": payload.get("action"), "reason": payload.get("reason"), "actor_type": payload.get("actor_type", "human_researcher"), "actor_label": payload.get("actor_label", "local-researcher")}
+        if "replacement_statement" in payload: internal["replacement_statement"] = payload["replacement_statement"]
+        apply_paper_evidence_decision(project, internal)
+        return project_paper_evidence_payload(review_root, project_id)
+    if kind == "comparison-protocol":
+        state = comparison_protocol_state(project); value = state.get("value") if isinstance(state.get("value"), dict) else {}; identifier = str(value.get("comparison_id") or "protocol")
+        _require_workspace_token(kind, identifier, value.get("protocol_digest"), payload)
+        apply_comparison_protocol_decision(project, {"action": payload.get("action"), "reason": payload.get("reason"), "actor_type": payload.get("actor_type", "human_researcher"), "actor_label": payload.get("actor_label", "local-researcher")})
+        return project_comparison_protocol_payload(review_root, project_id)
+    if kind == "synthesis":
+        state = synthesis_state(project); sid = payload.get("synthesis_id"); row = next((r for r in state.get("rows", []) if r.get("synthesis_id") == sid), None)
+        if not isinstance(row, dict): raise SynthesisError("SYNTHESIS_ID_NOT_FOUND")
+        _require_workspace_token(kind, str(sid), row.get("synthesis_digest"), payload)
+        apply_synthesis_decision(project, {"synthesis_id": sid, "action": payload.get("action"), "reason": payload.get("reason"), "actor_type": payload.get("actor_type", "human_researcher"), "actor_label": payload.get("actor_label", "local-researcher")})
+        return project_synthesis_payload(review_root, project_id)
+    if kind == "section-contracts":
+        state = section_contract_state(project); sid = payload.get("section_id"); row = next((r for r in state.get("rows", []) if r.get("section_id") == sid), None)
+        if not isinstance(row, dict): raise SectionContractError("SECTION_ID_NOT_FOUND")
+        _require_workspace_token(kind, str(sid), row.get("contract_digest"), payload)
+        apply_section_contract_decision(project, {"section_id": sid, "action": payload.get("action"), "reason": payload.get("reason"), "actor_type": payload.get("actor_type", "human_researcher"), "actor_label": payload.get("actor_label", "local-researcher")})
+        return project_section_contracts_payload(review_root, project_id)
+    if kind == "review-figures":
+        figure_id = payload.get("figure_id")
+        registry = read_json_if_exists(project / "03_figures/source_figure_registry.json")
+        if not isinstance(registry, dict): raise ReviewFigureError("FIGURE_STATE_INVALID")
+        rows = registry.get("figures", []); row = next((r for r in rows if isinstance(r, dict) and r.get("figure_id") == figure_id), None)
+        if not isinstance(row, dict): raise ReviewFigureError("FIGURE_NOT_FOUND")
+        _require_workspace_token(kind, str(figure_id), row.get("asset_sha256"), payload)
+        status = payload.get("selection_status")
+        if status not in {"selected", "available", "rejected"}: raise ReviewFigureError("FIGURE_SELECTION_INVALID")
+        row["selection_status"] = status
+        target = project / "03_figures/source_figure_registry.json"; target.write_text(json.dumps(registry, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        return project_review_figures_workspace_payload(review_root, project_id)
+    raise ValueError("unknown workspace")
 
 
 def project_progress_payload(review_root: Path, project_id: str) -> dict[str, Any]:
