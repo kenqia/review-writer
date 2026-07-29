@@ -39,7 +39,11 @@
     const figurePanel = section("原论文图片");
     (figures.source_figures || []).forEach(item => {
       const row = document.createElement("div"); row.className = "figure-source-row";
-      row.append(text("span", `${item.study_id} · ${item.figure_label} · 第 ${item.page} 页：${item.caption}`));
+      const details = document.createElement("div"); details.append(text("span", `${item.study_id} · ${item.figure_label} · 第 ${item.page} 页：${item.caption}`));
+      if (item.image_url) { const preview = document.createElement("img"); preview.src = item.image_url; preview.alt = item.caption || item.figure_label || "原论文图片"; preview.loading = "lazy"; preview.className = "source-figure-preview"; details.append(preview); }
+      const links = document.createElement("div"); links.className = "figure-links";
+      [[item.image_url, "新标签查看原图"], [item.pdf_page_url, "打开论文页"]].forEach(([href, label]) => { if (!href) return; const link = document.createElement("a"); link.href = href; link.target = "_blank"; link.rel = "noopener"; link.textContent = label; links.append(link); });
+      details.append(links); row.append(details);
       const button = document.createElement("button"); button.type = "button"; button.textContent = item.selection_status === "selected" ? "取消选择" : "选择原图";
       button.addEventListener("click", () => decide("review-figures", {...item, selection_status: item.selection_status === "selected" ? "available" : "selected"})); row.append(button); figurePanel.append(row);
     });

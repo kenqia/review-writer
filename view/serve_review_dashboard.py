@@ -239,6 +239,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_error(HTTPStatus.BAD_REQUEST, "figure index is invalid")
                 return
             self.handle_project_figure_get(project_id, int(indices[0]))
+        elif parsed.path.startswith("/api/project/") and parsed.path.endswith("/source-figure"):
+            project_id = project_id_from_route(parsed.path, "source-figure")
+            if project_id is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                return
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            figure_ids = query.get("figure_id", [])
+            if set(query) != {"figure_id"} or len(figure_ids) != 1 or not figure_ids[0]:
+                self.send_error(HTTPStatus.BAD_REQUEST, "figure_id is invalid")
+                return
+            self.handle_project_source_figure_get(project_id, figure_ids[0])
         elif parsed.path.startswith("/api/project/") and parsed.path.endswith("/review-state"):
             project_id = project_id_from_route(parsed.path, "review-state")
             if project_id is None:
@@ -976,6 +987,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND, "figure is unavailable")
             return
         self.send_file(path, content_type)
+
+    def handle_project_source_figure_get(self, project_id: str, figure_id: str) -> None:
+        try:
+            project = project_dir(self.review_root, project_id)
+            registry = read_json_if_exists(project / "03_figures/source_figure_registry.json")
+            rows = registry.get("figures", []) if isinstance(registry, dict) else []
+            row = next((item for item in rows if isinstance(item, dict) and item.get("figure_id") == figure_id), None)
+            if not isinstance(row, dict) or not isinstance(row.get("asset_path"), str):
+                raise ValueError("figure not found")
+            image_path = validate_project_file_path(project, Path(row["asset_path"]), "FIGURE_ASSET_INVALID")
+            if hashlib.sha256(image_path.read_bytes()).hexdigest() != row.get("asset_sha256"):
+                raise ValueError("figure hash mismatch")
+            content_type = mimetypes.guess_type(image_path.name)[0]
+            if not content_type or not content_type.startswith("image/"):
+                raise ValueError("figure type invalid")
+        except (OSError, ProjectReleaseError, ValueError):
+            self.send_error(HTTPStatus.NOT_FOUND, "source figure is unavailable")
+            return
+        self.send_file(image_path, content_type, extra_headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
     def handle_static_asset(self, path: str) -> None:
         assets_root = Path(__file__).resolve().parent / "assets"
@@ -2776,6 +2806,7 @@ def _safe_evidence_row(project_id: str, row: dict[str, Any]) -> dict[str, Any]:
     evidence_id = str(result["evidence_id"])
     result["version_token"] = _workspace_token("paper-evidence", evidence_id, row.get("candidate_digest"))
     result["pdf_page_url"] = f"/api/project/{quote(project_id, safe='')}/source/{quote(str(row.get('source_id')), safe='')}/pdf-page?page={int(locator.get('page') or 1)}"
+    result["parsed_text_url"] = f"/api/project/{quote(project_id, safe='')}/source/{quote(str(row.get('source_id')), safe='')}/parsed-markdown"
     return result
 
 
@@ -2847,6 +2878,8 @@ def project_review_figures_workspace_payload(review_root: Path, project_id: str)
         if not isinstance(row, dict): continue
         item = {key: row.get(key) for key in ("figure_id", "study_id", "source_id", "page", "figure_label", "caption", "evidence_ids", "selection_status")}
         item["version_token"] = _workspace_token("review-figure", str(row.get("figure_id")), row.get("asset_sha256"))
+        item["image_url"] = f"/api/project/{quote(project_id, safe='')}/source-figure?figure_id={quote(str(row.get('figure_id')), safe='')}"
+        item["pdf_page_url"] = f"/api/project/{quote(project_id, safe='')}/source/{quote(str(row.get('source_id')), safe='')}/pdf-page?page={int(row.get('page') or 1)}"
         source_figures.append(item)
     placeholders = []
     for row in synthesis_figure_placeholders(project):

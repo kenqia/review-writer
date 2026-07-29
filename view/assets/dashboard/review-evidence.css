@@ -6,6 +6,8 @@
 .evidence-card header strong, .synthesis-card strong { overflow-wrap: anywhere; }
 .workspace-status { flex: 0 0 auto; color: var(--rw-strong); font-size: 12px; }
 .evidence-meta, .decision-line { color: var(--rw-muted); font-size: 13px; }
+.evidence-links, .figure-links { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 0; }
+.evidence-links a, .figure-links a { color: var(--rw-strong); text-decoration: underline; }
 .evidence-card blockquote { margin: 10px 0; padding-left: 12px; border-left: 3px solid var(--rw-strong); color: #4e5148; overflow-wrap: anywhere; }
 .workspace-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .workspace-actions button, .synthesis-card button { min-height: 36px; padding: 7px 12px; border: 1px solid var(--rw-line); border-radius: 5px; background: var(--rw-paper); color: var(--rw-ink); cursor: pointer; }
@@ -15,6 +17,7 @@
 .synthesis-panel h4 { margin: 0; color: var(--rw-strong); }
 .synthesis-card p, .figure-source-row, .figure-placeholder-row { overflow-wrap: anywhere; }
 .figure-source-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.source-figure-preview { display: block; width: min(100%, 280px); max-height: 180px; object-fit: contain; margin-top: 8px; border: 1px solid var(--rw-line); background: #fff; }
 .figure-source-row button { flex: 0 0 auto; min-height: 32px; padding: 5px 9px; border: 1px solid var(--rw-line); border-radius: 5px; background: var(--rw-paper); color: var(--rw-ink); cursor: pointer; }
 .placeholder-heading { margin-top: 12px !important; color: var(--rw-strong-2) !important; }
 .workspace-empty, .workspace-error { padding: 14px; color: var(--rw-muted); }

@@ -39,6 +39,9 @@
       card.append(text("p", `条件：${list(item.reported_conditions)}；定量结果：${list(item.quantitative_results)}`));
       card.append(text("p", `机制等级：${item.mechanism_grade || "—"}；风险：${list(item.risk_classes)}`));
       if (item.locator?.exact_quote) card.append(text("blockquote", item.locator.exact_quote));
+      const references = document.createElement("p"); references.className = "evidence-links";
+      [[item.pdf_page_url, "打开原论文页"], [item.parsed_text_url, "打开解析正文"]].forEach(([href, label]) => { if (!href) return; const link = document.createElement("a"); link.href = href; link.target = "_blank"; link.rel = "noopener"; link.textContent = label; references.append(link); });
+      card.append(references);
       const actions = document.createElement("div"); actions.className = "workspace-actions";
       ["approve", "revise_and_approve", "reject"].forEach(action => {
         const button = document.createElement("button"); button.type = "button"; button.textContent = {approve:"批准", revise_and_approve:"修改后批准", reject:"拒绝"}[action];

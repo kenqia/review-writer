@@ -92,3 +92,8 @@ def test_review_html_loads_split_workspace_modules_and_hides_new_route_risk() ->
     assert "Coverage Map" in synthesis
     assert "protocol.evidence_ready" in synthesis
     assert "button.disabled = !synthesis.protocol_ready" in synthesis
+    assert "item.pdf_page_url" in evidence
+    assert "item.parsed_text_url" in evidence
+    assert "item.image_url" in synthesis
+    server = (root / "view/serve_review_dashboard.py").read_text(encoding="utf-8")
+    assert "/source-figure" in server
