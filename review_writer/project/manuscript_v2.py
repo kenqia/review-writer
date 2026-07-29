@@ -50,6 +50,13 @@ _HIGH_RISK = re.compile(
     r"|\b\d+(?:\.\d+)?\s*(?:%|°?C|K|h|min|s|mol|mmol|M|mM|nm|ppm|equiv)(?!\w))",
     flags=re.IGNORECASE,
 )
+_TRANSITION_ONLY = re.compile(
+    r"^(?:this section (?:introduces|outlines|is organized|turns to)|"
+    r"the (?:next|following) section (?:introduces|examines|compares|discusses)|"
+    r"we (?:next|now) (?:turn to|consider|compare|discuss)|"
+    r"the discussion (?:next|now) turns to)\b",
+    flags=re.IGNORECASE,
+)
 
 
 class ManuscriptV2Error(ValueError):
@@ -216,7 +223,14 @@ def _approved_objects(
 def _line_has_science(value: str) -> bool:
     cleaned = _MARKER.sub("", value)
     cleaned = re.sub(r"[`*_>#\-]", " ", cleaned)
-    return bool(_SCIENTIFIC.search(cleaned))
+    cleaned = " ".join(cleaned.split())
+    if not cleaned or _TRANSITION_ONLY.search(cleaned):
+        return False
+    if value.lstrip().startswith(("#", "![", "<!-- SYNTHESIS_FIGURE_PLACEHOLDER")):
+        return False
+    # Scientific vocabulary is an explicit signal.  Otherwise prose remains
+    # fail-closed unless it is one of the narrow transition forms above.
+    return bool(_SCIENTIFIC.search(cleaned) or re.search(r"[A-Za-z]{2,}", cleaned))
 
 
 def _claim_bindings(

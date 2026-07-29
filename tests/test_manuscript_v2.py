@@ -146,6 +146,19 @@ def test_unapproved_or_missing_claim_marker_is_rejected(project: Path) -> None:
         )
     with pytest.raises(ManuscriptV2Error, match="SCIENTIFIC_CLAIM_UNMARKED"):
         register_section_draft(project, _draft("The reaction delivered 82% yield."))
+    with pytest.raises(ManuscriptV2Error, match="SCIENTIFIC_CLAIM_UNMARKED"):
+        register_section_draft(project, _draft("Visible-light catalysis enables this transformation."))
+
+
+def test_narrow_transition_sentence_may_remain_unmarked(project: Path) -> None:
+    draft = register_section_draft(
+        project,
+        _draft(
+            "The next section compares these studies.\n\n"
+            "The experiment reported the product. [evidence:evidence-low]"
+        ),
+    )
+    assert draft["status"] == "needs_review"
 
 
 def test_high_risk_claim_requires_simulated_human_edit_decision(project: Path) -> None:
