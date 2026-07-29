@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import pytest
 
@@ -52,3 +53,23 @@ def test_coverage_map_requires_approved_protocol(tmp_path: Path, monkeypatch: py
     monkeypatch.setattr("review_writer.project.synthesis.comparison_protocol_state", lambda _: {"workflow_can_continue": False})
     with pytest.raises(SynthesisError, match="COMPARISON_PROTOCOL_NOT_APPROVED"):
         register_coverage_map(project, {"comparison_id": "cmp", "axes": [{}]})
+
+
+def test_synthesis_state_marks_claim_stale_when_protocol_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from review_writer.project.synthesis import synthesis_state
+    from review_writer.project.source_truth import canonical_digest
+
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr("review_writer.project.synthesis.comparison_protocol_state", lambda _: {"workflow_can_continue": True, "protocol_digest": "b" * 64})
+    monkeypatch.setattr("review_writer.project.synthesis.paper_evidence_state", lambda _: {"projection_digest": "c" * 64, "rows": []})
+    claim_dir = project / "02_synthesis"
+    claim_dir.mkdir()
+    claim = {
+        "synthesis_id": "s1",
+        "comparison_protocol_digest": "a" * 64,
+        "paper_evidence_projection_digest": "c" * 64,
+    }
+    claim["synthesis_digest"] = canonical_digest({k: v for k, v in claim.items() if k != "synthesis_digest"})
+    (claim_dir / "synthesis_claim_projection.jsonl").write_text(json.dumps(claim) + "\n", encoding="utf-8")
+    assert synthesis_state(project)["rows"][0]["reason_code"] == "SYNTHESIS_PROTOCOL_STALE"
