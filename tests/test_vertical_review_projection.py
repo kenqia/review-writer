@@ -13,6 +13,7 @@ import pytest
 
 import review_writer.project.vertical_review as vertical_review
 from review_writer.project.paper_evidence import (
+    PaperEvidenceError,
     apply_paper_evidence_decision,
     paper_evidence_state,
     register_paper_evidence_candidates,
@@ -2944,6 +2945,26 @@ def test_workflow_projection_requires_current_typed_paper_evidence(tmp_path: Pat
     assert after["paper_evidence_ready"] is True
     assert after["active_stage"] == "synthesis"
     assert after["blockers"] == ["SYNTHESIS_NOT_APPROVED"]
+
+
+def test_parsed_candidate_cannot_bind_digest_from_another_source(tmp_path: Path) -> None:
+    project = _canonical_prepare_project(tmp_path, si_policy="NOT_REQUIRED")
+    parse = parse_quality_state(project, "STUDY-CANARY")
+    si_digest = next(
+        row["object_digest"]
+        for row in parse["objects"]
+        if row["source_id"] == "CANARY_SI" and row["kind"] == "body_order"
+    )
+    invalid = {
+        **_typed_paper_candidate(project),
+        "bound_parse_object_digests": [si_digest],
+    }
+    before = _file_bytes(project)
+
+    with pytest.raises(PaperEvidenceError, match="PARSE_OBJECT_SOURCE_MISMATCH"):
+        register_paper_evidence_candidates(project, "STUDY-CANARY", invalid)
+
+    assert _file_bytes(project) == before
 
 
 def test_stale_parse_gate_invalidates_only_evidence_depending_on_changed_source(

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import multiprocessing
 from pathlib import Path
 
 import pytest
@@ -19,7 +21,8 @@ from review_writer.project.parse_quality import (
     parse_quality_state,
     write_parse_quality_gate,
 )
-from review_writer.project.source_truth import write_source_truth_bundle
+from review_writer.project.source_truth import canonical_digest, write_source_truth_bundle
+from review_writer.project.workflow_projection import workflow_state
 from test_source_truth import _source_truth_project
 
 
@@ -194,6 +197,28 @@ def test_locator_page_must_exist_in_current_source(project: Path) -> None:
         register_paper_evidence_candidates(project, STUDY_ID, payload)
 
 
+def test_locator_page_becoming_out_of_range_stales_approved_evidence(tmp_path: Path) -> None:
+    project = _source_truth_project(tmp_path)
+    manifest_path = project / "01_evidence/text_layers/text_layers.manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["sources"][0]["page_count"] = 2
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    _approve_parse(project)
+    payload = candidate()
+    payload["locator"] = {**payload["locator"], "page": 2}
+    row = _register(project, payload)
+    apply_paper_evidence_decision(project, _decision(row))
+
+    manifest["sources"][0]["page_count"] = 1
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    write_source_truth_bundle(project, STUDY_ID)
+
+    state = paper_evidence_state(project)
+    assert state["rows"][0]["status"] == "stale"
+    assert state["rows"][0]["reason_code"] == "LOCATOR_PAGE_STALE"
+    assert state["workflow_can_continue"] is False
+
+
 def test_current_hash_bound_approval_unlocks_paper_evidence(project: Path) -> None:
     row = _register(project)
 
@@ -303,6 +328,212 @@ def test_unknown_fields_and_duplicate_ids_fail_closed(project: Path) -> None:
             STUDY_ID,
             {"candidates": [candidate(), candidate()]},
         )
+
+
+def test_persisted_parsed_candidate_with_empty_dependencies_fails_closed(project: Path) -> None:
+    row = _register(project)
+    candidate_path = project / f"01_evidence/{STUDY_ID}/paper_evidence_candidates.json"
+    persisted = json.loads(candidate_path.read_text(encoding="utf-8"))
+    persisted_row = persisted["candidates"][0]
+    persisted_row["bound_parse_object_digests"] = []
+    persisted_row["candidate_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in persisted_row.items()
+            if key not in {"candidate_digest", "decision"}
+        }
+    )
+    candidate_path.write_text(json.dumps(persisted), encoding="utf-8")
+
+    with pytest.raises(PaperEvidenceError, match="PAPER_EVIDENCE_SCHEMA_INVALID"):
+        paper_evidence_state(project)
+
+    assert row["candidate_digest"] != persisted_row["candidate_digest"]
+
+
+@pytest.mark.parametrize("invalid_id", [".", "..", " leading", "trailing ", "line\nbreak"])
+def test_persisted_invalid_identifier_fails_closed(project: Path, invalid_id: str) -> None:
+    _register(project)
+    candidate_path = project / f"01_evidence/{STUDY_ID}/paper_evidence_candidates.json"
+    persisted = json.loads(candidate_path.read_text(encoding="utf-8"))
+    persisted_row = persisted["candidates"][0]
+    persisted_row["evidence_id"] = invalid_id
+    persisted_row["candidate_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in persisted_row.items()
+            if key not in {"candidate_digest", "decision"}
+        }
+    )
+    candidate_path.write_text(json.dumps(persisted), encoding="utf-8")
+
+    with pytest.raises(PaperEvidenceError):
+        paper_evidence_state(project)
+
+
+def test_decision_study_id_must_match_candidate(project: Path) -> None:
+    row = _register(project)
+    apply_paper_evidence_decision(project, _decision(row))
+    decisions_path = project / "01_evidence/paper_evidence_decisions.jsonl"
+    event = json.loads(decisions_path.read_text(encoding="utf-8"))
+    event["study_id"] = "different-study"
+    decisions_path.write_text(json.dumps(event) + "\n", encoding="utf-8")
+
+    with pytest.raises(PaperEvidenceError, match="EVIDENCE_DECISION_STUDY_MISMATCH"):
+        paper_evidence_state(project)
+
+
+def _duplicate_study_candidate(project: Path, row: dict) -> None:
+    source_bundle_path = project / "01_evidence/source_truth/scholarly-a/bundle.json"
+    bundle = json.loads(source_bundle_path.read_text(encoding="utf-8"))
+    bundle["study_id"] = "scholarly-b"
+    bundle["bundle_digest"] = canonical_digest(
+        {key: value for key, value in bundle.items() if key != "bundle_digest"}
+    )
+    bundle_path = project / "01_evidence/source_truth/scholarly-b/bundle.json"
+    bundle_path.parent.mkdir(parents=True, exist_ok=True)
+    bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+    receipt_path = project / "00_sources/acquisition_final_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["studies"].append({"study_id": "scholarly-b"})
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    copied = json.loads(json.dumps(row))
+    copied["study_id"] = "scholarly-b"
+    copied["candidate_digest"] = canonical_digest(
+        {key: value for key, value in copied.items() if key not in {"candidate_digest", "decision"}}
+    )
+    candidate_path = project / "01_evidence/scholarly-b/paper_evidence_candidates.json"
+    candidate_path.parent.mkdir(parents=True, exist_ok=True)
+    candidate_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "paper-evidence-candidate-set.v1",
+                "study_id": "scholarly-b",
+                "candidates": [copied],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_global_evidence_id_conflict_is_rejected_without_fact_writes(project: Path) -> None:
+    row = _register(project)
+    _duplicate_study_candidate(project, row)
+    before = {
+        path.relative_to(project).as_posix(): path.read_bytes()
+        for path in project.rglob("*")
+        if path.is_file()
+    }
+    conflicting = {**candidate(), "statement": "A conflicting statement."}
+
+    with pytest.raises(PaperEvidenceError, match="EVIDENCE_ID_DUPLICATE"):
+        register_paper_evidence_candidates(project, STUDY_ID, conflicting)
+
+    after = {
+        path.relative_to(project).as_posix(): path.read_bytes()
+        for path in project.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
+
+
+def test_state_rejects_preexisting_cross_study_duplicate_ids(project: Path) -> None:
+    row = _register(project)
+    _duplicate_study_candidate(project, row)
+
+    with pytest.raises(PaperEvidenceError, match="EVIDENCE_ID_DUPLICATE"):
+        paper_evidence_state(project)
+
+
+def _register_in_process(project: str, payload: dict, barrier: object, queue: object) -> None:
+    from review_writer.project.paper_evidence import register_paper_evidence_candidates
+
+    try:
+        barrier.wait()
+        register_paper_evidence_candidates(Path(project), STUDY_ID, payload)
+        queue.put("ok")
+    except Exception as exc:  # pragma: no cover - asserted through the queue.
+        queue.put(type(exc).__name__ + ":" + str(exc))
+
+
+def _decide_in_process(project: str, payload: dict, barrier: object, queue: object) -> None:
+    from review_writer.project.paper_evidence import apply_paper_evidence_decision
+
+    try:
+        barrier.wait()
+        apply_paper_evidence_decision(Path(project), payload)
+        queue.put("ok")
+    except Exception as exc:  # pragma: no cover - asserted through the queue.
+        queue.put(type(exc).__name__ + ":" + str(exc))
+
+
+def test_multiprocess_candidate_and_decision_transactions_preserve_both_rows(project: Path) -> None:
+    context = multiprocessing.get_context("spawn")
+    barrier = context.Barrier(2)
+    queue = context.Queue()
+    first = candidate()
+    second = {**candidate(), "evidence_id": "EVIDENCE-002", "statement": "Second observation."}
+    processes = [
+        context.Process(target=_register_in_process, args=(str(project), payload, barrier, queue))
+        for payload in (first, second)
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=20)
+    assert [process.exitcode for process in processes] == [0, 0]
+    assert [queue.get(timeout=2) for _ in processes] == ["ok", "ok"]
+    persisted = json.loads(
+        (project / f"01_evidence/{STUDY_ID}/paper_evidence_candidates.json").read_text()
+    )
+    rows = {row["evidence_id"]: row for row in persisted["candidates"]}
+    assert set(rows) == {"EVIDENCE-001", "EVIDENCE-002"}
+
+    decisions = [_decision(rows["EVIDENCE-001"]), _decision(rows["EVIDENCE-002"])]
+    barrier = context.Barrier(2)
+    queue = context.Queue()
+    processes = [
+        context.Process(target=_decide_in_process, args=(str(project), payload, barrier, queue))
+        for payload in decisions
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=20)
+    assert [process.exitcode for process in processes] == [0, 0]
+    assert [queue.get(timeout=2) for _ in processes] == ["ok", "ok"]
+    decision_rows = (
+        project / "01_evidence/paper_evidence_decisions.jsonl"
+    ).read_text().splitlines()
+    assert {json.loads(line)["evidence_id"] for line in decision_rows} == {
+        "EVIDENCE-001",
+        "EVIDENCE-002",
+    }
+
+
+def test_state_and_workflow_queries_do_not_write_projection_or_touch_files(project: Path) -> None:
+    row = _register(project)
+    apply_paper_evidence_decision(project, _decision(row))
+    projection = project / "01_evidence/paper_evidence_projection.jsonl"
+    projection.unlink()
+    before = {
+        path.relative_to(project).as_posix(): (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in project.rglob("*")
+        if path.is_file()
+    }
+
+    evidence = paper_evidence_state(project)
+    workflow = workflow_state(project)
+
+    after = {
+        path.relative_to(project).as_posix(): (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in project.rglob("*")
+        if path.is_file()
+    }
+    assert evidence["workflow_can_continue"] is True
+    assert workflow["paper_evidence_ready"] is True
+    assert not projection.exists()
+    assert after == before
 
 
 def test_candidate_output_symlink_is_rejected(project: Path, tmp_path: Path) -> None:

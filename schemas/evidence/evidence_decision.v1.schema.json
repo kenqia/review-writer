@@ -54,7 +54,7 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 240,
-      "pattern": "^[^/\\\\\\u0000]+$"
+      "pattern": "^(?!\\.\\.?$)(?!\\s)[^/\\\\\\u0000\\r\\n]*[^/\\\\\\u0000\\r\\n\\s]$"
     },
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "verification_decision": {

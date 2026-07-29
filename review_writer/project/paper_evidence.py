@@ -7,7 +7,7 @@ import json
 import os
 import re
 import tempfile
-import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -30,6 +30,10 @@ from review_writer.project.verification_decision import (
     VerificationDecisionError,
     verification_decision,
 )
+from review_writer.project.paper_evidence_store import (
+    PaperEvidenceStoreError,
+    project_write_lock,
+)
 
 
 PAPER_EVIDENCE_SCHEMA = REPO_ROOT / "schemas/evidence/paper_evidence.v1.schema.json"
@@ -42,7 +46,6 @@ EPISTEMIC_TYPES = frozenset(
 DECISION_ACTIONS = frozenset({"approve", "revise_and_approve", "reject"})
 ACTOR_TYPES = frozenset({"human_researcher", "simulated_researcher_agent"})
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-PAPER_EVIDENCE_LOCK = threading.RLock()
 
 
 class PaperEvidenceError(ValueError):
@@ -51,6 +54,16 @@ class PaperEvidenceError(ValueError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+@contextmanager
+def _mutation(project: Path):
+    project = _project_root(project)
+    try:
+        with project_write_lock(project):
+            yield project
+    except PaperEvidenceStoreError as exc:
+        raise PaperEvidenceError(exc.code) from exc
 
 
 def _project_root(project: Path) -> Path:
@@ -201,6 +214,15 @@ def _candidate_path(project: Path, study_id: str) -> Path:
 
 
 def _source(project: Path, study_id: str, source_id: str) -> dict[str, Any]:
+    source = _source_descriptor(project, study_id, source_id)
+    try:
+        source_truth_asset(project, study_id, source_id, "pdf")
+    except SourceTruthError as exc:
+        raise PaperEvidenceError(exc.code) from exc
+    return source
+
+
+def _source_descriptor(project: Path, study_id: str, source_id: str) -> dict[str, Any]:
     try:
         bundle = load_source_truth_bundle(project, study_id)
     except SourceTruthError as exc:
@@ -212,10 +234,6 @@ def _source(project: Path, study_id: str, source_id: str) -> dict[str, Any]:
     ]
     if len(matches) != 1:
         raise PaperEvidenceError("SOURCE_ID_NOT_FOUND")
-    try:
-        source_truth_asset(project, study_id, source_id, "pdf")
-    except SourceTruthError as exc:
-        raise PaperEvidenceError(exc.code) from exc
     return matches[0]
 
 
@@ -367,8 +385,22 @@ def _normalize_candidate(
         if isinstance(row, dict) and isinstance(row.get("object_digest"), str)
     }
     supplied_digests = payload.get("bound_parse_object_digests")
+    source_descriptor = _source_descriptor(project, study_id, source_id)
+    current_objects = {
+        row.get("object_digest"): row
+        for row in objects
+        if isinstance(row, dict) and isinstance(row.get("object_digest"), str)
+    }
     if supplied_digests is None:
-        bound_digests = sorted(current_digests) if source_mode == "parsed_candidate" else []
+        bound_digests = (
+            sorted(
+                digest
+                for digest, row in current_objects.items()
+                if row.get("source_id") == source_id
+            )
+            if source_mode == "parsed_candidate"
+            else []
+        )
     else:
         bound_digests = _normalize_string_list(supplied_digests, "PARSE_OBJECT_DIGESTS_INVALID")
         if not all(SHA256_RE.fullmatch(value) for value in bound_digests):
@@ -379,11 +411,15 @@ def _normalize_candidate(
             raise PaperEvidenceError("PARSED_EVIDENCE_NOT_ALLOWED")
         if not bound_digests or not set(bound_digests).issubset(current_digests):
             raise PaperEvidenceError("PARSE_OBJECT_DIGESTS_STALE")
+        if any(
+            current_objects[digest].get("source_id") != source_id
+            for digest in bound_digests
+        ):
+            raise PaperEvidenceError("PARSE_OBJECT_SOURCE_MISMATCH")
     elif bound_digests:
         raise PaperEvidenceError("MANUAL_PDF_PARSE_BINDING_INVALID")
     source_sha256 = current_source_pdf_sha256(project, study_id, source_id)
-    source = _source(project, study_id, source_id)
-    if locator["page"] > source["page_count"]:
+    if locator["page"] > source_descriptor["page_count"]:
         raise PaperEvidenceError("LOCATOR_PAGE_INVALID")
     supplied_sha256 = payload.get("source_pdf_sha256")
     if supplied_sha256 is not None and supplied_sha256 != source_sha256:
@@ -444,9 +480,7 @@ def _load_candidates(project: Path, study_id: str, *, missing_ok: bool = False) 
         raise PaperEvidenceError("PAPER_EVIDENCE_INVALID")
     seen: set[str] = set()
     for row in payload["candidates"]:
-        _validate_schema(row, PAPER_EVIDENCE_SCHEMA, "PAPER_EVIDENCE_SCHEMA_INVALID")
-        if row.get("decision") is not None or _candidate_digest(row) != row.get("candidate_digest"):
-            raise PaperEvidenceError("CANDIDATE_DIGEST_MISMATCH")
+        _validate_persisted_candidate(project, study_id, row)
         evidence_id = row.get("evidence_id")
         if evidence_id in seen:
             raise PaperEvidenceError("EVIDENCE_ID_DUPLICATE")
@@ -454,14 +488,73 @@ def _load_candidates(project: Path, study_id: str, *, missing_ok: bool = False) 
     return copy.deepcopy(payload["candidates"])
 
 
+def _validate_persisted_candidate(
+    project: Path,
+    study_id: str,
+    row: object,
+) -> None:
+    _validate_schema(row, PAPER_EVIDENCE_SCHEMA, "PAPER_EVIDENCE_SCHEMA_INVALID")
+    if not isinstance(row, dict):
+        raise PaperEvidenceError("PAPER_EVIDENCE_SCHEMA_INVALID")
+    if row.get("study_id") != study_id:
+        raise PaperEvidenceError("PAPER_EVIDENCE_STUDY_MISMATCH")
+    _identifier(row.get("evidence_id"), "EVIDENCE_ID_INVALID")
+    _identifier(row.get("study_id"), "STUDY_ID_INVALID")
+    _identifier(row.get("source_id"), "SOURCE_ID_INVALID")
+    if not isinstance(row.get("statement"), str) or row["statement"] != row["statement"].strip():
+        raise PaperEvidenceError("STATEMENT_INVALID")
+    _normalize_locator(row.get("locator"), row["locator"]["source_mode"])
+    for key, code in (
+        ("reported_conditions", "REPORTED_CONDITIONS_INVALID"),
+        ("quantitative_results", "QUANTITATIVE_RESULTS_INVALID"),
+        ("limitations", "LIMITATIONS_INVALID"),
+        ("risk_classes", "RISK_CLASSES_INVALID"),
+    ):
+        _normalize_string_list(row.get(key), code)
+    _source_descriptor(project, study_id, row["source_id"])
+    if row["locator"]["source_mode"] == "parsed_candidate":
+        if not row["bound_parse_object_digests"]:
+            raise PaperEvidenceError("PARSE_OBJECT_DIGESTS_INVALID")
+    elif row["bound_parse_object_digests"]:
+        raise PaperEvidenceError("MANUAL_PDF_PARSE_BINDING_INVALID")
+    if row.get("decision") is not None:
+        raise PaperEvidenceError("PAPER_EVIDENCE_DECISION_FORBIDDEN")
+    if _candidate_digest(row) != row.get("candidate_digest"):
+        raise PaperEvidenceError("CANDIDATE_DIGEST_MISMATCH")
+
+
+def _check_candidate_id_conflicts(
+    project: Path,
+    study_id: str,
+    candidates: list[dict[str, Any]],
+) -> None:
+    ids = [row["evidence_id"] for row in candidates]
+    if len(ids) != len(set(ids)):
+        raise PaperEvidenceError("EVIDENCE_ID_DUPLICATE")
+    try:
+        declared = declared_study_ids(project)
+    except SourceTruthError as exc:
+        raise PaperEvidenceError(exc.code) from exc
+    for other_study_id in declared:
+        if other_study_id == study_id:
+            continue
+        for previous in _load_candidates(project, other_study_id, missing_ok=True):
+            if previous["evidence_id"] in ids:
+                raise PaperEvidenceError("EVIDENCE_ID_DUPLICATE")
+    existing = _load_candidates(project, study_id, missing_ok=True)
+    existing_by_id = {row["evidence_id"]: row for row in existing}
+    for row in candidates:
+        previous = existing_by_id.get(row["evidence_id"])
+        if previous is not None and previous != row:
+            raise PaperEvidenceError("EVIDENCE_ID_CONFLICT")
+
+
 def _merge_candidates(
     project: Path,
     study_id: str,
     candidates: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    ids = [row["evidence_id"] for row in candidates]
-    if len(ids) != len(set(ids)):
-        raise PaperEvidenceError("EVIDENCE_ID_DUPLICATE")
+    _check_candidate_id_conflicts(project, study_id, candidates)
     existing = _load_candidates(project, study_id, missing_ok=True)
     by_id = {row["evidence_id"]: row for row in existing}
     for row in candidates:
@@ -489,12 +582,23 @@ def register_paper_evidence_candidates(
 ) -> dict[str, Any]:
     """Register strict parsed candidates without granting approval."""
 
-    with PAPER_EVIDENCE_LOCK:
-        project = _project_root(project)
-        study_id = _identifier(study_id, "STUDY_ID_INVALID")
+    project = _project_root(project)
+    study_id = _identifier(study_id, "STUDY_ID_INVALID")
+    raw_candidates = _candidate_rows(payload)
+    # Validate before creating the lockfile so rejected cross-source input is byte-preserving.
+    [
+        _normalize_candidate(project, study_id, row, source_mode="parsed_candidate")
+        for row in raw_candidates
+    ]
+    candidates = [
+        _normalize_candidate(project, study_id, row, source_mode="parsed_candidate")
+        for row in raw_candidates
+    ]
+    _check_candidate_id_conflicts(project, study_id, candidates)
+    with _mutation(project) as project:
         candidates = [
             _normalize_candidate(project, study_id, row, source_mode="parsed_candidate")
-            for row in _candidate_rows(payload)
+            for row in raw_candidates
         ]
         merged = _merge_candidates(project, study_id, candidates)
         state = _paper_evidence_state(project, persist=True)
@@ -511,11 +615,15 @@ def register_paper_evidence_candidates(
 def register_manual_pdf_evidence(project: Path, payload: object) -> dict[str, Any]:
     """Register one researcher-created locator against the verified original PDF."""
 
-    with PAPER_EVIDENCE_LOCK:
-        project = _project_root(project)
-        if not isinstance(payload, dict):
-            raise PaperEvidenceError("PAPER_EVIDENCE_INVALID")
-        study_id = _identifier(payload.get("study_id"), "STUDY_ID_INVALID")
+    project = _project_root(project)
+    if not isinstance(payload, dict):
+        raise PaperEvidenceError("PAPER_EVIDENCE_INVALID")
+    study_id = _identifier(payload.get("study_id"), "STUDY_ID_INVALID")
+    prevalidated = _normalize_candidate(
+        project, study_id, payload, source_mode="original_pdf_manual"
+    )
+    _check_candidate_id_conflicts(project, study_id, [prevalidated])
+    with _mutation(project) as project:
         state = _parse_state(project, study_id)
         actions = {
             row.get("decision", {}).get("action")
@@ -655,10 +763,10 @@ def _normalize_decision_payload(
 def apply_paper_evidence_decision(project: Path, payload: object) -> dict[str, Any]:
     """Append one current, hash-bound human decision and rebuild the projection."""
 
-    with PAPER_EVIDENCE_LOCK:
-        project = _project_root(project)
-        if not isinstance(payload, dict):
-            raise PaperEvidenceError("EVIDENCE_DECISION_INVALID")
+    project = _project_root(project)
+    if not isinstance(payload, dict):
+        raise PaperEvidenceError("EVIDENCE_DECISION_INVALID")
+    with _mutation(project) as project:
         evidence_id = _identifier(payload.get("evidence_id"), "EVIDENCE_ID_INVALID")
         candidates = _candidate_index(project)
         candidate = candidates.get(evidence_id)
@@ -689,14 +797,15 @@ def apply_paper_evidence_decision(project: Path, payload: object) -> dict[str, A
 
 def _freshness(project: Path, candidate: dict[str, Any]) -> tuple[bool, str | None]:
     try:
-        current_sha = current_source_pdf_sha256(
-            project, candidate["study_id"], candidate["source_id"]
-        )
+        source = _source(project, candidate["study_id"], candidate["source_id"])
+        current_sha = str(source["pdf"]["sha256"])
         state = _parse_state(project, candidate["study_id"])
     except PaperEvidenceError as exc:
         return False, exc.code
     if candidate["source_pdf_sha256"] != current_sha:
         return False, "SOURCE_PDF_STALE"
+    if candidate["locator"]["page"] > source["page_count"]:
+        return False, "LOCATOR_PAGE_STALE"
     if candidate["locator"]["source_mode"] == "original_pdf_manual":
         return (not candidate["bound_parse_object_digests"], "MANUAL_PDF_PARSE_BINDING_INVALID")
     reviewed_objects = {
@@ -722,6 +831,8 @@ def _freshness(project: Path, candidate: dict[str, Any]) -> tuple[bool, str | No
     if not dependencies.issubset(current_objects) or not dependencies.issubset(reviewed_objects):
         return False, "PARSE_OBJECT_DIGESTS_STALE"
     for digest in dependencies:
+        if current_objects[digest].get("source_id") != candidate["source_id"]:
+            return False, "PARSE_OBJECT_SOURCE_MISMATCH"
         decision = reviewed_objects[digest].get("decision")
         if isinstance(decision, dict) and decision.get("action") != "approve_candidate_extraction":
             return False, "PARSE_OBJECT_DECISION_STALE"
@@ -778,7 +889,13 @@ def _paper_evidence_state(project: Path, *, persist: bool) -> dict[str, Any]:
         if not candidates:
             missing_studies.append(study_id)
             continue
-        rows.extend(_project_row(project, row, latest.get(row["evidence_id"])) for row in candidates)
+        for row in candidates:
+            decision = latest.get(row["evidence_id"])
+            if decision is not None and decision.get("study_id") != row["study_id"]:
+                raise PaperEvidenceError("EVIDENCE_DECISION_STUDY_MISMATCH")
+            rows.append(_project_row(project, row, decision))
+    if len({row["evidence_id"] for row in rows}) != len(rows):
+        raise PaperEvidenceError("EVIDENCE_ID_DUPLICATE")
     known_ids = {row["evidence_id"] for row in rows}
     if any(row["evidence_id"] not in known_ids for row in decisions):
         raise PaperEvidenceError("EVIDENCE_DECISION_ORPHANED")
@@ -824,9 +941,8 @@ def _paper_evidence_state(project: Path, *, persist: bool) -> dict[str, Any]:
 def paper_evidence_state(project: Path) -> dict[str, Any]:
     """Rebuild the current fail-closed evidence projection."""
 
-    with PAPER_EVIDENCE_LOCK:
-        project = _project_root(project)
-        return _paper_evidence_state(project, persist=True)
+    project = _project_root(project)
+    return _paper_evidence_state(project, persist=False)
 
 
 def require_paper_evidence_ready(project: Path) -> str:
