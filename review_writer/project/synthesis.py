@@ -94,6 +94,12 @@ def _decision(payload: dict[str, Any], digest: str) -> dict[str, Any]:
     except VerificationDecisionError as exc: raise SynthesisError("SYNTHESIS_DECISION_INVALID") from exc
 
 
+def _unsigned(value: dict[str, Any], digest_key: str) -> dict[str, Any]:
+    result = {k: v for k, v in value.items() if k not in {digest_key, "status", "reason_code"}}
+    result["decision"] = None
+    return result
+
+
 def register_comparison_protocol(project: Path, payload: object) -> dict[str, Any]:
     project = _root(project)
     if not isinstance(payload, dict): raise SynthesisError("COMPARISON_PROTOCOL_INVALID")
@@ -107,7 +113,7 @@ def register_comparison_protocol(project: Path, payload: object) -> dict[str, An
         raise SynthesisError("PAPER_EVIDENCE_NOT_READY") from exc
     value["paper_evidence_projection_digest"] = evidence.get("projection_digest")
     _validate(value, "comparison_protocol.v1.schema.json", "COMPARISON_PROTOCOL_INVALID")
-    value["protocol_digest"] = canonical_digest(value)
+    value["protocol_digest"] = canonical_digest(_unsigned(value, "protocol_digest"))
     with project_write_lock(project): _write(project, PROTOCOL_PATH, value)
     return value
 
@@ -119,7 +125,6 @@ def apply_comparison_protocol_decision(project: Path, payload: object) -> dict[s
     digest = protocol.get("protocol_digest")
     if not isinstance(digest, str): raise SynthesisError("COMPARISON_PROTOCOL_INVALID")
     protocol["decision"] = _decision(payload, digest)
-    protocol["protocol_digest"] = canonical_digest({k: v for k, v in protocol.items() if k != "protocol_digest"})
     with project_write_lock(project): _write(project, PROTOCOL_PATH, protocol)
     return protocol
 
@@ -130,11 +135,11 @@ def comparison_protocol_state(project: Path) -> dict[str, Any]:
     try: _validate(value, "comparison_protocol.v1.schema.json", "COMPARISON_PROTOCOL_INVALID")
     except SynthesisError as exc: return {"status": "needs_review", "workflow_can_continue": False, "reason_code": exc.code}
     digest = value.get("protocol_digest")
-    unsigned = {k: v for k, v in value.items() if k != "protocol_digest"}
+    unsigned = _unsigned(value, "protocol_digest")
     if not isinstance(digest, str) or digest != canonical_digest(unsigned):
         return {"status": "needs_review", "workflow_can_continue": False, "reason_code": "COMPARISON_PROTOCOL_STALE"}
     decision = value.get("decision") or {}
-    ok = decision.get("action") == "approve" and value.get("paper_evidence_projection_digest") == paper_evidence_state(_root(project)).get("projection_digest")
+    ok = decision.get("action") == "approve" and decision.get("bound_object_digest") == digest and value.get("paper_evidence_projection_digest") == paper_evidence_state(_root(project)).get("projection_digest")
     return {"status": "approved" if ok else "needs_review", "workflow_can_continue": ok, "reason_code": "COMPARISON_PROTOCOL_APPROVED" if ok else "COMPARISON_PROTOCOL_NOT_APPROVED", "protocol_digest": value.get("protocol_digest"), "value": value}
 
 
@@ -174,7 +179,7 @@ def register_synthesis_candidates(project: Path, payload: object) -> dict[str, A
         if not row.get("single_study") and len(studies) < 2: raise SynthesisError("MULTI_STUDY_SUPPORT_REQUIRED")
         if row.get("single_study") and re.search(r"\b(field|generally|consensus|universal|all)\b", str(row.get("proposition", "")), re.I): raise SynthesisError("SINGLE_STUDY_OVERGENERALIZATION")
         _validate(row, "synthesis_claim.v1.schema.json")
-        row["synthesis_digest"] = canonical_digest(row)
+        row["synthesis_digest"] = canonical_digest(_unsigned(row, "synthesis_digest"))
         prior = existing.get(row.get("synthesis_id"))
         if prior is not None and prior != row: raise SynthesisError("SYNTHESIS_ID_CONFLICT")
         existing[row["synthesis_id"]] = row; out.append(row)
@@ -191,7 +196,6 @@ def apply_synthesis_decision(project: Path, payload: object) -> dict[str, Any]:
     if row is None: raise SynthesisError("SYNTHESIS_ID_NOT_FOUND")
     if row.get("paper_evidence_projection_digest") != paper_evidence_state(project).get("projection_digest"): raise SynthesisError("SYNTHESIS_STALE")
     row["decision"] = _decision(payload, row["synthesis_digest"]); row["status"] = "approved" if row["decision"]["action"] != "reject" else "rejected"
-    row["synthesis_digest"] = canonical_digest({k: v for k, v in row.items() if k not in {"synthesis_digest", "status", "reason_code"}})
     with project_write_lock(project): _write_jsonl(project, CLAIM_PATH, rows)
     return row
 
@@ -199,11 +203,14 @@ def apply_synthesis_decision(project: Path, payload: object) -> dict[str, Any]:
 def synthesis_state(project: Path) -> dict[str, Any]:
     project = _root(project); protocol = comparison_protocol_state(project); evidence = paper_evidence_state(project)
     rows = _read_jsonl(project, CLAIM_PATH); current = evidence.get("projection_digest")
+    current_protocol = protocol.get("protocol_digest")
     projected = []
     for row in rows:
         row = copy.deepcopy(row)
-        if row.get("synthesis_digest") != canonical_digest({k: v for k, v in row.items() if k not in {"synthesis_digest", "status", "reason_code"}}): row.update(status="stale", reason_code="SYNTHESIS_DIGEST_INVALID")
+        if row.get("comparison_protocol_digest") != protocol.get("protocol_digest"): row.update(status="stale", reason_code="SYNTHESIS_PROTOCOL_STALE")
+        elif row.get("synthesis_digest") != canonical_digest(_unsigned(row, "synthesis_digest")): row.update(status="stale", reason_code="SYNTHESIS_DIGEST_INVALID")
         elif row.get("paper_evidence_projection_digest") != current: row.update(status="stale", reason_code="SYNTHESIS_STALE")
+        elif row.get("comparison_protocol_digest") != current_protocol: row.update(status="stale", reason_code="SYNTHESIS_PROTOCOL_STALE")
         elif not row.get("decision"): row.update(status="needs_review", reason_code="SYNTHESIS_REVIEW_REQUIRED")
         elif row["decision"].get("action") == "reject": row.update(status="rejected", reason_code="SYNTHESIS_REJECTED")
         else: row.update(status="approved", reason_code="SYNTHESIS_APPROVED")
