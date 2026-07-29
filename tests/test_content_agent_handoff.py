@@ -152,6 +152,39 @@ def test_import_is_hash_bound_and_writes_candidate_only(tmp_path: Path) -> None:
     assert rows["candidates"][0]["decision"] is None
 
 
+def test_import_routes_original_pdf_manual_candidates_to_manual_registry(tmp_path: Path) -> None:
+    project = _source_truth_project(tmp_path)
+    write_source_truth_bundle(project, "scholarly-a")
+    gate = write_parse_quality_gate(project, "scholarly-a")
+    for row in gate["objects"]:
+        if row["status"] == "usable":
+            continue
+        gate = apply_parse_quality_decision(
+            project,
+            "scholarly-a",
+            {
+                "object_id": row["object_id"],
+                "object_digest": row["object_digest"],
+                "gate_digest": gate["gate_digest"],
+                "action": "pdf_locator_only",
+                "note": "Compared with the original PDF.",
+            },
+        )
+    package = build_content_task_package(project, _request(project))
+    candidate = _candidate()
+    candidate["locator"] = {**candidate["locator"], "source_mode": "original_pdf_manual"}
+    imported = import_content_agent_result(project, _result(project, package, candidate=candidate))
+
+    assert imported["status"] == "imported"
+    rows = json.loads(
+        (project / "01_evidence/scholarly-a/paper_evidence_candidates.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert rows["candidates"][0]["locator"]["source_mode"] == "original_pdf_manual"
+    assert rows["candidates"][0]["decision"] is None
+
+
 def test_import_rejects_stale_task_package_without_project_change(tmp_path: Path) -> None:
     project = _project(tmp_path)
     package = build_content_task_package(project, _request(project))

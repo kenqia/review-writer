@@ -23,6 +23,7 @@ from jsonschema import Draft202012Validator
 from .paper_evidence import (
     PaperEvidenceError,
     register_paper_evidence_candidates,
+    register_manual_pdf_evidence,
 )
 from .paper_evidence_store import PaperEvidenceStoreError, project_write_lock
 from .section_contract import SectionContractError, register_section_contracts
@@ -437,7 +438,11 @@ def _apply_on_copy(root: Path, result: dict[str, Any]) -> None:
         if result["request_kind"] == "paper_evidence":
             for candidate in content.get("evidence_candidates", []):
                 study_id = candidate.get("study_id") or result["target_ids"][0]
-                register_paper_evidence_candidates(root, study_id, candidate)
+                locator = candidate.get("locator") if isinstance(candidate.get("locator"), dict) else {}
+                if locator.get("source_mode") == "original_pdf_manual":
+                    register_manual_pdf_evidence(root, {**candidate, "study_id": study_id})
+                else:
+                    register_paper_evidence_candidates(root, study_id, candidate)
             suggestions = content.get("source_figure_suggestions", [])
             if suggestions:
                 path = root / _SUGGESTION_PATH
