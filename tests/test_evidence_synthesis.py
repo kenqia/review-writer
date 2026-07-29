@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from review_writer.project.section_contract import SectionContractError, register_section_contracts
-from review_writer.project.synthesis import SynthesisError, register_synthesis_candidates, register_comparison_protocol
+from review_writer.project.synthesis import SynthesisError, register_synthesis_candidates, register_comparison_protocol, register_coverage_map
 
 
 def test_synthesis_requires_approved_comparison_protocol(tmp_path: Path) -> None:
@@ -35,3 +35,20 @@ def test_single_study_claim_cannot_claim_consensus(tmp_path: Path, monkeypatch: 
     monkeypatch.setattr("review_writer.project.synthesis.paper_evidence_state", lambda _: {"projection_digest": "c" * 64, "rows": [{"evidence_id": "e1", "study_id": "study-a", "status": "approved"}]})
     with pytest.raises(SynthesisError, match="SINGLE_STUDY_OVERGENERALIZATION"):
         register_synthesis_candidates(project, {"synthesis_id": "s1", "proposition": "The field generally establishes this.", "comparison_axis": "yield", "supporting_evidence_ids": ["e1"], "applicability_boundary": "this study", "mechanism_evidence_grade": "low", "uncertainty": "high", "risk_class": "scope", "single_study": True})
+
+
+def test_rejected_evidence_cannot_enter_synthesis(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr("review_writer.project.synthesis.comparison_protocol_state", lambda _: {"workflow_can_continue": True, "protocol_digest": "b" * 64})
+    monkeypatch.setattr("review_writer.project.synthesis.paper_evidence_state", lambda _: {"projection_digest": "c" * 64, "rows": [{"evidence_id": "e1", "study_id": "study-a", "status": "rejected"}, {"evidence_id": "e2", "study_id": "study-b", "status": "approved"}]})
+    with pytest.raises(SynthesisError, match="SYNTHESIS_EVIDENCE_NOT_APPROVED"):
+        register_synthesis_candidates(project, {"synthesis_id": "s1", "proposition": "Bounded comparison.", "comparison_axis": "yield", "supporting_evidence_ids": ["e1", "e2"], "applicability_boundary": "these studies", "mechanism_evidence_grade": "low", "uncertainty": "high", "risk_class": "scope"})
+
+
+def test_coverage_map_requires_approved_protocol(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr("review_writer.project.synthesis.comparison_protocol_state", lambda _: {"workflow_can_continue": False})
+    with pytest.raises(SynthesisError, match="COMPARISON_PROTOCOL_NOT_APPROVED"):
+        register_coverage_map(project, {"comparison_id": "cmp", "axes": [{}]})

@@ -141,7 +141,10 @@ def comparison_protocol_state(project: Path) -> dict[str, Any]:
 def register_coverage_map(project: Path, payload: object) -> dict[str, Any]:
     project = _root(project)
     if not isinstance(payload, dict): raise SynthesisError("COVERAGE_MAP_INVALID")
+    protocol = comparison_protocol_state(project)
+    if not protocol.get("workflow_can_continue"): raise SynthesisError("COMPARISON_PROTOCOL_NOT_APPROVED")
     value = copy.deepcopy(payload); value.setdefault("schema_version", "coverage-map.v1"); value.setdefault("corpus_kind", "calibration_corpus"); value.setdefault("known_omissions", [])
+    value["comparison_protocol_digest"] = protocol.get("protocol_digest")
     _validate(value, "coverage_map.v1.schema.json", "COVERAGE_MAP_INVALID")
     with project_write_lock(project): _write(project, COVERAGE_PATH, value)
     return value
