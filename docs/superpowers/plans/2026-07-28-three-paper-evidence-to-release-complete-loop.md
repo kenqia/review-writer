@@ -636,7 +636,7 @@ Independent review passed. Non-blocking follow-up: persist per-paper/section hum
 - Create: `tests/test_evidence_synthesis.py`
 - Modify: `review_writer/project/workflow_projection.py`
 
-- [ ] **Step 1: 写失败测试锁定比较先于综合、反证和 single-study**
+- [x] **Step 1: 写失败测试锁定比较先于综合、反证和 single-study**
 
 ```python
 def test_synthesis_requires_approved_comparison_protocol() -> None:
@@ -662,23 +662,23 @@ def test_section_contract_requires_counterevidence_and_figure_plan() -> None:
         register_section_contracts(PROJECT, contract_without_limits_or_figures())
 ```
 
-- [ ] **Step 2: 定义并实现 Comparison Protocol**
+- [x] **Step 2: 定义并实现 Comparison Protocol**
 
 协议至少包含比较对象、比较轴、单位/归一化规则、缺失值处理、不可比条件、反例纳入规则、结论强度、当前 Paper Evidence projection digest 和模拟研究者决定。未批准协议时禁止注册 Synthesis Claim。
 
-- [ ] **Step 3: 实现 Coverage Map**
+- [x] **Step 3: 实现 Coverage Map**
 
 三篇案例的 coverage map 明确标记这是 calibration corpus，不宣称领域完整覆盖。每个比较轴列出已覆盖研究、缺失单元、不可比项、反证、已知遗漏及其对结论的影响。
 
-- [ ] **Step 4: 实现 Synthesis Claim**
+- [x] **Step 4: 实现 Synthesis Claim**
 
 每条包含 proposition、comparison axis、supporting Evidence IDs、counter Evidence IDs、applicability boundary、mechanism/evidence grade、uncertainty、risk class、single-study 标志、上游 digest 和 VerificationDecision。未批准、reject 或 stale Evidence 不得被引用。
 
-- [ ] **Step 5: 实现 Section Contract 和 writer packet**
+- [x] **Step 5: 实现 Section Contract 和 writer packet**
 
 每节 contract 包含：研究问题、比较对象/轴、预期综合判断、必须覆盖的反例/局限、Evidence/Synthesis ID 预算、Source Figure/Placeholder 计划、允许的措辞强度和决定。`build_section_writer_packet()` 只输出已批准且当前的最小字段，不输出旧稿、内部 prompt 或未批准候选。
 
-- [ ] **Step 6: 实现局部 impact invalidation**
+- [x] **Step 6: 实现局部 impact invalidation**
 
 依赖边固定为：
 
@@ -690,7 +690,7 @@ Section Contract → Manuscript section → DOCX snapshot → benchmark report
 
 上游 digest 变化只标记可达下游 stale，但任何 stale 对象都使对应 release capability fail-closed。
 
-- [ ] **Step 7: 验证并提交**
+- [x] **Step 7: 验证并提交**
 
 ```zsh
 PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider \
@@ -702,6 +702,10 @@ git add -- schemas/synthesis review_writer/project/synthesis.py \
 git diff --cached --check
 git commit -m "feat: add evidence synthesis contracts"
 ```
+
+**Task 6 completion record (2026-07-29):** Implemented and hardened through `aef248b`, `9e7faf8`, `f87a929`, `106c075`, `1c09c9d`, `cda03d2`, `ee9d7bc`, and `1fa15d3`.
+Focused regression: 43 passed; `make quality-check` and `git diff --check` passed. Independent review passed with no Critical/Important findings.
+Non-blocking follow-up: move synthesis/section read-modify-write reads inside the transaction lock, and broaden single-study overclaim detection beyond the current conservative vocabulary.
 
 ---
 
