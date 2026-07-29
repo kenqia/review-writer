@@ -6,6 +6,6 @@
   "properties": {
     "schema_version": {"const": "synthesis-claim.v1"}, "synthesis_id": {"type": "string", "minLength": 1}, "proposition": {"type": "string", "minLength": 1}, "comparison_axis": {"type": "string", "minLength": 1},
     "supporting_evidence_ids": {"type": "array", "items": {"type": "string"}}, "counter_evidence_ids": {"type": "array", "items": {"type": "string"}}, "applicability_boundary": {"type": "string", "minLength": 1}, "mechanism_evidence_grade": {"type": "string", "minLength": 1}, "uncertainty": {"type": "string", "minLength": 1}, "risk_class": {"type": "string", "minLength": 1}, "single_study": {"type": "boolean"},
-    "paper_evidence_projection_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "comparison_protocol_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "decision": {"type": ["object", "null"]}
+    "paper_evidence_projection_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "comparison_protocol_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "decision": {"type": ["object", "null"]}, "synthesis_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
   }
 }

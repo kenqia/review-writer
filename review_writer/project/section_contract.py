@@ -12,7 +12,7 @@ from jsonschema import Draft202012Validator
 
 from .source_truth import REPO_ROOT, canonical_digest
 from .paper_evidence_store import project_write_lock
-from .synthesis import SynthesisError, synthesis_state, _unsigned
+from .synthesis import SynthesisError, _unsigned, _valid_decision, synthesis_state
 
 PATH = Path("02_synthesis/section_contracts.jsonl")
 SCHEMA = REPO_ROOT / "schemas/synthesis/section_contract.v1.schema.json"
@@ -61,13 +61,15 @@ def register_section_contracts(project: Path, payload: object) -> dict[str, Any]
     for candidate in raw:
         if not isinstance(candidate, dict): raise SectionContractError("SECTION_CONTRACT_INVALID")
         row = copy.deepcopy(candidate)
+        if row.get("decision") is not None:
+            raise SectionContractError("SECTION_CONTRACT_DECISION_INVALID")
         row.setdefault("schema_version", "section-contract.v1"); row.setdefault("decision", None); row.setdefault("synthesis_projection_digest", synthesis["projection_digest"])
         # These are mandatory by policy even when an empty-looking plan was supplied.
         if not row.get("counterevidence_and_limitations") or not row.get("figure_plan"): raise SectionContractError("SECTION_CONTRACT_INVALID")
+        row["contract_digest"] = canonical_digest(_unsigned(row, "contract_digest"))
         try: schema = json.loads(SCHEMA.read_text(encoding="utf-8")); errors = list(Draft202012Validator(schema).iter_errors(row))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc: raise SectionContractError("SECTION_CONTRACT_SCHEMA_INVALID") from exc
         if errors: raise SectionContractError("SECTION_CONTRACT_INVALID")
-        row["contract_digest"] = canonical_digest(_unsigned(row, "contract_digest"))
         prior = existing.get(row.get("section_id"))
         if prior is not None and prior != row: raise SectionContractError("SECTION_CONTRACT_ID_CONFLICT")
         existing[row["section_id"]] = row; out.append(row)
@@ -98,6 +100,7 @@ def section_contract_state(project: Path) -> dict[str, Any]:
         if row.get("contract_digest") != canonical_digest(_unsigned(row, "contract_digest")): row.update(status="stale", reason_code="SECTION_CONTRACT_DIGEST_INVALID")
         elif row.get("synthesis_projection_digest") != synthesis.get("projection_digest"): row.update(status="stale", reason_code="SECTION_CONTRACT_STALE")
         elif not row.get("decision"): row.update(status="needs_review", reason_code="SECTION_CONTRACT_REVIEW_REQUIRED")
+        elif not _valid_decision(row["decision"], row["contract_digest"]): row.update(status="stale", reason_code="SECTION_CONTRACT_DECISION_INVALID")
         elif row["decision"].get("action") == "reject": row.update(status="rejected", reason_code="SECTION_CONTRACT_REJECTED")
         else: row.update(status="approved", reason_code="SECTION_CONTRACT_APPROVED")
         projected.append(row)

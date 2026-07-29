@@ -73,3 +73,20 @@ def test_synthesis_state_marks_claim_stale_when_protocol_changes(tmp_path: Path,
     claim["synthesis_digest"] = canonical_digest({k: v for k, v in claim.items() if k != "synthesis_digest"})
     (claim_dir / "synthesis_claim_projection.jsonl").write_text(json.dumps(claim) + "\n", encoding="utf-8")
     assert synthesis_state(project)["rows"][0]["reason_code"] == "SYNTHESIS_PROTOCOL_STALE"
+
+
+def test_candidate_cannot_supply_approval_decision(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr("review_writer.project.synthesis.comparison_protocol_state", lambda _: {"workflow_can_continue": True, "protocol_digest": "b" * 64})
+    monkeypatch.setattr("review_writer.project.synthesis.paper_evidence_state", lambda _: {"projection_digest": "c" * 64, "rows": []})
+    with pytest.raises(SynthesisError, match="SYNTHESIS_DECISION_INVALID"):
+        register_synthesis_candidates(project, {"synthesis_id": "s1", "decision": {"action": "approve"}})
+
+
+def test_section_candidate_cannot_supply_approval_decision(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("review_writer.project.section_contract.synthesis_state", lambda _: {"workflow_can_continue": True, "projection_digest": "a" * 64})
+    project = tmp_path / "project"
+    project.mkdir()
+    with pytest.raises(SectionContractError, match="SECTION_CONTRACT_DECISION_INVALID"):
+        register_section_contracts(project, {"section_id": "s1", "decision": {"action": "approve"}})

@@ -94,6 +94,26 @@ def _decision(payload: dict[str, Any], digest: str) -> dict[str, Any]:
     except VerificationDecisionError as exc: raise SynthesisError("SYNTHESIS_DECISION_INVALID") from exc
 
 
+def _valid_decision(value: object, digest: str) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if value.get("action") not in {"approve", "revise_and_approve", "reject"}:
+        return False
+    try:
+        normalized = verification_decision(
+            actor_type=value.get("actor_type"),
+            actor_label=value.get("actor_label"),
+            action=value.get("action"),
+            reason=value.get("reason"),
+            bound_object_digest=value.get("bound_object_digest"),
+            bound_gate_digest=value.get("bound_gate_digest"),
+            decided_at=value.get("decided_at"),
+        )
+    except (VerificationDecisionError, TypeError, AttributeError):
+        return False
+    return normalized == value and value.get("bound_object_digest") == digest
+
+
 def _unsigned(value: dict[str, Any], digest_key: str) -> dict[str, Any]:
     result = {k: v for k, v in value.items() if k not in {digest_key, "status", "reason_code"}}
     result["decision"] = None
@@ -112,8 +132,8 @@ def register_comparison_protocol(project: Path, payload: object) -> dict[str, An
     except PaperEvidenceError as exc:
         raise SynthesisError("PAPER_EVIDENCE_NOT_READY") from exc
     value["paper_evidence_projection_digest"] = evidence.get("projection_digest")
-    _validate(value, "comparison_protocol.v1.schema.json", "COMPARISON_PROTOCOL_INVALID")
     value["protocol_digest"] = canonical_digest(_unsigned(value, "protocol_digest"))
+    _validate(value, "comparison_protocol.v1.schema.json", "COMPARISON_PROTOCOL_INVALID")
     with project_write_lock(project): _write(project, PROTOCOL_PATH, value)
     return value
 
@@ -162,7 +182,11 @@ def coverage_map_state(project: Path) -> dict[str, Any]:
     try: _validate(value, "coverage_map.v1.schema.json", "COVERAGE_MAP_INVALID")
     except SynthesisError as exc:
         return {"status": "needs_review", "workflow_can_continue": False, "reason_code": exc.code}
-    ok = protocol.get("workflow_can_continue") and value.get("comparison_protocol_digest") == protocol.get("protocol_digest")
+    ok = (
+        protocol.get("workflow_can_continue")
+        and value.get("comparison_protocol_digest") == protocol.get("protocol_digest")
+        and value.get("comparison_id") == (protocol.get("value") or {}).get("comparison_id")
+    )
     return {"status": "approved" if ok else "needs_review", "workflow_can_continue": bool(ok), "reason_code": "COVERAGE_MAP_APPROVED" if ok else "COVERAGE_MAP_STALE", "value": value}
 
 
@@ -183,14 +207,17 @@ def register_synthesis_candidates(project: Path, payload: object) -> dict[str, A
     out = []
     for candidate in raw:
         if not isinstance(candidate, dict): raise SynthesisError("SYNTHESIS_INVALID")
-        row = copy.deepcopy(candidate); row.setdefault("schema_version", "synthesis-claim.v1"); row.setdefault("decision", None); row.setdefault("counter_evidence_ids", []); row.setdefault("single_study", False); row.setdefault("paper_evidence_projection_digest", current_digest); row.setdefault("comparison_protocol_digest", protocol.get("protocol_digest"))
+        row = copy.deepcopy(candidate)
+        if row.get("decision") is not None:
+            raise SynthesisError("SYNTHESIS_DECISION_INVALID")
+        row.setdefault("schema_version", "synthesis-claim.v1"); row.setdefault("decision", None); row.setdefault("counter_evidence_ids", []); row.setdefault("single_study", False); row.setdefault("paper_evidence_projection_digest", current_digest); row.setdefault("comparison_protocol_digest", protocol.get("protocol_digest"))
         supports = row.get("supporting_evidence_ids", []); counters = row.get("counter_evidence_ids", [])
         if not isinstance(supports, list) or not supports or any(eid not in evidence for eid in supports + (counters if isinstance(counters, list) else [])): raise SynthesisError("SYNTHESIS_EVIDENCE_NOT_APPROVED")
         studies = {evidence[eid]["study_id"] for eid in supports}
         if not row.get("single_study") and len(studies) < 2: raise SynthesisError("MULTI_STUDY_SUPPORT_REQUIRED")
         if row.get("single_study") and re.search(r"\b(field|generally|consensus|universal|all)\b", str(row.get("proposition", "")), re.I): raise SynthesisError("SINGLE_STUDY_OVERGENERALIZATION")
-        _validate(row, "synthesis_claim.v1.schema.json")
         row["synthesis_digest"] = canonical_digest(_unsigned(row, "synthesis_digest"))
+        _validate(row, "synthesis_claim.v1.schema.json")
         prior = existing.get(row.get("synthesis_id"))
         if prior is not None and prior != row: raise SynthesisError("SYNTHESIS_ID_CONFLICT")
         existing[row["synthesis_id"]] = row; out.append(row)
@@ -223,6 +250,7 @@ def synthesis_state(project: Path) -> dict[str, Any]:
         elif row.get("paper_evidence_projection_digest") != current: row.update(status="stale", reason_code="SYNTHESIS_STALE")
         elif row.get("comparison_protocol_digest") != current_protocol: row.update(status="stale", reason_code="SYNTHESIS_PROTOCOL_STALE")
         elif not row.get("decision"): row.update(status="needs_review", reason_code="SYNTHESIS_REVIEW_REQUIRED")
+        elif not _valid_decision(row["decision"], row["synthesis_digest"]): row.update(status="stale", reason_code="SYNTHESIS_DECISION_INVALID")
         elif row["decision"].get("action") == "reject": row.update(status="rejected", reason_code="SYNTHESIS_REJECTED")
         else: row.update(status="approved", reason_code="SYNTHESIS_APPROVED")
         projected.append(row)
