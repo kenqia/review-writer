@@ -415,7 +415,7 @@ git commit -m "fix: block release until parse review closes"
 - Modify: `scripts/run_vertical_review.py`
 - Modify: `tests/test_vertical_review_projection.py`
 
-- [ ] **Step 1: 写失败测试锁定认识论类型、当前 digest 和人工 PDF 路径**
+- [x] **Step 1: 写失败测试锁定认识论类型、当前 digest 和人工 PDF 路径**
 
 ```python
 def test_paper_evidence_requires_epistemic_type() -> None:
@@ -442,7 +442,7 @@ def test_legacy_approved_claim_becomes_unapproved_candidate() -> None:
     assert "epistemic_type" not in adapted
 ```
 
-- [ ] **Step 2: 定义 Paper Evidence 合同**
+- [x] **Step 2: 定义 Paper Evidence 合同**
 
 每条 evidence 固定包含：
 
@@ -480,7 +480,7 @@ def test_legacy_approved_claim_becomes_unapproved_candidate() -> None:
 01_evidence/paper_evidence_projection.jsonl
 ```
 
-- [ ] **Step 3: 实现注册、决定、状态和局部失效接口**
+- [x] **Step 3: 实现注册、决定、状态和局部失效接口**
 
 公开接口固定为：
 
@@ -494,11 +494,11 @@ require_paper_evidence_ready(project) -> str
 
 决定动作固定为 `approve`、`revise_and_approve`、`reject`。`revise_and_approve` 必须携带替代表述；决定绑定 candidate digest、所依赖 parse object digests 与 source PDF hash。上游变化只使依赖行 stale。
 
-- [ ] **Step 4: 把旧下游降为只读候选**
+- [x] **Step 4: 把旧下游降为只读候选**
 
 adapter 可读取旧卡片中的候选文本、locator 和风险提示，但输出必须带 `legacy_origin`、`needs_reverification`；不得继承旧 `APPROVED`，不得补造 epistemic type、parse digest、counter-evidence 或 comparison axis。
 
-- [ ] **Step 5: 添加 CLI**
+- [x] **Step 5: 添加 CLI**
 
 ```text
 register-paper-evidence --project <path> --study-id <id> --input <json>
@@ -508,7 +508,7 @@ record-paper-evidence --project <path> --input <json>
 
 CLI stdout 只返回计数、状态和 reason code，不输出 quote、路径、hash 或内部 prompt。
 
-- [ ] **Step 6: 验证并提交**
+- [x] **Step 6: 验证并提交**
 
 ```zsh
 PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider \
@@ -524,6 +524,11 @@ git add -- schemas/evidence/paper_evidence.v1.schema.json \
 git diff --cached --check
 git commit -m "feat: add typed paper evidence review"
 ```
+
+**Task 4 completion record (2026-07-29):** Implemented and hardened in `d132dc1`.
+Focused regression: 239 passed; workflow projection: 5 passed; implementation report: 244 passed.
+Project checks: `make smoke`, `make quality-check`, `git diff --check` passed. Specification review passed.
+Code-quality review was requested against the final commit; Windows-native `msvcrt` execution remains a static-review gap.
 
 ---
 
