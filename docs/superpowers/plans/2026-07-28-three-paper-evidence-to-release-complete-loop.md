@@ -543,7 +543,7 @@ Two non-blocking Minor candidates remain (narrow lock/output-parent symlink-swap
 - Modify: `review_writer/project/vertical_review.py`
 - Modify: `tests/test_vertical_review_projection.py`
 
-- [ ] **Step 1: 写失败测试锁定原图优先和禁止自动综合图**
+- [x] **Step 1: 写失败测试锁定原图优先和禁止自动综合图**
 
 ```python
 def test_source_figure_binds_asset_caption_page_and_pdf() -> None:
@@ -566,11 +566,11 @@ def test_placeholder_requires_question_panels_claims_and_limits() -> None:
         register_synthesis_figure_placeholder(PROJECT, {"title": "Figure 1"})
 ```
 
-- [ ] **Step 2: 实现 Source Figure 注册表**
+- [x] **Step 2: 实现 Source Figure 注册表**
 
 `build_source_figure_registry()` 从当前 bundle 的 content list、canonical image directory 和 PDF descriptor 重建逐图对象；图片集合 digest 必须与 Source Truth Bundle 中的 `images.digest` 一致。每项包含 `study_id`、`source_id`、`page`、`figure_label`、`caption`、项目相对图片路径、asset hash、PDF hash、关联 Evidence IDs 和选择状态。
 
-- [ ] **Step 3: 实现高密度但非装饰性的图预算**
+- [x] **Step 3: 实现高密度但非装饰性的图预算**
 
 真实小综述目标为 5–8 个图位：
 
@@ -580,7 +580,7 @@ def test_placeholder_requires_question_panels_claims_and_limits() -> None:
 - 仅在跨论文比较无法由单篇原图承担时创建 placeholder；
 - 缺少适合原图时必须记录原因，不得为了凑数生成装饰图。
 
-- [ ] **Step 4: 定义 placeholder 合同**
+- [x] **Step 4: 定义 placeholder 合同**
 
 ```python
 {
@@ -599,11 +599,11 @@ def test_placeholder_requires_question_panels_claims_and_limits() -> None:
 }
 ```
 
-- [ ] **Step 5: 移除新路线自动比较图调用**
+- [x] **Step 5: 移除新路线自动比较图调用**
 
 legacy 项目保留旧行为；`evidence-to-release.v1` 路线不得调用 Pillow 自动综合图函数，不得产生 `ORIGINAL_GENERATED` 科学图。
 
-- [ ] **Step 6: 验证并提交**
+- [x] **Step 6: 验证并提交**
 
 ```zsh
 PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider \
@@ -615,6 +615,11 @@ git add -- schemas/figures/source_figure.v1.schema.json \
 git diff --cached --check
 git commit -m "feat: prefer source figures and synthesis briefs"
 ```
+
+**Task 5 completion record (2026-07-29):** Implemented in `37f7629`.
+Focused regression: 179 passed (`tests/test_review_figures.py` and `tests/test_vertical_review_projection.py`).
+The new route emits source-figure references and human-owned synthesis placeholders only; legacy comparative bitmap behavior remains outside the new route.
+Independent review is pending; no automatic image generation was added.
 
 ---
 
