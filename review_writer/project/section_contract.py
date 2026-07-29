@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import copy
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -38,7 +40,14 @@ def _read(project: Path) -> list[dict[str, Any]]:
 
 def _write(project: Path, rows: list[dict[str, Any]]) -> None:
     path = project / PATH; path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n" for row in rows), encoding="utf-8")
+    if os.path.lexists(path) and (path.is_symlink() or not path.is_file()): raise SectionContractError("SECTION_CONTRACT_PATH_INVALID")
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write("".join(json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n" for row in rows)); handle.flush(); os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary): os.unlink(temporary)
 
 
 def register_section_contracts(project: Path, payload: object) -> dict[str, Any]:
