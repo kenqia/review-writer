@@ -721,7 +721,7 @@ Non-blocking follow-up: move synthesis/section read-modify-write reads inside th
 - Modify: `view/assets/dashboard/review-ui.css`
 - Modify: `tests/test_qoderwork_native_review_writer.py`
 
-- [ ] **Step 1: 写 API 与 UI 接线失败测试**
+- [x] **Step 1: 写 API 与 UI 接线失败测试**
 
 固定 API：
 
@@ -748,19 +748,19 @@ def test_synthesis_workspace_exposes_source_figures_before_placeholders(self) ->
     assert html.index("原论文图片") < html.index("综合图制图任务")
 ```
 
-- [ ] **Step 2: 拆出 Evidence 与 Synthesis 前端模块**
+- [x] **Step 2: 拆出 Evidence 与 Synthesis 前端模块**
 
 `review.html` 保留页面壳和通用状态；Evidence/Synthesis 交互放入两个独立 JS 文件，避免继续扩张单个内联脚本。模块只消费 safe API payload；动态文本只用 `textContent`。
 
-- [ ] **Step 3: 实现研究者工作流**
+- [x] **Step 3: 实现研究者工作流**
 
 Evidence 工作区提供论文列表、PDF/parsed text 对照、epistemic type、条件/数值/机制等级、风险、原图预览、批准/修改批准/拒绝。Synthesis 工作区依次呈现 Comparison Protocol、Coverage Map、claims、反证/局限、Section Contracts 和图计划；未满足前置门禁时后续控件禁用并显示真实原因。
 
-- [ ] **Step 4: 删除新路线独立 Risk 阶段**
+- [x] **Step 4: 删除新路线独立 Risk 阶段**
 
 风险作为 Evidence/Synthesis 属性集中处理。legacy 项目继续显示旧 Risk Packet；新路线 UI 不再导航到独立 risk stage。
 
-- [ ] **Step 5: 实现响应式和可访问性**
+- [x] **Step 5: 实现响应式和可访问性**
 
 - `1440×1000`：论文/对象列表、主审阅区、上下文三列；
 - `1024×900`：两列，Context 下移；
@@ -769,7 +769,7 @@ Evidence 工作区提供论文列表、PDF/parsed text 对照、epistemic type�
 - 无横向滚动、文字遮挡或低于现有正文可读性的密度；
 - radio、textarea、buttons 有 label、focus ring 和键盘顺序。
 
-- [ ] **Step 6: 验证并提交**
+- [x] **Step 6: 验证并提交**
 
 ```zsh
 PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider \
@@ -781,6 +781,10 @@ git add -- view/serve_review_dashboard.py view/assets/dashboard/review.html \
 git diff --cached --check
 git commit -m "feat: add evidence synthesis workspace"
 ```
+
+**Task 7 implementation record (2026-07-29):** API layer in `85ea108`, UI and hardening in `8863cb0`.
+New workspace routes expose only researcher-safe projections with opaque version tokens; stale writes return 409 before mutation. Evidence and Synthesis are split into dedicated modules, Source Figures render before synthesis placeholders, and the new route hides the legacy Risk stage.
+Validation: `tests/test_dashboard_evidence_workspace.py` 3 passed, native dashboard suite 120 passed, focused workspace/projection suite 23 passed, JS syntax and Python compile passed. Independent review pending.
 
 ---
 
