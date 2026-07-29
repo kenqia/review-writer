@@ -17,7 +17,11 @@ from .paper_evidence import (
     apply_paper_evidence_decision,
     paper_evidence_state,
 )
-from .paper_evidence_store import PaperEvidenceStoreError, project_write_lock
+from .paper_evidence_store import (
+    PaperEvidenceStoreError,
+    project_read_lock,
+    project_write_lock,
+)
 from .section_contract import (
     PATH as CONTRACT_PATH,
     SectionContractError,
@@ -523,21 +527,25 @@ def rebind_simulated_review_chain(
     # Guard the chain read and its eligibility checks with an initial and a
     # final snapshot. A write that slips into this interval is rejected before
     # staging, even when it preserves an otherwise approved projection.
-    with project_write_lock(root):
-        guard = _snapshot(root)
-        chain = _current_chain(root)
-        draft_error: SimulatedReviewRebindError | None = None
-        try:
-            _prepare_draft_rebind(root, require_current=True)
-        except SimulatedReviewRebindError as exc:
-            # Take the final version snapshot even when draft validation sees
-            # stale upstreams, so a concurrent write gets its precise reason.
-            draft_error = exc
-        before = _snapshot(root)
-        if before != guard:
-            raise SimulatedReviewRebindError("CHAIN_VERSION_CHANGED")
-        if draft_error is not None:
-            raise draft_error
+    guard_lock = project_read_lock if dry_run else project_write_lock
+    try:
+        with guard_lock(root):
+            guard = _snapshot(root)
+            chain = _current_chain(root)
+            draft_error: SimulatedReviewRebindError | None = None
+            try:
+                _prepare_draft_rebind(root, require_current=True)
+            except SimulatedReviewRebindError as exc:
+                # Take the final version snapshot even when draft validation sees
+                # stale upstreams, so a concurrent write gets its precise reason.
+                draft_error = exc
+            before = _snapshot(root)
+            if before != guard:
+                raise SimulatedReviewRebindError("CHAIN_VERSION_CHANGED")
+            if draft_error is not None:
+                raise draft_error
+    except PaperEvidenceStoreError as exc:
+        raise SimulatedReviewRebindError(exc.code) from exc
     try:
         with tempfile.TemporaryDirectory(
             prefix=".review-writer-rebind-", dir=root.parent

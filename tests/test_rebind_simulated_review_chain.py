@@ -265,6 +265,30 @@ def test_rebind_dry_run_has_zero_writes(tmp_path: Path) -> None:
     assert _regular_bytes(project) == before
 
 
+@pytest.mark.parametrize("lock_state", ["missing", "empty"])
+def test_rebind_dry_run_refuses_uninitialized_lock_without_writes(
+    tmp_path: Path, lock_state: str
+) -> None:
+    from review_writer.project.simulated_review_rebind import SimulatedReviewRebindError
+
+    project = _complete_chain(tmp_path)
+    lock_path = project / ".paper_evidence.lock"
+    if lock_state == "missing":
+        lock_path.unlink()
+    else:
+        lock_path.write_bytes(b"")
+    before = _regular_bytes(project)
+
+    with pytest.raises(
+        SimulatedReviewRebindError, match="PAPER_EVIDENCE_LOCK_UNINITIALIZED"
+    ):
+        _rebind(project, dry_run=True)
+
+    assert _regular_bytes(project) == before
+
+
+
+
 def test_rebind_rejects_unknown_actor_without_writes(tmp_path: Path) -> None:
     from review_writer.project.simulated_review_rebind import SimulatedReviewRebindError
 
