@@ -54,7 +54,7 @@
     if (busy) return; busy = true;
     const reason = window.prompt("请记录这项决定的理由", item.decision?.reason || "研究者核对后决定");
     if (!reason) { busy = false; return; }
-    try { render(await api(projectSelect.value, "paper-evidence", {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({evidence_id:item.evidence_id, action, reason, version_token:item.version_token})})); }
+    try { render(await api(projectSelect.value, "paper-evidence", {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({evidence_id:item.evidence_id, action, reason, version_token:item.version_token, ...window.reviewDecisionActor()})})); }
     catch (error) { message.textContent = error.message; }
     finally { busy = false; }
   }

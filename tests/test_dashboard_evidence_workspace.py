@@ -97,3 +97,81 @@ def test_review_html_loads_split_workspace_modules_and_hides_new_route_risk() ->
     assert "item.image_url" in synthesis
     server = (root / "view/serve_review_dashboard.py").read_text(encoding="utf-8")
     assert "/source-figure" in server
+
+
+def test_review_simulation_actor_is_exact_query_opt_in() -> None:
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "view/assets/dashboard/review.html").read_text(encoding="utf-8")
+    session = (root / "view/assets/dashboard/review-session.js").read_text(encoding="utf-8")
+    evidence = (root / "view/assets/dashboard/review-evidence.js").read_text(encoding="utf-8")
+    synthesis = (root / "view/assets/dashboard/review-synthesis.js").read_text(encoding="utf-8")
+
+    assert html.index("/assets/dashboard/review-session.js") < html.index(
+        "/assets/dashboard/review-evidence.js"
+    )
+    assert 'params.get("review_actor") === "simulated_researcher_agent"' in session
+    assert 'actor_type: "simulated_researcher_agent"' in session
+    assert 'actor_label: "dashboard-playwright-reviewer"' in session
+    assert "window.reviewDecisionActor" in evidence
+    assert "window.reviewDecisionActor" in synthesis
+    assert "actor_label" not in evidence
+    assert "actor_label" not in synthesis
+
+
+@pytest.mark.parametrize(
+    ("actor_fields", "expected"),
+    [
+        ({}, ("human_researcher", "local-researcher")),
+        (
+            {
+                "actor_type": "simulated_researcher_agent",
+                "actor_label": "dashboard-playwright-reviewer",
+            },
+            ("simulated_researcher_agent", "dashboard-playwright-reviewer"),
+        ),
+    ],
+)
+def test_workspace_api_preserves_explicit_actor_and_defaults_to_human(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    actor_fields: dict[str, str],
+    expected: tuple[str, str],
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    project = tmp_path / "new-route"
+    project.mkdir()
+    row = {
+        "evidence_id": "E-1",
+        "candidate_digest": "a" * 64,
+        "bound_parse_object_digests": ["b" * 64],
+        "source_pdf_sha256": "c" * 64,
+    }
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(dashboard, "project_dir", lambda _root, _project_id: project)
+    monkeypatch.setattr(dashboard, "paper_evidence_state", lambda _project: {"rows": [row]})
+    monkeypatch.setattr(
+        dashboard,
+        "apply_paper_evidence_decision",
+        lambda _project, payload: captured.update(payload),
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "project_paper_evidence_payload",
+        lambda _root, _project_id: {"status": "ok"},
+    )
+    payload = {
+        "evidence_id": "E-1",
+        "action": "approve",
+        "reason": "Checked.",
+        "version_token": dashboard._workspace_token(
+            "paper-evidence", "E-1", row["candidate_digest"]
+        ),
+        **actor_fields,
+    }
+
+    dashboard.write_project_workspace_decision(
+        tmp_path, "new-route", "paper-evidence", payload
+    )
+
+    assert (captured["actor_type"], captured["actor_label"]) == expected

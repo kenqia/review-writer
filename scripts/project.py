@@ -103,11 +103,40 @@ def build_parser() -> argparse.ArgumentParser:
     status = subparsers.add_parser("status", help="Compare current resolved config with an immutable snapshot")
     status.add_argument("--manifest", type=Path, required=True)
     status.add_argument("--snapshot", type=Path, required=True)
+    rebind = subparsers.add_parser(
+        "rebind-simulated-review-chain",
+        help="Repair one eligible simulated Dashboard review chain",
+    )
+    rebind.add_argument("--project", type=Path, required=True)
+    rebind.add_argument("--actor-label", required=True)
+    rebind.add_argument("--dry-run", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "rebind-simulated-review-chain":
+        from review_writer.project.simulated_review_rebind import (
+            SimulatedReviewRebindError,
+            rebind_simulated_review_chain,
+        )
+
+        try:
+            report = rebind_simulated_review_chain(
+                args.project,
+                actor_label=args.actor_label,
+                dry_run=args.dry_run,
+            )
+        except SimulatedReviewRebindError as exc:
+            print(
+                json.dumps(
+                    {"status": "REFUSED", "reason_code": exc.code, "counts": {}},
+                    sort_keys=True,
+                )
+            )
+            return 2
+        print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+        return 0
     try:
         if args.command == "validate":
             report = _validate_report(args.manifest)
