@@ -7,6 +7,27 @@
   const api = (id, suffix, options) => fetch(`/api/project/${encodeURIComponent(id)}/${suffix}`, options).then(response => { if (!response.ok) throw new Error(response.status === 409 ? "内容已更新，请刷新后重新核对。" : "综合判断暂不可用。"); return response.json(); });
   let busy = false;
   function section(title) { const node = document.createElement("section"); node.className = "synthesis-panel"; node.append(text("h4", title)); return node; }
+  function visibleList(value) { return Array.isArray(value) ? value.filter(item => typeof item === "string").join("、") : ""; }
+  function describeAxis(value) {
+    if (typeof value === "string") return value;
+    if (!value || typeof value !== "object") return "比较轴待核对";
+    return [
+      value.axis || value.name,
+      visibleList(value.covered_studies),
+      visibleList(value.missing_cells),
+      visibleList(value.non_comparable),
+      visibleList(value.counter_evidence),
+      value.impact,
+    ].filter(Boolean).join(" · ") || "比较轴待核对";
+  }
+  function describeFigurePlan(value) {
+    const rows = Array.isArray(value) ? value : [];
+    return rows.map(row => {
+      if (typeof row === "string") return row;
+      if (!row || typeof row !== "object") return "";
+      return [row.figure_type || row.type, row.scientific_question || row.rationale, visibleList(row.source_figure_ids), visibleList(row.placeholder_ids)].filter(Boolean).join(" · ");
+    }).filter(Boolean).join("；") || "尚未安排图位";
+  }
   function render(protocol, synthesis, contracts, figures) {
     root.replaceChildren();
     if (protocol.route !== "evidence-to-release.v1") return;
@@ -24,7 +45,7 @@
     const coveragePanel = section("Coverage Map");
     const coverage = synthesis.coverage || {};
     coveragePanel.append(text("p", `语料库：${coverage.corpus_kind || "—"}；状态：${coverage.status || "needs_review"}`));
-    (coverage.axes || []).forEach(axis => coveragePanel.append(text("p", typeof axis === "object" ? JSON.stringify(axis) : axis)));
+    (coverage.axes || []).forEach(axis => coveragePanel.append(text("p", describeAxis(axis))));
     if (coverage.known_omissions?.length) coveragePanel.append(text("p", `已知遗漏：${coverage.known_omissions.join("、")}`));
     const claimPanel = section("Synthesis Claims");
     (synthesis.items || []).forEach(item => {
@@ -35,7 +56,7 @@
       const button = document.createElement("button"); button.type = "button"; button.textContent = "记录决定"; button.disabled = !synthesis.protocol_ready; if (!synthesis.protocol_ready) button.title = "先批准 Comparison Protocol"; button.addEventListener("click", () => decide("synthesis", item)); card.append(button); claimPanel.append(card);
     });
     const contractPanel = section("Section Contracts");
-    (contracts.items || []).forEach(item => { const card = document.createElement("article"); card.className = "synthesis-card"; card.append(text("strong", item.section_id), text("p", item.research_question), text("p", `预期综合判断：${item.expected_synthesis}`), text("p", `图计划：${JSON.stringify(item.figure_plan || [])}`)); const button = document.createElement("button"); button.type = "button"; button.textContent = "记录决定"; button.disabled = !contracts.synthesis_ready; if (!contracts.synthesis_ready) button.title = "先完成 Synthesis Claims 审查"; button.addEventListener("click", () => decide("section-contracts", item)); card.append(button); contractPanel.append(card); });
+    (contracts.items || []).forEach(item => { const card = document.createElement("article"); card.className = "synthesis-card"; card.append(text("strong", item.section_id), text("p", item.research_question), text("p", `预期综合判断：${item.expected_synthesis}`), text("p", `图计划：${describeFigurePlan(item.figure_plan)}`)); const button = document.createElement("button"); button.type = "button"; button.textContent = "记录决定"; button.disabled = !contracts.synthesis_ready; if (!contracts.synthesis_ready) button.title = "先完成 Synthesis Claims 审查"; button.addEventListener("click", () => decide("section-contracts", item)); card.append(button); contractPanel.append(card); });
     const figurePanel = section("原论文图片");
     (figures.source_figures || []).forEach(item => {
       const row = document.createElement("div"); row.className = "figure-source-row";

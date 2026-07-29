@@ -910,12 +910,11 @@ textarea.editor {
 }
 .review-kicker { color: #b8c9bf; }
 .review-identity h1 {
-  overflow: hidden;
   margin: 0;
-  font: 700 clamp(19px, 2vw, 27px)/1.15 var(--rw-serif);
-  letter-spacing: -.02em;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  font: 700 27px/1.15 var(--rw-serif);
+  letter-spacing: 0;
+  white-space: normal;
 }
 .review-project-tools {
   display: grid;
