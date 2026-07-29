@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,34 @@ def test_source_figure_binds_asset_caption_page_and_pdf(tmp_path: Path) -> None:
     assert figure["caption"]
     assert figure["source_id"] == "stud-a"
     assert figure["asset_path"].startswith("01_evidence/parses/extracted/")
+    assert registry["figure_budget"]["status"] == "needs_human_selection"
+    assert registry["figure_budget"]["gaps"]
+
+
+def test_source_figure_rejects_content_list_drift(tmp_path: Path) -> None:
+    project = _new_route_project(tmp_path)
+    content_path = project / "01_evidence/parses/extracted/10_1000_example/parse_content_list.json"
+    content_path.write_text(content_path.read_text(encoding="utf-8").replace("figure.jpg", "full.md"), encoding="utf-8")
+
+    with pytest.raises(ReviewFigureError, match="FIGURE_CONTENT_LIST_DRIFT"):
+        build_source_figure_registry(project)
+
+
+def test_source_figure_rejects_asset_outside_images_directory(tmp_path: Path) -> None:
+    project = _new_route_project(tmp_path)
+    content_path = project / "01_evidence/parses/extracted/10_1000_example/parse_content_list.json"
+    content_path.write_text(content_path.read_text(encoding="utf-8").replace("images/figure.jpg", "full.md"), encoding="utf-8")
+    bundle_path = project / "01_evidence/source_truth/scholarly-a/bundle.json"
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    source = bundle["sources"][0]
+    source["content_list"]["sha256"] = hashlib.sha256(content_path.read_bytes()).hexdigest()
+    body = {key: value for key, value in bundle.items() if key != "bundle_digest"}
+    from review_writer.project.source_truth import canonical_digest
+    bundle["bundle_digest"] = canonical_digest(body)
+    bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+
+    with pytest.raises(ReviewFigureError, match="FIGURE_ASSET_INVALID"):
+        build_source_figure_registry(project)
 
 
 def test_new_route_never_generates_comparative_bitmap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

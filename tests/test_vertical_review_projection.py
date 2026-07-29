@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 import review_writer.project.vertical_review as vertical_review
+from test_source_truth import _source_truth_project
 from review_writer.project.paper_evidence import (
     PaperEvidenceError,
     apply_paper_evidence_decision,

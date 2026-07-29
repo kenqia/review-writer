@@ -125,10 +125,17 @@ def _atomic_json(project: Path, path: Path, payload: object) -> None:
 
 
 def _content_entries(project: Path, source: dict[str, Any]) -> list[dict[str, Any]]:
-    relative = source.get("content_list", {}).get("path")
-    if not isinstance(relative, str):
+    descriptor = source.get("content_list")
+    if not isinstance(descriptor, dict):
         _fail("FIGURE_CONTENT_LIST_INVALID")
-    payload = _read_json(_safe_asset(project, relative), "FIGURE_CONTENT_LIST_INVALID")
+    relative = descriptor.get("path")
+    expected_sha256 = descriptor.get("sha256")
+    if not isinstance(relative, str) or not isinstance(expected_sha256, str) or not _SHA256.fullmatch(expected_sha256):
+        _fail("FIGURE_CONTENT_LIST_INVALID")
+    content_path = _safe_asset(project, relative)
+    if _sha256(content_path) != expected_sha256:
+        _fail("FIGURE_CONTENT_LIST_DRIFT")
+    payload = _read_json(content_path, "FIGURE_CONTENT_LIST_INVALID")
     if not isinstance(payload, list) or not all(isinstance(row, dict) for row in payload):
         _fail("FIGURE_CONTENT_LIST_INVALID")
     return payload
@@ -225,6 +232,9 @@ def build_source_figure_registry(project: Path) -> dict[str, Any]:
             _verify_source_images(root, source)
             extracted = root / "01_evidence/parses/extracted" / slug
             entries = _content_entries(root, source)
+            image_root = (extracted / "images").resolve(strict=True)
+            if image_root.is_symlink() or not image_root.is_dir():
+                _fail("FIGURE_ASSET_INVALID")
             image_number = 0
             for index, entry in enumerate(entries):
                 if entry.get("type") != "image" or not isinstance(entry.get("img_path"), str):
@@ -233,6 +243,10 @@ def build_source_figure_registry(project: Path) -> dict[str, Any]:
                 if raw_path.is_absolute() or ".." in raw_path.parts:
                     _fail("FIGURE_ASSET_INVALID")
                 asset = _safe_asset(root, (extracted / raw_path).relative_to(root).as_posix())
+                try:
+                    asset.relative_to(image_root)
+                except ValueError as exc:
+                    raise ReviewFigureError("FIGURE_ASSET_INVALID") from exc
                 page_idx = entry.get("page_idx")
                 if not isinstance(page_idx, int) or page_idx < 0:
                     _fail("FIGURE_LOCATOR_INVALID")
@@ -259,6 +273,18 @@ def build_source_figure_registry(project: Path) -> dict[str, Any]:
                 figures.append(figure)
     figures.sort(key=lambda row: (row["study_id"], row["source_id"], row["page"], row["figure_id"]))
     selected = [row for row in figures if row["selection_status"] == "selected"]
+    minimum_slots, maximum_slots = 5, 8
+    if len(selected) < minimum_slots:
+        budget_status = "needs_human_selection"
+        budget_gaps = [
+            f"Select {minimum_slots - len(selected)} additional non-duplicative source figure(s) or register a synthesis placeholder."
+        ]
+    elif len(selected) > maximum_slots:
+        budget_status = "over_budget"
+        budget_gaps = [f"Reduce selected figures by {len(selected) - maximum_slots} slot(s)."]
+    else:
+        budget_status = "within_target"
+        budget_gaps = []
     registry = {
         "schema_version": "review-writer-source-figure-registry.v1",
         "project_id": root.name,
@@ -266,7 +292,14 @@ def build_source_figure_registry(project: Path) -> dict[str, Any]:
         "figures": figures,
         "selected_count": len(selected),
         "available_count": len(figures),
-        "target_figure_slots": {"minimum": 5, "maximum": 8},
+        "target_figure_slots": {"minimum": minimum_slots, "maximum": maximum_slots},
+        "figure_budget": {
+            "status": budget_status,
+            "selected_count": len(selected),
+            "minimum": minimum_slots,
+            "maximum": maximum_slots,
+            "gaps": budget_gaps,
+        },
         "registry_digest": canonical_digest(figures),
     }
     _atomic_json(root, REGISTRY_PATH, registry)
