@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://review-writer.local/schemas/quality/review_benchmark_report.v1.schema.json",
+  "title": "Evidence-bound review benchmark report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "evaluated_at",
+    "project_id",
+    "release_level",
+    "status",
+    "score",
+    "tier",
+    "expert_release_ready",
+    "rubric",
+    "hard_fails",
+    "issues",
+    "release_binding",
+    "standard_corpus",
+    "comparison_metrics",
+    "human_review_required",
+    "disclaimer"
+  ],
+  "properties": {
+    "schema_version": {"const": "review-benchmark-report.v1"},
+    "evaluated_at": {"type": "string", "format": "date-time"},
+    "project_id": {"type": "string", "minLength": 1},
+    "release_level": {"enum": ["SELF_REVIEWED_DRAFT", "EXPERT_REVIEWED_RELEASE"]},
+    "status": {"enum": ["fail", "pass_internal", "pass_expert"]},
+    "score": {"type": "number", "minimum": 0, "maximum": 100},
+    "tier": {
+      "enum": [
+        "below_internal_threshold",
+        "acceptable_internal_revision_required",
+        "benchmark_internal"
+      ]
+    },
+    "expert_release_ready": {"type": "boolean"},
+    "rubric": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["dimension_id", "max_score", "score", "rationale"],
+        "properties": {
+          "dimension_id": {
+            "enum": [
+              "scope_and_question_value",
+              "source_set_coverage",
+              "evidence_fidelity",
+              "synthesis_and_critique",
+              "structure_and_narrative",
+              "figure_information_value",
+              "citation_and_traceability"
+            ]
+          },
+          "max_score": {"type": "integer", "minimum": 1, "maximum": 20},
+          "score": {"type": "number", "minimum": 0, "maximum": 20},
+          "rationale": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "hard_fails": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "WRONG_SOURCE_BINDING",
+          "SUPPORTING_SOURCE_UNREAD",
+          "HIGH_RISK_CLAIM_UNAPPROVED",
+          "STALE_APPROVAL",
+          "FABRICATED_SCIENTIFIC_DETAIL",
+          "STATE_SURFACE_DIVERGENCE",
+          "UNSOURCED_SCIENTIFIC_CLAIM",
+          "LEGACY_DRAFT_REPACKAGED",
+          "SYSTEM_GENERATED_SYNTHESIS_FIGURE",
+          "SYNTHESIS_FIGURE_PENDING"
+        ]
+      }
+    },
+    "issues": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"enum": ["SYNTHESIS_FIGURE_PENDING"]}
+    },
+    "release_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manuscript_sha256", "release_sha256"],
+      "properties": {
+        "manuscript_sha256": {"$ref": "#/$defs/sha256"},
+        "release_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "standard_corpus": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "manifest_sha256",
+            "source_zip_sha256",
+            "file_count",
+            "pdf_count",
+            "mineru_success_count",
+            "mineru_failure_count",
+            "review_count",
+            "guide_count",
+            "stylesheet_count"
+          ],
+          "properties": {
+            "schema_version": {"const": "standard-corpus-binding.v1"},
+            "manifest_sha256": {"$ref": "#/$defs/sha256"},
+            "source_zip_sha256": {"$ref": "#/$defs/sha256"},
+            "file_count": {"type": "integer", "minimum": 1},
+            "pdf_count": {"const": 14},
+            "mineru_success_count": {"const": 14},
+            "mineru_failure_count": {"const": 0},
+            "review_count": {"const": 8},
+            "guide_count": {"const": 6},
+            "stylesheet_count": {"const": 1}
+          }
+        }
+      ]
+    },
+    "comparison_metrics": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "human_review_required": {"const": true},
+    "disclaimer": {"type": "string", "minLength": 1}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}
