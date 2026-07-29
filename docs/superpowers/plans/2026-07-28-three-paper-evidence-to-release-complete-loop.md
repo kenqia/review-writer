@@ -1047,7 +1047,7 @@ git commit -m "feat: add evidence bound internal review release"
 - Create: `tests/test_review_benchmark.py`
 - Modify: `scripts/run_vertical_review.py`
 
-- [ ] **Step 1: 写 credits ledger 失败测试**
+- [x] **Step 1: 写 credits ledger 失败测试**
 
 ```python
 def test_credit_ledger_records_reported_baseline() -> None:
@@ -1069,7 +1069,7 @@ ledger 为 append-only JSONL，只记录阶段、study IDs、输入/输出 diges
 record-credits --project <path> --stage <name> --before <int> --after <int> --source manual_dashboard
 ```
 
-- [ ] **Step 2: 写 benchmark 失败测试**
+- [x] **Step 2: 写 benchmark 失败测试**
 
 ```python
 def test_hard_fail_overrides_numeric_score() -> None:
@@ -1084,7 +1084,7 @@ def test_internal_placeholder_is_reported_but_not_internal_hard_fail() -> None:
     assert report["expert_release_ready"] is False
 ```
 
-- [ ] **Step 3: 固化 100 分量表**
+- [x] **Step 3: 固化 100 分量表**
 
 仓库 rubric 固定为总设计的产品维度：
 
@@ -1100,17 +1100,17 @@ def test_internal_placeholder_is_reported_but_not_internal_hard_fail() -> None:
 
 同时在子项中提高化学正确性、认识论分型、反例/局限和图文对应的权重解释。`80–89` 为可接受内部稿但需修订，`90–100` 为标杆级内部稿；任何 Hard Fail 优先。
 
-- [ ] **Step 4: 实现内部稿与专家稿两套 Hard Fail 投影**
+- [x] **Step 4: 实现内部稿与专家稿两套 Hard Fail 投影**
 
 共同 Hard Fail：错误来源绑定、未读支撑来源、未批准高风险主张、stale approval、补造条件/机制/共识、磁盘/API/UI/release 不一致、无来源科学主张、旧稿重新打包、系统生成综合科学图。
 
 内部稿允许清晰标记且 lineage 完整的 synthesis placeholder；专家稿额外要求所有必需综合图由用户上传并完成科学验收。
 
-- [ ] **Step 5: 绑定 `标准.zip` 分层标杆**
+- [x] **Step 5: 绑定 `标准.zip` 分层标杆**
 
 `load_standard_corpus()` 校验 Task 1 生成的 repo 外只读 corpus manifest、所有文件 hash、8 篇标杆论文/综述、6 份写作/图稿指南、1 份 ChemDraw stylesheet 和 MinerU 解析覆盖；不得把标杆正文复制进 repo。比较项包括章节比例、比较/批判段落密度、Source Figure 密度、caption 信息量、引用密度和可追溯性，但分数最终保留人工/Agent逐项理由。
 
-- [ ] **Step 6: 验证并提交**
+- [x] **Step 6: 验证并提交**
 
 ```zsh
 PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider \
