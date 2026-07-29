@@ -142,4 +142,3 @@ def test_record_credits_cli_appends_one_schema_valid_event(tmp_path: Path) -> No
         "status": "RECORDED",
     }
     assert len(_ledger_rows(project)) == 1
-
