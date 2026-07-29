@@ -9,6 +9,7 @@
 .evidence-card blockquote { margin: 10px 0; padding-left: 12px; border-left: 3px solid var(--rw-strong); color: #4e5148; overflow-wrap: anywhere; }
 .workspace-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .workspace-actions button, .synthesis-card button { min-height: 36px; padding: 7px 12px; border: 1px solid var(--rw-line); border-radius: 5px; background: var(--rw-paper); color: var(--rw-ink); cursor: pointer; }
+.synthesis-panel > button { min-height: 36px; padding: 7px 12px; border: 1px solid var(--rw-line); border-radius: 5px; background: var(--rw-paper); color: var(--rw-ink); cursor: pointer; }
 .workspace-actions button:hover, .synthesis-card button:hover { border-color: var(--rw-strong); }
 .synthesis-panel { margin-top: 18px; }
 .synthesis-panel h4 { margin: 0; color: var(--rw-strong); }

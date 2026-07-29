@@ -925,13 +925,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except WorkspaceStaleError:
             self.send_json({"error": "内容已更新，请刷新后重新核对"}, status=HTTPStatus.CONFLICT)
             return
-        except (json.JSONDecodeError, UnicodeError, ValueError):
-            self.send_json({"error": "决定内容无法读取"}, status=HTTPStatus.BAD_REQUEST)
-            return
         except (PaperEvidenceError, SynthesisError, SectionContractError, ReviewFigureError) as exc:
             code = getattr(exc, "code", "WORKSPACE_INVALID")
             status = HTTPStatus.CONFLICT if code.endswith("STALE") or code == "WORKSPACE_STALE" else HTTPStatus.BAD_REQUEST
             self.send_json({"error": "内容已更新，请刷新后重新核对" if status == HTTPStatus.CONFLICT else "决定未保存，请检查后重试"}, status=status)
+            return
+        except (json.JSONDecodeError, UnicodeError, ValueError):
+            self.send_json({"error": "决定内容无法读取"}, status=HTTPStatus.BAD_REQUEST)
             return
         self.send_json(result)
 
