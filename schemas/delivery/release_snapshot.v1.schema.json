@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://review-writer.local/schemas/delivery/release_snapshot.v1.schema.json",
+  "title": "Evidence-to-release snapshot v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "project_id", "route", "release_level", "status",
+    "workflow_digest", "lineage_digest", "manuscript_sha256", "markdown_path",
+    "docx_path", "docx_sha256", "placeholder_count", "pending_placeholder_count",
+    "hard_fail_signals", "system_generated_synthesis_figure", "integrity"
+  ],
+  "properties": {
+    "schema_version": {"const": "release-snapshot.v1"},
+    "project_id": {"type": "string", "minLength": 1},
+    "route": {"const": "evidence-to-release.v1"},
+    "release_level": {"enum": ["SELF_REVIEWED_DRAFT", "EXPERT_REVIEWED_RELEASE"]},
+    "status": {"enum": ["SELF_REVIEWED_DRAFT", "EXPERT_REVIEWED_RELEASE"]},
+    "workflow_digest": {"$ref": "#/$defs/sha256"},
+    "lineage_digest": {"$ref": "#/$defs/sha256"},
+    "manuscript_sha256": {"$ref": "#/$defs/sha256"},
+    "markdown_path": {"pattern": "^05_release/(?:self_reviewed_draft|expert_reviewed_release)\\.md$"},
+    "docx_path": {"pattern": "^05_release/(?:self_reviewed_draft|expert_reviewed_release)\\.docx$"},
+    "docx_sha256": {"$ref": "#/$defs/sha256"},
+    "placeholder_count": {"type": "integer", "minimum": 0},
+    "pending_placeholder_count": {"type": "integer", "minimum": 0},
+    "hard_fail_signals": {"type": "array", "items": {"type": "string"}},
+    "system_generated_synthesis_figure": {"const": false},
+    "integrity": {"$ref": "#/$defs/integrity"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "zip_valid", "relationships_valid", "document_xml_sha256",
+        "media_sha256", "markdown_roundtrip_match", "attribution_complete",
+        "workflow_digest_match", "document_xml_changed", "media_changed",
+        "legacy_repackage_only"
+      ],
+      "properties": {
+        "schema_version": {"const": "docx-integrity.v1"},
+        "zip_valid": {"const": true},
+        "relationships_valid": {"const": true},
+        "document_xml_sha256": {"$ref": "#/$defs/sha256"},
+        "media_sha256": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/sha256"}},
+        "markdown_roundtrip_match": {"const": true},
+        "attribution_complete": {"const": true},
+        "workflow_digest_match": {"const": true},
+        "document_xml_changed": {"type": ["boolean", "null"]},
+        "media_changed": {"type": ["boolean", "null"]},
+        "legacy_repackage_only": {"const": false}
+      }
+    }
+  }
+}

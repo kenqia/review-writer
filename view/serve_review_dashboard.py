@@ -49,6 +49,7 @@ from review_writer.delivery.project_release import (  # noqa: E402
     build_project_release,
     is_reparse_component,
     manuscript_lineage_entries,
+    new_route_release_docx_is_current,
     project_figure_validation_is_current,
     refreshed_manuscript_lineage,
     replace_manuscript_section_body,
@@ -621,10 +622,92 @@ class DashboardHandler(BaseHTTPRequestHandler):
         )
 
     def handle_project_export_docx(self, project_id: str) -> None:
+        raw_length = self.headers.get("Content-Length")
         try:
-            result = export_project_docx(self.review_root, project_id)
+            length = int(raw_length or 0)
+        except ValueError:
+            length = -1
+        release_level: str | None = None
+        new_contract = length != 0
+        if new_contract:
+            try:
+                if (
+                    length < 1
+                    or length > 4096
+                    or self.headers.get_content_type() != "application/json"
+                ):
+                    raise ValueError
+                request = json.loads(self.rfile.read(length).decode("utf-8"))
+                if (
+                    not isinstance(request, dict)
+                    or set(request) != {"release_level"}
+                    or request.get("release_level")
+                    not in {"SELF_REVIEWED_DRAFT", "EXPERT_REVIEWED_RELEASE"}
+                ):
+                    raise ValueError
+                release_level = request["release_level"]
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                self.send_json(
+                    {
+                        "ok": False,
+                        "error_code": "RELEASE_REQUEST_INVALID",
+                        "message": (
+                            "release request must contain exactly one supported release_level"
+                        ),
+                    },
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+        try:
+            result = (
+                export_project_docx(
+                    self.review_root, project_id, release_level=release_level
+                )
+                if new_contract
+                else export_project_docx(self.review_root, project_id)
+            )
+        except ProjectReleaseError as exc:
+            if not new_contract:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            status = (
+                HTTPStatus.INTERNAL_SERVER_ERROR
+                if exc.code in {"DOCX_CONVERTER_MISSING", "DOCX_EXPORT_FAILED"}
+                else HTTPStatus.CONFLICT
+            )
+            self.send_json(
+                {
+                    "ok": False,
+                    "error_code": exc.code,
+                    "message": str(exc).split(": ", 1)[-1],
+                },
+                status=status,
+            )
+            return
         except ValueError as exc:
-            self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
+            if new_contract:
+                self.send_json(
+                    {
+                        "ok": False,
+                        "error_code": "PROJECT_INVALID",
+                        "message": str(exc),
+                    },
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            else:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+        except Exception:
+            if not new_contract:
+                raise
+            self.send_json(
+                {
+                    "ok": False,
+                    "error_code": "RELEASE_INTERNAL_ERROR",
+                    "message": "release service failed",
+                },
+                status=HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
             return
         if result.get("http_status"):
             self.send_error(HTTPStatus(result.pop("http_status")), str(result.pop("error")))
@@ -4081,16 +4164,28 @@ def _write_project_draft_sections_unlocked(
     }
 
 
-def export_project_docx(review_root: Path, project_id: str) -> dict[str, Any]:
+def export_project_docx(
+    review_root: Path,
+    project_id: str,
+    *,
+    release_level: str | None = None,
+) -> dict[str, Any]:
     project = project_dir(review_root, project_id)
-    release = build_project_release(project)
+    release = (
+        build_project_release(project, release_level=release_level)
+        if release_level is not None
+        else build_project_release(project)
+    )
     docx_path = Path(release["docx"])
-    return {
+    result = {
         "ok": True,
         "filename": docx_path.name,
         "size": docx_path.stat().st_size,
         "release_status": release["status"],
     }
+    if release_level is not None:
+        result["release_level"] = release.get("release_level", release_level)
+    return result
 
 
 def project_matrix_payload(review_root: Path, project_id: str) -> dict[str, Any]:
@@ -4310,7 +4405,12 @@ def project_figures_payload(review_root: Path, project_id: str) -> dict[str, Any
 def is_project_release_docx(path: Path, review_root: Path) -> bool:
     candidate = path if path.is_absolute() else review_root / path
     root = review_root.resolve()
-    if candidate.name != "final_draft.docx" or candidate.parent.name != "05_final_audit":
+    legacy = candidate.name == "final_draft.docx" and candidate.parent.name == "05_final_audit"
+    new_route = (
+        candidate.name in {"self_reviewed_draft.docx", "expert_reviewed_release.docx"}
+        and candidate.parent.name == "05_release"
+    )
+    if not legacy and not new_route:
         return False
     project = candidate.parent.parent.resolve()
     if project == root:
@@ -4324,6 +4424,64 @@ def is_project_release_docx(path: Path, review_root: Path) -> bool:
 
 def _project_release_artifact_state(project: Path) -> dict[str, Any]:
     project_path = Path(project)
+    if os.path.lexists(project_path / SOURCE_TRUTH_ROOT):
+        authoritative_relative = Path("04_manuscript/manuscript.md")
+        metadata_relative = Path("05_release/release_snapshot.json")
+        validate_project_path_components(
+            project_path, (authoritative_relative, metadata_relative)
+        )
+        authoritative_path = validate_project_file_path(
+            project_path, authoritative_relative, "MANUSCRIPT_INVALID"
+        )
+        metadata_path = project_path / metadata_relative
+        metadata_exists = metadata_path.is_file() and not metadata_path.is_symlink()
+        metadata = read_json_if_exists(metadata_path) if metadata_exists else {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        release_level = metadata.get("release_level")
+        base = {
+            "SELF_REVIEWED_DRAFT": "self_reviewed_draft",
+            "EXPERT_REVIEWED_RELEASE": "expert_reviewed_release",
+        }.get(release_level, "self_reviewed_draft")
+        snapshot_relative = Path(f"05_release/{base}.md")
+        docx_relative = Path(f"05_release/{base}.docx")
+        quality_relative = Path("05_release/quality_report.json")
+        validate_project_path_components(
+            project_path,
+            (snapshot_relative, docx_relative, quality_relative),
+        )
+        snapshot_path = project_path / snapshot_relative
+        docx_path = project_path / docx_relative
+        quality_path = project_path / quality_relative
+        authoritative_bytes = authoritative_path.read_bytes()
+        markdown_exists = snapshot_path.is_file() and not snapshot_path.is_symlink()
+        snapshot_matches = bool(
+            metadata_exists
+            and markdown_exists
+            and snapshot_path.read_bytes() == authoritative_bytes
+            and metadata.get("markdown_path") == snapshot_relative.as_posix()
+            and metadata.get("docx_path") == docx_relative.as_posix()
+        )
+        quality_report = read_json_if_exists(quality_path)
+        if not isinstance(quality_report, dict):
+            quality_report = {}
+        integrity_valid = bool(
+            snapshot_matches
+            and docx_path.is_file()
+            and not docx_path.is_symlink()
+            and new_route_release_docx_is_current(docx_path)
+        )
+        return {
+            "authoritative_path": authoritative_path,
+            "snapshot_path": snapshot_path,
+            "docx_path": docx_path,
+            "stage_path": project_path / "05_release",
+            "quality_report": quality_report,
+            "snapshot_exists": metadata_exists,
+            "snapshot_matches": snapshot_matches,
+            "integrity_valid": integrity_valid,
+        }
+
     authoritative_relative = Path("04_first_draft/first_draft.md")
     snapshot_relative = Path("05_final_audit/final_draft.md")
     docx_relative = Path("05_final_audit/final_draft.docx")
@@ -4362,6 +4520,7 @@ def _project_release_artifact_state(project: Path) -> dict[str, Any]:
         "authoritative_path": authoritative_path,
         "snapshot_path": snapshot_path,
         "docx_path": docx_path,
+        "stage_path": project_path / "05_final_audit",
         "quality_report": quality_report,
         "snapshot_exists": snapshot_exists,
         "snapshot_matches": snapshot_matches,
@@ -4371,6 +4530,8 @@ def _project_release_artifact_state(project: Path) -> dict[str, Any]:
 
 def project_release_docx_is_current(docx_path: Path) -> bool:
     candidate = Path(docx_path)
+    if candidate.parent.name == "05_release":
+        return new_route_release_docx_is_current(candidate)
     project = candidate.parent.parent.resolve()
     state = _project_release_artifact_state(project)
     return bool(
@@ -4381,11 +4542,12 @@ def project_release_docx_is_current(docx_path: Path) -> bool:
 
 def project_final_payload(review_root: Path, project_id: str) -> dict[str, Any]:
     project = project_dir(review_root, project_id)
-    stage = project / "05_final_audit"
-    project_relative = project.relative_to(Path(review_root).resolve())
-    stage_relative = (project_relative / "05_final_audit").as_posix()
-    docx_relative = (project_relative / "05_final_audit" / "final_draft.docx").as_posix()
     artifact_state = _project_release_artifact_state(project)
+    stage = artifact_state["stage_path"]
+    stage_relative = stage.relative_to(Path(review_root).resolve()).as_posix()
+    docx_relative = artifact_state["docx_path"].relative_to(
+        Path(review_root).resolve()
+    ).as_posix()
     authoritative_path = artifact_state["authoritative_path"]
     snapshot_path = artifact_state["snapshot_path"]
     quality_report = artifact_state["quality_report"]

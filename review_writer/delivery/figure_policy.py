@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,9 @@ from PIL import Image, UnidentifiedImageError
 ORIGINAL_GENERATED = "ORIGINAL_GENERATED"
 LICENSED_SOURCE = "LICENSED_SOURCE"
 FIGURE_BRIEF_PLACEHOLDER = "FIGURE_BRIEF_PLACEHOLDER"
+SOURCE_FIGURE_INTERNAL = "SOURCE_FIGURE_INTERNAL"
+SYNTHESIS_FIGURE_PLACEHOLDER = "SYNTHESIS_FIGURE_PLACEHOLDER"
+HUMAN_SYNTHESIS_FIGURE = "HUMAN_SYNTHESIS_FIGURE"
 _FIGURE_TYPES = {ORIGINAL_GENERATED, LICENSED_SOURCE, FIGURE_BRIEF_PLACEHOLDER}
 _CC_LICENSE_RE = re.compile(
     r"^cc(?:\s*-\s*|\s+)by(?P<sa>(?:\s*-\s*|\s+)sa)?"
@@ -346,3 +350,176 @@ def figure_validation_is_current(
     except OSError:
         return False
     return True
+
+
+def source_figure_attribution(row: dict[str, Any]) -> str:
+    """Return the stable visible attribution required in a new-route manuscript."""
+    return (
+        f"Source Figure Attribution: {_required_text(row, 'figure_id')} | "
+        f"{_required_text(row, 'source_id')} | page {row.get('page')} | "
+        f"{_required_text(row, 'figure_label')} | {_required_text(row, 'caption')}"
+    )
+
+
+def validate_new_route_figure_policy(
+    project: Path,
+    *,
+    source_registry: Any,
+    placeholders: Any,
+    manuscript_markdown: str,
+    manuscript_image_paths: list[str],
+    release_level: str,
+    lineage_digest: str | None = None,
+) -> dict[str, Any]:
+    """Validate internal source figures and fail closed for expert release inputs."""
+    if release_level not in {"SELF_REVIEWED_DRAFT", "EXPERT_REVIEWED_RELEASE"}:
+        raise FigurePolicyError("RELEASE_LEVEL_INVALID", "release level is unsupported")
+    if (
+        not isinstance(source_registry, dict)
+        or not isinstance(source_registry.get("figures"), list)
+        or not isinstance(placeholders, list)
+        or not isinstance(manuscript_markdown, str)
+    ):
+        raise FigurePolicyError("FIGURE_POLICY_INVALID", "new-route figure state is invalid")
+
+    selected = [
+        row
+        for row in source_registry["figures"]
+        if isinstance(row, dict) and row.get("selection_status") == "selected"
+    ]
+    if not selected:
+        raise FigurePolicyError("FIGURE_POLICY_INVALID", "at least one source figure must be selected")
+    if any(not isinstance(row, dict) for row in source_registry["figures"]):
+        raise FigurePolicyError("FIGURE_POLICY_INVALID", "source figure entries must be objects")
+    if release_level == "EXPERT_REVIEWED_RELEASE" and any(
+        isinstance(row, dict) and row.get("status") != "verified" for row in placeholders
+    ):
+        raise FigurePolicyError(
+            "FIGURE_PLACEHOLDER_PENDING", "expert release requires verified human figures"
+        )
+
+    expected_paths: set[str] = set()
+    normalized: list[dict[str, Any]] = []
+    human_synthesis_figures: list[dict[str, Any]] = []
+    attributions: list[str] = []
+    project_root = project.resolve(strict=True)
+    for row in selected:
+        if isinstance(row.get("page"), bool) or not isinstance(row.get("page"), int) or row["page"] < 1:
+            raise FigurePolicyError("FIGURE_POLICY_INVALID", "source figure page is invalid")
+        asset_path = _required_text(row, "asset_path")
+        relative = Path(asset_path)
+        if relative.is_absolute() or ".." in relative.parts or "\\" in asset_path:
+            raise FigurePolicyError("FIGURE_IMAGE_INVALID", "source figure path is unsafe")
+        asset = project / relative
+        try:
+            resolved = asset.resolve(strict=True)
+            resolved.relative_to(project_root)
+        except (OSError, ValueError) as exc:
+            raise FigurePolicyError("FIGURE_IMAGE_INVALID", "source figure is unavailable") from exc
+        if asset.is_symlink() or not resolved.is_file():
+            raise FigurePolicyError("FIGURE_IMAGE_INVALID", "source figure must be a regular file")
+        binding = _image_binding(resolved, asset_path)
+        if binding["content_sha256"] != row.get("asset_sha256"):
+            raise FigurePolicyError("FIGURE_IMAGE_INVALID", "source figure hash is stale")
+        markdown_path = Path(os.path.relpath(resolved, project / "04_manuscript")).as_posix()
+        expected_paths.add(markdown_path)
+        attribution = source_figure_attribution(row)
+        if attribution not in manuscript_markdown:
+            raise FigurePolicyError("FIGURE_ATTRIBUTION_MISSING", "source attribution is absent")
+        if release_level == "EXPERT_REVIEWED_RELEASE":
+            rights_status = row.get("rights_status")
+            rights_license = row.get("rights_license")
+            if rights_status != "cleared" or not isinstance(rights_license, str) or not rights_license.strip():
+                raise FigurePolicyError("FIGURE_RIGHTS_NOT_CLEARED", "expert source figures require rights clearance")
+        attributions.append(attribution)
+        normalized.append(
+            {
+                "figure_id": _required_text(row, "figure_id"),
+                "figure_type": SOURCE_FIGURE_INTERNAL,
+                "asset_path": asset_path,
+                "markdown_path": markdown_path,
+                "content_sha256": binding["content_sha256"],
+                "attribution": attribution,
+            }
+        )
+
+    if release_level == "EXPERT_REVIEWED_RELEASE":
+        from review_writer.evaluation.review_benchmark import (
+            verified_synthesis_figure_bindings,
+        )
+
+        if not isinstance(lineage_digest, str):
+            raise FigurePolicyError(
+                "FIGURE_PLACEHOLDER_PENDING", "expert release requires human figure verification"
+            )
+        bindings = verified_synthesis_figure_bindings(
+            project,
+            placeholders=placeholders,
+            lineage_digest=lineage_digest,
+            manuscript_text=manuscript_markdown,
+        )
+        if bindings is None:
+            raise FigurePolicyError(
+                "FIGURE_PLACEHOLDER_PENDING", "expert release requires current human figure verification"
+            )
+        for binding in bindings:
+            asset = (project / binding["asset_path"]).resolve(strict=True)
+            markdown_path = Path(
+                os.path.relpath(asset, project / "04_manuscript")
+            ).as_posix()
+            expected_paths.add(markdown_path)
+            human_synthesis_figures.append(
+                {
+                    "placeholder_id": binding["placeholder_id"],
+                    "figure_type": HUMAN_SYNTHESIS_FIGURE,
+                    "asset_path": binding["asset_path"],
+                    "markdown_path": markdown_path,
+                    "content_sha256": binding["asset_sha256"],
+                }
+            )
+
+    if set(manuscript_image_paths) != expected_paths or len(manuscript_image_paths) != len(expected_paths):
+        raise FigurePolicyError("FIGURE_POLICY_INVALID", "manuscript images must match selected source figures")
+
+    pending = 0
+    placeholder_ids: set[str] = set()
+    for row in placeholders:
+        if not isinstance(row, dict):
+            raise FigurePolicyError("FIGURE_POLICY_INVALID", "placeholder entries must be objects")
+        placeholder_id = _required_text(row, "placeholder_id")
+        if placeholder_id in placeholder_ids:
+            raise FigurePolicyError("FIGURE_POLICY_INVALID", "placeholder ids must be unique")
+        placeholder_ids.add(placeholder_id)
+        for key in ("scientific_question", "caption_draft"):
+            _required_text(row, key)
+        panels = row.get("panels")
+        if not isinstance(panels, list) or not panels or any(
+            not isinstance(panel, dict) or not isinstance(panel.get("task"), str) or not panel["task"].strip()
+            for panel in panels
+        ):
+            raise FigurePolicyError("FIGURE_POLICY_INVALID", "placeholder tasks are incomplete")
+        if row.get("status") != "verified":
+            pending += 1
+            required_text = (
+                f"SYNTHESIS_FIGURE_PLACEHOLDER: {placeholder_id}",
+                row["scientific_question"].strip(),
+                *[panel["task"].strip() for panel in panels],
+            )
+            if any(value not in manuscript_markdown for value in required_text):
+                raise FigurePolicyError("FIGURE_PLACEHOLDER_INVALID", "placeholder is not visibly complete")
+    if release_level == "EXPERT_REVIEWED_RELEASE" and pending:
+        raise FigurePolicyError("FIGURE_PLACEHOLDER_PENDING", "expert release requires verified human figures")
+
+    return {
+        "schema_version": "review-writer-figure-validation.v2",
+        "release_level": release_level,
+        "source_figures": normalized,
+        "human_synthesis_figures": human_synthesis_figures,
+        "required_attributions": attributions,
+        "expected_media_sha256": sorted(
+            row["content_sha256"]
+            for row in [*normalized, *human_synthesis_figures]
+        ),
+        "placeholder_count": len(placeholders),
+        "pending_placeholder_count": pending,
+    }

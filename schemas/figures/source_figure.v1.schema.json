@@ -17,6 +17,15 @@
     "source_pdf_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "evidence_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
     "selection_status": {"enum": ["selected", "available", "rejected"]},
-    "selection_reason": {"type": "string", "minLength": 1}
-  }
+    "selection_reason": {"type": "string", "minLength": 1},
+    "rights_status": {"enum": ["unknown", "cleared"]},
+    "rights_license": {"type": "string", "minLength": 1},
+    "rights_evidence_reference": {"type": "string", "minLength": 1}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"rights_status": {"const": "cleared"}}, "required": ["rights_status"]},
+      "then": {"required": ["rights_license"]}
+    }
+  ]
 }

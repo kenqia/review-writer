@@ -16,11 +16,19 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from jsonschema import Draft202012Validator
+
 from review_writer.delivery.figure_policy import (
     FigurePolicyError,
     figure_validation_is_current,
+    validate_new_route_figure_policy,
     validate_figure_policy,
 )
+from review_writer.delivery.docx_integrity import (
+    DocxIntegrityError,
+    validate_docx_integrity,
+)
+from review_writer.project.manuscript_v2 import manuscript_state
 from review_writer.project.vertical_review import VerticalReviewError, benchmark_metrics
 from review_writer.project.workflow_projection import NEW_ROUTE, workflow_state
 
@@ -37,6 +45,8 @@ _CLAIM_MARKER_RE = re.compile(
     flags=re.IGNORECASE,
 )
 PROJECT_RELEASE_LOCK = threading.RLock()
+RELEASE_LEVELS = frozenset({"SELF_REVIEWED_DRAFT", "EXPERT_REVIEWED_RELEASE"})
+_SCHEMA_ROOT = Path(__file__).resolve().parents[2] / "schemas" / "delivery"
 
 
 class ProjectReleaseError(ValueError):
@@ -761,6 +771,23 @@ def _json_bytes(value: Any) -> bytes:
         raise ProjectReleaseError("QUALITY_REPORT_INVALID", "quality report must be finite JSON") from exc
 
 
+def _validate_release_schema(value: Any, filename: str) -> None:
+    try:
+        schema = json.loads((_SCHEMA_ROOT / filename).read_text(encoding="utf-8"))
+        errors = sorted(
+            Draft202012Validator(schema).iter_errors(value),
+            key=lambda error: list(error.path),
+        )
+    except (OSError, json.JSONDecodeError, TypeError) as exc:
+        raise ProjectReleaseError(
+            "RELEASE_SCHEMA_INVALID", "release schema is unavailable or invalid"
+        ) from exc
+    if errors:
+        raise ProjectReleaseError(
+            "RELEASE_SCHEMA_INVALID", "release payload does not match its schema"
+        )
+
+
 def _release_status(project: Path) -> str:
     state = _read_json(project / "00_brief" / "review_state.json", "PROJECT_STATE_INVALID")
     candidates = []
@@ -873,7 +900,9 @@ def project_figure_validation_is_current(
     )
 
 
-def _restore_release(paths: tuple[Path, ...], previous: dict[Path, bytes | None]) -> None:
+def _restore_release(
+    paths: tuple[Path, ...], previous: dict[Path, bytes | None]
+) -> None:
     for path in paths:
         payload = previous[path]
         if payload is None:
@@ -882,13 +911,494 @@ def _restore_release(paths: tuple[Path, ...], previous: dict[Path, bytes | None]
             _atomic_write(path, payload)
 
 
+def _stage_release_file(path: Path, payload: bytes) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="wb",
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        staged = Path(handle.name)
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    return staged
+
+
+def _commit_release_files(staged_by_target: dict[Path, Path]) -> None:
+    """Commit a validated release set, restoring original inodes on commit failure."""
+    backups: dict[Path, Path] = {}
+    replaced: list[Path] = []
+    try:
+        for target in staged_by_target:
+            if not target.exists():
+                continue
+            with tempfile.NamedTemporaryFile(
+                dir=target.parent,
+                prefix=f".{target.name}.",
+                suffix=".backup",
+                delete=False,
+            ) as handle:
+                backup = Path(handle.name)
+            backup.unlink()
+            os.link(target, backup)
+            backups[target] = backup
+        for target, staged in staged_by_target.items():
+            os.replace(staged, target)
+            replaced.append(target)
+    except Exception:
+        for target in reversed(replaced):
+            backup = backups.pop(target, None)
+            if backup is None:
+                target.unlink(missing_ok=True)
+            else:
+                os.replace(backup, target)
+        raise
+    finally:
+        for staged in staged_by_target.values():
+            staged.unlink(missing_ok=True)
+        for backup in backups.values():
+            backup.unlink(missing_ok=True)
+
+
+def _new_route_image_paths(markdown: str) -> list[str]:
+    paths: list[str] = []
+    fenced: str | None = None
+    for line in markdown.splitlines():
+        fence = _FENCE_RE.match(line)
+        if fence:
+            marker = fence.group(1)[0]
+            fenced = None if fenced == marker else marker
+            continue
+        if fenced is not None or not _IMAGE_MARKER_RE.search(line):
+            continue
+        match = _CANONICAL_IMAGE_RE.fullmatch(line)
+        if match is None:
+            raise ProjectReleaseError("IMAGE_INVALID", "new-route images must use standalone canonical Markdown")
+        path = match.group(2)
+        parsed = urlparse(path)
+        if (
+            parsed.scheme
+            or parsed.netloc
+            or parsed.query
+            or parsed.fragment
+            or path.startswith(("/", "\\"))
+            or "\\" in path
+        ):
+            raise ProjectReleaseError("IMAGE_INVALID", "new-route images must be project-local")
+        paths.append(path)
+    if len(paths) != len(set(paths)):
+        raise ProjectReleaseError("IMAGE_INVALID", "new-route image paths must be unique")
+    return paths
+
+
+def _new_route_figure_state(
+    project: Path,
+    markdown: str,
+    *,
+    release_level: str,
+    lineage_digest: str,
+) -> dict[str, Any]:
+    registry_path = validate_project_file_path(
+        project, Path("03_figures/source_figure_registry.json"), "FIGURE_POLICY_INVALID"
+    )
+    placeholder_path = validate_project_file_path(
+        project,
+        Path("03_figures/synthesis_figure_placeholders.json"),
+        "FIGURE_POLICY_INVALID",
+    )
+    registry = _read_json(registry_path, "FIGURE_POLICY_INVALID")
+    placeholder_state = _read_json(placeholder_path, "FIGURE_POLICY_INVALID")
+    placeholders = (
+        placeholder_state.get("placeholders")
+        if isinstance(placeholder_state, dict)
+        else None
+    )
+    try:
+        return validate_new_route_figure_policy(
+            project,
+            source_registry=registry,
+            placeholders=placeholders,
+            manuscript_markdown=markdown,
+            manuscript_image_paths=_new_route_image_paths(markdown),
+            release_level=release_level,
+            lineage_digest=lineage_digest,
+        )
+    except FigurePolicyError as exc:
+        raise ProjectReleaseError(exc.code, str(exc).split(": ", 1)[-1]) from exc
+
+
+def _new_route_release_paths(project: Path, release_level: str) -> tuple[Path, Path, Path, Path]:
+    base = (
+        "self_reviewed_draft"
+        if release_level == "SELF_REVIEWED_DRAFT"
+        else "expert_reviewed_release"
+    )
+    stage = project / "05_release"
+    return (
+        stage / f"{base}.md",
+        stage / f"{base}.docx",
+        stage / "release_snapshot.json",
+        stage / "quality_report.json",
+    )
+
+
+def _new_route_release(
+    project: Path,
+    workflow: dict[str, Any],
+    *,
+    release_level: str,
+    python_executable: Path,
+) -> dict[str, Any]:
+    if release_level not in RELEASE_LEVELS:
+        raise ProjectReleaseError("RELEASE_LEVEL_INVALID", "release level is unsupported")
+    if not workflow.get("parse_ready"):
+        raise ProjectReleaseError(
+            "PARSE_QUALITY_NOT_READY", "source-truth parse review must close before release"
+        )
+    if not workflow.get("internal_draft_export_ready"):
+        raise ProjectReleaseError(
+            "REVIEW_WORKFLOW_NOT_READY", "evidence-to-release review must close before release"
+        )
+    authoritative = manuscript_state(project)
+    if not isinstance(authoritative, dict) or authoritative.get("workflow_can_continue") is not True:
+        reason = authoritative.get("reason_code") if isinstance(authoritative, dict) else "MANUSCRIPT_INVALID"
+        raise ProjectReleaseError("MANUSCRIPT_NOT_APPROVED", str(reason))
+    source = validate_project_file_path(
+        project, Path("04_manuscript/manuscript.md"), "MANUSCRIPT_INVALID"
+    )
+    lineage_path = validate_project_file_path(
+        project,
+        Path("04_manuscript/manuscript_lineage.v2.json"),
+        "MANUSCRIPT_LINEAGE_INVALID",
+    )
+    try:
+        manuscript_bytes = source.read_bytes()
+        markdown = manuscript_bytes.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ProjectReleaseError("MANUSCRIPT_INVALID", "authoritative manuscript must be UTF-8") from exc
+    lineage = _read_json(lineage_path, "MANUSCRIPT_LINEAGE_INVALID")
+    workflow_digest = workflow.get("workflow_digest")
+    lineage_digest = lineage.get("lineage_digest") if isinstance(lineage, dict) else None
+    manuscript_sha256 = _sha256_bytes(manuscript_bytes)
+    if (
+        not isinstance(workflow_digest, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", workflow_digest)
+        or not isinstance(lineage_digest, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", lineage_digest)
+        or authoritative.get("manuscript_sha256") != manuscript_sha256
+        or authoritative.get("lineage_digest") != lineage_digest
+    ):
+        raise ProjectReleaseError("MANUSCRIPT_LINEAGE_STALE", "authoritative manuscript binding is stale")
+    figure_validation = _new_route_figure_state(
+        project,
+        markdown,
+        release_level=release_level,
+        lineage_digest=lineage_digest,
+    )
+    snapshot, docx, release_snapshot, quality = _new_route_release_paths(project, release_level)
+    release_paths = (snapshot, docx, release_snapshot, quality)
+    validate_project_path_components(
+        project, tuple(path.relative_to(project) for path in release_paths)
+    )
+    converter = (
+        Path(__file__).resolve().parents[2]
+        / "skills"
+        / "review-export-docx"
+        / "scripts"
+        / "md2docx.py"
+    )
+    staged: dict[Path, Path] = {}
+    temporary_docx: Path | None = None
+    try:
+        if not converter.is_file():
+            raise ProjectReleaseError("DOCX_CONVERTER_MISSING", "repository DOCX converter is unavailable")
+        staged[snapshot] = _stage_release_file(snapshot, manuscript_bytes)
+        with tempfile.NamedTemporaryFile(
+            dir=snapshot.parent,
+            prefix=f".{docx.stem}.",
+            suffix=".docx.tmp",
+            delete=False,
+        ) as handle:
+            temporary_docx = Path(handle.name)
+        temporary_docx.unlink()
+        try:
+            completed = subprocess.run(
+                [
+                    str(Path(python_executable)),
+                    str(converter),
+                    "--input",
+                    str(staged[snapshot]),
+                    "--output",
+                    str(temporary_docx),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=180,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ProjectReleaseError("DOCX_EXPORT_FAILED", "DOCX converter could not complete") from exc
+        if completed.returncode != 0 or not temporary_docx.is_file() or temporary_docx.stat().st_size <= 0:
+            raise ProjectReleaseError("DOCX_EXPORT_FAILED", "DOCX converter did not produce a document")
+
+        legacy_docx = project / "05_final_audit/final_draft.docx"
+        try:
+            integrity = validate_docx_integrity(
+                temporary_docx,
+                markdown=markdown,
+                expected_media_sha256=figure_validation["expected_media_sha256"],
+                required_attributions=figure_validation["required_attributions"],
+                workflow_digest=workflow_digest,
+                snapshot_workflow_digest=workflow_digest,
+                legacy_docx=legacy_docx if legacy_docx.is_file() and not legacy_docx.is_symlink() else None,
+            )
+        except DocxIntegrityError as exc:
+            raise ProjectReleaseError(exc.code, str(exc).split(": ", 1)[-1]) from exc
+
+        if release_level == "EXPERT_REVIEWED_RELEASE":
+            from review_writer.evaluation.review_benchmark import verified_synthesis_figures_current
+
+            if not verified_synthesis_figures_current(
+                project,
+                lineage_digest=lineage_digest,
+                manuscript_text=markdown,
+                docx_path=temporary_docx,
+            ):
+                raise ProjectReleaseError(
+                    "FIGURE_PLACEHOLDER_PENDING",
+                    "expert release requires current human figure verification",
+                )
+
+        docx_bytes = temporary_docx.read_bytes()
+        docx_sha256 = _sha256_bytes(docx_bytes)
+        snapshot_payload = {
+            "schema_version": "release-snapshot.v1",
+            "project_id": project.name,
+            "route": NEW_ROUTE,
+            "release_level": release_level,
+            "status": release_level,
+            "workflow_digest": workflow_digest,
+            "lineage_digest": lineage_digest,
+            "manuscript_sha256": manuscript_sha256,
+            "markdown_path": snapshot.relative_to(project).as_posix(),
+            "docx_path": docx.relative_to(project).as_posix(),
+            "docx_sha256": docx_sha256,
+            "placeholder_count": figure_validation["placeholder_count"],
+            "pending_placeholder_count": figure_validation["pending_placeholder_count"],
+            "hard_fail_signals": [],
+            "system_generated_synthesis_figure": False,
+            "integrity": integrity,
+        }
+        quality_payload = {
+            "schema_version": "project-release.v2",
+            "status": release_level,
+            "release_level": release_level,
+            "workflow_digest": workflow_digest,
+            "lineage_digest": lineage_digest,
+            "manuscript_sha256": manuscript_sha256,
+            "docx_sha256": docx_sha256,
+            "figure_validation": figure_validation,
+            "integrity": integrity,
+        }
+        _validate_release_schema(
+            snapshot_payload, "release_snapshot.v1.schema.json"
+        )
+        _validate_release_schema(quality_payload, "project_release.v2.schema.json")
+        staged[docx] = _stage_release_file(docx, docx_bytes)
+        staged[quality] = _stage_release_file(quality, _json_bytes(quality_payload))
+        staged[release_snapshot] = _stage_release_file(
+            release_snapshot, _json_bytes(snapshot_payload)
+        )
+        _commit_release_files(staged)
+        staged = {}
+        return {
+            "status": release_level,
+            "release_status": release_level,
+            "release_level": release_level,
+            "placeholder_count": figure_validation["placeholder_count"],
+            "pending_placeholder_count": figure_validation["pending_placeholder_count"],
+            "manuscript_sha256": manuscript_sha256,
+            "docx_sha256": docx_sha256,
+            "workflow_digest": workflow_digest,
+            "snapshot": snapshot,
+            "docx": docx,
+            "release_snapshot": release_snapshot,
+            "quality_report": quality,
+        }
+    finally:
+        if temporary_docx is not None:
+            temporary_docx.unlink(missing_ok=True)
+        for path in staged.values():
+            path.unlink(missing_ok=True)
+
+
 def build_project_release(
     project: Path,
     python_executable: Path = Path(sys.executable),
+    *,
+    release_level: str | None = None,
 ) -> dict[str, Any]:
     """Snapshot and export one validated authoritative manuscript without editing it."""
     with PROJECT_RELEASE_LOCK:
-        return _build_project_release_unlocked(project, python_executable)
+        project_path = Path(project)
+        workflow = workflow_state(project_path)
+        if workflow["route"] == NEW_ROUTE:
+            return _new_route_release(
+                project_path,
+                workflow,
+                release_level=release_level or "SELF_REVIEWED_DRAFT",
+                python_executable=python_executable,
+            )
+        if release_level not in {None, "SELF_REVIEWED_DRAFT"}:
+            raise ProjectReleaseError(
+                "RELEASE_LEVEL_INVALID", "legacy projects do not support expert release levels"
+            )
+        return _build_project_release_unlocked(project_path, python_executable)
+
+
+def new_route_release_docx_is_current(docx_path: Path) -> bool:
+    """Revalidate every authoritative binding before serving a new-route DOCX."""
+    candidate = Path(docx_path)
+    expected_levels = {
+        "self_reviewed_draft.docx": "SELF_REVIEWED_DRAFT",
+        "expert_reviewed_release.docx": "EXPERT_REVIEWED_RELEASE",
+    }
+    release_level = expected_levels.get(candidate.name)
+    if release_level is None or candidate.parent.name != "05_release":
+        return False
+    project = candidate.parent.parent
+    markdown_name = candidate.with_suffix(".md").name
+    relatives = (
+        Path("04_manuscript/manuscript.md"),
+        Path("04_manuscript/manuscript_lineage.v2.json"),
+        Path("03_figures/source_figure_registry.json"),
+        Path("03_figures/synthesis_figure_placeholders.json"),
+        Path(f"05_release/{markdown_name}"),
+        Path(f"05_release/{candidate.name}"),
+        Path("05_release/release_snapshot.json"),
+        Path("05_release/quality_report.json"),
+    )
+    try:
+        project = project.resolve(strict=True)
+        validate_project_path_components(project, relatives)
+        source = validate_project_file_path(
+            project, relatives[0], "MANUSCRIPT_INVALID"
+        )
+        lineage_path = validate_project_file_path(
+            project, relatives[1], "MANUSCRIPT_LINEAGE_INVALID"
+        )
+        released_markdown = validate_project_file_path(
+            project, relatives[4], "RELEASE_SNAPSHOT_INVALID"
+        )
+        released_docx = validate_project_file_path(
+            project, relatives[5], "DOCX_ZIP_INVALID"
+        )
+        release_snapshot_path = validate_project_file_path(
+            project, relatives[6], "RELEASE_SNAPSHOT_INVALID"
+        )
+        quality_path = validate_project_file_path(
+            project, relatives[7], "QUALITY_REPORT_INVALID"
+        )
+        if released_docx.resolve(strict=True) != candidate.resolve(strict=True):
+            return False
+        snapshot = _read_json(release_snapshot_path, "RELEASE_SNAPSHOT_INVALID")
+        quality = _read_json(quality_path, "QUALITY_REPORT_INVALID")
+        lineage = _read_json(lineage_path, "MANUSCRIPT_LINEAGE_INVALID")
+        if not all(isinstance(value, dict) for value in (snapshot, quality, lineage)):
+            return False
+        _validate_release_schema(snapshot, "release_snapshot.v1.schema.json")
+        _validate_release_schema(quality, "project_release.v2.schema.json")
+        expected_markdown_relative = f"05_release/{markdown_name}"
+        expected_docx_relative = f"05_release/{candidate.name}"
+        if (
+            snapshot.get("schema_version") != "release-snapshot.v1"
+            or snapshot.get("route") != NEW_ROUTE
+            or snapshot.get("release_level") != release_level
+            or snapshot.get("status") != release_level
+            or snapshot.get("markdown_path") != expected_markdown_relative
+            or snapshot.get("docx_path") != expected_docx_relative
+            or quality.get("schema_version") != "project-release.v2"
+            or quality.get("release_level") != release_level
+            or quality.get("status") != release_level
+        ):
+            return False
+        manuscript_bytes = source.read_bytes()
+        if released_markdown.read_bytes() != manuscript_bytes:
+            return False
+        manuscript_sha256 = _sha256_bytes(manuscript_bytes)
+        lineage_digest = lineage.get("lineage_digest")
+        docx_sha256 = _sha256_bytes(released_docx.read_bytes())
+        workflow = workflow_state(project)
+        workflow_digest = workflow.get("workflow_digest")
+        authoritative = manuscript_state(project)
+        if (
+            workflow.get("route") != NEW_ROUTE
+            or workflow.get("internal_draft_export_ready") is not True
+            or not isinstance(workflow_digest, str)
+            or snapshot.get("workflow_digest") != workflow_digest
+            or snapshot.get("lineage_digest") != lineage_digest
+            or snapshot.get("manuscript_sha256") != manuscript_sha256
+            or snapshot.get("docx_sha256") != docx_sha256
+            or quality.get("workflow_digest") != workflow_digest
+            or quality.get("lineage_digest") != lineage_digest
+            or quality.get("manuscript_sha256") != manuscript_sha256
+            or quality.get("docx_sha256") != docx_sha256
+            or not isinstance(authoritative, dict)
+            or authoritative.get("workflow_can_continue") is not True
+            or authoritative.get("manuscript_sha256") != manuscript_sha256
+            or authoritative.get("lineage_digest") != lineage_digest
+        ):
+            return False
+        markdown = manuscript_bytes.decode("utf-8")
+        figure_validation = _new_route_figure_state(
+            project,
+            markdown,
+            release_level=release_level,
+            lineage_digest=lineage_digest,
+        )
+        if quality.get("figure_validation") != figure_validation:
+            return False
+        legacy_docx = project / "05_final_audit/final_draft.docx"
+        integrity = validate_docx_integrity(
+            released_docx,
+            markdown=markdown,
+            expected_media_sha256=figure_validation["expected_media_sha256"],
+            required_attributions=figure_validation["required_attributions"],
+            workflow_digest=workflow_digest,
+            snapshot_workflow_digest=snapshot["workflow_digest"],
+            legacy_docx=(
+                legacy_docx
+                if legacy_docx.is_file() and not legacy_docx.is_symlink()
+                else None
+            ),
+        )
+        if snapshot.get("integrity") != integrity or quality.get("integrity") != integrity:
+            return False
+        if release_level == "EXPERT_REVIEWED_RELEASE":
+            from review_writer.evaluation.review_benchmark import (
+                verified_synthesis_figures_current,
+            )
+
+            if not verified_synthesis_figures_current(
+                project,
+                lineage_digest=lineage_digest,
+                manuscript_text=markdown,
+                docx_path=released_docx,
+            ):
+                return False
+        return True
+    except (
+        DocxIntegrityError,
+        FigurePolicyError,
+        OSError,
+        ProjectReleaseError,
+        UnicodeError,
+        ValueError,
+    ):
+        return False
 
 
 def _build_project_release_unlocked(

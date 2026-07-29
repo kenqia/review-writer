@@ -194,3 +194,47 @@ def test_declared_study_missing_from_source_truth_fails_closed(tmp_path: Path) -
     assert state["active_stage"] == "sources"
     assert state["parse_ready"] is False
     assert state["blockers"] == ["SOURCE_TRUTH_MISSING_OR_INVALID"]
+
+
+def test_new_route_approved_manuscript_enables_only_internal_export(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from review_writer.project import workflow_projection
+
+    project = tmp_path / "review-projects/approved-manuscript"
+    bundle = project / "01_evidence/source_truth/study-a/bundle.json"
+    bundle.parent.mkdir(parents=True)
+    bundle.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(workflow_projection, "declared_study_ids", lambda _: ["study-a"])
+    monkeypatch.setattr(
+        workflow_projection,
+        "project_parse_quality_state",
+        lambda _: {"workflow_can_continue": True, "status": "approved"},
+    )
+    monkeypatch.setattr(
+        workflow_projection,
+        "paper_evidence_state",
+        lambda _: {"workflow_can_continue": True},
+    )
+    monkeypatch.setattr(
+        workflow_projection,
+        "synthesis_state",
+        lambda _: {"workflow_can_continue": True},
+    )
+    monkeypatch.setattr(
+        workflow_projection,
+        "section_contract_state",
+        lambda _: {"workflow_can_continue": True},
+    )
+    monkeypatch.setattr(
+        "review_writer.project.manuscript_v2.manuscript_state",
+        lambda _: {"workflow_can_continue": True},
+    )
+
+    state = workflow_projection.workflow_state(project)
+
+    assert state["active_stage"] == "final"
+    assert state["manuscript_ready"] is True
+    assert state["internal_draft_export_ready"] is True
+    assert state["verified_release_ready"] is False
+    assert state["blockers"] == []

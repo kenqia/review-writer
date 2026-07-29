@@ -95,34 +95,34 @@ def _sha256(value: object) -> bool:
     )
 
 
-def _verified_figure_state(
+def _verified_figure_bindings(
     project: Path,
     placeholders: list[dict[str, Any]],
     *,
     placeholder_digest: str,
     lineage_digest: object,
     manuscript_text: str,
-    docx_path: Path | None,
-) -> bool:
+ ) -> list[dict[str, str]] | None:
     verified = [row for row in placeholders if row.get("status") == "verified"]
     if not verified:
-        return True
+        return []
     try:
         payload = _read_json(project / FIGURE_VERIFICATION_PATH, "FIGURE_VERIFICATION_INVALID")
         decision_schema = _read_json(VERIFICATION_DECISION_SCHEMA, "BENCHMARK_SCHEMA_INVALID")
     except BenchmarkError:
-        return False
+        return None
     if not isinstance(payload, dict) or set(payload) != {"verifications"}:
-        return False
+        return None
     records = payload.get("verifications")
     if not isinstance(records, list) or not all(isinstance(row, dict) for row in records):
-        return False
+        return None
     validator = Draft202012Validator(decision_schema)
+    bindings: list[dict[str, str]] = []
     for placeholder in verified:
         placeholder_id = placeholder.get("placeholder_id")
         matches = [row for row in records if row.get("placeholder_id") == placeholder_id]
         if len(matches) != 1:
-            return False
+            return None
         record = matches[0]
         if set(record) != {
             "placeholder_id",
@@ -132,7 +132,7 @@ def _verified_figure_state(
             "lineage_digest",
             "verification",
         }:
-            return False
+            return None
         if (
             record["placeholder_digest"] != placeholder_digest
             or record["lineage_digest"] != lineage_digest
@@ -140,7 +140,7 @@ def _verified_figure_state(
             or not _sha256(record["asset_sha256"])
             or not isinstance(record["verification"], dict)
         ):
-            return False
+            return None
         verification = record["verification"]
         verification_object = {
             "placeholder_digest": record["placeholder_digest"],
@@ -156,33 +156,111 @@ def _verified_figure_state(
             or verification.get("bound_object_digest") != canonical_digest(verification_object)
             or verification.get("bound_gate_digest") != lineage_digest
         ):
-            return False
+            return None
         asset = project / record["asset_path"]
         try:
             resolved = asset.resolve(strict=True)
             resolved.relative_to(project)
             if asset.is_symlink() or not resolved.is_file():
-                return False
+                return None
             if _sha256_file(resolved) != record["asset_sha256"]:
-                return False
+                return None
             if f"HUMAN_SYNTHESIS_FIGURE: {record['asset_path']}" not in manuscript_text:
-                return False
-            if docx_path is None:
-                return False
-            with ZipFile(docx_path) as package:
-                media = [
-                    name
-                    for name in package.namelist()
-                    if name.startswith("word/media/") and not name.endswith("/")
-                ]
-                if not any(
-                    hashlib.sha256(package.read(name)).hexdigest() == record["asset_sha256"]
-                    for name in media
-                ):
-                    return False
-        except (OSError, ValueError, BadZipFile, KeyError):
-            return False
-    return True
+                return None
+            bindings.append(
+                {
+                    "placeholder_id": str(placeholder_id),
+                    "asset_path": record["asset_path"],
+                    "asset_sha256": record["asset_sha256"],
+                }
+            )
+        except (OSError, ValueError, KeyError):
+            return None
+    return bindings
+
+
+def verified_synthesis_figure_bindings(
+    project: Path,
+    *,
+    placeholders: list[dict[str, Any]],
+    lineage_digest: str,
+    manuscript_text: str,
+) -> list[dict[str, str]] | None:
+    """Return human-verified synthesis assets without weakening the decision boundary."""
+    if not all(isinstance(row, dict) and row.get("status") == "verified" for row in placeholders):
+        return None
+    return _verified_figure_bindings(
+        project,
+        placeholders,
+        placeholder_digest=canonical_digest(placeholders),
+        lineage_digest=lineage_digest,
+        manuscript_text=manuscript_text,
+    )
+
+
+def _verified_figure_state(
+    project: Path,
+    placeholders: list[dict[str, Any]],
+    *,
+    placeholder_digest: str,
+    lineage_digest: object,
+    manuscript_text: str,
+    docx_path: Path | None,
+) -> bool:
+    bindings = _verified_figure_bindings(
+        project,
+        placeholders,
+        placeholder_digest=placeholder_digest,
+        lineage_digest=lineage_digest,
+        manuscript_text=manuscript_text,
+    )
+    if bindings is None:
+        return False
+    if not bindings:
+        return True
+    if docx_path is None:
+        return False
+    try:
+        with ZipFile(docx_path) as package:
+            media_hashes = {
+                hashlib.sha256(package.read(name)).hexdigest()
+                for name in package.namelist()
+                if name.startswith("word/media/") and not name.endswith("/")
+            }
+    except (OSError, BadZipFile, KeyError):
+        return False
+    return all(binding["asset_sha256"] in media_hashes for binding in bindings)
+
+
+def verified_synthesis_figures_current(
+    project: Path,
+    *,
+    lineage_digest: str,
+    manuscript_text: str,
+    docx_path: Path,
+) -> bool:
+    """Return whether every verified placeholder remains human-bound and embedded."""
+    try:
+        state = _read_json(
+            project / "03_figures/synthesis_figure_placeholders.json",
+            "FIGURE_PLACEHOLDER_INVALID",
+        )
+    except BenchmarkError:
+        return False
+    placeholders = state.get("placeholders") if isinstance(state, dict) else None
+    if not isinstance(placeholders, list) or not all(isinstance(row, dict) for row in placeholders):
+        return False
+    placeholder_digest = canonical_digest(placeholders)
+    if any(row.get("status") != "verified" for row in placeholders):
+        return False
+    return _verified_figure_state(
+        project,
+        placeholders,
+        placeholder_digest=placeholder_digest,
+        lineage_digest=lineage_digest,
+        manuscript_text=manuscript_text,
+        docx_path=docx_path,
+    )
 
 
 def _release_payload(release: Path, release_level: str | None) -> dict[str, Any]:

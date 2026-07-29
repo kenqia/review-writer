@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://review-writer.local/schemas/delivery/project_release.v2.schema.json",
+  "title": "Evidence-to-release quality report v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "status", "release_level", "workflow_digest",
+    "lineage_digest", "manuscript_sha256", "docx_sha256",
+    "figure_validation", "integrity"
+  ],
+  "properties": {
+    "schema_version": {"const": "project-release.v2"},
+    "status": {"enum": ["SELF_REVIEWED_DRAFT", "EXPERT_REVIEWED_RELEASE"]},
+    "release_level": {"enum": ["SELF_REVIEWED_DRAFT", "EXPERT_REVIEWED_RELEASE"]},
+    "workflow_digest": {"$ref": "#/$defs/sha256"},
+    "lineage_digest": {"$ref": "#/$defs/sha256"},
+    "manuscript_sha256": {"$ref": "#/$defs/sha256"},
+    "docx_sha256": {"$ref": "#/$defs/sha256"},
+    "figure_validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "release_level", "source_figures", "human_synthesis_figures", "required_attributions",
+        "expected_media_sha256", "placeholder_count", "pending_placeholder_count"
+      ],
+      "properties": {
+        "schema_version": {"const": "review-writer-figure-validation.v2"},
+        "release_level": {"enum": ["SELF_REVIEWED_DRAFT", "EXPERT_REVIEWED_RELEASE"]},
+        "source_figures": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+        "human_synthesis_figures": {"type": "array", "items": {"type": "object"}},
+        "required_attributions": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "expected_media_sha256": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/sha256"}},
+        "placeholder_count": {"type": "integer", "minimum": 0},
+        "pending_placeholder_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "integrity": {"type": "object"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

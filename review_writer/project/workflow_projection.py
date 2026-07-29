@@ -125,6 +125,17 @@ def _new_route_state(project: Path) -> dict[str, Any]:
     manuscript_ready = False
     internal_draft_export_ready = False
     verified_release_ready = False
+    if section_contracts_ready:
+        try:
+            from review_writer.project.manuscript_v2 import manuscript_state
+
+            manuscript_ready = bool(
+                manuscript_state(project).get("workflow_can_continue")
+            )
+            internal_draft_export_ready = manuscript_ready
+        except (OSError, ValueError, KeyError, TypeError):
+            manuscript_ready = False
+            internal_draft_export_ready = False
 
     blockers: list[str] = []
     if not source_ready:
