@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://review-writer.local/schemas/delivery/manuscript_lineage.v2.schema.json",
+  "title": "Evidence-bound manuscript lineage v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "route", "project_id", "workflow_digest",
+    "parse_object_digests", "paper_evidence_projection_digest",
+    "synthesis_projection_digest", "section_contract_projection_digest",
+    "section_contract_digests", "source_figure_registry_digest",
+    "synthesis_figure_placeholder_digest",
+    "generation_content_agent_result_digests", "sections",
+    "claim_bindings", "manuscript_sha256", "lineage_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "manuscript-lineage.v2"},
+    "route": {"const": "evidence-to-release.v1"},
+    "project_id": {"$ref": "#/$defs/id"},
+    "workflow_digest": {"$ref": "#/$defs/sha256"},
+    "parse_object_digests": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {"$ref": "#/$defs/sha256"}
+    },
+    "paper_evidence_projection_digest": {"$ref": "#/$defs/sha256"},
+    "synthesis_projection_digest": {"$ref": "#/$defs/sha256"},
+    "section_contract_projection_digest": {"$ref": "#/$defs/sha256"},
+    "section_contract_digests": {
+      "type": "object", "minProperties": 1,
+      "propertyNames": {"$ref": "#/$defs/id"},
+      "additionalProperties": {"$ref": "#/$defs/sha256"}
+    },
+    "source_figure_registry_digest": {
+      "oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]
+    },
+    "synthesis_figure_placeholder_digest": {
+      "oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]
+    },
+    "generation_content_agent_result_digests": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {"$ref": "#/$defs/sha256"}
+    },
+    "sections": {
+      "type": "array", "minItems": 1,
+      "items": {"$ref": "#/$defs/section"}
+    },
+    "claim_bindings": {
+      "type": "array", "items": {"$ref": "#/$defs/claim_binding"}
+    },
+    "manuscript_sha256": {"$ref": "#/$defs/sha256"},
+    "lineage_digest": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "id": {
+      "type": "string", "minLength": 1, "maxLength": 240,
+      "pattern": "^(?!\\.\\.?$)(?!.*[/\\\\\\u0000\\r\\n])[^\\s]+$"
+    },
+    "approval": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "actor_type", "actor_label", "action", "reason", "decided_at",
+        "bound_object_digest", "upstream_digest", "original_expression",
+        "edited_expression"
+      ],
+      "properties": {
+        "actor_type": {"enum": ["human_researcher", "simulated_researcher_agent"]},
+        "actor_label": {"type": "string", "minLength": 1, "maxLength": 200},
+        "action": {"const": "approve"},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "decided_at": {"type": "string", "minLength": 1},
+        "bound_object_digest": {"$ref": "#/$defs/sha256"},
+        "upstream_digest": {"$ref": "#/$defs/sha256"},
+        "original_expression": {"type": "string"},
+        "edited_expression": {"type": "string"}
+      }
+    },
+    "section": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "section_id", "contract_digest", "draft_digest",
+        "generation_content_agent_result_digest", "approval"
+      ],
+      "properties": {
+        "section_id": {"$ref": "#/$defs/id"},
+        "contract_digest": {"$ref": "#/$defs/sha256"},
+        "draft_digest": {"$ref": "#/$defs/sha256"},
+        "generation_content_agent_result_digest": {"$ref": "#/$defs/sha256"},
+        "approval": {"$ref": "#/$defs/approval"}
+      }
+    },
+    "claim_binding": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "section_id", "marker", "paper_evidence_ids", "synthesis_ids",
+        "section_approval_digest"
+      ],
+      "properties": {
+        "section_id": {"$ref": "#/$defs/id"},
+        "marker": {"type": "string", "minLength": 1},
+        "paper_evidence_ids": {
+          "type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}
+        },
+        "synthesis_ids": {
+          "type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}
+        },
+        "section_approval_digest": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}
