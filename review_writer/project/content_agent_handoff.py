@@ -358,6 +358,8 @@ def _result_scope(root: Path, result: dict[str, Any]) -> None:
         for row in suggestions:
             if not isinstance(row, dict):
                 raise ContentAgentError("RESULT_CONTENT_INVALID")
+            if any(key in row for key in ("decision", "status", "selection_status")):
+                raise ContentAgentError("CONTENT_AGENT_CANNOT_APPROVE")
             if not isinstance(row.get("source_id"), str) or not row["source_id"].strip():
                 raise ContentAgentError("RESULT_CONTENT_INVALID")
             if not isinstance(row.get("page"), int) or isinstance(row.get("page"), bool) or row["page"] < 1:
@@ -478,6 +480,18 @@ def import_content_agent_result(project: Path, result: object) -> dict[str, Any]
         if any(path.startswith("04_first_draft/") or path == "04_first_draft" for path in changed):
             raise ContentAgentError("IMPORT_OUT_OF_SCOPE")
         with project_write_lock(root):
-            for relative in changed:
-                _write_bytes_atomic(root, relative, (staging / relative).read_bytes())
+            written: list[str] = []
+            try:
+                for relative in changed:
+                    _write_bytes_atomic(root, relative, (staging / relative).read_bytes())
+                    written.append(relative)
+            except Exception:
+                # Restore the pre-import bytes if an unexpected filesystem
+                # error occurs after one of the replacements.
+                for relative in reversed(written):
+                    if relative in before:
+                        _write_bytes_atomic(root, relative, before[relative])
+                    else:
+                        (root / relative).unlink(missing_ok=True)
+                raise
     return {"status": "imported", "project_id": root.name, "request_kind": value["request_kind"], "changed_files": changed, "result_digest": value["result_digest"]}
