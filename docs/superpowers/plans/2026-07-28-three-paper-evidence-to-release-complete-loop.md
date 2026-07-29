@@ -784,7 +784,7 @@ git commit -m "feat: add evidence synthesis workspace"
 
 **Task 7 implementation record (2026-07-29):** API layer in `85ea108`, UI and hardening in `8863cb0`.
 New workspace routes expose only researcher-safe projections with opaque version tokens; stale writes return 409 before mutation. Evidence and Synthesis are split into dedicated modules, Source Figures render before synthesis placeholders, and the new route hides the legacy Risk stage.
-Validation: `tests/test_dashboard_evidence_workspace.py` 3 passed, native dashboard suite 120 passed, focused workspace/projection suite 23 passed, latest combined dashboard regression 123 passed, JS syntax and Python compile passed. Independent review passed after adding Coverage Map rendering, prerequisite button gating, 409 stale-domain handling, and live status accessibility.
+Validation: `tests/test_dashboard_evidence_workspace.py` 3 passed, native dashboard suite 120 passed, focused workspace/projection suite 23 passed, latest combined dashboard regression 123 passed, JS syntax and Python compile passed. Independent review passed after adding Coverage Map rendering, prerequisite button gating, 409 stale-domain handling, PDF/parsed-text links, Source Figure image preview, and live status accessibility.
 
 ---
 
