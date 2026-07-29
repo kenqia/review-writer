@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -376,17 +375,60 @@ def test_rebind_detects_concurrent_version_change_before_commit(
     project = _complete_chain(tmp_path)
     protocol = project / "02_synthesis/comparison_protocol.json"
     concurrent = protocol.read_bytes() + b"\n"
+    original_snapshot = rebind._snapshot
+    calls = 0
 
-    @contextmanager
-    def concurrent_lock(_project: Path):
-        protocol.write_bytes(concurrent)
-        yield
+    def concurrent_snapshot(root: Path):
+        nonlocal calls
+        result = original_snapshot(root)
+        calls += 1
+        if root == project and calls == 2:
+            protocol.write_bytes(concurrent)
+        return result
 
-    monkeypatch.setattr(rebind, "project_write_lock", concurrent_lock)
+    monkeypatch.setattr(rebind, "_snapshot", concurrent_snapshot)
     with pytest.raises(rebind.SimulatedReviewRebindError, match="CHAIN_VERSION_CHANGED"):
         _rebind(project)
 
     assert protocol.read_bytes() == concurrent
+
+
+def test_rebind_rejects_decision_change_after_chain_read_before_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from review_writer.project import simulated_review_rebind as rebind
+
+    project = _complete_chain(tmp_path)
+    original_chain = rebind._current_chain
+    concurrent_bytes: dict[str, bytes] = {}
+
+    def chain_then_concurrent_decision(root: Path):
+        chain = original_chain(root)
+        row = paper_evidence_state(root)["rows"][0]
+        decision_path = root / "01_evidence/paper_evidence_decisions.jsonl"
+        events = [json.loads(line) for line in decision_path.read_text().splitlines()]
+        event = json.loads(json.dumps(events[-1]))
+        event["decision"]["reason"] = "Concurrent decision after chain read."
+        event["decision"]["decided_at"] = "2099-01-01T00:00:00+00:00"
+        decision_path.write_text(
+            "\n".join(json.dumps(item, sort_keys=True) for item in [*events, event]) + "\n"
+        )
+        concurrent_bytes["all"] = _regular_bytes(root)[
+            "01_evidence/paper_evidence_decisions.jsonl"
+        ]
+        return chain
+
+    before = _regular_bytes(project)
+    monkeypatch.setattr(rebind, "_current_chain", chain_then_concurrent_decision)
+
+    with pytest.raises(rebind.SimulatedReviewRebindError, match="CHAIN_VERSION_CHANGED"):
+        _rebind(project)
+
+    after = _regular_bytes(project)
+    assert after["01_evidence/paper_evidence_decisions.jsonl"] == concurrent_bytes["all"]
+    for relative, payload in before.items():
+        if relative != "01_evidence/paper_evidence_decisions.jsonl":
+            assert after[relative] == payload
 
 
 def test_rebind_cli_stdout_contains_only_status_reason_and_counts(
