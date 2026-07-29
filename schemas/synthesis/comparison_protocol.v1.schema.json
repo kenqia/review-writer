@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://review-writer.local/schemas/synthesis/comparison_protocol.v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "comparison_id", "comparison_objects", "axes", "normalization_rules", "missing_value_policy", "incomparability_rules", "counterevidence_rules", "claim_strength", "paper_evidence_projection_digest", "decision"],
+  "properties": {
+    "schema_version": {"const": "comparison-protocol.v1"},
+    "comparison_id": {"type": "string", "minLength": 1},
+    "comparison_objects": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "axes": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "normalization_rules": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "missing_value_policy": {"type": "string", "minLength": 1},
+    "incomparability_rules": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "counterevidence_rules": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "claim_strength": {"type": "string", "minLength": 1},
+    "paper_evidence_projection_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "decision": {"type": ["object", "null"]}
+  }
+}

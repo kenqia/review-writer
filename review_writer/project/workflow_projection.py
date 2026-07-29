@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from review_writer.project.paper_evidence import PaperEvidenceError, paper_evidence_state
+from review_writer.project.synthesis import SynthesisError, synthesis_state
+from review_writer.project.section_contract import SectionContractError, section_contract_state
 from review_writer.project.parse_quality import project_parse_quality_state
 from review_writer.project.source_truth import (
     SOURCE_TRUTH_ROOT,
@@ -106,9 +108,20 @@ def _new_route_state(project: Path) -> dict[str, Any]:
         except (PaperEvidenceError, OSError, ValueError, KeyError, TypeError):
             paper_evidence_error = True
 
-    # Later tasks replace these remaining closed capabilities with validated projections.
     synthesis_ready = False
     section_contracts_ready = False
+    synthesis_error = False
+    section_contract_error = False
+    if paper_evidence_ready:
+        try:
+            synthesis_ready = bool(synthesis_state(project).get("workflow_can_continue"))
+        except (SynthesisError, OSError, ValueError, KeyError, TypeError):
+            synthesis_error = True
+        if synthesis_ready:
+            try:
+                section_contracts_ready = bool(section_contract_state(project).get("workflow_can_continue"))
+            except (SectionContractError, SynthesisError, OSError, ValueError, KeyError, TypeError):
+                section_contract_error = True
     manuscript_ready = False
     internal_draft_export_ready = False
     verified_release_ready = False
@@ -131,7 +144,7 @@ def _new_route_state(project: Path) -> dict[str, Any]:
         )
     elif not synthesis_ready or not section_contracts_ready:
         active_stage = "synthesis"
-        blockers.append("SYNTHESIS_NOT_APPROVED")
+        blockers.append("SYNTHESIS_INVALID" if synthesis_error else ("SECTION_CONTRACT_INVALID" if section_contract_error else "SYNTHESIS_NOT_APPROVED"))
     elif not manuscript_ready:
         active_stage = "drafting"
         blockers.append("MANUSCRIPT_NOT_APPROVED")
