@@ -10,9 +10,13 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
+from review_writer.project.manuscript_v2 import manuscript_state
+from review_writer.project.source_truth import canonical_digest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REPORT_SCHEMA = REPO_ROOT / "schemas/quality/review_benchmark_report.v1.schema.json"
+PLACEHOLDER_SCHEMA = REPO_ROOT / "schemas/figures/synthesis_figure_placeholder.v1.schema.json"
 RUBRIC_DIMENSIONS = (
     ("scope_and_question_value", 10),
     ("source_set_coverage", 15),
@@ -74,53 +78,125 @@ def _read_json(path: Path, code: str) -> Any:
         raise BenchmarkError(code) from exc
 
 
-def _release_payload(release: Path | dict[str, Any], release_level: str | None) -> dict[str, Any]:
-    if isinstance(release, dict):
-        payload = dict(release)
-        project_id = payload.get("project_id", "unknown-project")
-    else:
-        project = Path(release)
-        if project.is_symlink() or not project.is_dir():
-            raise BenchmarkError("BENCHMARK_RELEASE_INVALID")
-        try:
-            project = project.resolve(strict=True)
-        except OSError as exc:
-            raise BenchmarkError("BENCHMARK_RELEASE_INVALID") from exc
-        payload = _read_json(project / "05_release/release_snapshot.json", "BENCHMARK_RELEASE_INVALID")
-        if not isinstance(payload, dict):
-            raise BenchmarkError("BENCHMARK_RELEASE_INVALID")
-        project_id = payload.get("project_id", project.name)
-        placeholder_path = project / "03_figures/synthesis_figure_placeholders.json"
-        if placeholder_path.is_file():
-            placeholder_state = _read_json(placeholder_path, "BENCHMARK_RELEASE_INVALID")
-            payload["synthesis_placeholders"] = (
-                placeholder_state.get("placeholders", [])
-                if isinstance(placeholder_state, dict)
-                else []
-            )
-    level = release_level or payload.get("release_level") or payload.get("status")
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _release_payload(release: Path, release_level: str | None) -> dict[str, Any]:
+    """Read a release and bind the report to canonical, on-disk state."""
+    if not isinstance(release, Path) or release.is_symlink() or not release.is_dir():
+        raise BenchmarkError("BENCHMARK_RELEASE_INVALID")
+    try:
+        project = release.resolve(strict=True)
+        snapshot = _read_json(project / "05_release/release_snapshot.json", "BENCHMARK_RELEASE_INVALID")
+    except (OSError, BenchmarkError) as exc:
+        raise BenchmarkError("BENCHMARK_RELEASE_INVALID") from exc
+    if not isinstance(snapshot, dict):
+        raise BenchmarkError("BENCHMARK_RELEASE_INVALID")
+    project_id = snapshot.get("project_id", project.name)
+    level = release_level or snapshot.get("release_level") or snapshot.get("status")
     if level not in RELEASE_LEVELS or not isinstance(project_id, str) or not project_id:
         raise BenchmarkError("BENCHMARK_RELEASE_INVALID")
-    manuscript_sha256 = payload.get("manuscript_sha256")
-    release_sha256 = payload.get("release_sha256") or payload.get("docx_sha256")
-    if not isinstance(manuscript_sha256, str) or len(manuscript_sha256) != 64:
-        manuscript_sha256 = hashlib.sha256(_canonical_bytes(payload.get("manuscript", payload))).hexdigest()
-    if not isinstance(release_sha256, str) or len(release_sha256) != 64:
-        release_sha256 = hashlib.sha256(_canonical_bytes(payload)).hexdigest()
-    placeholders = payload.get("synthesis_placeholders", [])
-    if not isinstance(placeholders, list) or not all(isinstance(row, dict) for row in placeholders):
-        raise BenchmarkError("BENCHMARK_RELEASE_INVALID")
-    signals = payload.get("hard_fail_signals", [])
+
+    divergence = False
+    manuscript_path = project / "04_manuscript/manuscript.md"
+    lineage_path = project / "04_manuscript/manuscript_lineage.v2.json"
+    state: dict[str, Any]
+    try:
+        state = manuscript_state(project)
+    except Exception:
+        state = {"workflow_can_continue": False}
+        divergence = True
+    if state.get("workflow_can_continue") is not True:
+        divergence = True
+    try:
+        actual_manuscript_sha256 = _sha256_file(manuscript_path) if manuscript_path.is_file() else None
+        lineage = _read_json(lineage_path, "BENCHMARK_RELEASE_INVALID")
+        if not isinstance(lineage, dict):
+            raise BenchmarkError("BENCHMARK_RELEASE_INVALID")
+    except (OSError, BenchmarkError):
+        actual_manuscript_sha256 = None
+        lineage = {}
+        divergence = True
+    state_manuscript_sha256 = state.get("manuscript_sha256")
+    state_lineage_digest = state.get("lineage_digest")
+    if (
+        not isinstance(actual_manuscript_sha256, str)
+        or state_manuscript_sha256 != actual_manuscript_sha256
+        or lineage.get("manuscript_sha256") != actual_manuscript_sha256
+        or lineage.get("lineage_digest") != state_lineage_digest
+    ):
+        divergence = True
+
+    docx_path: Path | None = None
+    docx_sha256: str | None = None
+    declared_docx_path = snapshot.get("docx_path")
+    if isinstance(declared_docx_path, str) and declared_docx_path:
+        candidate = project / declared_docx_path
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(project)
+            if resolved.is_file() and not candidate.is_symlink():
+                docx_path = resolved
+                docx_sha256 = _sha256_file(resolved)
+        except (OSError, ValueError):
+            pass
+    if (
+        docx_path is None
+        or snapshot.get("docx_sha256") != docx_sha256
+        or snapshot.get("manuscript_sha256") != actual_manuscript_sha256
+        or snapshot.get("lineage_digest") != state_lineage_digest
+        or snapshot.get("project_id", project.name) != project_id
+    ):
+        divergence = True
+
+    placeholders: list[dict[str, Any]] = []
+    placeholder_path = project / "03_figures/synthesis_figure_placeholders.json"
+    try:
+        placeholder_state = _read_json(placeholder_path, "BENCHMARK_RELEASE_INVALID")
+        if not isinstance(placeholder_state, dict) or not isinstance(placeholder_state.get("placeholders"), list):
+            raise BenchmarkError("BENCHMARK_RELEASE_INVALID")
+        placeholders = placeholder_state["placeholders"]
+    except BenchmarkError:
+        divergence = True
+    validator = Draft202012Validator(_read_json(PLACEHOLDER_SCHEMA, "BENCHMARK_SCHEMA_INVALID"))
+    if any(not isinstance(row, dict) or list(validator.iter_errors(row)) for row in placeholders):
+        divergence = True
+    placeholder_digest = canonical_digest(placeholders)
+    if lineage.get("synthesis_figure_placeholder_digest") != placeholder_digest:
+        divergence = True
+    manuscript_text = ""
+    if manuscript_path.is_file():
+        try:
+            manuscript_text = manuscript_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            divergence = True
+    for row in placeholders:
+        if isinstance(row, dict) and row.get("status") != "verified":
+            placeholder_id = row.get("placeholder_id")
+            if (
+                not isinstance(placeholder_id, str)
+                or f"SYNTHESIS_FIGURE_PLACEHOLDER: {placeholder_id}" not in manuscript_text
+            ):
+                divergence = True
+
+    signals = snapshot.get("hard_fail_signals", [])
     if not isinstance(signals, list) or not all(isinstance(code, str) for code in signals):
         raise BenchmarkError("BENCHMARK_RELEASE_INVALID")
     signals = list(signals)
-    if payload.get("system_generated_synthesis_figure") is True:
+    if snapshot.get("system_generated_synthesis_figure") is True:
         signals.append("SYSTEM_GENERATED_SYNTHESIS_FIGURE")
+    if divergence:
+        signals.append("STATE_SURFACE_DIVERGENCE")
     return {
         "project_id": project_id,
         "release_level": level,
-        "manuscript_sha256": manuscript_sha256,
-        "release_sha256": release_sha256,
+        "manuscript_sha256": actual_manuscript_sha256 if not divergence else None,
+        "release_sha256": docx_sha256 if not divergence else None,
         "placeholders": placeholders,
         "hard_fail_signals": signals,
     }
@@ -226,7 +302,7 @@ def validate_report(report: object) -> dict[str, Any]:
 
 
 def evaluate_review(
-    release: Path | dict[str, Any],
+    release: Path,
     rubric_scores: object,
     *,
     hard_fails: list[str] | tuple[str, ...] = (),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -13,6 +14,7 @@ from review_writer.project.credit_ledger import (
     CreditLedgerError,
     record_credit_event,
 )
+from review_writer.project import credit_ledger
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -142,3 +144,57 @@ def test_record_credits_cli_appends_one_schema_valid_event(tmp_path: Path) -> No
         "status": "RECORDED",
     }
     assert len(_ledger_rows(project)) == 1
+
+
+def test_credit_ledger_rejects_symlinked_output_parent_without_external_writes(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (project / "06_evaluation").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(CreditLedgerError, match="CREDIT_LEDGER_INVALID"):
+        record_credit_event(
+            project,
+            stage="source_review",
+            before=2004,
+            after=1351,
+            source="manual_dashboard",
+        )
+
+    assert list(outside.iterdir()) == []
+
+
+def test_credit_ledger_rechecks_containment_after_ledger_parse(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    original_read = credit_ledger._read_ledger
+
+    def swap_parent_after_parse(path: Path) -> list[dict[str, object]]:
+        rows = original_read(path)
+        evaluation = project / "06_evaluation"
+        (evaluation / ".credit_ledger.lock").unlink()
+        evaluation.rmdir()
+        evaluation.symlink_to(outside, target_is_directory=True)
+        return rows
+
+    monkeypatch.setattr(credit_ledger, "_read_ledger", swap_parent_after_parse)
+
+    with pytest.raises(CreditLedgerError, match="CREDIT_LEDGER_INVALID"):
+        record_credit_event(
+            project,
+            stage="source_review",
+            before=2004,
+            after=1351,
+            source="manual_dashboard",
+        )
+
+    assert list(outside.iterdir()) == []
+    assert os.path.lexists(project / "06_evaluation")

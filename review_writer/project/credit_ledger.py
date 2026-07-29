@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import stat
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -78,6 +79,33 @@ def _safe_project(project: Path) -> Path:
         raise CreditLedgerError("CREDIT_PROJECT_INVALID") from exc
 
 
+def _is_reparse(path: Path) -> bool:
+    """Reject links and platform reparse points before touching project storage."""
+    if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
+        return True
+    try:
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+        return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+    except OSError:
+        return False
+
+
+def _assert_project_path(project: Path, path: Path) -> None:
+    current = project
+    try:
+        relative = path.relative_to(project)
+    except ValueError as exc:
+        raise CreditLedgerError("CREDIT_LEDGER_INVALID") from exc
+    for part in relative.parts:
+        current = current / part
+        if _is_reparse(current):
+            raise CreditLedgerError("CREDIT_LEDGER_INVALID")
+    try:
+        path.resolve(strict=False).relative_to(project)
+    except (OSError, ValueError) as exc:
+        raise CreditLedgerError("CREDIT_LEDGER_INVALID") from exc
+
+
 def _validate_inputs(
     *,
     stage: str,
@@ -125,7 +153,9 @@ def _validate_inputs(
 @contextmanager
 def _ledger_lock(project: Path) -> Iterator[None]:
     lock_path = project / _LOCK_PATH
+    _assert_project_path(project, lock_path)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
+    _assert_project_path(project, lock_path)
     if lock_path.is_symlink() or (os.path.lexists(lock_path) and not lock_path.is_file()):
         raise CreditLedgerError("CREDIT_LEDGER_INVALID")
     with lock_path.open("a+b") as lock:
@@ -224,8 +254,11 @@ def record_credit_event(
     )
     project_path = _safe_project(project)
     ledger_path = project_path / CREDIT_LEDGER_PATH
+    _assert_project_path(project_path, ledger_path)
     with _ledger_lock(project_path):
+        _assert_project_path(project_path, ledger_path)
         rows = _read_ledger(ledger_path)
+        _assert_project_path(project_path, ledger_path)
         if rows and before != rows[-1]["after"]:
             raise CreditLedgerError("CREDIT_CONTINUITY_INVALID")
         event: dict[str, Any] = {

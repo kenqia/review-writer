@@ -111,7 +111,12 @@ def _resolve_declared_file(root: Path, relative: str) -> Path:
 def _validate_manifest_files(root: Path, manifest: dict[str, Any]) -> set[str]:
     rows = manifest["files"]
     declared = [row["path"] for row in rows]
-    if len(declared) != len(set(declared)) or manifest["file_count"] != len(rows):
+    if (
+        len(rows) != 1071
+        or len(declared) != len(set(declared))
+        or manifest["file_count"] != 1071
+        or manifest["file_count"] != len(rows)
+    ):
         raise StandardCorpusError("STANDARD_CORPUS_MANIFEST_INVALID")
     for row in rows:
         path = _resolve_declared_file(root, row["path"])
@@ -200,7 +205,9 @@ def load_standard_corpus(root: Path) -> dict[str, Any]:
     if errors:
         raise StandardCorpusError("STANDARD_CORPUS_MANIFEST_INVALID")
     if (
-        manifest["pdf_count"] != 14
+        manifest["file_count"] != 1071
+        or len(manifest["files"]) != 1071
+        or manifest["pdf_count"] != 14
         or manifest["mineru_success_count"] != 14
         or manifest["mineru_failure_count"] != 0
     ):
