@@ -46,6 +46,10 @@ from review_writer.project.vertical_review import (  # noqa: E402
     register_study,
 )
 from review_writer.project.batch_runner import BatchRunnerError, run_batch  # noqa: E402
+from review_writer.project.credit_ledger import (  # noqa: E402
+    CreditLedgerError,
+    record_credit_event,
+)
 from review_writer.project.parse_quality import (  # noqa: E402
     ParseQualityError,
     apply_parse_quality_decision,
@@ -1038,6 +1042,17 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--credits-after", type=int)
     run.add_argument("--forecast-credits", type=float)
 
+    credits = commands.add_parser("record-credits")
+    credits.add_argument("--project", type=Path, required=True)
+    credits.add_argument("--stage", required=True)
+    credits.add_argument("--before", type=int, required=True)
+    credits.add_argument("--after", type=int, required=True)
+    credits.add_argument("--source", required=True)
+    credits.add_argument("--study-id", action="append", default=[])
+    credits.add_argument("--input-digest")
+    credits.add_argument("--output-digest")
+    credits.add_argument("--forecast-credits", type=float)
+
     register = commands.add_parser("register-study")
     register.add_argument("--project-dir", type=Path, required=True)
     register.add_argument("--candidate", type=Path, required=True)
@@ -1180,6 +1195,27 @@ def _run(args: argparse.Namespace) -> int:
         )
         _print_summary(summary)
         return 0 if summary["status"] == "COMPLETE" else 3
+    if args.command == "record-credits":
+        event = record_credit_event(
+            args.project,
+            stage=args.stage,
+            before=args.before,
+            after=args.after,
+            source=args.source,
+            study_ids=args.study_id,
+            input_digest=args.input_digest,
+            output_digest=args.output_digest,
+            forecast=args.forecast_credits,
+        )
+        _print_summary(
+            {
+                "command": "record-credits",
+                "consumed": event["consumed"],
+                "event_id": event["event_id"],
+                "status": "RECORDED",
+            }
+        )
+        return 0
     if args.command == "register-study":
         candidate = _load_json(args.candidate)
         r0_report = _canonical_r0_report(
@@ -1259,6 +1295,12 @@ def main(argv: list[str] | None = None) -> int:
     except PaperEvidenceError as exc:
         _print_summary(
             {"error_code": exc.code, "status": "ERROR"},
+            stream=sys.stderr,
+        )
+        return 2
+    except CreditLedgerError as exc:
+        _print_summary(
+            {"command": args.command, "error_code": exc.code, "status": "ERROR"},
             stream=sys.stderr,
         )
         return 2

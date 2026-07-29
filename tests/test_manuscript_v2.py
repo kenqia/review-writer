@@ -11,6 +11,7 @@ from review_writer.project.manuscript_v2 import (
     approve_section,
     build_manuscript_workspace,
     merge_authoritative_manuscript,
+    manuscript_state,
     register_section_draft,
 )
 
@@ -232,6 +233,11 @@ def test_approved_sections_merge_to_authoritative_manuscript_and_lineage(project
     assert lineage["section_contract_projection_digest"] == SHA_C
     assert lineage["sections"][0]["generation_content_agent_result_digest"]
     assert lineage["claim_bindings"][0]["paper_evidence_ids"] == ["evidence-low"]
+    assert manuscript_state(project)["workflow_can_continue"] is True
+
+    manuscript.write_text(manuscript.read_text(encoding="utf-8") + "tamper", encoding="utf-8")
+    assert manuscript_state(project)["reason_code"] == "MANUSCRIPT_LINEAGE_STALE"
+    assert build_manuscript_workspace(project)["status"] == "in_progress"
 
 
 def test_merge_failure_does_not_overwrite_existing_authoritative_pair(project: Path) -> None:

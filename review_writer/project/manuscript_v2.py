@@ -497,14 +497,109 @@ def build_manuscript_workspace(project: Path) -> dict[str, Any]:
         except (OSError, UnicodeError) as exc:
             raise ManuscriptV2Error("MANUSCRIPT_INVALID") from exc
     lineage_present = lineage_path.is_file() and not lineage_path.is_symlink()
+    authoritative = manuscript_state(root)
     return {
         "schema_version": "manuscript-workspace.v2",
         "route": NEW_ROUTE,
         "project_id": root.name,
-        "status": "approved" if manuscript is not None and lineage_present else "in_progress",
+        "status": "approved" if authoritative["workflow_can_continue"] else "in_progress",
+        "reason_code": authoritative["reason_code"],
         "sections": sections,
         "manuscript": manuscript,
         "lineage_present": lineage_present,
+    }
+
+
+def manuscript_state(project: Path) -> dict[str, Any]:
+    """Validate the current authoritative pair against every non-circular upstream binding."""
+    root = _root(project)
+    manuscript_path = root / MANUSCRIPT_PATH
+    lineage_path = root / LINEAGE_PATH
+    if not manuscript_path.is_file() or manuscript_path.is_symlink() or not lineage_path.is_file() or lineage_path.is_symlink():
+        return {
+            "status": "needs_review",
+            "workflow_can_continue": False,
+            "reason_code": "MANUSCRIPT_NOT_APPROVED",
+        }
+    try:
+        manuscript_bytes = manuscript_path.read_bytes()
+        manuscript_bytes.decode("utf-8")
+        lineage = _read_json(lineage_path, "MANUSCRIPT_LINEAGE_INVALID")
+        if not isinstance(lineage, dict):
+            raise ManuscriptV2Error("MANUSCRIPT_LINEAGE_INVALID")
+        _validate_lineage(lineage)
+        expected_lineage = canonical_digest(
+            {key: value for key, value in lineage.items() if key != "lineage_digest"}
+        )
+        if lineage.get("lineage_digest") != expected_lineage:
+            raise ManuscriptV2Error("MANUSCRIPT_LINEAGE_STALE")
+        if lineage.get("manuscript_sha256") != hashlib.sha256(manuscript_bytes).hexdigest():
+            raise ManuscriptV2Error("MANUSCRIPT_LINEAGE_STALE")
+        evidence, synthesis, contracts = _states(root)
+        if (
+            lineage.get("paper_evidence_projection_digest") != evidence["projection_digest"]
+            or lineage.get("synthesis_projection_digest") != synthesis["projection_digest"]
+            or lineage.get("section_contract_projection_digest") != contracts["projection_digest"]
+            or lineage.get("parse_object_digests") != _parse_object_digests(root)
+        ):
+            raise ManuscriptV2Error("MANUSCRIPT_LINEAGE_STALE")
+        registry_digest, placeholder_digest = _figure_digests(root)
+        if (
+            lineage.get("source_figure_registry_digest") != registry_digest
+            or lineage.get("synthesis_figure_placeholder_digest") != placeholder_digest
+        ):
+            raise ManuscriptV2Error("MANUSCRIPT_LINEAGE_STALE")
+        drafts = _projected_drafts(root)
+        if not drafts or any(row.get("status") != "approved" for row in drafts):
+            raise ManuscriptV2Error("MANUSCRIPT_LINEAGE_STALE")
+        expected_sections = [
+            {
+                "section_id": row["section_id"],
+                "contract_digest": row["contract_digest"],
+                "draft_digest": row["draft_digest"],
+                "generation_content_agent_result_digest": row["generation_content_agent_result_digest"],
+                "approval": row["decision"],
+            }
+            for row in drafts
+        ]
+        expected_claims: list[dict[str, Any]] = []
+        for row in drafts:
+            approval_digest = canonical_digest(row["decision"])
+            for binding in row["claim_bindings"]:
+                expected_claims.append(
+                    {
+                        "section_id": row["section_id"],
+                        "marker": binding["marker"],
+                        "paper_evidence_ids": binding["paper_evidence_ids"],
+                        "synthesis_ids": binding["synthesis_ids"],
+                        "section_approval_digest": approval_digest,
+                    }
+                )
+        contract_rows = contracts.get("rows", [])
+        expected_contracts = {
+            row["section_id"]: row["contract_digest"]
+            for row in contract_rows
+            if isinstance(row, dict) and row.get("status") == "approved"
+        }
+        expected_generation = sorted(
+            {row["generation_content_agent_result_digest"] for row in drafts}
+        )
+        if (
+            lineage.get("sections") != expected_sections
+            or lineage.get("claim_bindings") != expected_claims
+            or lineage.get("section_contract_digests") != expected_contracts
+            or lineage.get("generation_content_agent_result_digests") != expected_generation
+        ):
+            raise ManuscriptV2Error("MANUSCRIPT_LINEAGE_STALE")
+    except (OSError, UnicodeError, ManuscriptV2Error) as exc:
+        code = exc.code if isinstance(exc, ManuscriptV2Error) else "MANUSCRIPT_INVALID"
+        return {"status": "needs_review", "workflow_can_continue": False, "reason_code": code}
+    return {
+        "status": "approved",
+        "workflow_can_continue": True,
+        "reason_code": "MANUSCRIPT_APPROVED",
+        "manuscript_sha256": lineage["manuscript_sha256"],
+        "lineage_digest": lineage["lineage_digest"],
     }
 
 
