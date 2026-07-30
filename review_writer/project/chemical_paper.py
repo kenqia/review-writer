@@ -234,6 +234,17 @@ def load_chemical_paper_state(project: Path, study_id: str) -> dict[str, Any]:
     return state
 
 
+def chemical_paper_current_binding(project: Path, study_id: str) -> dict[str, str]:
+    """Return current Chemical provenance without exposing archive or molecule payloads."""
+    state = load_chemical_paper_state(project, study_id)
+    return {
+        "source_pdf_sha256": state["source_pdf_sha256"],
+        "source_truth_bundle_digest": state["source_truth_bundle_digest"],
+        "import_digest": state["current_import_digest"],
+        "state_digest": state["state_digest"],
+    }
+
+
 def _safe_member_name(name: str) -> str:
     normalized = unicodedata.normalize("NFC", name)
     pure = PurePosixPath(normalized)
@@ -810,6 +821,7 @@ def _study_summary(state: dict[str, Any]) -> dict[str, Any]:
                 "prior_state": event.get("prior_state"), "state": event.get("state"),
                 "actor_type": event["actor"]["actor_type"], "actor_label": event["actor"]["actor_label"],
                 "reason": event["reason"], "recorded_at": event["recorded_at"],
+                "pdf_locator": event.get("pdf_locator"),
             })
         missing_fields = [field for field in FIELD_NAMES if values[field] is None]
         molecules.append({

@@ -22,12 +22,19 @@ from jsonschema import Draft202012Validator
 
 from .paper_evidence import (
     PaperEvidenceError,
+    require_dual_evidence_ready,
     register_paper_evidence_candidates,
     register_manual_pdf_evidence,
 )
 from .chemical_paper import STATE_NAME as CHEMICAL_PAPER_STATE_NAME
 from .chemical_paper import STATE_ROOT as CHEMICAL_PAPER_STATE_ROOT
 from .chemical_paper import ChemicalPaperError, load_chemical_paper_state
+from .chemical_paper import chemical_paper_projection
+from .parse_quality import ParseQualityError, parse_quality_state
+from .parse_reconciliation import (
+    ParseReconciliationError,
+    load_parse_reconciliation,
+)
 from .paper_evidence_store import PaperEvidenceStoreError, project_write_lock
 from .section_contract import SectionContractError, register_section_contracts
 from .source_truth import (
@@ -43,7 +50,7 @@ from .synthesis import SynthesisError, register_comparison_protocol, register_co
 
 REQUEST_SCHEMA = REPO_ROOT / "schemas/agents/content_agent_request.v1.schema.json"
 RESULT_SCHEMA = REPO_ROOT / "schemas/agents/content_agent_result.v1.schema.json"
-ALLOWED_INPUTS = frozenset({"source_truth", "parse_quality", "paper_evidence", "chemical_paper", "comparison_protocol", "section_contract"})
+ALLOWED_INPUTS = frozenset({"source_truth", "parse_quality", "paper_evidence", "chemical_paper", "reconciliation", "comparison_protocol", "section_contract"})
 REQUEST_KINDS = frozenset({"paper_evidence", "synthesis_claims", "section_draft"})
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _ID = re.compile(r"^(?!\.\.?$)(?!.*[/\\\x00\r\n])\S{1,240}$")
@@ -117,6 +124,7 @@ def _normalize_request(project: Path, request: object) -> dict[str, Any]:
         raise ContentAgentError("REQUEST_INVALID")
     value = copy.deepcopy(request)
     value.setdefault("schema_version", "content-agent-request.v1")
+    value.setdefault("field_dependencies", [])
     _validate_schema(value, REQUEST_SCHEMA, "REQUEST_INVALID")
     if value["project_id"] != project.name:
         raise ContentAgentError("PROJECT_ID_MISMATCH")
@@ -178,6 +186,143 @@ def _add_artifact(project: Path, out: dict[str, list[dict[str, Any]]], key: str,
 def _existing(project: Path, relative: str) -> bool:
     path = project / relative
     return path.is_file() and not path.is_symlink()
+
+
+def _inline_artifact(
+    out: dict[str, list[dict[str, Any]]],
+    key: str,
+    *,
+    package_path: str,
+    kind: str,
+    content: object,
+) -> None:
+    payload = (json.dumps(content, ensure_ascii=False, allow_nan=False, sort_keys=True, indent=2) + "\n").encode()
+    out.setdefault(key, []).append({
+        "path": package_path,
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "size_bytes": len(payload),
+        "kind": kind,
+        "content": copy.deepcopy(content),
+    })
+
+
+def _safe_parse_projection(project: Path, study_id: str) -> dict[str, Any]:
+    try:
+        state = parse_quality_state(project, study_id)
+    except ParseQualityError as exc:
+        raise ContentAgentError(exc.code) from exc
+    return {
+        "study_id": study_id,
+        "status": state["status"],
+        "workflow_can_continue": state["workflow_can_continue"],
+        "objects": [
+            {
+                "kind": row["kind"], "source_id": row["source_id"],
+                "status": row["status"], "issues": row["issues"],
+                "decision": (
+                    {key: row["decision"].get(key) for key in ("action", "note", "actor_type", "actor_label")}
+                    if isinstance(row.get("decision"), dict) else None
+                ),
+            }
+            for row in state["objects"]
+        ],
+    }
+
+
+def _safe_chemical_projection(project: Path, study_id: str) -> dict[str, Any]:
+    try:
+        projection = chemical_paper_projection(project)
+    except ChemicalPaperError as exc:
+        raise ContentAgentError(exc.code) from exc
+    matches = [row for row in projection["studies"] if row["study_id"] == study_id]
+    if len(matches) != 1:
+        raise ContentAgentError("CHEMICAL_PAPER_NOT_IMPORTED")
+    row = matches[0]
+    return {
+        key: copy.deepcopy(row[key])
+        for key in (
+            "study_id", "status", "backend", "version", "page_count", "molecule_count",
+            "reaction_data_status", "missing_field_counts", "gaps", "limitations"
+        )
+    } | {
+        "molecules": [
+            {
+                key: copy.deepcopy(molecule[key])
+                for key in (
+                    "molecule_index", "page", "bbox_normalized", "mol_idt",
+                    "smiles_expanded", "smiles_unexpanded", "missing_fields",
+                    "candidate_elements", "history"
+                )
+            }
+            for molecule in row["molecules"]
+        ]
+    }
+
+
+def _safe_reconciliation_projection(project: Path, study_id: str) -> dict[str, Any]:
+    try:
+        registry = load_parse_reconciliation(project, study_id)
+    except ParseReconciliationError as exc:
+        raise ContentAgentError(exc.code) from exc
+    return {
+        "study_id": study_id,
+        "workflow_can_continue": registry["workflow_can_continue"],
+        "objects": [
+            {
+                "kind": row["kind"], "source_id": row["source_id"], "page": row["page"],
+                "generic_candidate": row["generic_candidate"],
+                "chemical_candidate": row["chemical_candidate"], "status": row["status"],
+                "decision": (
+                    {key: row["decision"].get(key) for key in ("action", "selected_lane", "note", "pdf_locator", "actor_type", "actor_label")}
+                    if isinstance(row.get("decision"), dict) else None
+                ),
+            }
+            for row in registry["objects"]
+        ],
+    }
+
+
+def _dual_source_artifacts(
+    project: Path,
+    studies: Iterable[str],
+    request: dict[str, Any],
+    out: dict[str, list[dict[str, Any]]],
+) -> None:
+    for study_id in studies:
+        try:
+            bindings = require_dual_evidence_ready(
+                project,
+                study_id,
+                requires_chemical=bool(request["field_dependencies"]),
+            )
+            bundle = load_source_truth_bundle(project, study_id)
+        except (PaperEvidenceError, SourceTruthError) as exc:
+            raise ContentAgentError(exc.code) from exc
+        for source in bundle["sources"]:
+            if source.get("document_role") != "MAIN":
+                continue
+            for field, kind in (
+                ("pdf", "source_asset:pdf"),
+                ("canonical_markdown", "source_asset:canonical_markdown"),
+                ("content_list_v2", "source_asset:content_list"),
+            ):
+                descriptor = source.get(field)
+                if not isinstance(descriptor, dict) or not isinstance(descriptor.get("path"), str):
+                    raise ContentAgentError("SOURCE_TRUTH_INVALID")
+                _add_artifact(project, out, "source_truth", descriptor["path"], kind)
+        _inline_artifact(
+            out, "parse_quality", package_path=f"inputs/safe/{study_id}/parse-quality.json",
+            kind="parse_quality_safe_projection", content=_safe_parse_projection(project, study_id),
+        )
+        if bindings["chemical_completion_digest"] is not None:
+            _inline_artifact(
+                out, "chemical_paper", package_path=f"inputs/safe/{study_id}/chemical-paper.json",
+                kind="chemical_paper_safe_projection", content=_safe_chemical_projection(project, study_id),
+            )
+            _inline_artifact(
+                out, "reconciliation", package_path=f"inputs/safe/{study_id}/reconciliation.json",
+                kind="reconciliation_safe_projection", content=_safe_reconciliation_projection(project, study_id),
+            )
 
 
 def _source_artifacts(project: Path, studies: Iterable[str], out: dict[str, list[dict[str, Any]]]) -> None:
@@ -243,9 +388,9 @@ def _chemical_paper_source_artifacts(
 def _collect_inputs(project: Path, request: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     inputs: dict[str, list[dict[str, Any]]] = {}
     studies = request["target_ids"] if request["request_kind"] == "paper_evidence" else declared_study_ids(project)
-    # The root commits the project to the Chemical Paper route.  A partial or
-    # stale import must fail closed instead of falling back to generic MinerU.
-    if (project / CHEMICAL_PAPER_STATE_ROOT).exists():
+    if (project / "01_evidence/dual_source").exists():
+        _dual_source_artifacts(project, studies, request, inputs)
+    elif (project / CHEMICAL_PAPER_STATE_ROOT).exists():
         _chemical_paper_source_artifacts(project, studies, inputs)
     else:
         _source_artifacts(project, studies, inputs)
@@ -275,7 +420,7 @@ def _collect_inputs(project: Path, request: dict[str, Any]) -> dict[str, list[di
 
 
 def _package_digest(package: dict[str, Any]) -> str:
-    keys = ("schema_version", "project_id", "request_kind", "target_ids", "inputs", "chemical_paper_import_bindings")
+    keys = ("schema_version", "project_id", "request_kind", "target_ids", "field_dependencies", "inputs", "chemical_paper_import_bindings")
     value = {key: package[key] for key in keys if key in package}
     return canonical_digest(value)
 
@@ -331,11 +476,12 @@ def build_content_task_package(project: Path, request: object, output_dir: Path 
         "project_id": root.name,
         "request_kind": normalized["request_kind"],
         "target_ids": list(normalized["target_ids"]),
+        "field_dependencies": list(normalized["field_dependencies"]),
         "inputs": inputs,
     }
     studies = normalized["target_ids"] if normalized["request_kind"] == "paper_evidence" else declared_study_ids(root)
     bindings = _chemical_paper_bindings(root, studies)
-    if bindings:
+    if bindings and not (root / "01_evidence/dual_source").exists():
         package["chemical_paper_import_bindings"] = bindings
     package["task_package_digest"] = _package_digest(package)
     if _forbidden_in_package(package):
@@ -348,20 +494,31 @@ def build_content_task_package(project: Path, request: object, output_dir: Path 
             pass
         else:
             raise ContentAgentError("PACKAGE_OUTPUT_IN_PROJECT")
-        if destination.exists() and (destination.is_symlink() or not destination.is_dir()):
+        if destination.exists():
             raise ContentAgentError("PACKAGE_OUTPUT_INVALID")
-        destination.mkdir(parents=True, exist_ok=True)
-        for entries in inputs.values():
-            for item in entries:
-                source = _safe_project_relative(root, item["source_path"])
-                target = destination / item["path"]
-                target.parent.mkdir(parents=True, exist_ok=True)
-                if target.is_symlink() or (target.exists() and not target.is_file()):
-                    raise ContentAgentError("PACKAGE_OUTPUT_INVALID")
-                shutil.copyfile(source, target)
-        (destination / "manifest.json").write_text(
-            json.dumps(package, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8"
-        )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = Path(tempfile.mkdtemp(prefix=f".{destination.name}.", dir=destination.parent))
+        staged = temporary / destination.name
+        try:
+            staged.mkdir()
+            for entries in inputs.values():
+                for item in entries:
+                    target = staged / item["path"]
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    if "source_path" in item:
+                        source = _safe_project_relative(root, item["source_path"])
+                        shutil.copyfile(source, target)
+                    else:
+                        target.write_text(
+                            json.dumps(item["content"], ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+                            encoding="utf-8",
+                        )
+            (staged / "manifest.json").write_text(
+                json.dumps(package, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+            )
+            os.replace(staged, destination)
+        finally:
+            shutil.rmtree(temporary, ignore_errors=True)
     return package
 
 
@@ -463,12 +620,20 @@ def _result_scope(root: Path, result: dict[str, Any]) -> None:
 
 
 def _expected_task_digest(root: Path, result: dict[str, Any]) -> str:
+    dependencies = sorted({
+        dependency
+        for row in result.get("content", {}).get("evidence_candidates", [])
+        if isinstance(row, dict)
+        for dependency in row.get("field_dependencies", [])
+        if isinstance(dependency, str)
+    }) if result["request_kind"] == "paper_evidence" else []
     request = {
         "schema_version": "content-agent-request.v1",
         "request_kind": result["request_kind"],
         "project_id": root.name,
         "target_ids": result["target_ids"],
         "reason": "Content Agent candidate content requested by the review workflow.",
+        "field_dependencies": dependencies,
     }
     package = build_content_task_package(root, request)
     return package["task_package_digest"]

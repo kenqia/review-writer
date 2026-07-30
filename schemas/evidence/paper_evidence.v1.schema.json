@@ -16,6 +16,8 @@
     "limitations",
     "mechanism_grade",
     "risk_classes",
+    "field_dependencies",
+    "dual_parse_bindings",
     "bound_parse_object_digests",
     "source_pdf_sha256",
     "candidate_digest",
@@ -41,6 +43,24 @@
       "enum": ["not_applicable", "proposal", "indirect_support", "direct_support"]
     },
     "risk_classes": {"$ref": "#/$defs/text_list"},
+    "field_dependencies": {
+      "type": "array", "uniqueItems": true,
+      "items": {"enum": ["molecule", "smiles", "molblock"]}
+    },
+    "dual_parse_bindings": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["dual_source_binding_digest", "chemical_completion_digest", "reconciliation_digest"],
+          "properties": {
+            "dual_source_binding_digest": {"$ref": "#/$defs/sha256"},
+            "chemical_completion_digest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+            "reconciliation_digest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]}
+          }
+        }
+      ]
+    },
     "bound_parse_object_digests": {
       "type": "array",
       "uniqueItems": true,

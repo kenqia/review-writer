@@ -16,7 +16,17 @@
       "items": {"$ref": "#/$defs/id"}
     },
     "reason": {"type": "string", "minLength": 1, "maxLength": 2000}
+    ,"field_dependencies": {
+      "type": "array", "uniqueItems": true,
+      "items": {"enum": ["molecule", "smiles", "molblock"]}
+    }
   },
+  "allOf": [
+    {
+      "if": {"properties": {"request_kind": {"const": "paper_evidence"}}},
+      "else": {"properties": {"field_dependencies": {"maxItems": 0}}}
+    }
+  ],
   "$defs": {
     "id": {
       "type": "string",

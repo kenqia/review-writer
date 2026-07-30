@@ -284,7 +284,7 @@ def test_paper_evidence_package_digest_is_isolated_from_existing_evidence(
     }
 
 
-def test_source_figure_registry_is_bound_to_chemical_import_without_fake_figure(tmp_path: Path) -> None:
+def test_source_figure_registry_keeps_generic_authority_with_chemical_gap(tmp_path: Path) -> None:
     project = _new_route_project(tmp_path)
     pdf_sha, _, pages = _main_binding(project, "scholarly-a")
     import_chemical_paper(
@@ -297,9 +297,13 @@ def test_source_figure_registry_is_bound_to_chemical_import_without_fake_figure(
     registry = build_source_figure_registry(project)
 
     assert registry["chemical_paper_project_binding_digest"]
-    assert registry["figures"] == []
+    assert [row["figure_label"] for row in registry["figures"]] == ["Figure 1"]
+    assert all(
+        row["asset_path"].startswith("01_evidence/parses/extracted/")
+        for row in registry["figures"]
+    )
     assert any(
-        "Chemical Paper" in row["reason"] and "不创建" in row["reason"]
+        "Chemical Paper" in row["reason"] and "独立图片" in row["reason"]
         for row in registry["locator_gaps"]
     )
     assert load_source_figure_registry(project)["registry_digest"] == registry["registry_digest"]

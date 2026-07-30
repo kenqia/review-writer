@@ -101,6 +101,12 @@ def _standard_parse_fixture(root: Path, *, pdf_count: int = 14) -> Path:
             "batches": [{"jobs": completed}],
         },
     )
+    # The production standard-corpus contract freezes the audited 1,071-file
+    # inventory. Keep this synthetic fixture schema-valid without weakening
+    # that production invariant.
+    current_file_count = sum(path.is_file() for path in root.rglob("*"))
+    for index in range(max(0, 1071 - current_file_count)):
+        _write(root / f"extracted/support/inventory-{index:04d}.txt", b"fixture")
     return root
 
 

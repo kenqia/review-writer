@@ -477,6 +477,19 @@ def declared_study_ids(project: Path) -> list[str]:
     return _declared_study_ids(project)
 
 
+def study_source_tier(project: Path, study_id: str) -> str:
+    """Return the explicit core/background routing tier for one declared study."""
+    project = project.resolve(strict=True)
+    matches = [
+        row for row in _study_candidates(project)
+        if row.get("candidate_id") == study_id or row.get("study_id") == study_id
+    ]
+    tiers = {row.get("tier") for row in matches}
+    if len(matches) != 1 or tiers not in ({"core"}, {"background"}):
+        raise SourceTruthError("SOURCE_TIER_INVALID")
+    return next(iter(tiers))
+
+
 def build_all_source_truth(project: Path) -> list[dict[str, object]]:
     project = project.resolve(strict=True)
     return [build_source_truth_bundle(project, study_id) for study_id in _declared_study_ids(project)]

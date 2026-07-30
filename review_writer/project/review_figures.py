@@ -559,11 +559,11 @@ def build_source_figure_registry(project: Path) -> dict[str, Any]:
                         "page": 1,
                         "reason": (
                             "MinerU Chemical Paper 导出包未提供独立图片文件；"
-                            "页面区域仅作为原始 PDF 定位，不创建或沿用通用 MinerU 图片。"
+                            "其页面区域仅作为原始 PDF 定位，Source Figure 仍只使用"
+                            "当前 Generic MinerU 的显式 caption 与原图资产。"
                         ),
                     }
                 )
-                continue
             _verify_source_images(root, source)
             extracted = root / "01_evidence/parses/extracted" / slug
             # v1 remains part of Source Truth byte integrity, but is never used
