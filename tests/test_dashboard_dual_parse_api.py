@@ -223,6 +223,90 @@ def test_post_confirm_http_projects_bound_import_as_researcher_review_not_curren
         assert forbidden not in encoded
 
 
+def test_first_smiles_completion_locator_serves_the_bound_original_pdf_page(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    review_root = tmp_path / "review-root"
+    project = dual_project(review_root, chemical=False)
+    archive = write_chemical_zip(
+        tmp_path / "chemical.zip",
+        pages=1,
+        molecules=[
+            {
+                "mol_id": "mol-a",
+                "page_idx": 0,
+                "bbox_normalized": [0.1, 0.2, 0.3, 0.4],
+                "smiles_expanded": "",
+                "smiles_unexpanded": "",
+                "mol_idt": "",
+                "mol_block": v2000(),
+            }
+        ],
+    )
+    status, preflight = _post_zip(
+        review_root,
+        archive,
+        project_id=project.name,
+        study_id="scholarly-a",
+    )
+    assert status == 200
+    status, _ = _post_json(
+        review_root,
+        "chemical-paper/confirm",
+        {
+            "study_id": "scholarly-a",
+            "preflight_token": preflight["preflight_token"],
+            "actor_type": "simulated_researcher_agent",
+            "actor_label": "simulated_researcher",
+        },
+        project_id=project.name,
+    )
+    assert status == 200
+
+    status, _, body = _http_request(
+        review_root,
+        (
+            f"GET /api/project/{project.name}/dual-parse HTTP/1.1\r\n"
+            "Host: localhost\r\n\r\n"
+        ).encode("ascii"),
+    )
+    assert status == 200
+    projection = json.loads(body)
+    item = next(
+        row
+        for row in projection["completion_queue"]
+        if row["field"] == "smiles_expanded"
+    )
+    locator = item["pdf_page_url"]
+    assert locator == f"/api/project/{project.name}/source/stud-a/pdf-page?page=1"
+    assert all(
+        row["pdf_page_url"] == locator for row in projection["completion_queue"]
+    )
+    assert "/parse-quality/" not in json.dumps(projection, sort_keys=True)
+
+    bound_pdf = project / "00_sources/papers/paper-a.pdf"
+    rendered = b"\x89PNG\r\n\x1a\nbound-original-pdf-page"
+    seen: list[tuple[Path, int]] = []
+
+    def render(path: Path, page: int) -> bytes:
+        seen.append((path, page))
+        return rendered
+
+    monkeypatch.setattr(dashboard, "render_pdf_page", render)
+    status, headers, body = _http_request(
+        review_root,
+        f"GET {locator} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode("ascii"),
+    )
+
+    assert status == 200
+    assert headers["Content-Type"] == "image/png"
+    assert body == rendered
+    assert seen == [(bound_pdf, 1)]
+
+
 def test_confirm_revalidates_records_actor_and_rejects_second_confirm(
     tmp_path: Path,
 ) -> None:

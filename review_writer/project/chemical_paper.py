@@ -20,6 +20,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import quote
 
 from jsonschema import Draft202012Validator
 
@@ -229,7 +230,21 @@ def load_chemical_paper_state(project: Path, study_id: str) -> dict[str, Any]:
         and isinstance(row.get("pdf"), dict)
         and row["pdf"].get("sha256") == state["source_pdf_sha256"]
     ] if isinstance(sources, list) else []
-    if bundle.get("bundle_digest") != state["source_truth_bundle_digest"] or len(current) != 1:
+    active = state["imports"][state["current_import_digest"]]
+    if (
+        bundle.get("bundle_digest") != state["source_truth_bundle_digest"]
+        or state["project_id"] != root.name
+        or len(current) != 1
+        or active["source_id"] != state["source_id"]
+        or active["source_pdf_sha256"] != state["source_pdf_sha256"]
+        or active["source_truth_bundle_digest"] != state["source_truth_bundle_digest"]
+        or active["page_count"] != current[0]["page_count"]
+        or active["molecule_count"] != len(state["molecules"])
+        or any(
+            molecule["page_index"] >= current[0]["page_count"]
+            for molecule in state["molecules"]
+        )
+    ):
         raise ChemicalPaperError("CHEMICAL_PAPER_SOURCE_TRUTH_STALE")
     return state
 
@@ -837,7 +852,8 @@ def _study_summary(state: dict[str, Any]) -> dict[str, Any]:
             ],
             "element_review_state": review_state,
             "pdf_page_url": (
-                f"/api/project/{state['project_id']}/parse-quality/{state['study_id']}"
+                f"/api/project/{quote(state['project_id'], safe='')}/source/"
+                f"{quote(state['source_id'], safe='')}"
                 f"/pdf-page?page={molecule['page_index'] + 1}"
             ),
             "version_token": version_token,

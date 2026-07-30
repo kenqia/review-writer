@@ -195,6 +195,142 @@ def test_import_binds_pdf_and_preserves_explicit_unknowns_with_safe_projection(t
         assert forbidden not in encoded
 
 
+def test_safe_projection_routes_three_studies_to_their_quoted_bound_sources(
+    tmp_path: Path,
+) -> None:
+    from review_writer.project.chemical_paper import (
+        chemical_paper_projection,
+        import_chemical_paper,
+    )
+
+    project = source_truth_project(tmp_path, study_id="study-a")
+    renamed = project.with_name("project#quoted?")
+    project.rename(renamed)
+    project = renamed
+    base_bundle = json.loads(
+        (project / "01_evidence/source_truth/study-a/bundle.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    receipt_path = project / "00_sources/acquisition_final_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["studies"] = [
+        {"study_id": study_id} for study_id in ("study-a", "study-b", "study-c")
+    ]
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    expected: dict[str, str] = {}
+    for index, study_id in enumerate(("study-a", "study-b", "study-c"), start=1):
+        body = {
+            key: copy.deepcopy(value)
+            for key, value in base_bundle.items()
+            if key != "bundle_digest"
+        }
+        body["project_id"] = project.name
+        body["study_id"] = study_id
+        body["study_identity"] = {
+            "doi": f"10.1000/test-{index}",
+            "title": f"Fixture study {index}",
+        }
+        body["sources"][0]["source_id"] = f"source#{index}?main"
+        body["sources"][0]["mineru_slug"] = f"study-{index}-main"
+        bundle_path = project / f"01_evidence/source_truth/{study_id}/bundle.json"
+        bundle_path.parent.mkdir(parents=True, exist_ok=True)
+        bundle_path.write_text(
+            json.dumps({**body, "bundle_digest": canonical_digest(body)}),
+            encoding="utf-8",
+        )
+        import_chemical_paper(
+            project,
+            study_id,
+            PDF_SHA,
+            write_chemical_zip(tmp_path / f"chemical-{index}.zip"),
+            ACTOR,
+        )
+        expected[study_id] = (
+            f"/api/project/project%23quoted%3F/source/"
+            f"source%23{index}%3Fmain/pdf-page?page=2"
+        )
+
+    projection = chemical_paper_projection(project)
+    observed = {
+        study["study_id"]: study["molecules"][1]["pdf_page_url"]
+        for study in projection["studies"]
+    }
+
+    assert observed == expected
+    encoded = json.dumps(projection, ensure_ascii=False, sort_keys=True)
+    assert "/parse-quality/" not in encoded
+    for forbidden in (
+        "source_pdf_sha256",
+        "archive_sha256",
+        "entry_inventory",
+        "mol_block",
+        str(project),
+    ):
+        assert forbidden not in encoded
+
+
+@pytest.mark.parametrize(
+    "binding_failure",
+    ("wrong", "missing", "ambiguous", "stale", "page_out_of_range"),
+)
+def test_safe_projection_fails_closed_for_invalid_current_source_binding(
+    tmp_path: Path,
+    binding_failure: str,
+) -> None:
+    from review_writer.project.chemical_paper import (
+        ChemicalPaperError,
+        chemical_paper_projection,
+        import_chemical_paper,
+    )
+
+    project = source_truth_project(tmp_path)
+    import_chemical_paper(
+        project,
+        "study-1",
+        PDF_SHA,
+        write_chemical_zip(tmp_path / "chemical.zip"),
+        ACTOR,
+    )
+    state_path = project / "01_evidence/chemical_paper/study-1/state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    bundle_path = project / "01_evidence/source_truth/study-1/bundle.json"
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+
+    if binding_failure == "wrong":
+        state["source_id"] = "wrong-source"
+    elif binding_failure in {"missing", "ambiguous"}:
+        body = {key: value for key, value in bundle.items() if key != "bundle_digest"}
+        if binding_failure == "missing":
+            body["sources"][0]["document_role"] = "SI"
+        else:
+            body["sources"].append(copy.deepcopy(body["sources"][0]))
+        bundle = {**body, "bundle_digest": canonical_digest(body)}
+        bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+        state["source_truth_bundle_digest"] = bundle["bundle_digest"]
+    elif binding_failure == "stale":
+        body = {key: value for key, value in bundle.items() if key != "bundle_digest"}
+        body["warnings"] = ["source binding changed"]
+        bundle_path.write_text(
+            json.dumps({**body, "bundle_digest": canonical_digest(body)}),
+            encoding="utf-8",
+        )
+    else:
+        state["molecules"][0]["page_index"] = 2
+
+    state["state_digest"] = canonical_digest(
+        {key: value for key, value in state.items() if key != "state_digest"}
+    )
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(
+        ChemicalPaperError,
+        match="CHEMICAL_PAPER_SOURCE_TRUTH_STALE",
+    ):
+        chemical_paper_projection(project)
+
+
 def test_import_preserves_exported_molecule_order_for_stable_review_indexes(
     tmp_path: Path,
 ) -> None:
