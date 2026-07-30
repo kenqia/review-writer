@@ -13,6 +13,12 @@ from jsonschema import Draft202012Validator
 
 from review_writer.project.manuscript_v2 import manuscript_state
 from review_writer.project.source_truth import canonical_digest
+from review_writer.delivery.chemical_paper_release import (
+    ChemicalPaperReleaseError,
+    analyze_chemical_paper_release,
+    dependency_currentness_for_project,
+    safe_chemical_paper_projection,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -50,7 +56,9 @@ COMMON_HARD_FAILS = frozenset(
         "SYSTEM_GENERATED_SYNTHESIS_FIGURE",
     }
 )
-EXPERT_HARD_FAILS = frozenset({"SYNTHESIS_FIGURE_PENDING"})
+EXPERT_HARD_FAILS = frozenset(
+    {"SYNTHESIS_FIGURE_PENDING", "CHEMICAL_DEPENDENCY_UNRESOLVED"}
+)
 RELEASE_LEVELS = frozenset({"SELF_REVIEWED_DRAFT", "EXPERT_REVIEWED_RELEASE"})
 
 
@@ -351,6 +359,36 @@ def _release_payload(release: Path, release_level: str | None) -> dict[str, Any]
         manuscript_text = manuscript_path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
         raise BenchmarkError("BENCHMARK_MANUSCRIPT_NOT_APPROVED") from exc
+    try:
+        chemical_state = analyze_chemical_paper_release(lineage)
+        chemical_currentness = dependency_currentness_for_project(
+            project, chemical_state
+        )
+    except ChemicalPaperReleaseError:
+        chemical_state = analyze_chemical_paper_release({})
+        chemical_currentness = {
+            "lineage_binding_status": "stale",
+            "can_release": False,
+        }
+        divergence = True
+    chemical_paper_safe_summary = safe_chemical_paper_projection(chemical_state)
+    if chemical_state["status"] == "available":
+        if (
+            chemical_currentness.get("lineage_binding_status") != "current"
+            or snapshot.get("chemical_paper_binding_digest")
+            != chemical_state["binding_digest"]
+            or snapshot.get("chemical_paper_safe_summary")
+            != chemical_paper_safe_summary
+            or snapshot.get("chemical_paper_dependency_can_release")
+            is not chemical_currentness.get("can_release")
+        ):
+            divergence = True
+    elif (
+        snapshot.get("chemical_paper_binding_digest") not in {None, ""}
+        or snapshot.get("chemical_paper_safe_summary") is not None
+        or snapshot.get("chemical_paper_dependency_can_release", True) is not True
+    ):
+        divergence = True
     for row in placeholders:
         if isinstance(row, dict) and row.get("status") != "verified":
             placeholder_id = row.get("placeholder_id")
@@ -386,6 +424,12 @@ def _release_payload(release: Path, release_level: str | None) -> dict[str, Any]
         "release_sha256": docx_sha256 if not divergence else None,
         "placeholders": placeholders,
         "verified_figure_ready": verified_figure_ready,
+        "chemical_paper_state": chemical_state,
+        "chemical_paper_safe_summary": chemical_paper_safe_summary,
+        "chemical_paper_binding_digest": chemical_state["binding_digest"],
+        "chemical_paper_dependency_can_release": chemical_currentness.get(
+            "can_release", False
+        ),
         "hard_fail_signals": signals,
     }
 
@@ -459,6 +503,23 @@ def validate_report(report: object) -> dict[str, Any]:
     if errors:
         raise BenchmarkError("BENCHMARK_REPORT_INVALID")
     rows = report["rubric"]
+    summary = report["chemical_paper_safe_summary"]
+    expected_chemical_issues: set[str] = set()
+    if isinstance(summary, dict):
+        if summary["unresolved_field_count"]:
+            expected_chemical_issues.add("CHEMICAL_FIELDS_UNRESOLVED")
+        if summary["element_review_counts"]["not_reviewed"]:
+            expected_chemical_issues.add("CHEMICAL_ELEMENTS_NOT_REVIEWED")
+        if summary["reaction_data_status"] == "unavailable_not_provided":
+            expected_chemical_issues.add("CHEMICAL_REACTION_DATA_UNAVAILABLE")
+    dependency_can_release = report["release_binding"][
+        "chemical_paper_dependency_can_release"
+    ]
+    if not dependency_can_release:
+        expected_chemical_issues.add("CHEMICAL_DEPENDENCY_UNRESOLVED")
+    actual_chemical_issues = {
+        code for code in report["issues"] if code.startswith("CHEMICAL_")
+    }
     expected_ids = [key for key, _ in RUBRIC_DIMENSIONS]
     if (
         [row["dimension_id"] for row in rows] != expected_ids
@@ -468,14 +529,24 @@ def validate_report(report: object) -> dict[str, Any]:
         or report["status"]
         != _expected_status(report["release_level"], report["score"], report["hard_fails"])
         or report["comparison_metrics"] != list(COMPARISON_METRICS)
+        or actual_chemical_issues != expected_chemical_issues
         or (
             report["release_level"] == "SELF_REVIEWED_DRAFT"
-            and "SYNTHESIS_FIGURE_PENDING" in report["hard_fails"]
+            and any(code in EXPERT_HARD_FAILS for code in report["hard_fails"])
         )
         or (
             report["release_level"] == "EXPERT_REVIEWED_RELEASE"
             and "SYNTHESIS_FIGURE_PENDING" in report["issues"]
             and "SYNTHESIS_FIGURE_PENDING" not in report["hard_fails"]
+        )
+        or (
+            report["release_level"] == "EXPERT_REVIEWED_RELEASE"
+            and (
+                "CHEMICAL_DEPENDENCY_UNRESOLVED" in report["issues"]
+            )
+            != (
+                "CHEMICAL_DEPENDENCY_UNRESOLVED" in report["hard_fails"]
+            )
         )
     ):
         raise BenchmarkError("BENCHMARK_REPORT_INCONSISTENT")
@@ -483,6 +554,8 @@ def validate_report(report: object) -> dict[str, Any]:
         report["score"] >= 80
         and not report["hard_fails"]
         and "SYNTHESIS_FIGURE_PENDING" not in report["issues"]
+        and "CHEMICAL_DEPENDENCY_UNRESOLVED" not in report["issues"]
+        and dependency_can_release
     )
     if report["expert_release_ready"] is not expert_ready:
         raise BenchmarkError("BENCHMARK_REPORT_INCONSISTENT")
@@ -506,9 +579,17 @@ def evaluate_review(
         or not binding["verified_figure_ready"]
     )
     issues = ["SYNTHESIS_FIGURE_PENDING"] if pending else []
+    issues.extend(binding["chemical_paper_state"]["issues"])
+    if not binding["chemical_paper_dependency_can_release"]:
+        issues.append("CHEMICAL_DEPENDENCY_UNRESOLVED")
     all_hard_fails = list(hard_fails) + binding["hard_fail_signals"]
     if binding["release_level"] == "EXPERT_REVIEWED_RELEASE" and pending:
         all_hard_fails.append("SYNTHESIS_FIGURE_PENDING")
+    if (
+        binding["release_level"] == "EXPERT_REVIEWED_RELEASE"
+        and not binding["chemical_paper_dependency_can_release"]
+    ):
+        all_hard_fails.append("CHEMICAL_DEPENDENCY_UNRESOLVED")
     allowed = COMMON_HARD_FAILS | EXPERT_HARD_FAILS
     if any(code not in allowed for code in all_hard_fails):
         raise BenchmarkError("BENCHMARK_HARD_FAIL_INVALID")
@@ -521,13 +602,25 @@ def evaluate_review(
         "status": _expected_status(binding["release_level"], score, unique_hard_fails),
         "score": score,
         "tier": _tier(score),
-        "expert_release_ready": score >= 80 and not unique_hard_fails and not pending,
+        "expert_release_ready": (
+            score >= 80
+            and not unique_hard_fails
+            and not pending
+            and binding["chemical_paper_dependency_can_release"]
+        ),
         "rubric": rubric,
         "hard_fails": unique_hard_fails,
-        "issues": issues,
+        "issues": sorted(set(issues)),
+        "chemical_paper_safe_summary": binding["chemical_paper_safe_summary"],
         "release_binding": {
             "manuscript_sha256": binding["manuscript_sha256"],
             "release_sha256": binding["release_sha256"],
+            "chemical_paper_binding_digest": binding[
+                "chemical_paper_binding_digest"
+            ],
+            "chemical_paper_dependency_can_release": binding[
+                "chemical_paper_dependency_can_release"
+            ],
         },
         "standard_corpus": standard_corpus,
         "comparison_metrics": list(COMPARISON_METRICS),

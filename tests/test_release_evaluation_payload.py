@@ -23,7 +23,9 @@ def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value) + "\n", encoding="utf-8")
 
 
-def _benchmark(project: Path) -> dict[str, object]:
+def _benchmark(
+    project: Path, *, chemical_paper: dict[str, object] | None = None
+) -> dict[str, object]:
     report: dict[str, object] = {
         "schema_version": "review-benchmark-report.v1",
         "evaluated_at": "2026-07-29T00:00:00Z",
@@ -43,10 +45,24 @@ def _benchmark(project: Path) -> dict[str, object]:
             for dimension_id, maximum, score in DIMENSIONS
         ],
         "hard_fails": [],
-        "issues": ["SYNTHESIS_FIGURE_PENDING"],
+        "issues": [
+            "SYNTHESIS_FIGURE_PENDING",
+            *(
+                [
+                    "CHEMICAL_ELEMENTS_NOT_REVIEWED",
+                    "CHEMICAL_FIELDS_UNRESOLVED",
+                    "CHEMICAL_REACTION_DATA_UNAVAILABLE",
+                ]
+                if chemical_paper is not None
+                else []
+            ),
+        ],
+        "chemical_paper_safe_summary": chemical_paper,
         "release_binding": {
             "manuscript_sha256": "a" * 64,
             "release_sha256": "b" * 64,
+            "chemical_paper_binding_digest": "c" * 64 if chemical_paper else None,
+            "chemical_paper_dependency_can_release": True,
         },
         "standard_corpus": None,
         "comparison_metrics": [
@@ -68,6 +84,19 @@ def _benchmark(project: Path) -> dict[str, object]:
             "release_level": "SELF_REVIEWED_DRAFT",
             "manuscript_sha256": "a" * 64,
             "docx_sha256": "b" * 64,
+            **(
+                {
+                    "chemical_paper_binding_digest": "c" * 64,
+                    "chemical_paper_safe_summary": chemical_paper,
+                    "chemical_paper_dependency_can_release": True,
+                }
+                if chemical_paper is not None
+                else {
+                    "chemical_paper_binding_digest": None,
+                    "chemical_paper_safe_summary": None,
+                    "chemical_paper_dependency_can_release": True,
+                }
+            ),
         },
     )
     return report
@@ -128,3 +157,39 @@ def test_evaluation_payload_hides_stale_benchmark_values(tmp_path: Path) -> None
 
     assert payload["benchmark"] == {"status": "stale", "reason_code": "BENCHMARK_RELEASE_STALE"}
     assert "score" not in payload["benchmark"]
+
+
+def test_evaluation_payload_exposes_only_aggregate_chemical_paper_state(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "review-projects/project-a"
+    project.mkdir(parents=True)
+    chemical_paper: dict[str, object] = {
+        "schema_version": "chemical-paper-safe-summary.v1",
+        "route": "chemical-paper-zip-only",
+        "study_count": 3,
+        "molecule_count": 309,
+        "unresolved_field_count": 94,
+        "element_review_counts": {
+            "not_reviewed": 309,
+            "confirmed": 0,
+            "corrected": 0,
+            "not_applicable": 0,
+        },
+        "reaction_data_status": "unavailable_not_provided",
+    }
+    _benchmark(project, chemical_paper=chemical_paper)
+
+    payload = dashboard.project_evaluation_payload(project)
+
+    assert payload["benchmark"]["chemical_paper_safe_summary"] == chemical_paper
+    serialized = json.dumps(payload["benchmark"]["chemical_paper_safe_summary"])
+    for forbidden in (
+        "chemical_paper_lineage_digest",
+        "source_pdf_sha256",
+        "import_digest",
+        "molecule_id",
+        "study_id",
+        "zip_path",
+    ):
+        assert forbidden not in serialized

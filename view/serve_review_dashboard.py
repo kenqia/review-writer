@@ -3947,9 +3947,15 @@ def _project_benchmark_payload(project: Path) -> dict[str, Any]:
         or report.get("release_level") != snapshot.get("release_level")
         or binding.get("manuscript_sha256") != snapshot.get("manuscript_sha256")
         or binding.get("release_sha256") != snapshot.get("docx_sha256")
+        or binding.get("chemical_paper_binding_digest")
+        != snapshot.get("chemical_paper_binding_digest")
+        or binding.get("chemical_paper_dependency_can_release")
+        is not snapshot.get("chemical_paper_dependency_can_release")
+        or report.get("chemical_paper_safe_summary")
+        != snapshot.get("chemical_paper_safe_summary")
     ):
         return {"status": "stale", "reason_code": "BENCHMARK_RELEASE_STALE"}
-    return {
+    projected = {
         "status": "available",
         "release_level": report["release_level"],
         "benchmark_status": report["status"],
@@ -3962,6 +3968,10 @@ def _project_benchmark_payload(project: Path) -> dict[str, Any]:
         "human_review_required": report["human_review_required"],
         "disclaimer": report["disclaimer"],
     }
+    chemical_paper = report.get("chemical_paper_safe_summary")
+    if isinstance(chemical_paper, dict):
+        projected["chemical_paper_safe_summary"] = chemical_paper
+    return projected
 
 
 def project_evaluation_payload(project: Path) -> dict[str, Any]:
