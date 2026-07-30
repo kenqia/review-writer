@@ -388,6 +388,57 @@ def test_safe_projection_rejects_cross_study_duplicate_source_id(
         chemical_paper_projection(project)
 
 
+def test_safe_projection_rejects_orphan_source_collision_outside_receipt(
+    tmp_path: Path,
+) -> None:
+    from review_writer.project.chemical_paper import (
+        ChemicalPaperError,
+        chemical_paper_projection,
+        import_chemical_paper,
+    )
+
+    project = source_truth_project(tmp_path)
+    import_chemical_paper(
+        project,
+        "study-1",
+        PDF_SHA,
+        write_chemical_zip(tmp_path / "chemical.zip"),
+        ACTOR,
+    )
+    first_path = project / "01_evidence/source_truth/study-1/bundle.json"
+    first = json.loads(first_path.read_text(encoding="utf-8"))
+    orphan_body = {
+        key: copy.deepcopy(value)
+        for key, value in first.items()
+        if key != "bundle_digest"
+    }
+    orphan_body["study_id"] = "orphan-study"
+    orphan_body["study_identity"] = {
+        "doi": "10.1000/orphan",
+        "title": "Undeclared orphan fixture",
+    }
+    orphan_path = project / "01_evidence/source_truth/orphan-study/bundle.json"
+    orphan_path.parent.mkdir(parents=True)
+    orphan_path.write_text(
+        json.dumps(
+            {**orphan_body, "bundle_digest": canonical_digest(orphan_body)}
+        ),
+        encoding="utf-8",
+    )
+
+    receipt = json.loads(
+        (project / "00_sources/acquisition_final_receipt.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert receipt["studies"] == [{"study_id": "study-1"}]
+    with pytest.raises(
+        ChemicalPaperError,
+        match="CHEMICAL_PAPER_SOURCE_TRUTH_STALE",
+    ):
+        chemical_paper_projection(project)
+
+
 @pytest.mark.parametrize(
     ("asset_failure", "error_code"),
     (

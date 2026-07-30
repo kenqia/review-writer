@@ -495,6 +495,31 @@ def build_all_source_truth(project: Path) -> list[dict[str, object]]:
     return [build_source_truth_bundle(project, study_id) for study_id in _declared_study_ids(project)]
 
 
+def project_source_binding(
+    project: Path,
+    source_id: str,
+) -> tuple[str, dict[str, Any]]:
+    """Resolve one globally unique source using the Dashboard route boundary."""
+    project = project.resolve(strict=True)
+    if not isinstance(source_id, str) or not source_id:
+        raise SourceTruthError("SOURCE_ID_NOT_FOUND")
+    matches: list[tuple[str, dict[str, Any]]] = []
+    root = project / SOURCE_TRUTH_ROOT
+    if root.is_dir() and not root.is_symlink():
+        for study_dir in sorted(root.iterdir()):
+            if not study_dir.is_dir() or study_dir.is_symlink():
+                continue
+            bundle = load_source_truth_bundle(project, study_dir.name)
+            matches.extend(
+                (study_dir.name, row)
+                for row in bundle.get("sources", [])
+                if isinstance(row, dict) and row.get("source_id") == source_id
+            )
+    if len(matches) != 1:
+        raise SourceTruthError("SOURCE_ID_NOT_FOUND")
+    return matches[0]
+
+
 def source_truth_asset(
     project: Path,
     study_id: str,

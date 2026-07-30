@@ -31,6 +31,7 @@ from .source_truth import (
     canonical_digest,
     declared_study_ids,
     load_source_truth_bundle,
+    project_source_binding,
     source_truth_asset,
 )
 
@@ -225,7 +226,6 @@ def load_chemical_paper_state(project: Path, study_id: str) -> dict[str, Any]:
     state = _validate_state(value)
     try:
         bundle = load_source_truth_bundle(root, study_id)
-        source_occurrences: list[str] = []
         for current_study_id in declared_study_ids(root):
             current_bundle = (
                 bundle
@@ -237,12 +237,10 @@ def load_chemical_paper_state(project: Path, study_id: str) -> dict[str, Any]:
                 or current_bundle.get("study_id") != current_study_id
             ):
                 raise SourceTruthError("SOURCE_TRUTH_IDENTITY_MISMATCH")
-            source_occurrences.extend(
-                current_study_id
-                for row in current_bundle.get("sources", [])
-                if isinstance(row, dict)
-                and row.get("source_id") == state["source_id"]
-            )
+        resolved_study_id, resolved_source = project_source_binding(
+            root,
+            state["source_id"],
+        )
     except SourceTruthError as exc:
         raise ChemicalPaperError("CHEMICAL_PAPER_SOURCE_TRUTH_STALE") from exc
     sources = bundle.get("sources")
@@ -262,8 +260,9 @@ def load_chemical_paper_state(project: Path, study_id: str) -> dict[str, Any]:
         or state["study_id"] != study_id
         or bundle.get("project_id") != root.name
         or bundle.get("study_id") != study_id
-        or source_occurrences != [study_id]
+        or resolved_study_id != study_id
         or len(current) != 1
+        or resolved_source != current[0]
         or active["source_id"] != state["source_id"]
         or active["source_pdf_sha256"] != state["source_pdf_sha256"]
         or active["source_truth_bundle_digest"] != state["source_truth_bundle_digest"]

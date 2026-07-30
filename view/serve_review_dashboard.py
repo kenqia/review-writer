@@ -112,6 +112,7 @@ from review_writer.project.source_truth import (  # noqa: E402
     SourceTruthError,
     canonical_digest,
     load_source_truth_bundle,
+    project_source_binding,
     source_truth_asset,
 )
 from review_writer.project.chemical_paper import (  # noqa: E402
@@ -3402,40 +3403,16 @@ def write_project_parse_quality_decision(
 def project_parse_source_asset(project: Path, source_id: str, kind: str) -> Path:
     if not source_id or kind not in {"pdf", "parsed-markdown"}:
         raise SourceTruthError("SOURCE_ASSET_KIND_INVALID")
-    root = project / SOURCE_TRUTH_ROOT
-    matches: list[str] = []
-    if root.is_dir() and not root.is_symlink():
-        for study_dir in sorted(root.iterdir()):
-            if not study_dir.is_dir() or study_dir.is_symlink():
-                continue
-            bundle = load_source_truth_bundle(project, study_dir.name)
-            if any(
-                isinstance(row, dict) and row.get("source_id") == source_id
-                for row in bundle.get("sources", [])
-            ):
-                matches.append(study_dir.name)
-    if len(matches) != 1:
-        raise SourceTruthError("SOURCE_ID_NOT_FOUND")
-    return source_truth_asset(project, matches[0], source_id, kind)
+    study_id, _ = project_source_binding(project, source_id)
+    return source_truth_asset(project, study_id, source_id, kind)
 
 
 def project_parse_source_page_count(project: Path, source_id: str) -> int:
-    root = project / SOURCE_TRUTH_ROOT
-    matches: list[int] = []
-    if root.is_dir() and not root.is_symlink():
-        for study_dir in sorted(root.iterdir()):
-            if not study_dir.is_dir() or study_dir.is_symlink():
-                continue
-            bundle = load_source_truth_bundle(project, study_dir.name)
-            for row in bundle.get("sources", []):
-                if isinstance(row, dict) and row.get("source_id") == source_id:
-                    page_count = row.get("page_count")
-                    if not isinstance(page_count, int) or isinstance(page_count, bool) or page_count < 1:
-                        raise SourceTruthError("SOURCE_PAGE_COUNT_INVALID")
-                    matches.append(page_count)
-    if len(matches) != 1:
-        raise SourceTruthError("SOURCE_ID_NOT_FOUND")
-    return matches[0]
+    _, source = project_source_binding(project, source_id)
+    page_count = source.get("page_count")
+    if not isinstance(page_count, int) or isinstance(page_count, bool) or page_count < 1:
+        raise SourceTruthError("SOURCE_PAGE_COUNT_INVALID")
+    return page_count
 
 
 def render_pdf_page(path: Path, page: int) -> bytes:
