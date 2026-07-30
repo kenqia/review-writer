@@ -589,12 +589,13 @@ def _dashboard_authority_payloads(
     except ImportError as exc:
         raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_UNAVAILABLE") from exc
     root = _project(project)
+    dual = project_dual_source_state(root)
     values = (
-        project_dual_source_state(root),
+        dual,
         project_chemical_completion_state(root),
         project_reconciliation_state(root),
         chemical_paper_projection(root),
-        workflow_state(root),
+        workflow_state(root, precomputed_dual_state=dual),
     )
     if not all(isinstance(value, dict) for value in values):
         raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_INVALID")

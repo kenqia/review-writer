@@ -78,7 +78,11 @@ def _legacy_state(project: Path) -> dict[str, Any]:
     )
 
 
-def _new_route_state(project: Path) -> dict[str, Any]:
+def _new_route_state(
+    project: Path,
+    *,
+    precomputed_dual_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     source_root = project / SOURCE_TRUTH_ROOT
     bundle_paths = (
         sorted(source_root.glob("*/bundle.json"))
@@ -126,7 +130,30 @@ def _new_route_state(project: Path) -> dict[str, Any]:
     generic_source_available_count = 0
     dual_state: dict[str, Any] | None = None
     if source_ready and dual_route:
-        dual_state = project_dual_source_state(project)
+        precomputed_studies = (
+            precomputed_dual_state.get("studies")
+            if isinstance(precomputed_dual_state, dict)
+            else None
+        )
+        precomputed_ids = (
+            sorted(
+                row.get("study_id")
+                for row in precomputed_studies
+                if isinstance(row, dict) and isinstance(row.get("study_id"), str)
+            )
+            if isinstance(precomputed_studies, list)
+            else []
+        )
+        if (
+            precomputed_dual_state is not None
+            and precomputed_dual_state.get("schema_version")
+            == "dual-source-project-state.v1"
+            and precomputed_ids == declared
+            and len(precomputed_ids) == len(precomputed_studies)
+        ):
+            dual_state = precomputed_dual_state
+        else:
+            dual_state = project_dual_source_state(project)
         main_source_available_count = int(
             dual_state.get("main_source_available_count", 0)
         )
@@ -258,11 +285,17 @@ def _new_route_state(project: Path) -> dict[str, Any]:
     )
 
 
-def workflow_state(project: Path) -> dict[str, Any]:
+def workflow_state(
+    project: Path,
+    *,
+    precomputed_dual_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Project the only workflow state allowed to authorize downstream work."""
 
     project = project.resolve(strict=True)
     source_root = project / SOURCE_TRUTH_ROOT
     if os.path.lexists(source_root):
-        return _new_route_state(project)
+        return _new_route_state(
+            project, precomputed_dual_state=precomputed_dual_state
+        )
     return _legacy_state(project)

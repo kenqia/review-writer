@@ -262,6 +262,47 @@ def test_fresh_generic_sources_remain_available_before_parse_and_chemical_review
     assert evidence["workflow_can_continue"] is False
 
 
+def test_dashboard_projection_validates_each_source_once_per_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from review_writer.project import dual_source as authority
+
+    request = source_request(tmp_path)
+    project = bootstrap_dual_parse_project(
+        tmp_path / "review-projects", request
+    )
+    bind_generic_parse_outputs(project, generic_output(tmp_path / "generic", request))
+    before = {
+        path.relative_to(project).as_posix(): path.read_bytes()
+        for path in project.rglob("*")
+        if path.is_file()
+    }
+    real_availability = authority._source_availability
+    calls: list[str] = []
+
+    def counted_availability(root: Path, study_id: str) -> dict[str, str]:
+        calls.append(study_id)
+        return real_availability(root, study_id)
+
+    monkeypatch.setattr(authority, "_source_availability", counted_availability)
+
+    first = dual_parse_dashboard_projection(project)
+
+    assert first["summary"]["generic_current"] == 3
+    assert calls == ["study-0", "study-1", "study-2"]
+
+    calls.clear()
+    second = dual_parse_dashboard_projection(project)
+
+    assert second["summary"]["generic_current"] == 3
+    assert calls == ["study-0", "study-1", "study-2"]
+    assert {
+        path.relative_to(project).as_posix(): path.read_bytes()
+        for path in project.rglob("*")
+        if path.is_file()
+    } == before
+
+
 def test_fresh_figure_workspace_get_is_read_only(tmp_path: Path) -> None:
     project = _ready_project(tmp_path)
     before = {
