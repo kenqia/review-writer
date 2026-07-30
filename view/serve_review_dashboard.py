@@ -2527,7 +2527,9 @@ def project_cockpit_payload(review_root: Path, project_id: str) -> dict[str, Any
         blockers = blockers if isinstance(blockers, list) else []
         progress = project_progress_payload(review_root, project_id)
         dual_parse_status = "not_applicable"
-        if (project / "01_evidence/dual_source").is_dir():
+        if workflow.get("dual_route") is True or (
+            project / "01_evidence/dual_source"
+        ).is_dir():
             try:
                 from review_writer.project.chemical_completion import (
                     project_chemical_completion_state,
@@ -2537,28 +2539,49 @@ def project_cockpit_payload(review_root: Path, project_id: str) -> dict[str, Any
                     project_reconciliation_state,
                 )
 
+                dual_source = project_dual_source_state(project)
                 dual_states = (
-                    project_dual_source_state(project),
+                    dual_source,
                     project_chemical_completion_state(project),
                     project_reconciliation_state(project),
                 )
-                dual_parse_status = (
-                    "current"
-                    if all(
-                        state.get("workflow_can_continue") is True
+                if all(
+                    state.get("workflow_can_continue") is True
+                    for state in dual_states
+                ):
+                    dual_parse_status = "current"
+                else:
+                    reason_codes = {
+                        str(row.get("reason_code"))
                         for state in dual_states
+                        for row in state.get("studies", [])
+                        if isinstance(row, dict) and row.get("reason_code")
+                    }
+                    dual_parse_status = (
+                        "stale"
+                        if any("STALE" in code for code in reason_codes)
+                        else "blocked"
                     )
-                    else "stale"
-                )
             except (OSError, ValueError, KeyError, TypeError):
                 dual_parse_status = "stale"
+        main_source_available_count = workflow.get(
+            "main_source_available_count"
+        )
+        if (
+            isinstance(main_source_available_count, bool)
+            or not isinstance(main_source_available_count, int)
+            or main_source_available_count < 0
+        ):
+            main_source_available_count = (
+                study_count if workflow.get("parse_ready") else 0
+            )
         return {
             "project_id": project_id,
             "dual_parse_status": dual_parse_status,
             "current_stage": progress["active_stage"],
             "metrics": {
                 "included_studies": study_count,
-                "full_text_main_coverage": study_count if workflow.get("parse_ready") else 0,
+                "full_text_main_coverage": main_source_available_count,
                 "reviewed_studies": reviewed_studies,
                 "scientific_risks": len(blockers),
             },

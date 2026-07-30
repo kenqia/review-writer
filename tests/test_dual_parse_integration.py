@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import shutil
 import subprocess
@@ -24,10 +25,21 @@ from review_writer.project.content_agent_handoff import (
     ContentAgentError,
     build_content_task_package,
 )
-from review_writer.project.dual_source import write_dual_source_binding
+from review_writer.project.dual_parse_bootstrap import (
+    bind_generic_parse_outputs,
+    bootstrap_dual_parse_project,
+)
+from review_writer.project.dual_source import (
+    project_dual_source_state,
+    write_dual_source_binding,
+)
+from review_writer.project.paper_evidence import paper_evidence_state
 from review_writer.project.parse_quality import write_parse_quality_gate
 from review_writer.project.parse_reconciliation import write_parse_reconciliation
-from review_writer.project.source_truth import write_source_truth_bundle
+from review_writer.project.source_truth import (
+    load_source_truth_bundle,
+    write_source_truth_bundle,
+)
 from review_writer.project.workflow_projection import workflow_state
 from test_parse_quality import _decide_all
 from test_dual_parse_content_package import paper_request
@@ -35,6 +47,7 @@ from test_chemical_completion import completion_project
 from test_chemical_paper_import import v2000, write_chemical_zip
 from test_dual_source import dual_project
 from test_parse_reconciliation import reconciliation_project
+from test_dual_parse_bootstrap import generic_output, source_request
 from view.serve_review_dashboard import project_cockpit_payload
 from view.serve_review_dashboard import project_review_figures_workspace_payload
 
@@ -89,6 +102,33 @@ def test_reparse_stales_ui_package_and_release_together(tmp_path: Path) -> None:
     ):
         build_content_task_package(project, paper_request(project))
     assert dual_parse_release_state(project)["internal_release_ready"] is False
+
+
+def test_pdf_drift_blocks_saved_dual_binding_and_release(tmp_path: Path) -> None:
+    project = _ready_project(tmp_path)
+    bundle = load_source_truth_bundle(project, "scholarly-a")
+    main = next(
+        row for row in bundle["sources"] if row["document_role"] == "MAIN"
+    )
+    pdf = project / main["pdf"]["path"]
+    pdf.write_bytes(pdf.read_bytes() + b"\npost-binding drift")
+
+    scientific = project_dual_source_state(project)
+    workflow = workflow_state(project)
+    release = dual_parse_release_state(project)
+
+    row = scientific["studies"][0]
+    assert row["pdf_status"] == "stale"
+    assert row["generic_parse_status"] != "current"
+    assert row["status"] == "blocked"
+    assert scientific["workflow_can_continue"] is False
+    assert scientific["main_source_available_count"] == 0
+    assert scientific["generic_source_available_count"] == 0
+    assert workflow["dual_source_ready"] is False
+    assert release["dual_parse_status"] == "stale"
+    assert release["internal_release_ready"] is False
+    assert "DUAL_PARSE_STALE" in release["hard_fails"]
+    assert "CORE_GENERIC_PARSE_MISSING_OR_STALE" in release["hard_fails"]
 
 
 def test_backend_projection_is_consumable_by_dashboard_ui(tmp_path: Path) -> None:
@@ -164,6 +204,154 @@ def test_backend_projection_exposes_safe_researcher_work_queues(
     assert item["registry_digest"].startswith("rcv1.")
     assert item["generic_candidate"].startswith("名称: compound 1")
     assert item["chemical_candidate"].startswith("名称: compound 1")
+
+
+def test_fresh_generic_sources_remain_available_before_parse_and_chemical_review(
+    tmp_path: Path,
+) -> None:
+    request = source_request(tmp_path)
+    project = bootstrap_dual_parse_project(
+        tmp_path / "review-projects", request
+    )
+    bind_generic_parse_outputs(project, generic_output(tmp_path / "generic", request))
+
+    scientific = project_dual_source_state(project)
+    dashboard = dual_parse_dashboard_projection(project)
+    workflow = workflow_state(project)
+    cockpit = project_cockpit_payload(tmp_path, project.name)
+    evidence = paper_evidence_state(project)
+
+    assert len(scientific["studies"]) == 3
+    assert all(row["pdf_status"] == "verified" for row in scientific["studies"])
+    assert all(
+        row["generic_parse_status"] == "current"
+        for row in scientific["studies"]
+    )
+    assert all(row["status"] == "blocked" for row in scientific["studies"])
+    assert scientific["workflow_can_continue"] is False
+
+    assert dashboard["summary"] == {
+        "core_studies": 3,
+        "pdf_verified": 3,
+        "generic_current": 3,
+        "chemical_current": 0,
+        "reaction_data_status": "unavailable_not_provided",
+    }
+    assert all(row["pdf_status"] == "verified" for row in dashboard["studies"])
+    assert all(
+        row["generic_parse_status"] == "current" for row in dashboard["studies"]
+    )
+    assert all(
+        row["chemical_import_status"] == "missing"
+        for row in dashboard["studies"]
+    )
+    assert all(
+        row["completion_status"] == "blocked"
+        and row["reconciliation_status"] == "blocked"
+        and row["paper_evidence_status"] == "blocked"
+        for row in dashboard["studies"]
+    )
+
+    assert workflow["active_stage"] == "parsing"
+    assert workflow["parse_ready"] is False
+    assert workflow["dual_source_ready"] is False
+    assert workflow["paper_evidence_ready"] is False
+    assert workflow["main_source_available_count"] == 3
+    assert workflow["generic_source_available_count"] == 3
+    assert cockpit["metrics"]["full_text_main_coverage"] == 3
+    assert cockpit["metrics"]["reviewed_studies"] == 0
+    assert evidence["workflow_can_continue"] is False
+
+
+def test_dashboard_projection_validates_each_source_once_per_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from review_writer.project import dual_source as authority
+
+    request = source_request(tmp_path)
+    project = bootstrap_dual_parse_project(
+        tmp_path / "review-projects", request
+    )
+    bind_generic_parse_outputs(project, generic_output(tmp_path / "generic", request))
+    before = {
+        path.relative_to(project).as_posix(): path.read_bytes()
+        for path in project.rglob("*")
+        if path.is_file()
+    }
+    real_availability = authority._source_availability
+    calls: list[str] = []
+
+    def counted_availability(root: Path, study_id: str) -> dict[str, str]:
+        calls.append(study_id)
+        return real_availability(root, study_id)
+
+    monkeypatch.setattr(authority, "_source_availability", counted_availability)
+
+    first = dual_parse_dashboard_projection(project)
+
+    assert first["summary"]["generic_current"] == 3
+    assert calls == ["study-0", "study-1", "study-2"]
+
+    calls.clear()
+    second = dual_parse_dashboard_projection(project)
+
+    assert second["summary"]["generic_current"] == 3
+    assert calls == ["study-0", "study-1", "study-2"]
+    assert {
+        path.relative_to(project).as_posix(): path.read_bytes()
+        for path in project.rglob("*")
+        if path.is_file()
+    } == before
+
+
+def test_malformed_precomputed_dual_state_recomputes_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from review_writer.project import workflow_projection as projection
+
+    request = source_request(tmp_path)
+    project = bootstrap_dual_parse_project(
+        tmp_path / "review-projects", request
+    )
+    bind_generic_parse_outputs(project, generic_output(tmp_path / "generic", request))
+    valid = project_dual_source_state(project)
+    missing_keys = {
+        "schema_version": valid["schema_version"],
+        "studies": [{"study_id": row["study_id"]} for row in valid["studies"]],
+    }
+    invalid_status = copy.deepcopy(valid)
+    invalid_status["studies"][0]["status"] = "forged_current"
+    count_mismatch = copy.deepcopy(valid)
+    count_mismatch["main_source_available_count"] += 1
+    workflow_contradiction = copy.deepcopy(valid)
+    workflow_contradiction["workflow_can_continue"] = True
+    recomputes = 0
+
+    def fresh_state(_project: Path) -> dict[str, object]:
+        nonlocal recomputes
+        recomputes += 1
+        return copy.deepcopy(valid)
+
+    monkeypatch.setattr(projection, "project_dual_source_state", fresh_state)
+
+    for index, malformed in enumerate(
+        (
+            missing_keys,
+            invalid_status,
+            count_mismatch,
+            workflow_contradiction,
+        ),
+        start=1,
+    ):
+        state = projection._new_route_state(
+            project, _precomputed_dual_state=malformed
+        )
+
+        assert recomputes == index
+        assert state["main_source_available_count"] == 3
+        assert state["generic_source_available_count"] == 3
+        assert state["dual_source_ready"] is False
+        assert state["paper_evidence_ready"] is False
 
 
 def test_fresh_figure_workspace_get_is_read_only(tmp_path: Path) -> None:

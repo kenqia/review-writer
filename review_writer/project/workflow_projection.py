@@ -16,6 +16,7 @@ from review_writer.project.source_truth import (
     SourceTruthError,
     canonical_digest,
     declared_study_ids,
+    study_source_tier,
 )
 from review_writer.project.dual_source import project_dual_source_state
 from review_writer.project.chemical_completion import project_chemical_completion_state
@@ -77,7 +78,106 @@ def _legacy_state(project: Path) -> dict[str, Any]:
     )
 
 
-def _new_route_state(project: Path) -> dict[str, Any]:
+def _validated_precomputed_dual_state(
+    value: object, declared: list[str]
+) -> dict[str, Any] | None:
+    if (
+        not isinstance(value, dict)
+        or set(value) != {
+            "schema_version",
+            "studies",
+            "main_source_available_count",
+            "generic_source_available_count",
+            "workflow_can_continue",
+        }
+        or value.get("schema_version") != "dual-source-project-state.v1"
+        or not isinstance(value.get("studies"), list)
+        or not isinstance(value.get("workflow_can_continue"), bool)
+    ):
+        return None
+    studies = value["studies"]
+    counts = (
+        value.get("main_source_available_count"),
+        value.get("generic_source_available_count"),
+    )
+    if any(
+        isinstance(count, bool) or not isinstance(count, int) or count < 0
+        for count in counts
+    ):
+        return None
+    allowed_pdf = {"verified", "stale", "unknown"}
+    allowed_generic = {"current", "stale", "unknown"}
+    allowed_status = {"blocked", "current", "current_generic_only"}
+    ids: list[str] = []
+    for row in studies:
+        if not isinstance(row, dict):
+            return None
+        study_id = row.get("study_id")
+        tier = row.get("source_tier")
+        requires_chemical = row.get("requires_chemical")
+        pdf_status = row.get("pdf_status")
+        generic_status = row.get("generic_parse_status")
+        status = row.get("status")
+        generic = row.get("generic")
+        if (
+            not isinstance(study_id, str)
+            or tier not in {"core", "background"}
+            or not isinstance(requires_chemical, bool)
+            or requires_chemical is not (tier == "core")
+            or pdf_status not in allowed_pdf
+            or generic_status not in allowed_generic
+            or status not in allowed_status
+            or not isinstance(generic, dict)
+            or generic.get("status") != generic_status
+        ):
+            return None
+        ids.append(study_id)
+        if status == "blocked":
+            if not isinstance(row.get("reason_code"), str) or not row["reason_code"]:
+                return None
+            continue
+        if (
+            pdf_status != "verified"
+            or generic_status != "current"
+            or not isinstance(row.get("binding_digest"), str)
+            or not isinstance(generic.get("binding_digest"), str)
+            or (status == "current_generic_only" and tier != "background")
+        ):
+            return None
+        chemical = row.get("chemical")
+        if status == "current_generic_only":
+            if chemical is not None:
+                return None
+        elif (
+            not isinstance(chemical, dict)
+            or chemical.get("status") != "current"
+            or not isinstance(chemical.get("state_digest"), str)
+            or row.get("reaction_data_status")
+            not in {"available", "unavailable_not_provided"}
+        ):
+            return None
+    if sorted(ids) != declared or len(ids) != len(set(ids)):
+        return None
+    main_count = sum(row["pdf_status"] == "verified" for row in studies)
+    generic_count = sum(
+        row["generic_parse_status"] == "current" for row in studies
+    )
+    workflow = bool(studies) and all(
+        row["status"] in {"current", "current_generic_only"} for row in studies
+    )
+    if (
+        counts != (main_count, generic_count)
+        or value["workflow_can_continue"] is not workflow
+    ):
+        return None
+    return value
+
+
+def _new_route_state(
+    project: Path,
+    *,
+    _precomputed_dual_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     source_root = project / SOURCE_TRUTH_ROOT
     bundle_paths = (
         sorted(source_root.glob("*/bundle.json"))
@@ -104,7 +204,16 @@ def _new_route_state(project: Path) -> dict[str, Any]:
 
     paper_evidence_ready = False
     paper_evidence_error = False
-    dual_route = (
+    tiered_dual_route = False
+    if source_ready and declared:
+        try:
+            tiered_dual_route = all(
+                study_source_tier(project, study_id) in {"core", "background"}
+                for study_id in declared
+            )
+        except SourceTruthError:
+            tiered_dual_route = False
+    dual_route = tiered_dual_route or (
         (project / "01_evidence/dual_source").is_dir()
         or (project / "01_evidence/chemical_paper").is_dir()
     )
@@ -112,8 +221,22 @@ def _new_route_state(project: Path) -> dict[str, Any]:
     chemical_completion_ready = not dual_route
     reconciliation_ready = not dual_route
     dual_blocker: str | None = None
-    if parse_ready and dual_route:
-        dual_state = project_dual_source_state(project)
+    main_source_available_count = 0
+    generic_source_available_count = 0
+    dual_state: dict[str, Any] | None = None
+    if source_ready and dual_route:
+        dual_state = _validated_precomputed_dual_state(
+            _precomputed_dual_state, declared
+        )
+        if dual_state is None:
+            dual_state = project_dual_source_state(project)
+        main_source_available_count = int(
+            dual_state.get("main_source_available_count", 0)
+        )
+        generic_source_available_count = int(
+            dual_state.get("generic_source_available_count", 0)
+        )
+    if parse_ready and dual_state is not None:
         dual_source_ready = bool(dual_state.get("workflow_can_continue"))
         if not dual_source_ready:
             blocked = next((row for row in dual_state["studies"] if row["status"] == "blocked"), {})
@@ -218,7 +341,10 @@ def _new_route_state(project: Path) -> dict[str, Any]:
         {
             "schema_version": "evidence-to-release-workflow-state.v1",
             "route": NEW_ROUTE,
+            "dual_route": dual_route,
             "active_stage": active_stage,
+            "main_source_available_count": main_source_available_count,
+            "generic_source_available_count": generic_source_available_count,
             "parse_ready": parse_ready,
             "dual_source_ready": dual_source_ready,
             "chemical_completion_ready": chemical_completion_ready,
@@ -243,3 +369,19 @@ def workflow_state(project: Path) -> dict[str, Any]:
     if os.path.lexists(source_root):
         return _new_route_state(project)
     return _legacy_state(project)
+
+
+def _workflow_and_dual_source_state(
+    project: Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Compute and reuse dual authority only within this synchronous request."""
+
+    root = project.resolve(strict=True)
+    dual = project_dual_source_state(root)
+    source_root = root / SOURCE_TRUTH_ROOT
+    workflow = (
+        _new_route_state(root, _precomputed_dual_state=dual)
+        if os.path.lexists(source_root)
+        else _legacy_state(root)
+    )
+    return workflow, dual

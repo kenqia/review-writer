@@ -580,21 +580,23 @@ def _dashboard_authority_payloads(
         from review_writer.project.chemical_completion import (
             project_chemical_completion_state,
         )
-        from review_writer.project.dual_source import project_dual_source_state
         from review_writer.project.parse_reconciliation import (
             project_reconciliation_state,
         )
-        from review_writer.project.workflow_projection import workflow_state
+        from review_writer.project.workflow_projection import (
+            _workflow_and_dual_source_state,
+        )
         from review_writer.project.chemical_paper import chemical_paper_projection
     except ImportError as exc:
         raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_UNAVAILABLE") from exc
     root = _project(project)
+    workflow, dual = _workflow_and_dual_source_state(root)
     values = (
-        project_dual_source_state(root),
+        dual,
         project_chemical_completion_state(root),
         project_reconciliation_state(root),
         chemical_paper_projection(root),
-        workflow_state(root),
+        workflow,
     )
     if not all(isinstance(value, dict) for value in values):
         raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_INVALID")
@@ -667,11 +669,15 @@ def dual_parse_dashboard_projection(project: Path) -> dict[str, Any]:
             "study_id": study_id,
             "source_tier": source.get("source_tier"),
             "dual_source_status": source.get("status"),
+            "pdf_status": source.get("pdf_status", "unknown"),
             "generic_parse_status": source.get(
-                "generic_status",
-                source.get("generic", {}).get("status")
-                if isinstance(source.get("generic"), dict)
-                else None,
+                "generic_parse_status",
+                source.get(
+                    "generic_status",
+                    source.get("generic", {}).get("status")
+                    if isinstance(source.get("generic"), dict)
+                    else "unknown",
+                ),
             ),
             "chemical_import_status": source.get(
                 "chemical_status",
@@ -697,6 +703,11 @@ def dual_parse_dashboard_projection(project: Path) -> dict[str, Any]:
             "version": chemistry.get("version"),
             "reaction_data_status": chemistry.get(
                 "reaction_data_status", REACTION_UNAVAILABLE
+            ),
+            "paper_evidence_status": (
+                "available"
+                if workflow.get("paper_evidence_ready") is True
+                else "blocked"
             ),
             "completion_version_token": complete.get("version_token"),
         }
@@ -824,6 +835,9 @@ def dual_parse_dashboard_projection(project: Path) -> dict[str, Any]:
         "project_status": "current" if project_current else "needs_review",
         "summary": {
             "core_studies": len(core),
+            "pdf_verified": sum(
+                row.get("pdf_status") == "verified" for row in core
+            ),
             "generic_current": sum(
                 row.get("generic_parse_status") == "current" for row in core
             ),
@@ -1101,9 +1115,13 @@ def _hard_fails_for_row(
                 }
             )
         return hard_fails
-    current_binding = _binding_from_authority(current)
-    if current_binding != frozen:
-        hard_fails.add("DUAL_PARSE_STALE")
+    try:
+        current_binding = _binding_from_authority(current)
+    except DualParseReleaseError:
+        hard_fails.update({"DUAL_PARSE_STALE", "DUAL_SOURCE_BINDING_MISMATCH"})
+    else:
+        if current_binding != frozen:
+            hard_fails.add("DUAL_PARSE_STALE")
     if current.get("dual_source_binding_digest") != frozen["dual_source_binding_digest"]:
         hard_fails.add("DUAL_SOURCE_BINDING_MISMATCH")
     if current.get("generic_status") != "current" or current.get("generic_version") != frozen["generic_version"]:
