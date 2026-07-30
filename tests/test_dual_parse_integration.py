@@ -24,7 +24,15 @@ from review_writer.project.content_agent_handoff import (
     ContentAgentError,
     build_content_task_package,
 )
-from review_writer.project.dual_source import write_dual_source_binding
+from review_writer.project.dual_parse_bootstrap import (
+    bind_generic_parse_outputs,
+    bootstrap_dual_parse_project,
+)
+from review_writer.project.dual_source import (
+    project_dual_source_state,
+    write_dual_source_binding,
+)
+from review_writer.project.paper_evidence import paper_evidence_state
 from review_writer.project.parse_quality import write_parse_quality_gate
 from review_writer.project.parse_reconciliation import write_parse_reconciliation
 from review_writer.project.source_truth import write_source_truth_bundle
@@ -35,6 +43,7 @@ from test_chemical_completion import completion_project
 from test_chemical_paper_import import v2000, write_chemical_zip
 from test_dual_source import dual_project
 from test_parse_reconciliation import reconciliation_project
+from test_dual_parse_bootstrap import generic_output, source_request
 from view.serve_review_dashboard import project_cockpit_payload
 from view.serve_review_dashboard import project_review_figures_workspace_payload
 
@@ -164,6 +173,63 @@ def test_backend_projection_exposes_safe_researcher_work_queues(
     assert item["registry_digest"].startswith("rcv1.")
     assert item["generic_candidate"].startswith("名称: compound 1")
     assert item["chemical_candidate"].startswith("名称: compound 1")
+
+
+def test_fresh_generic_sources_remain_available_before_parse_and_chemical_review(
+    tmp_path: Path,
+) -> None:
+    request = source_request(tmp_path)
+    project = bootstrap_dual_parse_project(
+        tmp_path / "review-projects", request
+    )
+    bind_generic_parse_outputs(project, generic_output(tmp_path / "generic", request))
+
+    scientific = project_dual_source_state(project)
+    dashboard = dual_parse_dashboard_projection(project)
+    workflow = workflow_state(project)
+    cockpit = project_cockpit_payload(tmp_path, project.name)
+    evidence = paper_evidence_state(project)
+
+    assert len(scientific["studies"]) == 3
+    assert all(row["pdf_status"] == "verified" for row in scientific["studies"])
+    assert all(
+        row["generic_parse_status"] == "current"
+        for row in scientific["studies"]
+    )
+    assert all(row["status"] == "blocked" for row in scientific["studies"])
+    assert scientific["workflow_can_continue"] is False
+
+    assert dashboard["summary"] == {
+        "core_studies": 3,
+        "pdf_verified": 3,
+        "generic_current": 3,
+        "chemical_current": 0,
+        "reaction_data_status": "unavailable_not_provided",
+    }
+    assert all(row["pdf_status"] == "verified" for row in dashboard["studies"])
+    assert all(
+        row["generic_parse_status"] == "current" for row in dashboard["studies"]
+    )
+    assert all(
+        row["chemical_import_status"] == "missing"
+        for row in dashboard["studies"]
+    )
+    assert all(
+        row["completion_status"] == "blocked"
+        and row["reconciliation_status"] == "blocked"
+        and row["paper_evidence_status"] == "blocked"
+        for row in dashboard["studies"]
+    )
+
+    assert workflow["active_stage"] == "parsing"
+    assert workflow["parse_ready"] is False
+    assert workflow["dual_source_ready"] is False
+    assert workflow["paper_evidence_ready"] is False
+    assert workflow["main_source_available_count"] == 3
+    assert workflow["generic_source_available_count"] == 3
+    assert cockpit["metrics"]["full_text_main_coverage"] == 3
+    assert cockpit["metrics"]["reviewed_studies"] == 0
+    assert evidence["workflow_can_continue"] is False
 
 
 def test_fresh_figure_workspace_get_is_read_only(tmp_path: Path) -> None:

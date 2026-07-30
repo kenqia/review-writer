@@ -667,11 +667,15 @@ def dual_parse_dashboard_projection(project: Path) -> dict[str, Any]:
             "study_id": study_id,
             "source_tier": source.get("source_tier"),
             "dual_source_status": source.get("status"),
+            "pdf_status": source.get("pdf_status", "unknown"),
             "generic_parse_status": source.get(
-                "generic_status",
-                source.get("generic", {}).get("status")
-                if isinstance(source.get("generic"), dict)
-                else None,
+                "generic_parse_status",
+                source.get(
+                    "generic_status",
+                    source.get("generic", {}).get("status")
+                    if isinstance(source.get("generic"), dict)
+                    else "unknown",
+                ),
             ),
             "chemical_import_status": source.get(
                 "chemical_status",
@@ -697,6 +701,11 @@ def dual_parse_dashboard_projection(project: Path) -> dict[str, Any]:
             "version": chemistry.get("version"),
             "reaction_data_status": chemistry.get(
                 "reaction_data_status", REACTION_UNAVAILABLE
+            ),
+            "paper_evidence_status": (
+                "available"
+                if workflow.get("paper_evidence_ready") is True
+                else "blocked"
             ),
             "completion_version_token": complete.get("version_token"),
         }
@@ -824,6 +833,9 @@ def dual_parse_dashboard_projection(project: Path) -> dict[str, Any]:
         "project_status": "current" if project_current else "needs_review",
         "summary": {
             "core_studies": len(core),
+            "pdf_verified": sum(
+                row.get("pdf_status") == "verified" for row in core
+            ),
             "generic_current": sum(
                 row.get("generic_parse_status") == "current" for row in core
             ),

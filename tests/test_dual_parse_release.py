@@ -246,6 +246,7 @@ def test_dashboard_projection_whitelists_researcher_safe_fields(
             "study_id": "study-a",
             "source_tier": "core",
             "dual_source_status": "current",
+            "pdf_status": "unknown",
             "generic_parse_status": "current",
             "chemical_import_status": "missing",
             "completion_status": "blocked",
@@ -259,6 +260,7 @@ def test_dashboard_projection_whitelists_researcher_safe_fields(
             "backend": "pipeline",
             "version": "1.0",
                 "reaction_data_status": "unavailable_not_provided",
+                "paper_evidence_status": "blocked",
                 "completion_version_token": "completion-v1.opaque",
                 "reconciliation_version_token": "rcv1."
                 + base64.urlsafe_b64encode(bytes.fromhex(SHA_C))

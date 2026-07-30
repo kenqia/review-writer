@@ -16,6 +16,7 @@ from review_writer.project.source_truth import (
     SourceTruthError,
     canonical_digest,
     declared_study_ids,
+    study_source_tier,
 )
 from review_writer.project.dual_source import project_dual_source_state
 from review_writer.project.chemical_completion import project_chemical_completion_state
@@ -104,7 +105,16 @@ def _new_route_state(project: Path) -> dict[str, Any]:
 
     paper_evidence_ready = False
     paper_evidence_error = False
-    dual_route = (
+    tiered_dual_route = False
+    if source_ready and declared:
+        try:
+            tiered_dual_route = all(
+                study_source_tier(project, study_id) in {"core", "background"}
+                for study_id in declared
+            )
+        except SourceTruthError:
+            tiered_dual_route = False
+    dual_route = tiered_dual_route or (
         (project / "01_evidence/dual_source").is_dir()
         or (project / "01_evidence/chemical_paper").is_dir()
     )
@@ -112,8 +122,18 @@ def _new_route_state(project: Path) -> dict[str, Any]:
     chemical_completion_ready = not dual_route
     reconciliation_ready = not dual_route
     dual_blocker: str | None = None
-    if parse_ready and dual_route:
+    main_source_available_count = 0
+    generic_source_available_count = 0
+    dual_state: dict[str, Any] | None = None
+    if source_ready and dual_route:
         dual_state = project_dual_source_state(project)
+        main_source_available_count = int(
+            dual_state.get("main_source_available_count", 0)
+        )
+        generic_source_available_count = int(
+            dual_state.get("generic_source_available_count", 0)
+        )
+    if parse_ready and dual_state is not None:
         dual_source_ready = bool(dual_state.get("workflow_can_continue"))
         if not dual_source_ready:
             blocked = next((row for row in dual_state["studies"] if row["status"] == "blocked"), {})
@@ -218,7 +238,10 @@ def _new_route_state(project: Path) -> dict[str, Any]:
         {
             "schema_version": "evidence-to-release-workflow-state.v1",
             "route": NEW_ROUTE,
+            "dual_route": dual_route,
             "active_stage": active_stage,
+            "main_source_available_count": main_source_available_count,
+            "generic_source_available_count": generic_source_available_count,
             "parse_ready": parse_ready,
             "dual_source_ready": dual_source_ready,
             "chemical_completion_ready": chemical_completion_ready,

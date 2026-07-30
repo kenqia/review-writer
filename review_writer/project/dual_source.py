@@ -18,9 +18,11 @@ from review_writer.project.paper_evidence_store import PaperEvidenceStoreError, 
 from review_writer.project.parse_quality import ParseQualityError, require_parse_quality_ready
 from review_writer.project.source_truth import (
     SourceTruthError,
+    build_source_truth_bundle,
     canonical_digest,
     declared_study_ids,
     load_source_truth_bundle,
+    source_truth_asset,
     study_source_tier,
 )
 
@@ -149,6 +151,46 @@ def require_dual_source_ready(project: Path, study_id: str, *, requires_chemical
     return str(saved["binding_digest"])
 
 
+def _source_availability(project: Path, study_id: str) -> dict[str, str]:
+    """Project PDF and Generic currentness without authorizing dual-source use."""
+
+    result = {"pdf_status": "unknown", "generic_parse_status": "unknown"}
+    try:
+        saved = load_source_truth_bundle(project, study_id)
+    except SourceTruthError:
+        return result
+    main = [
+        row for row in saved["sources"]
+        if isinstance(row, dict) and row.get("document_role") == "MAIN"
+    ]
+    if len(main) != 1 or not isinstance(main[0].get("source_id"), str):
+        return result
+    try:
+        source_truth_asset(
+            project, study_id, str(main[0]["source_id"]), "pdf"
+        )
+    except SourceTruthError as exc:
+        if exc.code == "SOURCE_ASSET_DRIFT":
+            result["pdf_status"] = "stale"
+        return result
+    result["pdf_status"] = "verified"
+    try:
+        current = build_source_truth_bundle(project, study_id)
+    except SourceTruthError:
+        return result
+    saved_body = {key: value for key, value in saved.items() if key != "bundle_digest"}
+    current_body = {
+        key: value for key, value in current.items() if key != "bundle_digest"
+    }
+    current_body["project_id"] = saved_body.get("project_id")
+    result["generic_parse_status"] = (
+        "current"
+        if canonical_digest(current_body) == canonical_digest(saved_body)
+        else "stale"
+    )
+    return result
+
+
 def project_dual_source_state(project: Path) -> dict[str, object]:
     root = Path(project).resolve(strict=True)
     try:
@@ -157,17 +199,32 @@ def project_dual_source_state(project: Path) -> dict[str, object]:
         raise DualSourceError(exc.code) from exc
     rows: list[dict[str, object]] = []
     for study_id in study_ids:
+        row: dict[str, object] = {
+            "study_id": study_id,
+            **_source_availability(root, study_id),
+        }
+        try:
+            tier = study_source_tier(root, study_id)
+        except SourceTruthError as exc:
+            rows.append({**row, "status": "blocked", "reason_code": exc.code})
+            continue
+        row.update({
+            "source_tier": tier,
+            "requires_chemical": tier == "core",
+            "generic": {"status": row["generic_parse_status"]},
+        })
         try:
             binding = load_dual_source_binding(root, study_id)
             require_dual_source_ready(root, study_id, requires_chemical=binding["source_tier"] == "core")
             generic = binding["generic"]
             chemical = binding["chemical"]
             rows.append({
-                "study_id": study_id,
+                **row,
                 "status": binding["status"],
                 "source_tier": binding["source_tier"],
                 "requires_chemical": binding["source_tier"] == "core",
                 "binding_digest": binding["binding_digest"],
+                "generic_parse_status": "current",
                 "generic": {
                     "status": "current",
                     "binding_digest": generic["parse_gate_digest"],
@@ -184,8 +241,14 @@ def project_dual_source_state(project: Path) -> dict[str, object]:
                 "reaction_data_status": binding["reaction_data_status"],
             })
         except DualSourceError as exc:
-            rows.append({"study_id": study_id, "status": "blocked", "reason_code": exc.code})
+            rows.append({**row, "status": "blocked", "reason_code": exc.code})
     return {
         "schema_version": "dual-source-project-state.v1", "studies": rows,
+        "main_source_available_count": sum(
+            row.get("pdf_status") == "verified" for row in rows
+        ),
+        "generic_source_available_count": sum(
+            row.get("generic_parse_status") == "current" for row in rows
+        ),
         "workflow_can_continue": bool(rows) and all(row["status"] in {"current", "current_generic_only"} for row in rows),
     }
