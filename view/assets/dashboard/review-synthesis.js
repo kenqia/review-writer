@@ -110,8 +110,8 @@
         ? {figure_id:item.figure_id, selection_status:item.selection_status, version_token:item.version_token}
         : {[kind === "synthesis" ? "synthesis_id" : "section_id"]: item[kind === "synthesis" ? "synthesis_id" : "section_id"], action:"approve", reason, version_token:item.version_token};
     if (kind !== "review-figures") Object.assign(body, window.reviewDecisionActor());
-    try { await api(projectSelect.value, kind, {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)}); await refresh(); } catch (error) { root.prepend(text("p", error.message, "workspace-error")); } finally { busy = false; }
+    try { await api(projectSelect.value, kind, {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)}); await refresh(true); } catch (error) { root.prepend(text("p", error.message, "workspace-error")); } finally { busy = false; }
   }
-  async function refresh() { const id = projectSelect.value; if (!id || busy) return; try { const values = await Promise.all([api(id,"comparison-protocol"), api(id,"synthesis"), api(id,"section-contracts"), api(id,"review-figures")]); render(...values); } catch (_) {} }
-  projectSelect.addEventListener("change", refresh); document.addEventListener("DOMContentLoaded", refresh); window.setInterval(refresh, 5000);
+  async function refresh(force = false) { const id = projectSelect.value; if (!id || (busy && !force)) return; try { const values = await Promise.all([api(id,"comparison-protocol"), api(id,"synthesis"), api(id,"section-contracts"), api(id,"review-figures")]); render(...values); } catch (_) {} }
+  projectSelect.addEventListener("change", refresh); document.addEventListener("DOMContentLoaded", refresh);
 }());

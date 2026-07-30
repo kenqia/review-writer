@@ -76,5 +76,4 @@
   }
   projectSelect.addEventListener("change", refresh);
   document.addEventListener("DOMContentLoaded", refresh);
-  window.setInterval(refresh, 5000);
 }());
