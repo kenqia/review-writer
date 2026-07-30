@@ -103,6 +103,34 @@ def test_project_surface_coordinator_ignores_delayed_a_responses_and_refreshes_b
     )
 
 
+def test_mutation_invalidates_same_project_inflight_get_and_reconciles_once() -> None:
+    session_path = json.dumps(str(DASHBOARD / "review-session.js"))
+    _run_node(
+        "\n".join(
+            [
+                f"const ui=require({session_path});",
+                "const deferred=()=>{let resolve;const promise=new Promise(yes=>{resolve=yes});return {promise,resolve}};",
+                "const until=async predicate=>{for(let index=0;index<20;index+=1){if(predicate())return;await new Promise(resolve=>setImmediate(resolve));}throw new Error('condition not reached')};",
+                "(async()=>{",
+                " const loads=[];const renders=[];let mutations=0;const mutationResult=deferred();",
+                " const coordinator=ui.createProjectSurfaceCoordinator({getProjectId:()=> 'A',load:id=>{const call={id,...deferred()};loads.push(call);return call.promise},render:value=>renders.push(`refresh:${value}`)});",
+                " const oldGet=coordinator.refresh();await until(()=>loads.length===1);",
+                " const mutation=coordinator.mutate(async id=>{if(id!=='A')throw new Error(id);mutations+=1;return mutationResult.promise},",
+                "   {renderResult:value=>renders.push(`mutation:${value}`),refreshAfterMutation:true});",
+                " await until(()=>mutations===1);const duplicate=await coordinator.mutate(async()=>{mutations+=1;return 'duplicate'});",
+                " if(duplicate.status!=='busy'||mutations!==1)throw new Error(JSON.stringify({duplicate,mutations}));mutationResult.resolve('new');",
+                " await until(()=>renders.includes('mutation:new'));",
+                " loads[0].resolve('old');await until(()=>loads.length===2);loads[1].resolve('new');",
+                " await Promise.all([oldGet,mutation]);",
+                " if(mutations!==1||loads.length!==2)throw new Error(JSON.stringify({mutations,loadCount:loads.length,renders}));",
+                " if(renders.includes('refresh:old'))throw new Error(`old GET overwrote mutation ${JSON.stringify(renders)}`);",
+                " if(JSON.stringify(renders)!==JSON.stringify(['mutation:new','refresh:new']))throw new Error(JSON.stringify(renders));",
+                "})().catch(error=>{console.error(error);process.exit(1)});",
+            ]
+        )
+    )
+
+
 def test_evidence_and_synthesis_route_all_async_rendering_through_project_guard() -> None:
     for filename in ("review-evidence.js", "review-synthesis.js"):
         source = (DASHBOARD / filename).read_text(encoding="utf-8")
@@ -113,7 +141,8 @@ def test_evidence_and_synthesis_route_all_async_rendering_through_project_guard(
     evidence = (DASHBOARD / "review-evidence.js").read_text(encoding="utf-8")
     synthesis = (DASHBOARD / "review-synthesis.js").read_text(encoding="utf-8")
     assert "renderResult: render" in evidence
-    assert "refreshAfterSuccess: true" in synthesis
+    assert "refreshAfterMutation: true" in evidence
+    assert "refreshAfterMutation: true" in synthesis
 
 
 def test_review_page_uses_refresh_scheduler_instead_of_fixed_interval() -> None:

@@ -75,7 +75,7 @@
     try {
       await coordinator.mutate(
         id => api(id, "paper-evidence", {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({evidence_id:item.evidence_id, action, reason, version_token:item.version_token, ...window.reviewDecisionActor()})}),
-        {renderResult: render, onError: error => { message.textContent = error.message; }},
+        {renderResult: render, refreshAfterMutation: true, onError: error => { message.textContent = error.message; }},
       );
     } finally { busy = false; }
   }

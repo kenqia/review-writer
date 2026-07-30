@@ -82,6 +82,7 @@
 
     let projectId = String(getProjectId() || "");
     let generation = 0;
+    let operationEpoch = 0;
     let refreshRunning = false;
     let refreshQueued = false;
     let mutationRunning = false;
@@ -93,12 +94,14 @@
         generation += 1;
         if (refreshRunning || mutationRunning) refreshQueued = true;
       }
-      return {projectId, generation};
+      return {projectId, generation, operationEpoch};
     }
 
     function isCurrent(context) {
       const current = syncProject();
-      return current.projectId === context.projectId && current.generation === context.generation;
+      return current.projectId === context.projectId
+        && current.generation === context.generation
+        && current.operationEpoch === context.operationEpoch;
     }
 
     async function drainRefresh() {
@@ -131,9 +134,11 @@
 
     async function mutate(run, settings) {
       if (typeof run !== "function") throw new Error("mutation required");
-      const context = syncProject();
-      if (!context.projectId) return {status: "empty"};
+      const projectContext = syncProject();
+      if (!projectContext.projectId) return {status: "empty"};
       if (mutationRunning) return {status: "busy"};
+      operationEpoch += 1;
+      const context = {...projectContext, operationEpoch};
       mutationRunning = true;
       try {
         const value = await run(context.projectId, context);
@@ -141,12 +146,12 @@
         if (current && typeof settings?.renderResult === "function") {
           settings.renderResult(value, context);
         }
-        if (settings?.refreshAfterSuccess === true) refreshQueued = true;
         return {status: current ? "saved" : "stale"};
       } catch (error) {
         if (isCurrent(context)) settings?.onError?.(error, context);
         return {status: "error"};
       } finally {
+        if (settings?.refreshAfterMutation === true) refreshQueued = true;
         mutationRunning = false;
         await drainRefresh();
       }

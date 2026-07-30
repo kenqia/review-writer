@@ -118,7 +118,7 @@
     try {
       await coordinator.mutate(
         id => api(id, kind, {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)}),
-        {refreshAfterSuccess: true, onError: error => { root.prepend(text("p", error.message, "workspace-error")); }},
+        {refreshAfterMutation: true, onError: error => { root.prepend(text("p", error.message, "workspace-error")); }},
       );
     } finally { busy = false; }
   }
