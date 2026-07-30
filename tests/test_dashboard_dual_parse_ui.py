@@ -12,6 +12,7 @@ DASHBOARD = ROOT / "view" / "assets" / "dashboard"
 REVIEW_HTML = DASHBOARD / "review.html"
 DUAL_SCRIPT = DASHBOARD / "review-dual-parse.js"
 DUAL_STYLE = DASHBOARD / "review-dual-parse.css"
+FRESH_V2_FIXTURE = ROOT / "tests" / "fixtures" / "dashboard" / "fresh_v2_authoritative_surface.json"
 
 
 class _DashboardParser(HTMLParser):
@@ -85,6 +86,90 @@ def test_projection_model_exposes_safe_status_actor_freshness_and_one_next_actio
             ]
         )
     )
+
+
+def test_fresh_v2_fixture_renders_explicit_pdf_generic_and_fail_closed_later_gates() -> None:
+    module_path = json.dumps(str(DUAL_SCRIPT))
+    fixture_path = json.dumps(str(FRESH_V2_FIXTURE))
+    _run_node(
+        "\n".join(
+            [
+                f"const ui=require({module_path});",
+                f"const fixture=require({fixture_path});",
+                "class Node {",
+                " constructor(tag,id=''){this.tag=tag;this.id=id;this.children=[];this.attributes={};this.className='';this.textContent='';}",
+                " append(...nodes){this.children.push(...nodes);}",
+                " replaceChildren(...nodes){this.children=[...nodes];}",
+                " setAttribute(name,value){this.attributes[name]=String(value);if(name==='id')this.id=String(value);}",
+                " addEventListener(){}",
+                " querySelector(selector){",
+                "  const id=selector.startsWith('#')?selector.slice(1):'';",
+                "  if(id && this.id===id)return this;",
+                "  for(const child of this.children){if(child && typeof child.querySelector==='function'){const found=child.querySelector(selector);if(found)return found;}}",
+                "  return null;",
+                " }",
+                "}",
+                "const document={createElement:tag=>new Node(tag),createTextNode:value=>{const node=new Node('#text');node.textContent=String(value);return node;},body:new Node('body')};",
+                "const mount=new Node('main');",
+                "for(const id of ['dual-study-status','chemical-import-preflight','chemical-completion-queue','reconciliation-list']) mount.append(new Node('section',id));",
+                "const model=ui.projectionModel(fixture.dual_parse);",
+                "ui.render(document,mount,model,{});",
+                "const visibleText=node=>[node.textContent,...node.children.map(visibleText)].join(' ');",
+                "const rendered=visibleText(mount);",
+                "for(const expected of ['完成 11 项 Generic Parse 决定','PDF 已核验','Generic Parse 当前有效','Chemical Paper 待确认导入','Chemical Completion 尚未开放','Reconciliation 尚未开放','Paper Evidence 尚不可用']) if(!rendered.includes(expected)) throw new Error(`missing ${expected}: ${rendered}`);",
+                "for(const expected of ['PDF 已核验','Generic Parse 当前有效','Chemical Paper 待确认导入','Chemical Completion 尚未开放','Reconciliation 尚未开放','Paper Evidence 尚不可用']) if(rendered.split(expected).length-1!==3) throw new Error(`wrong count ${expected}: ${rendered}`);",
+                "for(const forbidden of ['PDF 核验已失效','Generic Parse 待启动','Evidence 可用','internal-study-one','internal-study-two','internal-study-three']) if(rendered.includes(forbidden)) throw new Error(`leaked or false ${forbidden}: ${rendered}`);",
+            ]
+        )
+    )
+
+
+def test_absent_pdf_generic_states_remain_unknown_and_never_infer_evidence() -> None:
+    module_path = json.dumps(str(DUAL_SCRIPT))
+    _run_node(
+        "\n".join(
+            [
+                f"const ui=require({module_path});",
+                "const absent=ui.projectionModel({schema_version:'dual-parse-projection.v1',status:'ready',studies:[{source_tier:'core',chemical_import_status:'missing',completion_status:'blocked',reconciliation_status:'blocked'}]}).studies[0];",
+                "if(absent.pdfLabel!=='PDF 状态未知' || absent.genericLabel!=='Generic Parse 状态未知' || absent.evidenceLabel!=='Paper Evidence 尚不可用') throw new Error(JSON.stringify(absent));",
+                "const genericOnly=ui.projectionModel({schema_version:'dual-parse-projection.v1',status:'ready',studies:[{source_tier:'core',generic_parse_status:'current',chemical_import_status:'current',completion_status:'current',reconciliation_status:'current'}]}).studies[0];",
+                "if(genericOnly.pdfLabel!=='PDF 状态未知' || genericOnly.evidenceLabel!=='Paper Evidence 尚不可用') throw new Error(JSON.stringify(genericOnly));",
+                "const approved=ui.projectionModel({schema_version:'dual-parse-projection.v1',status:'ready',studies:[{source_tier:'core',pdf_status:'verified',generic_parse_status:'current',chemical_import_status:'current',completion_status:'current',reconciliation_status:'current',paper_evidence_status:'available'}]}).studies[0];",
+                "if(approved.evidenceLabel!=='Paper Evidence 可用') throw new Error(JSON.stringify(approved));",
+            ]
+        )
+    )
+
+
+def test_authoritative_availability_separates_sources_from_approved_evidence() -> None:
+    module_path = json.dumps(str(DUAL_SCRIPT))
+    fixture_path = json.dumps(str(FRESH_V2_FIXTURE))
+    _run_node(
+        "\n".join(
+            [
+                f"const ui=require({module_path});",
+                f"const fixture=require({fixture_path});",
+                "const availability=ui.availabilityModel({sources:fixture.sources,dualParse:fixture.dual_parse,includedStudies:fixture.cockpit.metrics.included_studies,approvedEvidenceStudies:fixture.cockpit.metrics.reviewed_studies});",
+                "if(JSON.stringify(availability)!==JSON.stringify({mainFullText:{available:3,total:3},genericSource:{available:3,total:3},approvedEvidence:{available:0,total:3}})) throw new Error(JSON.stringify(availability));",
+                "const unknown=ui.availabilityModel({sources:{sources:[]},dualParse:{schema_version:'other'},includedStudies:3});",
+                "if(unknown.mainFullText.available!==null || unknown.genericSource.available!==null || unknown.approvedEvidence.available!==null) throw new Error(JSON.stringify(unknown));",
+                "const divergent=ui.availabilityModel({sources:fixture.sources,dualParse:{schema_version:'dual-parse-projection.v1',status:'ready',summary:{core_studies:0,generic_current:0},studies:[{source_tier:'core'}]},includedStudies:3});",
+                "if(divergent.genericSource.available!==null || divergent.genericSource.total!==3) throw new Error(JSON.stringify(divergent));",
+            ]
+        )
+    )
+
+
+def test_dashboard_wires_distinct_source_and_evidence_availability_copy() -> None:
+    html = REVIEW_HTML.read_text(encoding="utf-8")
+    for required in (
+        "ReviewDualParseUI.availabilityModel(",
+        "MAIN 全文可用",
+        "Generic Parse source 可用",
+        "已批准 Paper Evidence",
+    ):
+        assert required in html
+    assert "['MAIN 全文覆盖', Number(metrics.full_text_main_coverage) || 0]" not in html
 
 
 def test_http_request_builders_serialize_frozen_snake_case_contracts() -> None:

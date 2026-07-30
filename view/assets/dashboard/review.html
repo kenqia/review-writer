@@ -278,14 +278,14 @@
               <small>进入全文复核的研究</small>
             </article>
             <article>
-              <span>MAIN 全文</span>
+              <span>MAIN 全文可用</span>
               <strong id="metric-main-coverage">—</strong>
-              <small>已具备主文全文</small>
+              <small>已核验的主文来源</small>
             </article>
             <article>
-              <span>已复核研究</span>
+              <span>已批准 Evidence</span>
               <strong id="metric-reviewed">—</strong>
-              <small>已有证据卡片</small>
+              <small>Paper Evidence 已批准</small>
             </article>
             <article>
               <span>科学风险</span>
@@ -739,20 +739,29 @@
 
     function renderHealth() {
       const metrics = cockpitPayload.metrics || {};
-      const included = Number(metrics.included_studies) || 0;
+      const availability = ReviewDualParseUI.availabilityModel({
+        sources:sourcePayload,
+        dualParse:dualParseModel,
+        includedStudies:Number.isInteger(metrics.included_studies) ? metrics.included_studies : null,
+        approvedEvidenceStudies:Number.isInteger(metrics.reviewed_studies) ? metrics.reviewed_studies : null,
+      });
       const rows = [
-        ['MAIN 全文覆盖', Number(metrics.full_text_main_coverage) || 0],
-        ['已完成证据复核', Number(metrics.reviewed_studies) || 0]
+        ['MAIN 全文可用', availability.mainFullText],
+        ['Generic Parse source 可用', availability.genericSource],
+        ['已批准 Paper Evidence', availability.approvedEvidence]
       ];
       clear($('cockpit-health'));
-      rows.forEach(([label, value]) => {
+      rows.forEach(([label, metric]) => {
         const block = document.createElement('div');
         block.className = 'health-row';
         const line = document.createElement('div');
-        line.append(textElement('span', '', label), textElement('strong', '', `${value} / ${included}`));
+        const valueLabel = metric.available === null ? '未知' : String(metric.available);
+        const totalLabel = metric.total === null ? '未知' : String(metric.total);
+        line.append(textElement('span', '', label), textElement('strong', '', `${valueLabel} / ${totalLabel}`));
         const progress = document.createElement('progress');
-        progress.max = Math.max(included, 1);
-        progress.value = Math.min(value, progress.max);
+        progress.max = Math.max(metric.total || 0, 1);
+        progress.value = metric.available === null ? 0 : Math.min(metric.available, progress.max);
+        progress.hidden = metric.available === null || metric.total === null;
         progress.setAttribute('aria-label', label);
         block.append(line, progress);
         $('cockpit-health').append(block);
@@ -1598,9 +1607,15 @@
 
     function renderCockpit() {
       const metrics = cockpitPayload.metrics || {};
+      const availability = ReviewDualParseUI.availabilityModel({
+        sources:sourcePayload,
+        dualParse:dualParseModel,
+        includedStudies:Number.isInteger(metrics.included_studies) ? metrics.included_studies : null,
+        approvedEvidenceStudies:Number.isInteger(metrics.reviewed_studies) ? metrics.reviewed_studies : null,
+      });
       $('metric-included').textContent = cockpitPayload.metrics.included_studies ?? 0;
-      $('metric-main-coverage').textContent = cockpitPayload.metrics.full_text_main_coverage ?? 0;
-      $('metric-reviewed').textContent = cockpitPayload.metrics.reviewed_studies ?? 0;
+      $('metric-main-coverage').textContent = availability.mainFullText.available ?? '未知';
+      $('metric-reviewed').textContent = availability.approvedEvidence.available ?? '未知';
       $('metric-scientific-risks').textContent = cockpitPayload.metrics.scientific_risks ?? 0;
       $('recommended-next').textContent = cockpitPayload.recommended_next || '继续核对当前研究证据';
       void metrics;

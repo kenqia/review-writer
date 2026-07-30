@@ -1,0 +1,72 @@
+{
+  "dual_parse": {
+    "schema_version": "dual-parse-projection.v1",
+    "status": "ready",
+    "next_action": {
+      "label": "完成 11 项 Generic Parse 决定",
+      "description": "逐项对照原始 PDF；Paper Evidence 继续保持不可用。"
+    },
+    "summary": {
+      "core_studies": 3,
+      "generic_current": 3,
+      "chemical_current": 0
+    },
+    "studies": [
+      {
+        "study_id": "internal-study-one",
+        "citation": "Fresh study one",
+        "source_tier": "core",
+        "pdf_status": "verified",
+        "generic_parse_status": "current",
+        "chemical_import_status": "missing",
+        "completion_status": "blocked",
+        "reconciliation_status": "blocked",
+        "paper_evidence_status": "blocked"
+      },
+      {
+        "study_id": "internal-study-two",
+        "citation": "Fresh study two",
+        "source_tier": "core",
+        "pdf_status": "verified",
+        "generic_parse_status": "current",
+        "chemical_import_status": "missing",
+        "completion_status": "blocked",
+        "reconciliation_status": "blocked",
+        "paper_evidence_status": "blocked"
+      },
+      {
+        "study_id": "internal-study-three",
+        "citation": "Fresh study three",
+        "source_tier": "core",
+        "pdf_status": "verified",
+        "generic_parse_status": "current",
+        "chemical_import_status": "missing",
+        "completion_status": "blocked",
+        "reconciliation_status": "blocked",
+        "paper_evidence_status": "blocked"
+      }
+    ]
+  },
+  "sources": {
+    "sources": [
+      {"study_id": "internal-study-one", "role": "MAIN", "status": "已获得"},
+      {"study_id": "internal-study-two", "role": "MAIN", "status": "已获得"},
+      {"study_id": "internal-study-three", "role": "MAIN", "status": "已获得"}
+    ]
+  },
+  "cockpit": {
+    "metrics": {
+      "included_studies": 3,
+      "full_text_main_coverage": 0,
+      "reviewed_studies": 0
+    }
+  },
+  "parse_quality": {
+    "summary": {"studies": 3, "objects": 21, "needs_review": 11},
+    "studies": [
+      {"study_id": "internal-study-one"},
+      {"study_id": "internal-study-two"},
+      {"study_id": "internal-study-three"}
+    ]
+  }
+}
