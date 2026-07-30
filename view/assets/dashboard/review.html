@@ -2522,7 +2522,6 @@
         event.target.value = projectId;
         return 'cancelled';
       }
-      const previousProjectId = projectId;
       activeParseStudyId = '';
       projectId = nextProjectId;
       try {
@@ -2531,11 +2530,24 @@
         return loadResult;
       } catch (error) {
         if (projectId === nextProjectId) {
-          projectId = previousProjectId;
+          projectId = '';
           projectLoadGeneration += 1;
+          progressCapabilityProjectId = '';
+          progressCapabilityGeneration = -1;
           setProjectLoadBusy(false);
-          event.target.value = previousProjectId;
-          if (!previousProjectId) setProjectSelectionWorkspace();
+          event.target.value = '';
+          dualParseModel = ReviewDualParseUI.projectionModel({
+            schema_version:'dual-parse-projection.v1',
+            status:'unavailable',
+            next_action:{label:'请重新选择项目',description:'项目读取失败；明确选择后将重新读取。'},
+          });
+          progressPayload = {active_stage:'sources',stages:[],studies:[],blocker:'',recommended_next:'',release_capabilities:{internal_draft_export_ready:false,verified_release_ready:false}};
+          finalPayload = {final_draft_docx_exists:false,final_draft_docx_path:''};
+          reviewFigurePayload = {source_figures:[],placeholders:[]};
+          renderDualParse();
+          renderReleaseControls();
+          setProjectSelectionWorkspace();
+          $('project-waiting-message').textContent = '项目暂时无法读取，请重新选择项目。';
         }
         $('workbench-message').textContent = '项目暂时无法读取。';
         return 'error';

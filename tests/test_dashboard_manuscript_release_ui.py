@@ -323,12 +323,16 @@ def test_failed_explicit_project_selection_can_retry_same_project() -> None:
         "\n".join(
             [
                 "let projectId='',activeParseStudyId='old',projectLoadGeneration=0,projectLoadBusy=false,loadCount=0;",
+                "let progressCapabilityProjectId='',progressCapabilityGeneration=-1;",
+                "let progressPayload={release_capabilities:{}},finalPayload={},reviewFigurePayload={};",
+                "let dualParseModel={status:'unavailable'};const ReviewDualParseUI={projectionModel:value=>({...value})};",
                 "const projects=[{project_id:'fresh-v2'}];",
                 "const confirmDiscardDraftChanges=()=>true,confirmDiscardRiskDecisions=()=>true,confirmDiscardParseQualityDecisions=()=>true;",
                 "const setProjectLoadBusy=value=>{projectLoadBusy=value;};",
                 "let selectionWorkspaceCount=0;const setProjectSelectionWorkspace=()=>{selectionWorkspaceCount+=1;};",
+                "const renderDualParse=()=>{},renderReleaseControls=()=>{};",
                 "const loadProject=async()=>{projectLoadGeneration+=1;setProjectLoadBusy(true);loadCount+=1;try{if(loadCount===1)throw new Error('temporary failure');return 'loaded';}finally{setProjectLoadBusy(false);}};",
-                "const nodes={'workbench-message':{textContent:''}};const $=id=>nodes[id];",
+                "const nodes={'workbench-message':{textContent:''},'project-waiting-message':{textContent:''}};const $=id=>nodes[id];",
                 match.group(0),
                 "(async()=>{",
                 " const event={target:{value:'fresh-v2'}};",
@@ -338,6 +342,55 @@ def test_failed_explicit_project_selection_can_retry_same_project() -> None:
                 " const second=await selectProject(event);",
                 " const third=await selectProject(event);",
                 " if(second!=='loaded' || third!=='unchanged' || projectId!=='fresh-v2' || loadCount!==2) throw new Error(JSON.stringify({second,third,projectId,loadCount}));",
+                "})().catch(error=>{console.error(error);process.exit(1);});",
+            ]
+        )
+    )
+
+
+def test_failed_project_switch_requires_explicit_reload_of_previous_project() -> None:
+    html = (DASHBOARD / "review.html").read_text(encoding="utf-8")
+    match = re.search(
+        r"^    async function selectProject\(event\) \{[\s\S]*?^    \}",
+        html,
+        flags=re.MULTILINE,
+    )
+    assert match is not None
+    _run_node(
+        "\n".join(
+            [
+                "let projectId='project-a',activeParseStudyId='old',projectLoadGeneration=7,projectLoadBusy=false,loadCount=0;",
+                "let progressCapabilityProjectId='project-a',progressCapabilityGeneration=7;",
+                "let progressPayload={release_capabilities:{internal_draft_export_ready:true,verified_release_ready:true}};",
+                "let finalPayload={final_draft_docx_exists:true,final_draft_docx_path:'project-a.docx'};",
+                "let reviewFigurePayload={source_figures:[],placeholders:[]};",
+                "let dualParseModel={status:'ready',owner:'project-a'};",
+                "const projects=[{project_id:'project-a'},{project_id:'project-b'}];",
+                "const confirmDiscardDraftChanges=()=>true,confirmDiscardRiskDecisions=()=>true,confirmDiscardParseQualityDecisions=()=>true;",
+                "const setProjectLoadBusy=value=>{projectLoadBusy=value;};",
+                "let selectionWorkspaceCount=0;const setProjectSelectionWorkspace=()=>{selectionWorkspaceCount+=1;};",
+                "const ReviewDualParseUI={projectionModel:value=>({...value})};",
+                "let dualRenderCount=0;const renderDualParse=()=>{dualRenderCount+=1;};",
+                "let releaseDisabled=false,releaseRenderCount=0;const renderReleaseControls=()=>{releaseRenderCount+=1;releaseDisabled=!(progressCapabilityProjectId===projectId&&progressCapabilityGeneration===projectLoadGeneration);};",
+                "const nodes={'workbench-message':{textContent:''},'project-waiting-message':{textContent:''}};const $=id=>nodes[id];",
+                "const loadProject=async()=>{",
+                " const requestedProjectId=projectId;const generation=++projectLoadGeneration;",
+                " progressCapabilityProjectId='';progressCapabilityGeneration=-1;setProjectLoadBusy(true);",
+                " dualParseModel={status:'loading',owner:requestedProjectId};renderDualParse();loadCount+=1;",
+                " try{if(loadCount===1)throw new Error('project-b unavailable');progressCapabilityProjectId=requestedProjectId;progressCapabilityGeneration=generation;dualParseModel={status:'ready',owner:requestedProjectId};return 'loaded';}",
+                " finally{if(generation===projectLoadGeneration)setProjectLoadBusy(false);}",
+                "};",
+                match.group(0),
+                "(async()=>{",
+                " const event={target:{value:'project-b'}};",
+                " const failed=await selectProject(event);",
+                " if(failed!=='error'||projectId!==''||event.target.value!==''||projectLoadGeneration!==9||projectLoadBusy||selectionWorkspaceCount!==1) throw new Error(JSON.stringify({failed,projectId,value:event.target.value,projectLoadGeneration,projectLoadBusy,selectionWorkspaceCount}));",
+                " if(dualParseModel.status==='loading'||dualRenderCount<2) throw new Error(JSON.stringify({dualParseModel,dualRenderCount}));",
+                " if(progressCapabilityProjectId!==''||progressCapabilityGeneration!==-1||!releaseDisabled||releaseRenderCount<1) throw new Error(JSON.stringify({progressCapabilityProjectId,progressCapabilityGeneration,releaseDisabled,releaseRenderCount}));",
+                " if(finalPayload.final_draft_docx_exists||!nodes['project-waiting-message'].textContent.includes('重新选择')) throw new Error(JSON.stringify({finalPayload,waiting:nodes['project-waiting-message'].textContent}));",
+                " event.target.value='project-a';",
+                " const reloaded=await selectProject(event);const duplicate=await selectProject(event);",
+                " if(reloaded!=='loaded'||duplicate!=='unchanged'||loadCount!==2||projectId!=='project-a'||progressCapabilityProjectId!=='project-a'||progressCapabilityGeneration!==projectLoadGeneration||dualParseModel.owner!=='project-a') throw new Error(JSON.stringify({reloaded,duplicate,loadCount,projectId,progressCapabilityProjectId,progressCapabilityGeneration,projectLoadGeneration,dualParseModel}));",
                 "})().catch(error=>{console.error(error);process.exit(1);});",
             ]
         )
