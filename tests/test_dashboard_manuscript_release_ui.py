@@ -248,6 +248,28 @@ def test_audit_component_does_not_invent_missing_evaluation() -> None:
     )
 
 
+def test_audit_component_consumes_authoritative_backend_evaluation_and_ledger() -> None:
+    module_path = json.dumps(str(DASHBOARD / "review-audit.js"))
+    _run_node(
+        "\n".join(
+            [
+                f"const ui=require({module_path});",
+                "const rubric=Array.from({length:7},(_,index)=>({dimension_id:`dimension_${index+1}`,score:index+1,rationale:`理由 ${index+1}`}));",
+                "const model=ui.buildAuditModel({",
+                " progress:{credits:{measured:7,forecast:8},credit_ledger:{status:'available',measured:{before:2004,after:1351,consumed:653},forecast:650}},",
+                " final:{evaluation:{schema_version:'release-evaluation.v1',benchmark:{status:'available',score:83,rubric,hard_fails:['WRONG_SOURCE_BINDING'],issues:['SYNTHESIS_FIGURE_PENDING']},credit_ledger:{status:'available',measured:{consumed:653},forecast:650}}}",
+                "});",
+                "const encoded=JSON.stringify(model);",
+                "if(model.credits.measured!=='实测消耗：653 credits' || model.credits.forecast!=='预测用量：650 credits') throw new Error(encoded);",
+                "if(model.evaluation.score!=='83' || model.evaluation.dimensions.length!==7) throw new Error(encoded);",
+                "if(!encoded.includes('来源绑定与当前发布不一致') || !encoded.includes('综合图仍待研究者完成')) throw new Error(encoded);",
+                "if(encoded.includes('WRONG_SOURCE_BINDING') || encoded.includes('SYNTHESIS_FIGURE_PENDING')) throw new Error(`exposed internal evaluation code: ${encoded}`);",
+                "if(encoded.includes('实测消耗：7 credits') || encoded.includes('预测用量：8 credits')) throw new Error(`used non-authoritative credits: ${encoded}`);",
+            ]
+        )
+    )
+
+
 def test_research_workspaces_do_not_render_opaque_identifiers() -> None:
     evidence = (DASHBOARD / "review-evidence.js").read_text(encoding="utf-8")
     synthesis = (DASHBOARD / "review-synthesis.js").read_text(encoding="utf-8")

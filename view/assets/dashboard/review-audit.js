@@ -11,6 +11,18 @@
   const string = value => typeof value === "string" ? value.trim() : "";
   const finite = value => value !== null && value !== "" && Number.isFinite(Number(value));
   const opaquePattern = /^(?:scholarly|section|placeholder|marker|cmp|syn|pe)[-_:]|^(?:dashboard|local|simulated)-|^[a-z0-9]+(?:_[a-z0-9]+){1,}$|^[a-z]+-[0-9a-f]{8,}/i;
+  const evaluationLabels = {
+    WRONG_SOURCE_BINDING: "来源绑定与当前发布不一致",
+    SUPPORTING_SOURCE_UNREAD: "支撑来源正文或补充信息尚未核读",
+    HIGH_RISK_CLAIM_UNAPPROVED: "高风险科学主张尚未批准",
+    STALE_APPROVAL: "科学批准已因上游变化失效",
+    FABRICATED_SCIENTIFIC_DETAIL: "检出无证据支持的科学细节",
+    STATE_SURFACE_DIVERGENCE: "磁盘、界面与发布状态不一致",
+    UNSOURCED_SCIENTIFIC_CLAIM: "科学主张缺少来源绑定",
+    LEGACY_DRAFT_REPACKAGED: "当前文稿仅为旧稿重新打包",
+    SYSTEM_GENERATED_SYNTHESIS_FIGURE: "检出系统生成的综合科学图",
+    SYNTHESIS_FIGURE_PENDING: "综合图仍待研究者完成",
+  };
 
   function researcherLabel(value, fallback) {
     const candidate = string(value);
@@ -30,6 +42,11 @@
       pdf_locator_only: "仅原始 PDF 定位",
       reparse_required: "需要重新解析",
     })[string(value)] || "状态未提供";
+  }
+
+  function evaluationFindingLabel(value, fallback) {
+    const candidate = string(value);
+    return evaluationLabels[candidate] || researcherLabel(candidate, fallback);
   }
 
   function decisionActor(value) {
@@ -124,28 +141,40 @@
   }
 
   function creditsModel(payload) {
-    const credits = object(object(payload).credits);
+    const progress = object(payload);
+    const hasLedger = Object.prototype.hasOwnProperty.call(progress, "credit_ledger");
+    const ledger = object(progress.credit_ledger);
+    const legacy = object(progress.credits);
+    const measured = hasLedger ? object(ledger.measured).consumed : legacy.measured;
+    const forecast = hasLedger ? ledger.forecast : legacy.forecast;
     return {
       title: "Credits",
-      measured: `实测消耗：${finite(credits.measured) ? `${Number(credits.measured)} credits` : "未记录"}`,
-      forecast: `预测用量：${finite(credits.forecast) ? `${Number(credits.forecast)} credits` : "未估算"}`,
+      measured: `实测消耗：${finite(measured) ? `${Number(measured)} credits` : "未记录"}`,
+      forecast: `预测用量：${finite(forecast) ? `${Number(forecast)} credits` : "未估算"}`,
     };
   }
 
   function evaluationModel(payload) {
     const finalPayload = object(payload);
     const report = object(finalPayload.quality_report);
-    const source = object(finalPayload.evaluation || finalPayload.benchmark || report.evaluation);
-    const dimensions = array(source.dimensions || source.rationales).map((value, index) => {
+    const evaluation = object(finalPayload.evaluation || finalPayload.benchmark || report.evaluation);
+    const source = object(evaluation.benchmark || evaluation);
+    const dimensions = array(source.rubric || source.dimensions || source.rationales).map((value, index) => {
       const row = object(value);
       return {
-        name: researcherLabel(row.name || row.dimension, `评估维度 ${index + 1}`),
+        name: researcherLabel(row.name || row.dimension || row.dimension_id, `评估维度 ${index + 1}`),
         score: finite(row.score) ? String(Number(row.score)) : "未提供",
         rationale: researcherLabel(row.rationale || row.reason, "理由未提供"),
       };
     });
-    const hardFails = array(source.hard_fails || source.hardFails).map(item => researcherLabel(item, "Hard Fail 内容未提供"));
-    const issues = array(source.issues).map(item => researcherLabel(typeof item === "string" ? item : object(item).message, "问题内容未提供"));
+    const hardFails = array(source.hard_fails || source.hardFails).map(item => evaluationFindingLabel(item, "Hard Fail 内容未提供"));
+    const issues = array(source.issues).map(item => {
+      const row = object(item);
+      return evaluationFindingLabel(
+        typeof item === "string" ? item : row.code || row.message,
+        "问题内容未提供",
+      );
+    });
     const available = finite(source.score) || dimensions.length > 0 || hardFails.length > 0 || issues.length > 0;
     return {
       title: "发布评估",
