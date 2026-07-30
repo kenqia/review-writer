@@ -100,27 +100,41 @@ def test_explicit_project_label_is_stable_when_other_projects_are_inserted_or_re
 
     boundary = dashboard.with_visible_project_labels(
         [
-            {"project_id": "boundary-ok", "topic": "边界回退", "project_label": "界" * 200},
+            {"project_id": "boundary-ok", "topic": "边界回退", "project_label": "😀" * 200},
             {"project_id": "boundary-long", "topic": "长度安全回退", "project_label": "界" * 201},
             {"project_id": "html-safe", "topic": "HTML 回退", "project_label": "<em>研究</em>"},
         ]
     )
-    assert boundary[0]["visible_label"] == "界" * 200
+    assert boundary[0]["visible_label"] == "😀" * 200
     assert boundary[1]["visible_label"] == "长度安全回退"
     assert boundary[2]["visible_label"] == "<em>研究</em>"
     assert all(row["selectable"] is True for row in boundary)
 
-    unsafe_values = ["零\u200b宽", "双\u202e向", "删除\x7f符", "\ud800", "私用\ue000", "未分配\u0378"]
-    unsafe = dashboard.with_visible_project_labels(
-        [
-            {"project_id": f"unsafe-{index}", "topic": value, "project_label": value}
-            for index, value in enumerate(unsafe_values)
-        ]
-    )
-    assert all(row["visible_label"] == "未命名综述项目" for row in unsafe)
-    assert all(row["topic"] == "" for row in unsafe)
-    assert all(row["selectable"] is False for row in unsafe)
-    json.dumps(unsafe, ensure_ascii=False).encode("utf-8")
+    unsafe_values = [
+        "零\u200b宽",
+        "双\u202e向",
+        "删除\x7f符",
+        "控制\x01符",
+        "\ud800",
+        "私用\ue000",
+        "未分配\u0378",
+        "界" * 201,
+        " \t\n ",
+    ]
+    for index, value in enumerate(unsafe_values):
+        unsafe = dashboard.with_visible_project_labels(
+            [{"project_id": f"unsafe-{index}", "topic": value, "project_label": value}]
+        )
+        assert unsafe[0]["visible_label"] == "未命名综述项目"
+        assert unsafe[0]["topic"] == ""
+        assert unsafe[0]["selectable"] is False
+        assert unsafe[0]["has_valid_label"] is False
+        assert "唯一有效项目显示名称" in unsafe[0]["selection_message"]
+        json.dumps(unsafe, ensure_ascii=False).encode("utf-8")
+
+    assert all(row["has_valid_label"] is True for row in target_rows)
+    assert listed_target["has_valid_label"] is True
+    assert all(row["has_valid_label"] is True for row in boundary)
 
 
 def test_duplicate_legacy_labels_fail_closed_without_exposing_technical_ids() -> None:
@@ -171,19 +185,20 @@ def test_duplicate_legacy_labels_fail_closed_without_exposing_technical_ids() ->
                 " {project_id:'nfc-composed',visible_label:'é',selectable:true},",
                 " {project_id:'nfc-decomposed',visible_label:'e\\u0301',selectable:true}]);",
                 "if(nfc.some(choice=>choice.selectable)||!nfc.every(choice=>choice.label.startsWith('é')))throw new Error(JSON.stringify(nfc));",
-                "const unsafe=ui.createProjectSelectionRegistry().replace([",
-                " {project_id:'zero-width',visible_label:'零\\u200b宽',selectable:true},",
-                " {project_id:'bidi',visible_label:'双\\u202e向',selectable:true},",
-                " {project_id:'del',visible_label:'删除\\u007f符',selectable:true},",
-                " {project_id:'surrogate',visible_label:'\\ud800',selectable:true}]);",
-                "if(unsafe.some(choice=>choice.selectable)||!unsafe.every(choice=>choice.label.startsWith('项目显示名称不可用')))throw new Error(JSON.stringify(unsafe));",
-                "const boundary=ui.createProjectSelectionRegistry().replace([",
-                " {project_id:'boundary-ok',visible_label:'界'.repeat(200),selectable:true},",
-                " {project_id:'boundary-long',visible_label:'界'.repeat(201),selectable:true}]);",
-                "if(!boundary[0].selectable||boundary[0].label.length!==200||!boundary[1].label.startsWith('项目显示名称不可用'))throw new Error(JSON.stringify(boundary));",
+                "const unsafeLabels=['零\\u200b宽','双\\u202e向','删除\\u007f符','控制\\u0001符','\\ud800','私用\\ue000','未分配\\u0378','界'.repeat(201),' \\t\\n '];",
+                "unsafeLabels.forEach((visible_label,index)=>{",
+                " const registry=ui.createProjectSelectionRegistry();",
+                " const choices=registry.replace([{project_id:`unsafe-${index}`,visible_label,selectable:true}]);",
+                " const choice=choices[0];",
+                " if(choice.selectable||!choice.label.startsWith('项目显示名称不可用')||registry.getProjectId(choice.key)!==''||registry.getOptionKey(`unsafe-${index}`)!=='')throw new Error(JSON.stringify({visible_label,choice}));",
+                "});",
+                "const boundaryRegistry=ui.createProjectSelectionRegistry();",
+                "const boundary=boundaryRegistry.replace([{project_id:'boundary-ok',visible_label:'😀'.repeat(200),selectable:true}]);",
+                "if(!boundary[0].selectable||[...boundary[0].label].length!==200||boundaryRegistry.getProjectId(boundary[0].key)!=='boundary-ok')throw new Error(JSON.stringify(boundary));",
             ]
         )
     )
+    assert all(row["has_valid_label"] is True for row in labeled)
 
 
 def test_project_selector_keeps_ids_out_of_dom_and_requires_explicit_visible_selection() -> None:

@@ -4714,26 +4714,34 @@ def has_review_product_data(project: Path) -> bool:
 
 def with_visible_project_labels(projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
     topics = [canonical_project_visible_text(project.get("topic")) for project in projects]
-    labels = [
+    canonical_labels = [
         canonical_project_visible_text(project.get("project_label"))
         or topic
-        or "未命名综述项目"
         for project, topic in zip(projects, topics, strict=True)
     ]
+    has_valid_labels = [bool(label) for label in canonical_labels]
+    labels = [label or "未命名综述项目" for label in canonical_labels]
     counts = {label: labels.count(label) for label in set(labels)}
     labeled: list[dict[str, Any]] = []
-    for project, topic, label in zip(projects, topics, labels, strict=True):
+    for project, topic, label, has_valid_label in zip(
+        projects, topics, labels, has_valid_labels, strict=True
+    ):
         duplicate = counts[label] > 1
         labeled.append(
             {
                 **{key: value for key, value in project.items() if key != "project_label"},
                 "topic": topic,
                 "visible_label": label,
-                "selectable": not duplicate,
+                "has_valid_label": has_valid_label,
+                "selectable": has_valid_label and not duplicate,
                 "selection_message": (
-                    "多个项目使用相同显示名称，请在 QoderWork 中设置唯一项目显示名称。"
-                    if duplicate
-                    else ""
+                    "项目显示名称无效，请在 QoderWork 中设置唯一有效项目显示名称。"
+                    if not has_valid_label
+                    else (
+                        "多个项目使用相同显示名称，请在 QoderWork 中设置唯一项目显示名称。"
+                        if duplicate
+                        else ""
+                    )
                 ),
             }
         )

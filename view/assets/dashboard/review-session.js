@@ -40,9 +40,10 @@
 
     function replace(projects) {
       const rows = Array.isArray(projects) ? projects : [];
+      const visibleLabels = rows.map(project => canonicalProjectVisibleLabel(project?.visible_label));
       const labelCounts = new Map();
-      rows.forEach(project => {
-        const label = canonicalProjectVisibleLabel(project?.visible_label) || "项目显示名称不可用";
+      visibleLabels.forEach(visibleLabel => {
+        const label = visibleLabel || "项目显示名称不可用";
         labelCounts.set(label, (labelCounts.get(label) || 0) + 1);
       });
       const nextOptionIds = new Map();
@@ -50,9 +51,12 @@
       const nextProjectKeys = new Map();
       const choices = rows.map((project, index) => {
         const key = `project-option-${index + 1}`;
-        const label = canonicalProjectVisibleLabel(project?.visible_label) || "项目显示名称不可用";
+        const visibleLabel = visibleLabels[index];
+        const hasValidLabel = visibleLabel !== "";
+        const label = visibleLabel || "项目显示名称不可用";
         const projectId = typeof project?.project_id === "string" ? project.project_id : "";
         const selectable = project?.selectable === true
+          && hasValidLabel
           && projectId !== ""
           && labelCounts.get(label) === 1;
         nextOptionLabels.set(key, label);
@@ -61,7 +65,9 @@
           nextProjectKeys.set(projectId, key);
         }
         const message = canonicalProjectVisibleLabel(project?.selection_message)
-          || "请在 QoderWork 中设置唯一项目显示名称。";
+          || (hasValidLabel
+            ? "请在 QoderWork 中设置唯一项目显示名称。"
+            : "请在 QoderWork 中设置唯一有效项目显示名称。");
         return {key, label: selectable ? label : `${label}（${message}）`, selectable};
       });
       optionIds = nextOptionIds;
