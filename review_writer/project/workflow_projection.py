@@ -78,10 +78,105 @@ def _legacy_state(project: Path) -> dict[str, Any]:
     )
 
 
+def _validated_precomputed_dual_state(
+    value: object, declared: list[str]
+) -> dict[str, Any] | None:
+    if (
+        not isinstance(value, dict)
+        or set(value) != {
+            "schema_version",
+            "studies",
+            "main_source_available_count",
+            "generic_source_available_count",
+            "workflow_can_continue",
+        }
+        or value.get("schema_version") != "dual-source-project-state.v1"
+        or not isinstance(value.get("studies"), list)
+        or not isinstance(value.get("workflow_can_continue"), bool)
+    ):
+        return None
+    studies = value["studies"]
+    counts = (
+        value.get("main_source_available_count"),
+        value.get("generic_source_available_count"),
+    )
+    if any(
+        isinstance(count, bool) or not isinstance(count, int) or count < 0
+        for count in counts
+    ):
+        return None
+    allowed_pdf = {"verified", "stale", "unknown"}
+    allowed_generic = {"current", "stale", "unknown"}
+    allowed_status = {"blocked", "current", "current_generic_only"}
+    ids: list[str] = []
+    for row in studies:
+        if not isinstance(row, dict):
+            return None
+        study_id = row.get("study_id")
+        tier = row.get("source_tier")
+        requires_chemical = row.get("requires_chemical")
+        pdf_status = row.get("pdf_status")
+        generic_status = row.get("generic_parse_status")
+        status = row.get("status")
+        generic = row.get("generic")
+        if (
+            not isinstance(study_id, str)
+            or tier not in {"core", "background"}
+            or not isinstance(requires_chemical, bool)
+            or requires_chemical is not (tier == "core")
+            or pdf_status not in allowed_pdf
+            or generic_status not in allowed_generic
+            or status not in allowed_status
+            or not isinstance(generic, dict)
+            or generic.get("status") != generic_status
+        ):
+            return None
+        ids.append(study_id)
+        if status == "blocked":
+            if not isinstance(row.get("reason_code"), str) or not row["reason_code"]:
+                return None
+            continue
+        if (
+            pdf_status != "verified"
+            or generic_status != "current"
+            or not isinstance(row.get("binding_digest"), str)
+            or not isinstance(generic.get("binding_digest"), str)
+            or (status == "current_generic_only" and tier != "background")
+        ):
+            return None
+        chemical = row.get("chemical")
+        if status == "current_generic_only":
+            if chemical is not None:
+                return None
+        elif (
+            not isinstance(chemical, dict)
+            or chemical.get("status") != "current"
+            or not isinstance(chemical.get("state_digest"), str)
+            or row.get("reaction_data_status")
+            not in {"available", "unavailable_not_provided"}
+        ):
+            return None
+    if sorted(ids) != declared or len(ids) != len(set(ids)):
+        return None
+    main_count = sum(row["pdf_status"] == "verified" for row in studies)
+    generic_count = sum(
+        row["generic_parse_status"] == "current" for row in studies
+    )
+    workflow = bool(studies) and all(
+        row["status"] in {"current", "current_generic_only"} for row in studies
+    )
+    if (
+        counts != (main_count, generic_count)
+        or value["workflow_can_continue"] is not workflow
+    ):
+        return None
+    return value
+
+
 def _new_route_state(
     project: Path,
     *,
-    precomputed_dual_state: dict[str, Any] | None = None,
+    _precomputed_dual_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     source_root = project / SOURCE_TRUTH_ROOT
     bundle_paths = (
@@ -130,29 +225,10 @@ def _new_route_state(
     generic_source_available_count = 0
     dual_state: dict[str, Any] | None = None
     if source_ready and dual_route:
-        precomputed_studies = (
-            precomputed_dual_state.get("studies")
-            if isinstance(precomputed_dual_state, dict)
-            else None
+        dual_state = _validated_precomputed_dual_state(
+            _precomputed_dual_state, declared
         )
-        precomputed_ids = (
-            sorted(
-                row.get("study_id")
-                for row in precomputed_studies
-                if isinstance(row, dict) and isinstance(row.get("study_id"), str)
-            )
-            if isinstance(precomputed_studies, list)
-            else []
-        )
-        if (
-            precomputed_dual_state is not None
-            and precomputed_dual_state.get("schema_version")
-            == "dual-source-project-state.v1"
-            and precomputed_ids == declared
-            and len(precomputed_ids) == len(precomputed_studies)
-        ):
-            dual_state = precomputed_dual_state
-        else:
+        if dual_state is None:
             dual_state = project_dual_source_state(project)
         main_source_available_count = int(
             dual_state.get("main_source_available_count", 0)
@@ -285,17 +361,27 @@ def _new_route_state(
     )
 
 
-def workflow_state(
-    project: Path,
-    *,
-    precomputed_dual_state: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+def workflow_state(project: Path) -> dict[str, Any]:
     """Project the only workflow state allowed to authorize downstream work."""
 
     project = project.resolve(strict=True)
     source_root = project / SOURCE_TRUTH_ROOT
     if os.path.lexists(source_root):
-        return _new_route_state(
-            project, precomputed_dual_state=precomputed_dual_state
-        )
+        return _new_route_state(project)
     return _legacy_state(project)
+
+
+def _workflow_and_dual_source_state(
+    project: Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Compute and reuse dual authority only within this synchronous request."""
+
+    root = project.resolve(strict=True)
+    dual = project_dual_source_state(root)
+    source_root = root / SOURCE_TRUTH_ROOT
+    workflow = (
+        _new_route_state(root, _precomputed_dual_state=dual)
+        if os.path.lexists(source_root)
+        else _legacy_state(root)
+    )
+    return workflow, dual

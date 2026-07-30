@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import shutil
 import subprocess
@@ -301,6 +302,56 @@ def test_dashboard_projection_validates_each_source_once_per_request(
         for path in project.rglob("*")
         if path.is_file()
     } == before
+
+
+def test_malformed_precomputed_dual_state_recomputes_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from review_writer.project import workflow_projection as projection
+
+    request = source_request(tmp_path)
+    project = bootstrap_dual_parse_project(
+        tmp_path / "review-projects", request
+    )
+    bind_generic_parse_outputs(project, generic_output(tmp_path / "generic", request))
+    valid = project_dual_source_state(project)
+    missing_keys = {
+        "schema_version": valid["schema_version"],
+        "studies": [{"study_id": row["study_id"]} for row in valid["studies"]],
+    }
+    invalid_status = copy.deepcopy(valid)
+    invalid_status["studies"][0]["status"] = "forged_current"
+    count_mismatch = copy.deepcopy(valid)
+    count_mismatch["main_source_available_count"] += 1
+    workflow_contradiction = copy.deepcopy(valid)
+    workflow_contradiction["workflow_can_continue"] = True
+    recomputes = 0
+
+    def fresh_state(_project: Path) -> dict[str, object]:
+        nonlocal recomputes
+        recomputes += 1
+        return copy.deepcopy(valid)
+
+    monkeypatch.setattr(projection, "project_dual_source_state", fresh_state)
+
+    for index, malformed in enumerate(
+        (
+            missing_keys,
+            invalid_status,
+            count_mismatch,
+            workflow_contradiction,
+        ),
+        start=1,
+    ):
+        state = projection._new_route_state(
+            project, _precomputed_dual_state=malformed
+        )
+
+        assert recomputes == index
+        assert state["main_source_available_count"] == 3
+        assert state["generic_source_available_count"] == 3
+        assert state["dual_source_ready"] is False
+        assert state["paper_evidence_ready"] is False
 
 
 def test_fresh_figure_workspace_get_is_read_only(tmp_path: Path) -> None:

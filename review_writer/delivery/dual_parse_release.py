@@ -580,22 +580,23 @@ def _dashboard_authority_payloads(
         from review_writer.project.chemical_completion import (
             project_chemical_completion_state,
         )
-        from review_writer.project.dual_source import project_dual_source_state
         from review_writer.project.parse_reconciliation import (
             project_reconciliation_state,
         )
-        from review_writer.project.workflow_projection import workflow_state
+        from review_writer.project.workflow_projection import (
+            _workflow_and_dual_source_state,
+        )
         from review_writer.project.chemical_paper import chemical_paper_projection
     except ImportError as exc:
         raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_UNAVAILABLE") from exc
     root = _project(project)
-    dual = project_dual_source_state(root)
+    workflow, dual = _workflow_and_dual_source_state(root)
     values = (
         dual,
         project_chemical_completion_state(root),
         project_reconciliation_state(root),
         chemical_paper_projection(root),
-        workflow_state(root, precomputed_dual_state=dual),
+        workflow,
     )
     if not all(isinstance(value, dict) for value in values):
         raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_INVALID")
