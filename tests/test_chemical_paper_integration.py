@@ -8,7 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from review_writer.project.chemical_paper import import_chemical_paper
+from review_writer.project.chemical_paper import (
+    correct_chemical_paper_field,
+    import_chemical_paper,
+)
 from review_writer.project.content_agent_handoff import (
     ContentAgentError,
     build_content_task_package,
@@ -84,12 +87,52 @@ def test_content_agent_package_binds_current_chemical_import(tmp_path: Path) -> 
         _archive(tmp_path / "chemical.zip", pages),
         ACTOR,
     )
-    after = build_content_task_package(project, _request(project))
+    destination = tmp_path / "chemical-task-package"
+    after = build_content_task_package(project, _request(project), destination)
 
-    assert "chemical_paper" in after["inputs"]
+    assert set(after["inputs"]) == {"chemical_paper", "source_truth"}
+    assert [row["kind"] for row in after["inputs"]["chemical_paper"]] == [
+        "chemical_paper_state"
+    ]
+    assert [row["kind"] for row in after["inputs"]["source_truth"]] == [
+        "source_asset:pdf"
+    ]
+    copied = {
+        path.relative_to(destination).as_posix()
+        for path in destination.rglob("*")
+        if path.is_file() and path.name != "manifest.json"
+    }
+    assert copied == {
+        row["path"] for rows in after["inputs"].values() for row in rows
+    }
+    encoded = json.dumps(after, sort_keys=True)
+    for superseded in (
+        "canonical_markdown",
+        "content_list",
+        "source_asset:layout",
+        "layout_layer",
+        "reading_layer",
+        "parse_quality",
+    ):
+        assert superseded not in encoded
     assert after["chemical_paper_import_bindings"][0]["study_id"] == "scholarly-a"
     assert after["chemical_paper_import_bindings"][0]["chemical_paper_import_digest"]
     assert after["task_package_digest"] != before["task_package_digest"]
+
+
+def test_chemical_content_package_requires_current_state_before_writing_output(
+    tmp_path: Path,
+) -> None:
+    project = content_project(tmp_path)
+    (project / "01_evidence/chemical_paper").mkdir(parents=True)
+    destination = tmp_path / "missing-chemical-task-package"
+    before = snapshot(project)
+
+    with pytest.raises(ContentAgentError, match="CHEMICAL_PAPER_NOT_IMPORTED"):
+        build_content_task_package(project, _request(project), destination)
+
+    assert snapshot(project) == before
+    assert not destination.exists()
 
 
 def test_content_agent_result_from_pre_import_package_is_stale_and_zero_write(tmp_path: Path) -> None:
@@ -108,6 +151,66 @@ def test_content_agent_result_from_pre_import_package_is_stale_and_zero_write(tm
     with pytest.raises(ContentAgentError, match="TASK_PACKAGE_STALE"):
         import_content_agent_result(project, result)
     assert snapshot(project) == before
+
+
+def test_content_agent_result_is_stale_after_chemical_state_change_and_zero_write(
+    tmp_path: Path,
+) -> None:
+    project = content_project(tmp_path)
+    pdf_sha, _, pages = _main_binding(project, "scholarly-a")
+    imported = import_chemical_paper(
+        project,
+        "scholarly-a",
+        pdf_sha,
+        _archive(tmp_path / "chemical.zip", pages),
+        ACTOR,
+    )
+    package = build_content_task_package(project, _request(project))
+    result = _result(project, package)
+    correct_chemical_paper_field(
+        project,
+        study_id="scholarly-a",
+        molecule_index=0,
+        field="smiles_expanded",
+        value="CC",
+        actor=ACTOR,
+        reason="Checked against the original PDF.",
+        version_token=imported["version_token"],
+    )
+
+    before = snapshot(project)
+    with pytest.raises(ContentAgentError, match="TASK_PACKAGE_STALE"):
+        import_content_agent_result(project, result)
+    assert snapshot(project) == before
+
+
+def test_chemical_content_package_rejects_pdf_drift_before_writing_output(
+    tmp_path: Path,
+) -> None:
+    project = content_project(tmp_path)
+    pdf_sha, _, pages = _main_binding(project, "scholarly-a")
+    import_chemical_paper(
+        project,
+        "scholarly-a",
+        pdf_sha,
+        _archive(tmp_path / "chemical.zip", pages),
+        ACTOR,
+    )
+    bundle = json.loads(
+        (project / "01_evidence/source_truth/scholarly-a/bundle.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    main = next(row for row in bundle["sources"] if row["document_role"] == "MAIN")
+    (project / main["pdf"]["path"]).write_bytes(b"drifted PDF bytes")
+    destination = tmp_path / "drifted-pdf-task-package"
+    before = snapshot(project)
+
+    with pytest.raises(ContentAgentError, match="SOURCE_ASSET_DRIFT"):
+        build_content_task_package(project, _request(project), destination)
+
+    assert snapshot(project) == before
+    assert not destination.exists()
 
 
 def test_source_figure_registry_is_bound_to_chemical_import_without_fake_figure(tmp_path: Path) -> None:
