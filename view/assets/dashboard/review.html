@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="/assets/dashboard/review-release.css">
   <link rel="stylesheet" href="/assets/dashboard/review-audit.css">
   <link rel="stylesheet" href="/assets/dashboard/review-chemical-paper.css">
+  <link rel="stylesheet" href="/assets/dashboard/review-dual-parse.css">
 </head>
 <body class="page-review">
   <a class="skip-link" href="#primary-workspace">跳到主要工作区</a>
@@ -142,7 +143,21 @@
             <p id="source-upload-message" class="inline-message" role="status" aria-live="polite"></p>
           </section>
 
-          <section id="chemical-paper-panel" class="chemical-paper-panel" aria-labelledby="chemical-paper-heading">
+          <section id="dual-parse-workspace" class="dual-parse-workspace" aria-labelledby="dual-parse-heading">
+            <header class="dual-parse-heading">
+              <div>
+                <p class="section-label">Dual parse review</p>
+                <h3 id="dual-parse-heading">双层解析与化学证据核对</h3>
+              </div>
+              <p>原始 PDF 是唯一科学仲裁来源</p>
+            </header>
+            <section id="dual-study-status" aria-label="各研究双层解析状态"></section>
+            <section id="chemical-import-preflight" aria-label="Chemical Paper 导入预检"></section>
+            <section id="chemical-completion-queue" aria-label="Chemical Completion 待办"></section>
+            <section id="reconciliation-list" aria-label="双层解析差异核对"></section>
+          </section>
+
+          <section id="chemical-paper-panel" class="chemical-paper-panel" aria-labelledby="chemical-paper-heading" hidden>
             <header class="chemical-paper-heading">
               <div>
                 <p class="section-label">Chemical structure handoff</p>
@@ -429,6 +444,7 @@
   <script src="/assets/dashboard/review-release.js"></script>
   <script src="/assets/dashboard/review-audit.js"></script>
   <script src="/assets/dashboard/review-chemical-paper.js"></script>
+  <script src="/assets/dashboard/review-dual-parse.js"></script>
   <script>
     const $ = id => document.getElementById(id);
     const stageLabels = {
@@ -481,6 +497,7 @@
     let finalPayload = {final_draft_docx_exists:false, final_draft_docx_path:''};
     let sourcePayload = {counts:{total:0,ready:0,missing:0}, sources:[], supplements:[], unresolved:[], upload_required:false};
     let chemicalPaperPayload = {status:'unavailable', studies:[]};
+    let dualParseModel = ReviewDualParseUI.projectionModel({schema_version:'dual-parse-projection.v1',status:'unavailable'});
     let progressPayload = {active_stage:'sources', stages:[], studies:[], blocker:'', recommended_next:'', release_capabilities:{internal_draft_export_ready:false,verified_release_ready:false}};
     let parseQualityPayload = {status:'unavailable', workflow_can_continue:false, summary:{}, studies:[]};
     let parseQualityBusy = new Set();
@@ -500,6 +517,7 @@
     let projectsRefreshBusy = false;
     let sourceUploadBusy = false;
     let chemicalPaperBusy = false;
+    let dualParseBusy = false;
     let sourceSupplementBusy = false;
     let sourceMappingBusy = false;
     let exportBusy = false;
@@ -577,6 +595,9 @@
       $('source-archive-input').disabled = busy || sourceUploadBusy;
       document.querySelectorAll('#chemical-paper-panel input, #chemical-paper-panel select, #chemical-paper-panel button').forEach(control => {
         control.disabled = busy || chemicalPaperBusy;
+      });
+      document.querySelectorAll('#dual-parse-workspace input, #dual-parse-workspace select, #dual-parse-workspace textarea, #dual-parse-workspace button').forEach(control => {
+        control.disabled = busy || dualParseBusy;
       });
       document.querySelectorAll('#source-supplement-form input, #source-supplement-form button').forEach(control => {
         control.disabled = busy || sourceSupplementBusy;
@@ -859,6 +880,132 @@
           onValidationError:message => { $('chemical-paper-message').textContent = message; },
         },
         chemicalPaperActor(),
+      );
+    }
+
+    function dualParseActor() {
+      const actor = chemicalPaperActor();
+      return {actorType:actor.actor_type, actorLabel:actor.actor_label};
+    }
+
+    function dualParseInputSnapshot() {
+      return Array.from(document.querySelectorAll('#dual-parse-workspace input:not([type="file"]), #dual-parse-workspace select, #dual-parse-workspace textarea'))
+        .map((control, index) => ({index, value:control.value, checked:control.checked}));
+    }
+
+    function restoreDualParseInputs(snapshot) {
+      const controls = Array.from(document.querySelectorAll('#dual-parse-workspace input:not([type="file"]), #dual-parse-workspace select, #dual-parse-workspace textarea'));
+      (snapshot || []).forEach(row => {
+        const control = controls[row.index];
+        if (!control) return;
+        control.value = row.value;
+        if ('checked' in control) control.checked = row.checked;
+        if (control.tagName === 'SELECT') control.dispatchEvent(new Event('change'));
+      });
+    }
+
+    function showDualParseFailure(message, retry) {
+      const status = document.querySelector('#dual-study-status .dual-parse-live-state');
+      if (!status) return;
+      status.classList.add('failed');
+      const previous = status.querySelector('.dual-parse-action-failure');
+      if (previous) previous.remove();
+      const failure = textElement('p', 'dual-parse-action-failure', message);
+      status.append(failure);
+      if (retry) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = '重试当前动作';
+        button.addEventListener('click', retry);
+        status.append(button);
+      }
+    }
+
+    async function refreshDualParse(preserveInputs) {
+      if (!projectId || dualParseBusy) return;
+      const snapshot = preserveInputs ? dualParseInputSnapshot() : [];
+      dualParseBusy = true;
+      dualParseModel = ReviewDualParseUI.projectionModel({
+        schema_version:'dual-parse-projection.v1',
+        status:'loading',
+        next_action:{label:'读取当前双层解析任务',description:'完成读取前不会提交决定。'},
+      });
+      renderDualParse();
+      try {
+        dualParseModel = await ReviewDualParseUI.load(projectId, fetch);
+        renderDualParse();
+        if (preserveInputs) restoreDualParseInputs(snapshot);
+      } finally {
+        dualParseBusy = false;
+        applyWorkbenchBusyState(editorBusy || projectLoadBusy);
+      }
+    }
+
+    async function submitDualParseMutation(kind, payload) {
+      if (!projectId || dualParseBusy || projectLoadBusy) return null;
+      const submittedProjectId = projectId;
+      const encoded = encodeURIComponent(submittedProjectId);
+      let url = '';
+      let options = {};
+      if (kind === 'preflight') {
+        url = `/api/project/${encoded}/chemical-paper/preflight?study_id=${encodeURIComponent(payload.study_id)}`;
+        options = {method:'POST',headers:{'Content-Type':'application/zip'},body:payload.file};
+      } else if (kind === 'confirm') {
+        url = `/api/project/${encoded}/chemical-paper/confirm`;
+        options = {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)};
+      } else if (kind === 'completion') {
+        url = `/api/project/${encoded}/chemical-completion`;
+        options = {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)};
+      } else if (kind === 'reconciliation') {
+        url = `/api/project/${encoded}/parse-reconciliation`;
+        options = {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)};
+      } else {
+        return null;
+      }
+      dualParseBusy = true;
+      applyWorkbenchBusyState(true);
+      const retry = () => submitDualParseMutation(kind, payload);
+      try {
+        const response = await fetch(url, options);
+        let body = {};
+        try { body = await response.json(); } catch (_) { body = {}; }
+        if (projectId !== submittedProjectId) return null;
+        if (response.status === 409) {
+          showDualParseFailure('状态已有更新；输入已保留。请刷新当前状态后重新提交。', () => refreshDualParse(true));
+          return null;
+        }
+        if (!response.ok) {
+          showDualParseFailure('动作失败；权威状态未更改，输入已保留。', retry);
+          return null;
+        }
+        if (kind === 'preflight') return body;
+        await loadProject();
+        return body;
+      } catch (_) {
+        if (projectId === submittedProjectId) {
+          showDualParseFailure('网络请求失败；权威状态未更改，输入已保留。', retry);
+        }
+        return null;
+      } finally {
+        dualParseBusy = false;
+        applyWorkbenchBusyState(editorBusy || projectLoadBusy);
+      }
+    }
+
+    function renderDualParse() {
+      ReviewDualParseUI.render(
+        document,
+        $('dual-parse-workspace'),
+        dualParseModel,
+        {
+          actor:dualParseActor(),
+          onImportPreflight:payload => submitDualParseMutation('preflight', payload),
+          onImportConfirm:payload => submitDualParseMutation('confirm', payload),
+          onCompletionSave:payload => submitDualParseMutation('completion', payload),
+          onReconciliationSave:payload => submitDualParseMutation('reconciliation', payload),
+          onRetry:() => refreshDualParse(false),
+          onValidationError:message => showDualParseFailure(message),
+        },
       );
     }
 
@@ -1462,6 +1609,7 @@
       renderModeCoverage();
       renderCockpitContext();
       renderStageWorkspace();
+      renderDualParse();
       renderReviewAudit();
     }
 
@@ -2196,6 +2344,12 @@
       progressCapabilityGeneration = -1;
       setProjectLoadBusy(true);
       $('workbench-message').textContent = '正在读取项目…';
+      dualParseModel = ReviewDualParseUI.projectionModel({
+        schema_version:'dual-parse-projection.v1',
+        status:'loading',
+        next_action:{label:'读取当前双层解析任务',description:'完成读取前不会提交决定。'},
+      });
+      renderDualParse();
       const encoded = encodeURIComponent(requestedProjectId);
       try {
         const projectPayloads = await Promise.all([
@@ -2214,11 +2368,13 @@
           optionalPayload(`/api/project/${encoded}/review-figures`, {source_figures:[],placeholders:[]}),
           optionalPayload(`/api/project/${encoded}/comparison-protocol`, {status:'unavailable',protocol:{}}),
           optionalPayload(ReviewChemicalPaperUI.routes(requestedProjectId).read, {}),
+          ReviewDualParseUI.load(requestedProjectId, fetch),
         ]);
         const [nextProjectState, nextCockpitPayload, nextDraftPayload, nextEvidencePayload, nextRiskPayload, nextSourcePayload, nextProgressPayload, nextParseQualityPayload, nextFigurePayload, nextFinalPayload] = projectPayloads;
         const [nextManuscriptEvidencePayload, nextManuscriptSynthesisPayload, nextReviewFigurePayload] = projectPayloads.slice(10);
         const nextComparisonProtocolPayload = projectPayloads[13];
         const nextChemicalPaperPayload = projectPayloads[14];
+        const nextDualParseModel = projectPayloads[15];
         if (
           generation !== projectLoadGeneration
           || projectId !== requestedProjectId
@@ -2240,6 +2396,7 @@
         reviewFigurePayload = nextReviewFigurePayload;
         comparisonProtocolPayload = nextComparisonProtocolPayload;
         chemicalPaperPayload = nextChemicalPaperPayload;
+        dualParseModel = nextDualParseModel;
         editorDirty = false;
         riskDecisionDirty = false;
         parseQualityDirty.clear();
