@@ -234,6 +234,17 @@ def load_chemical_paper_state(project: Path, study_id: str) -> dict[str, Any]:
     return state
 
 
+def chemical_paper_current_binding(project: Path, study_id: str) -> dict[str, str]:
+    """Return current Chemical provenance without exposing archive or molecule payloads."""
+    state = load_chemical_paper_state(project, study_id)
+    return {
+        "source_pdf_sha256": state["source_pdf_sha256"],
+        "source_truth_bundle_digest": state["source_truth_bundle_digest"],
+        "import_digest": state["current_import_digest"],
+        "state_digest": state["state_digest"],
+    }
+
+
 def _safe_member_name(name: str) -> str:
     normalized = unicodedata.normalize("NFC", name)
     pure = PurePosixPath(normalized)

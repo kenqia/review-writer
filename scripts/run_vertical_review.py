@@ -76,6 +76,11 @@ from review_writer.project.dual_parse_bootstrap import (  # noqa: E402
     bind_generic_parse_outputs,
     bootstrap_dual_parse_project,
 )
+from review_writer.project.dual_source import (  # noqa: E402
+    DualSourceError,
+    project_dual_source_state,
+    write_dual_source_binding,
+)
 from review_writer.delivery.project_release import (  # noqa: E402
     ProjectReleaseError,
     bind_authoritative_draft,
@@ -987,6 +992,13 @@ def _parser() -> argparse.ArgumentParser:
     generic_bind.add_argument("--project", type=Path, required=True)
     generic_bind.add_argument("--mineru-output", type=Path, required=True)
 
+    dual_source = commands.add_parser("build-dual-source")
+    dual_source.add_argument("--project", type=Path, required=True)
+    dual_source.add_argument("--study-id")
+
+    dual_state = commands.add_parser("dual-source-state")
+    dual_state.add_argument("--project", type=Path, required=True)
+
     preflight = commands.add_parser("preflight")
     preflight.add_argument("--review-root", type=Path, required=True)
     preflight.add_argument("--mineru-token-file", type=Path, default=DEFAULT_MINERU_TOKEN_FILE)
@@ -1099,6 +1111,14 @@ def _run(args: argparse.Namespace) -> int:
     if args.command == "bind-generic-parse":
         result = bind_generic_parse_outputs(args.project, args.mineru_output)
         _print_summary({"command": args.command, **result})
+        return 0
+    if args.command == "build-dual-source":
+        study_ids = [args.study_id] if args.study_id else [row["study_id"] for row in project_dual_source_state(args.project)["studies"]]
+        bindings = [write_dual_source_binding(args.project, study_id) for study_id in study_ids]
+        _print_summary({"command": args.command, "binding_count": len(bindings), "status": "BOUND"})
+        return 0
+    if args.command == "dual-source-state":
+        _print_summary({"command": args.command, **project_dual_source_state(args.project)})
         return 0
     if args.command == "preflight":
         summary = _preflight_status(
@@ -1325,6 +1345,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     except DualParseBootstrapError as exc:
+        _print_summary(
+            {"command": args.command, "error_code": exc.code, "status": "ERROR"},
+            stream=sys.stderr,
+        )
+        return 2
+    except DualSourceError as exc:
         _print_summary(
             {"command": args.command, "error_code": exc.code, "status": "ERROR"},
             stream=sys.stderr,
