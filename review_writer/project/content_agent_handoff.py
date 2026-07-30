@@ -249,13 +249,14 @@ def _collect_inputs(project: Path, request: dict[str, Any]) -> dict[str, list[di
         _chemical_paper_source_artifacts(project, studies, inputs)
     else:
         _source_artifacts(project, studies, inputs)
-    evidence_projection = "01_evidence/paper_evidence_projection.jsonl"
-    if _existing(project, evidence_projection):
-        _add_artifact(project, inputs, "paper_evidence", evidence_projection, "paper_evidence_projection")
-    for study_id in studies:
-        candidate = f"01_evidence/{study_id}/paper_evidence_candidates.json"
-        if _existing(project, candidate):
-            _add_artifact(project, inputs, "paper_evidence", candidate, "paper_evidence_candidates")
+    if request["request_kind"] != "paper_evidence":
+        evidence_projection = "01_evidence/paper_evidence_projection.jsonl"
+        if _existing(project, evidence_projection):
+            _add_artifact(project, inputs, "paper_evidence", evidence_projection, "paper_evidence_projection")
+        for study_id in studies:
+            candidate = f"01_evidence/{study_id}/paper_evidence_candidates.json"
+            if _existing(project, candidate):
+                _add_artifact(project, inputs, "paper_evidence", candidate, "paper_evidence_candidates")
     if request["request_kind"] in {"synthesis_claims", "section_draft"}:
         for relative, kind in (
             ("02_synthesis/comparison_protocol.json", "comparison_protocol"),

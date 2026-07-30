@@ -105,6 +105,34 @@ def test_content_task_package_contains_only_bound_project_artifacts(tmp_path: Pa
     assert all(not str(item["path"]).startswith(("/", "\\")) for rows in package["inputs"].values() for item in rows)
 
 
+def test_generic_paper_evidence_package_excludes_prior_evidence_but_synthesis_uses_it(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    (project / "01_evidence/paper_evidence_projection.jsonl").write_text(
+        json.dumps({"study_id": "scholarly-a", "evidence_id": "existing"}) + "\n",
+        encoding="utf-8",
+    )
+    candidates = project / "01_evidence/scholarly-a/paper_evidence_candidates.json"
+    candidates.parent.mkdir(parents=True, exist_ok=True)
+    candidates.write_text(
+        json.dumps({"candidates": [{"evidence_id": "existing-candidate"}]}),
+        encoding="utf-8",
+    )
+
+    paper_package = build_content_task_package(project, _request(project))
+    assert "paper_evidence" not in paper_package["inputs"]
+    assert {"source_truth", "parse_quality"} <= set(paper_package["inputs"])
+    synthesis_package = build_content_task_package(
+        project,
+        _request(project, kind="synthesis_claims"),
+    )
+    assert {row["kind"] for row in synthesis_package["inputs"]["paper_evidence"]} == {
+        "paper_evidence_projection",
+        "paper_evidence_candidates",
+    }
+
+
 def test_package_can_copy_only_hash_bound_inputs_to_task_directory(tmp_path: Path) -> None:
     project = _project(tmp_path)
     destination = tmp_path / "task-package"
