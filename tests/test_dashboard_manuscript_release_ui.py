@@ -116,6 +116,7 @@ def test_release_component_separates_levels_and_hides_stale_downloads() -> None:
                 f"const ui = require({module_path});",
                 "const controls = ui.deriveReleaseControls({",
                 "  capabilities:{internal_draft_export_ready:true,verified_release_ready:true},",
+                "  credits:{status:'unavailable',measured:null,forecast:null},",
                 "  figures:{placeholders:[{placeholder_id:'p1',status:'awaiting_human_figure'}]},",
                 "  artifacts:{internal:{exists:true,current:false,download_url:'/file?path=stale.docx'},verified:{exists:true,current:true,download_url:'/file?path=verified.docx'}}",
                 "});",
@@ -131,6 +132,18 @@ def test_release_component_separates_levels_and_hides_stale_downloads() -> None:
             ]
         )
     )
+
+
+def test_dashboard_hides_all_credits_ui_and_copy() -> None:
+    forbidden = ("credit", "实测消耗", "预测用量")
+    for path in (
+        DASHBOARD / "review.html",
+        *DASHBOARD.glob("review-*.js"),
+        *DASHBOARD.glob("review-*.css"),
+    ):
+        source = path.read_text(encoding="utf-8").lower()
+        for token in forbidden:
+            assert token not in source, f"{path.name} exposes credits UI token: {token}"
 
 
 def test_busy_state_does_not_reenable_expert_release_with_placeholder() -> None:
@@ -220,12 +233,13 @@ def test_audit_component_keeps_closure_visible_without_internal_ids() -> None:
                 " protocol:{status:'approved',protocol:{comparison_objects:['scholarly-0792992b4e71861e'],normalization_rules:['保留原始单位'],missing_value_policy:'缺失值不插补',incomparability_rules:['不同终点不排名'],counterevidence_rules:['保留失败结果'],claim_strength:'有边界综合',decision:{action:'approve',reason:'已核对',actor_label:'李研究员'}}},",
                 " synthesis:{coverage:{corpus_kind:'calibration_corpus',axes:[{axis_id:'scope_and_limits',question:'范围如何不同',counterevidence_ids:['PE-SECRET'],incomparable_items:['终点不同'],impact_on_conclusion:'不排名'}]}},",
                 " figures:{summary:{source_count:32,placeholder_count:1},source_figures:[{figure_id:'scholarly-secret:figure-1',study_id:'scholarly-secret',figure_label:'Figure 1'}],placeholders:[{placeholder_id:'placeholder-scope-v1',scientific_question:'哪些范围不可比？',reader_takeaway:'保持论文特异边界',status:'awaiting_human_figure'}]},",
-                " progress:{credits:{measured:null,forecast:null}},",
+                " progress:{credits:{status:'unknown',measured:null,forecast:null},credit_ledger:{status:'unavailable'}},",
                 " final:{evaluation:{score:82,dimensions,hard_fails:['缺少署名'],issues:['一项待修复']}}",
                 "});",
                 "const encoded=JSON.stringify(model);",
                 "for(const secret of ['scholarly-','calibration_corpus','placeholder-scope-v1','PE-SECRET','scope_and_limits']) if(encoded.includes(secret)) throw new Error(`leaked ${secret}: ${encoded}`);",
-                "for(const label of ['解析质量','归一化规则','缺失值规则','不可比规则','反证规则','决策者：李研究员','来源署名与复用权利未提供','缺口原因未提供','实测消耗：未记录','预测用量：未估算','Hard Fails','缺少署名','一项待修复']) if(!encoded.includes(label)) throw new Error(`missing ${label}: ${encoded}`);",
+                "for(const label of ['解析质量','归一化规则','缺失值规则','不可比规则','反证规则','决策者：李研究员','来源署名与复用权利未提供','缺口原因未提供','Hard Fails','缺少署名','一项待修复']) if(!encoded.includes(label)) throw new Error(`missing ${label}: ${encoded}`);",
+                "for(const hidden of ['credits','credit_ledger','实测消耗','预测用量']) if(encoded.toLowerCase().includes(hidden)) throw new Error(`exposed ${hidden}: ${encoded}`);",
                 "if(model.evaluation.dimensions.length!==7 || model.evaluation.score!=='82') throw new Error(encoded);",
             ]
         )
@@ -248,7 +262,7 @@ def test_audit_component_does_not_invent_missing_evaluation() -> None:
     )
 
 
-def test_audit_component_consumes_authoritative_backend_evaluation_and_ledger() -> None:
+def test_audit_component_consumes_evaluation_but_ignores_credits_payloads() -> None:
     module_path = json.dumps(str(DASHBOARD / "review-audit.js"))
     _run_node(
         "\n".join(
@@ -260,11 +274,12 @@ def test_audit_component_consumes_authoritative_backend_evaluation_and_ledger() 
                 " final:{evaluation:{schema_version:'release-evaluation.v1',benchmark:{status:'available',score:83,rubric,hard_fails:['WRONG_SOURCE_BINDING'],issues:['SYNTHESIS_FIGURE_PENDING']},credit_ledger:{status:'available',measured:{consumed:653},forecast:650}}}",
                 "});",
                 "const encoded=JSON.stringify(model);",
-                "if(model.credits.measured!=='实测消耗：653 credits' || model.credits.forecast!=='预测用量：650 credits') throw new Error(encoded);",
+                "if(Object.prototype.hasOwnProperty.call(model,'credits')) throw new Error(`credits model exposed: ${encoded}`);",
                 "if(model.evaluation.score!=='83' || model.evaluation.dimensions.length!==7) throw new Error(encoded);",
                 "if(!encoded.includes('来源绑定与当前发布不一致') || !encoded.includes('综合图仍待研究者完成')) throw new Error(encoded);",
                 "if(encoded.includes('WRONG_SOURCE_BINDING') || encoded.includes('SYNTHESIS_FIGURE_PENDING')) throw new Error(`exposed internal evaluation code: ${encoded}`);",
-                "if(encoded.includes('实测消耗：7 credits') || encoded.includes('预测用量：8 credits')) throw new Error(`used non-authoritative credits: ${encoded}`);",
+                "for(const hidden of ['credits','credit_ledger','实测消耗','预测用量']) if(encoded.toLowerCase().includes(hidden)) throw new Error(`exposed ${hidden}: ${encoded}`);",
+                "if(encoded.includes('：0') || encoded.includes(':0')) throw new Error(`invented zero: ${encoded}`);",
             ]
         )
     )

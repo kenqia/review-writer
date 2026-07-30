@@ -141,20 +141,6 @@
     };
   }
 
-  function creditsModel(payload) {
-    const progress = object(payload);
-    const hasLedger = Object.prototype.hasOwnProperty.call(progress, "credit_ledger");
-    const ledger = object(progress.credit_ledger);
-    const legacy = object(progress.credits);
-    const measured = hasLedger ? object(ledger.measured).consumed : legacy.measured;
-    const forecast = hasLedger ? ledger.forecast : legacy.forecast;
-    return {
-      title: "Credits",
-      measured: `实测消耗：${finite(measured) ? `${Number(measured)} credits` : "未记录"}`,
-      forecast: `预测用量：${finite(forecast) ? `${Number(forecast)} credits` : "未估算"}`,
-    };
-  }
-
   function evaluationModel(payload) {
     const finalPayload = object(payload);
     const report = object(finalPayload.quality_report);
@@ -197,7 +183,6 @@
       protocol: protocolModel(value.protocol),
       coverage: coverageModel(value.synthesis),
       figures: figureModel(value.figures),
-      credits: creditsModel(value.progress),
       evaluation: evaluationModel(value.final),
     };
   }
@@ -271,13 +256,7 @@
     model.coverage.axes.forEach(row => appendText(document, coverage, "p", `${row.title} · ${row.question} · ${row.conflict} · ${row.impact}`));
     appendList(document, coverage, model.coverage.omissions, "已知遗漏未提供");
 
-    const credits = document.createElement("section");
-    credits.className = "audit-section";
-    appendText(document, credits, "h3", model.credits.title);
-    appendText(document, credits, "p", model.credits.measured);
-    appendText(document, credits, "p", model.credits.forecast);
-
-    rootNode.append(parse, evaluation, protocol, figures, coverage, credits);
+    rootNode.append(parse, evaluation, protocol, figures, coverage);
   }
 
   return {buildAuditModel, decisionActor, humanStatus, renderAudit, researcherLabel};

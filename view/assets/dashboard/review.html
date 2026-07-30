@@ -150,10 +150,6 @@
               <strong id="processing-next">—</strong>
             </div>
             <p id="processing-blocker" class="processing-blocker" hidden></p>
-            <dl class="processing-credits" aria-label="Credits 使用情况">
-              <div><dt>实测消耗</dt><dd id="processing-credit-measured">未记录</dd></div>
-              <div><dt>预测用量</dt><dd id="processing-credit-forecast">未估算</dd></div>
-            </dl>
             <ol id="processing-stage-list" class="processing-stage-list"></ol>
             <div id="processing-study-list" class="processing-study-list"></div>
           </section>
@@ -292,7 +288,7 @@
                 <p class="section-label">Review closure</p>
                 <h2 id="review-audit-heading">审查闭环与发布评估</h2>
               </div>
-              <p>持续显示解析、比较协议、综合覆盖、图件披露、credits 与发布评估；缺失数据保持显式未知。</p>
+              <p>持续显示解析、比较协议、综合覆盖、图件披露与发布评估；缺失数据保持显式未知。</p>
             </header>
             <div id="review-audit-root" class="review-audit-grid" aria-live="polite"></div>
           </section>
@@ -858,14 +854,6 @@
       $('processing-next').textContent = progressPayload.recommended_next || '继续处理当前科学阶段';
       $('processing-blocker').hidden = !progressPayload.blocker;
       $('processing-blocker').textContent = progressPayload.blocker || '';
-      const measuredCredits = progressPayload.credits?.measured;
-      const forecastCredits = progressPayload.credits?.forecast;
-      $('processing-credit-measured').textContent = Number.isFinite(measuredCredits)
-        ? `${measuredCredits} credits`
-        : '未记录';
-      $('processing-credit-forecast').textContent = Number.isFinite(forecastCredits)
-        ? `${forecastCredits} credits`
-        : '未估算';
       clear($('processing-stage-list'));
       (progressPayload.stages || []).forEach(stage => {
         const item = document.createElement('li');

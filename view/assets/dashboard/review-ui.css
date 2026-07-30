@@ -1177,7 +1177,7 @@ textarea.editor {
 .source-row a { color: var(--review-green); font-size: 10px; font-weight: 800; }
 .source-supplement-form {
   display: grid;
-  grid-template-columns: minmax(180px, 1.2fr) repeat(2, minmax(150px, 1fr)) auto auto;
+  grid-template-columns: minmax(0, 1.2fr) repeat(2, minmax(0, 1fr)) auto auto;
   gap: 14px;
   align-items: end;
   margin: 24px 0 10px;
