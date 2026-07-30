@@ -4937,14 +4937,17 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             "projectState.default_workspace",
             "setWorkspace(projectState.default_workspace)",
             "cockpitPayload.metrics.included_studies",
-            "cockpitPayload.metrics.full_text_main_coverage",
-            "cockpitPayload.metrics.reviewed_studies",
+            "ReviewDualParseUI.availabilityModel({",
+            "sources:sourcePayload",
+            "availability.mainFullText.available",
+            "reviewedEvidenceStudies:Number.isInteger(metrics.reviewed_studies)",
             "cockpitPayload.metrics.scientific_risks",
             "cockpitPayload.mode_coverage",
             "cockpitPayload.recommended_next",
             "/cockpit`",
         ):
             self.assertIn(binding, review_html)
+        self.assertNotIn("cockpitPayload.metrics.full_text_main_coverage", review_html)
         self.assertNotIn('role="tab"', review_html)
 
     def test_review_workbench_waits_for_qoderwork_projects_and_polls(self) -> None:
