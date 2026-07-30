@@ -69,7 +69,7 @@ def test_projection_model_exposes_safe_status_actor_freshness_and_one_next_actio
                 "const model=ui.projectionModel({schema_version:'dual-parse-projection.v1',status:'ready',",
                 " next_action:{label:'确认第一篇 Chemical Paper 导入',description:'先核对预检摘要，再确认写入。'},",
                 " studies:[{study_id:'internal-study-a',citation:'Core study A',tier:'core',",
-                "  pdf:{status:'verified'},generic_parse:{status:'current'},",
+                "  pdf_status:'verified',generic_parse_status:'current',paper_evidence_status:'blocked',",
                 "  chemical:{status:'needs_import'},completion:{status:'blocked'},",
                 "  reconciliation:{status:'blocked'},evidence:{status:'unavailable'},",
                 "  actor_label:'模拟研究者',updated_at:'2026-07-30T09:00:00Z'}],",
@@ -124,6 +124,19 @@ def test_fresh_v2_fixture_renders_explicit_pdf_generic_and_fail_closed_later_gat
     )
 
 
+def test_fresh_v2_fixture_declares_only_the_new_flat_authority_contract() -> None:
+    payload = json.loads(FRESH_V2_FIXTURE.read_text(encoding="utf-8"))["dual_parse"]
+    assert payload["schema_version"] == "dual-parse-projection.v1"
+    assert payload["studies"]
+    for study in payload["studies"]:
+        assert {
+            "pdf_status",
+            "generic_parse_status",
+            "paper_evidence_status",
+        }.issubset(study)
+        assert not {"pdf", "generic_parse", "evidence", "evidence_status"}.intersection(study)
+
+
 def test_absent_pdf_generic_states_remain_unknown_and_never_infer_evidence() -> None:
     module_path = json.dumps(str(DUAL_SCRIPT))
     _run_node(
@@ -131,17 +144,21 @@ def test_absent_pdf_generic_states_remain_unknown_and_never_infer_evidence() -> 
             [
                 f"const ui=require({module_path});",
                 "const absent=ui.projectionModel({schema_version:'dual-parse-projection.v1',status:'ready',studies:[{source_tier:'core',chemical_import_status:'missing',completion_status:'blocked',reconciliation_status:'blocked'}]}).studies[0];",
-                "if(absent.pdfLabel!=='PDF 状态未知' || absent.genericLabel!=='Generic Parse 状态未知' || absent.evidenceLabel!=='Paper Evidence 尚不可用') throw new Error(JSON.stringify(absent));",
+                "if(absent.pdfLabel!=='PDF 状态未知' || absent.genericLabel!=='Generic Parse 状态未知' || absent.evidenceLabel!=='Paper Evidence 状态未知') throw new Error(JSON.stringify(absent));",
                 "const genericOnly=ui.projectionModel({schema_version:'dual-parse-projection.v1',status:'ready',studies:[{source_tier:'core',generic_parse_status:'current',chemical_import_status:'current',completion_status:'current',reconciliation_status:'current'}]}).studies[0];",
-                "if(genericOnly.pdfLabel!=='PDF 状态未知' || genericOnly.evidenceLabel!=='Paper Evidence 尚不可用') throw new Error(JSON.stringify(genericOnly));",
+                "if(genericOnly.pdfLabel!=='PDF 状态未知' || genericOnly.evidenceLabel!=='Paper Evidence 状态未知') throw new Error(JSON.stringify(genericOnly));",
                 "const approved=ui.projectionModel({schema_version:'dual-parse-projection.v1',status:'ready',studies:[{source_tier:'core',pdf_status:'verified',generic_parse_status:'current',chemical_import_status:'current',completion_status:'current',reconciliation_status:'current',paper_evidence_status:'available'}]}).studies[0];",
                 "if(approved.evidenceLabel!=='Paper Evidence 可用') throw new Error(JSON.stringify(approved));",
+                "const conflict=ui.projectionModel({schema_version:'dual-parse-projection.v1',status:'ready',studies:[{source_tier:'core',pdf_status:'verified',generic_parse_status:'current',paper_evidence_status:'blocked',pdf:{status:'failed'},generic_parse:{status:'stale'},evidence:{status:'available'},evidence_status:'available'}]}).studies[0];",
+                "if(conflict.pdfLabel!=='PDF 已核验' || conflict.genericLabel!=='Generic Parse 当前有效' || conflict.evidenceLabel!=='Paper Evidence 尚不可用') throw new Error(JSON.stringify(conflict));",
+                "const legacyOnly=ui.projectionModel({schema_version:'dual-parse-projection.v1',status:'ready',studies:[{source_tier:'core',pdf:{status:'verified'},generic_parse:{status:'current'},evidence:{status:'available'},evidence_status:'available'}]}).studies[0];",
+                "if(legacyOnly.pdfLabel!=='PDF 状态未知' || legacyOnly.genericLabel!=='Generic Parse 状态未知' || legacyOnly.evidenceLabel!=='Paper Evidence 状态未知') throw new Error(JSON.stringify(legacyOnly));",
             ]
         )
     )
 
 
-def test_authoritative_availability_separates_sources_from_approved_evidence() -> None:
+def test_authoritative_availability_separates_sources_from_completed_evidence_review() -> None:
     module_path = json.dumps(str(DUAL_SCRIPT))
     fixture_path = json.dumps(str(FRESH_V2_FIXTURE))
     _run_node(
@@ -149,12 +166,27 @@ def test_authoritative_availability_separates_sources_from_approved_evidence() -
             [
                 f"const ui=require({module_path});",
                 f"const fixture=require({fixture_path});",
-                "const availability=ui.availabilityModel({sources:fixture.sources,dualParse:fixture.dual_parse,includedStudies:fixture.cockpit.metrics.included_studies,approvedEvidenceStudies:fixture.cockpit.metrics.reviewed_studies});",
-                "if(JSON.stringify(availability)!==JSON.stringify({mainFullText:{available:3,total:3},genericSource:{available:3,total:3},approvedEvidence:{available:0,total:3}})) throw new Error(JSON.stringify(availability));",
+                "const availability=ui.availabilityModel({sources:fixture.sources,dualParse:fixture.dual_parse,includedStudies:fixture.cockpit.metrics.included_studies,reviewedEvidenceStudies:fixture.cockpit.metrics.reviewed_studies});",
+                "if(JSON.stringify(availability)!==JSON.stringify({mainFullText:{available:3,total:3},genericSource:{available:3,total:3},reviewedEvidence:{available:0,total:3}})) throw new Error(JSON.stringify(availability));",
                 "const unknown=ui.availabilityModel({sources:{sources:[]},dualParse:{schema_version:'other'},includedStudies:3});",
-                "if(unknown.mainFullText.available!==null || unknown.genericSource.available!==null || unknown.approvedEvidence.available!==null) throw new Error(JSON.stringify(unknown));",
+                "if(unknown.mainFullText.available!==null || unknown.genericSource.available!==null || unknown.reviewedEvidence.available!==null) throw new Error(JSON.stringify(unknown));",
                 "const divergent=ui.availabilityModel({sources:fixture.sources,dualParse:{schema_version:'dual-parse-projection.v1',status:'ready',summary:{core_studies:0,generic_current:0},studies:[{source_tier:'core'}]},includedStudies:3});",
                 "if(divergent.genericSource.available!==null || divergent.genericSource.total!==3) throw new Error(JSON.stringify(divergent));",
+                "const partial=ui.availabilityModel({sources:{sources:[{study_id:'a',role:'MAIN',status:'已获得'},{study_id:'a',role:'MAIN',status:'已获得'},{study_id:'b',role:'MAIN',status:'已获得'},{study_id:'c',role:'MAIN',status:'已获得'}]},dualParse:{schema_version:'other'},includedStudies:4,reviewedEvidenceStudies:1});",
+                "if(partial.mainFullText.available!==3 || partial.mainFullText.total!==4) throw new Error(JSON.stringify(partial));",
+            ]
+        )
+    )
+
+
+def test_rejected_evidence_decision_counts_as_reviewed_without_claiming_approval() -> None:
+    module_path = json.dumps(str(DUAL_SCRIPT))
+    _run_node(
+        "\n".join(
+            [
+                f"const ui=require({module_path});",
+                "const rejectedReview=ui.availabilityModel({includedStudies:1,reviewedEvidenceStudies:1});",
+                "if(rejectedReview.reviewedEvidence.available!==1 || 'approvedEvidence' in rejectedReview) throw new Error(JSON.stringify(rejectedReview));",
             ]
         )
     )
@@ -166,9 +198,11 @@ def test_dashboard_wires_distinct_source_and_evidence_availability_copy() -> Non
         "ReviewDualParseUI.availabilityModel(",
         "MAIN 全文可用",
         "Generic Parse source 可用",
-        "已批准 Paper Evidence",
+        "已完成 Evidence 复核",
     ):
         assert required in html
+    assert "已批准 Evidence" not in html
+    assert "已批准 Paper Evidence" not in html
     assert "['MAIN 全文覆盖', Number(metrics.full_text_main_coverage) || 0]" not in html
 
 

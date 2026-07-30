@@ -115,8 +115,8 @@
 
   function studyModel(value, index) {
     const row = object(value);
-    const pdfStatus = text(object(row.pdf).status, text(row.pdf_status, "unknown"));
-    const genericStatus = text(object(row.generic_parse).status, text(row.generic_parse_status, "unknown"));
+    const pdfStatus = text(row.pdf_status, "unknown");
+    const genericStatus = text(row.generic_parse_status, "unknown");
     const rawChemicalStatus = text(object(row.chemical).status, text(row.chemical_import_status, "unknown"));
     const chemicalStatus = rawChemicalStatus === "missing" ? "needs_import" : rawChemicalStatus;
     const missingChemicalFields = [
@@ -134,10 +134,7 @@
       object(row.reconciliation).status,
       unresolvedReconciliation ? "needs_review" : text(row.reconciliation_status, "unknown"),
     );
-    const evidenceStatus = text(
-      object(row.evidence).status,
-      text(row.paper_evidence_status, text(row.evidence_status, "unavailable")),
-    );
+    const evidenceStatus = text(row.paper_evidence_status, "unknown");
     const model = {
       displayLabel: `研究 ${index + 1}`,
       citation: publicText(row.citation, `Core study ${index + 1}`),
@@ -319,9 +316,23 @@
     const includedStudies = nonNegativeInteger(value.includedStudies);
     const sourceRows = array(object(value.sources).sources)
       .filter(row => text(object(row).role, "").toUpperCase() === "MAIN");
-    const sourceStatusesKnown = sourceRows.length > 0 && sourceRows.every(row =>
-      ["已获得", "需要上传"].includes(text(object(row).status, ""))
-    );
+    const sourceStatusByStudy = new Map();
+    let sourceRowsValid = sourceRows.length > 0;
+    sourceRows.forEach(value => {
+      const row = object(value);
+      const studyId = text(row.study_id, "");
+      const status = text(row.status, "");
+      if (!studyId || !["已获得", "需要上传"].includes(status)) {
+        sourceRowsValid = false;
+        return;
+      }
+      if (!sourceStatusByStudy.has(studyId)) sourceStatusByStudy.set(studyId, new Set());
+      sourceStatusByStudy.get(studyId).add(status);
+    });
+    const sourceTotal = includedStudies !== null
+      ? includedStudies : sourceStatusByStudy.size || null;
+    const sourceCoverageKnown = sourceRowsValid
+      && (includedStudies === null || sourceStatusByStudy.size <= includedStudies);
     const dualParse = object(value.dualParse).contractValid === true
       ? value.dualParse : projectionModel(value.dualParse);
     const coreStudies = nonNegativeInteger(object(dualParse.summary).coreStudies);
@@ -334,17 +345,17 @@
       && (coreStudies > 0 || includedStudies === 0);
     return {
       mainFullText: {
-        available: sourceStatusesKnown
-          ? sourceRows.filter(row => text(object(row).status, "") === "已获得").length
+        available: sourceCoverageKnown
+          ? Array.from(sourceStatusByStudy.values()).filter(statuses => statuses.has("已获得")).length
           : null,
-        total: sourceRows.length || includedStudies,
+        total: sourceTotal,
       },
       genericSource: {
         available: genericKnown ? genericCurrent : null,
         total: genericKnown ? coreStudies : includedStudies,
       },
-      approvedEvidence: {
-        available: nonNegativeInteger(value.approvedEvidenceStudies),
+      reviewedEvidence: {
+        available: nonNegativeInteger(value.reviewedEvidenceStudies),
         total: includedStudies,
       },
     };
