@@ -19,6 +19,20 @@
       : {};
   }
 
+  function canonicalProjectVisibleLabel(value) {
+    if (typeof value !== "string") return "";
+    let normalized;
+    try {
+      normalized = value.normalize("NFC");
+    } catch (_) {
+      return "";
+    }
+    if (/\p{C}/u.test(normalized)) return "";
+    normalized = normalized.replace(/\p{Z}+/gu, " ").replace(/ +/g, " ").trim();
+    if (!normalized || [...normalized].length > 200) return "";
+    return normalized;
+  }
+
   function createProjectSelectionRegistry() {
     let optionIds = new Map();
     let optionLabels = new Map();
@@ -28,17 +42,15 @@
       const rows = Array.isArray(projects) ? projects : [];
       const labelCounts = new Map();
       rows.forEach(project => {
-        const label = typeof project?.visible_label === "string" ? project.visible_label.trim() : "";
-        if (label) labelCounts.set(label, (labelCounts.get(label) || 0) + 1);
+        const label = canonicalProjectVisibleLabel(project?.visible_label) || "项目显示名称不可用";
+        labelCounts.set(label, (labelCounts.get(label) || 0) + 1);
       });
       const nextOptionIds = new Map();
       const nextOptionLabels = new Map();
       const nextProjectKeys = new Map();
       const choices = rows.map((project, index) => {
         const key = `project-option-${index + 1}`;
-        const label = typeof project?.visible_label === "string" && project.visible_label.trim()
-          ? project.visible_label.trim()
-          : "项目显示名称不可用";
+        const label = canonicalProjectVisibleLabel(project?.visible_label) || "项目显示名称不可用";
         const projectId = typeof project?.project_id === "string" ? project.project_id : "";
         const selectable = project?.selectable === true
           && projectId !== ""
@@ -48,9 +60,8 @@
           nextOptionIds.set(key, projectId);
           nextProjectKeys.set(projectId, key);
         }
-        const message = typeof project?.selection_message === "string" && project.selection_message.trim()
-          ? project.selection_message.trim()
-          : "请在 QoderWork 中设置唯一项目显示名称。";
+        const message = canonicalProjectVisibleLabel(project?.selection_message)
+          || "请在 QoderWork 中设置唯一项目显示名称。";
         return {key, label: selectable ? label : `${label}（${message}）`, selectable};
       });
       optionIds = nextOptionIds;

@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import unicodedata
 import zipfile
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -4586,6 +4587,28 @@ def infer_project_topic(project: Path) -> str:
     return ""
 
 
+def canonical_project_visible_text(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    try:
+        normalized = unicodedata.normalize("NFC", value)
+    except (TypeError, UnicodeError):
+        return ""
+    if any(
+        unicodedata.category(character) in {"Cc", "Cf", "Cs", "Co", "Cn"}
+        for character in normalized
+    ):
+        return ""
+    normalized = " ".join(normalized.split())
+    if not normalized or len(normalized) > 200:
+        return ""
+    try:
+        normalized.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        return ""
+    return normalized
+
+
 def infer_project_label(project: Path) -> str:
     review_state = read_json_if_exists(project / "00_brief" / "review_state.json")
     if not isinstance(review_state, dict):
@@ -4593,13 +4616,7 @@ def infer_project_label(project: Path) -> str:
     brief = review_state.get("brief")
     if not isinstance(brief, dict):
         return ""
-    label = brief.get("project_label")
-    if not isinstance(label, str):
-        return ""
-    label = label.strip()
-    if not label or len(label) > 200 or any(ord(character) < 32 for character in label):
-        return ""
-    return label
+    return canonical_project_visible_text(brief.get("project_label"))
 
 
 def is_direct_output_root(review_root: Path) -> bool:
@@ -4696,19 +4713,21 @@ def has_review_product_data(project: Path) -> bool:
 
 
 def with_visible_project_labels(projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    topics = [canonical_project_visible_text(project.get("topic")) for project in projects]
     labels = [
-        visible_text(project.get("project_label"))
-        or visible_text(project.get("topic"))
+        canonical_project_visible_text(project.get("project_label"))
+        or topic
         or "未命名综述项目"
-        for project in projects
+        for project, topic in zip(projects, topics, strict=True)
     ]
     counts = {label: labels.count(label) for label in set(labels)}
     labeled: list[dict[str, Any]] = []
-    for project, label in zip(projects, labels, strict=True):
+    for project, topic, label in zip(projects, topics, labels, strict=True):
         duplicate = counts[label] > 1
         labeled.append(
             {
                 **{key: value for key, value in project.items() if key != "project_label"},
+                "topic": topic,
                 "visible_label": label,
                 "selectable": not duplicate,
                 "selection_message": (

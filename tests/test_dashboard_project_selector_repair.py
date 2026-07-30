@@ -44,8 +44,9 @@ def test_explicit_project_label_is_stable_when_other_projects_are_inserted_or_re
     target = {
         "project_id": "technical-fresh-v2",
         "topic": "同题综述",
-        "project_label": "新一轮证据复核",
+        "project_label": "  新一轮\u00a0 证据复核  ",
     }
+    canonical_target_label = "新一轮 证据复核"
     legacy = {"project_id": "technical-old-v2", "topic": "同题综述"}
     unrelated = {"project_id": "technical-other-v2", "topic": "其他课题"}
 
@@ -59,7 +60,7 @@ def test_explicit_project_label_is_stable_when_other_projects_are_inserted_or_re
         for snapshot in snapshots
     ]
 
-    assert [row["visible_label"] for row in target_rows] == ["新一轮证据复核"] * 3
+    assert [row["visible_label"] for row in target_rows] == [canonical_target_label] * 3
     assert all(row["selectable"] is True for row in target_rows)
     assert all("project_label" not in row for row in target_rows)
     visible = json.dumps(
@@ -94,8 +95,32 @@ def test_explicit_project_label_is_stable_when_other_projects_are_inserted_or_re
         for row in dashboard.list_review_projects(tmp_path)
         if row["project_id"] == target["project_id"]
     )
-    assert listed_target["visible_label"] == target["project_label"]
+    assert listed_target["visible_label"] == canonical_target_label
     assert listed_target["selectable"] is True
+
+    boundary = dashboard.with_visible_project_labels(
+        [
+            {"project_id": "boundary-ok", "topic": "边界回退", "project_label": "界" * 200},
+            {"project_id": "boundary-long", "topic": "长度安全回退", "project_label": "界" * 201},
+            {"project_id": "html-safe", "topic": "HTML 回退", "project_label": "<em>研究</em>"},
+        ]
+    )
+    assert boundary[0]["visible_label"] == "界" * 200
+    assert boundary[1]["visible_label"] == "长度安全回退"
+    assert boundary[2]["visible_label"] == "<em>研究</em>"
+    assert all(row["selectable"] is True for row in boundary)
+
+    unsafe_values = ["零\u200b宽", "双\u202e向", "删除\x7f符", "\ud800", "私用\ue000", "未分配\u0378"]
+    unsafe = dashboard.with_visible_project_labels(
+        [
+            {"project_id": f"unsafe-{index}", "topic": value, "project_label": value}
+            for index, value in enumerate(unsafe_values)
+        ]
+    )
+    assert all(row["visible_label"] == "未命名综述项目" for row in unsafe)
+    assert all(row["topic"] == "" for row in unsafe)
+    assert all(row["selectable"] is False for row in unsafe)
+    json.dumps(unsafe, ensure_ascii=False).encode("utf-8")
 
 
 def test_duplicate_legacy_labels_fail_closed_without_exposing_technical_ids() -> None:
@@ -122,6 +147,15 @@ def test_duplicate_legacy_labels_fail_closed_without_exposing_technical_ids() ->
     assert "technical-old-v2" not in visible
     assert "technical-fresh-v2" not in visible
 
+    nfc_labeled = dashboard.with_visible_project_labels(
+        [
+            {"project_id": "nfc-composed", "topic": "不同主题一", "project_label": "é"},
+            {"project_id": "nfc-decomposed", "topic": "不同主题二", "project_label": "e\u0301"},
+        ]
+    )
+    assert [row["visible_label"] for row in nfc_labeled] == ["é", "é"]
+    assert all(row["selectable"] is False for row in nfc_labeled)
+
     session_path = json.dumps(str(DASHBOARD / "review-session.js"))
     payload = json.dumps(labeled, ensure_ascii=False)
     _run_node(
@@ -133,6 +167,20 @@ def test_duplicate_legacy_labels_fail_closed_without_exposing_technical_ids() ->
                 "const visible=JSON.stringify(choices);",
                 "if(visible.includes('technical-old-v2')||visible.includes('technical-fresh-v2'))throw new Error(visible);",
                 "if(!choices.every(choice=>choice.label.includes('唯一项目显示名称')))throw new Error(visible);",
+                "const nfc=ui.createProjectSelectionRegistry().replace([",
+                " {project_id:'nfc-composed',visible_label:'é',selectable:true},",
+                " {project_id:'nfc-decomposed',visible_label:'e\\u0301',selectable:true}]);",
+                "if(nfc.some(choice=>choice.selectable)||!nfc.every(choice=>choice.label.startsWith('é')))throw new Error(JSON.stringify(nfc));",
+                "const unsafe=ui.createProjectSelectionRegistry().replace([",
+                " {project_id:'zero-width',visible_label:'零\\u200b宽',selectable:true},",
+                " {project_id:'bidi',visible_label:'双\\u202e向',selectable:true},",
+                " {project_id:'del',visible_label:'删除\\u007f符',selectable:true},",
+                " {project_id:'surrogate',visible_label:'\\ud800',selectable:true}]);",
+                "if(unsafe.some(choice=>choice.selectable)||!unsafe.every(choice=>choice.label.startsWith('项目显示名称不可用')))throw new Error(JSON.stringify(unsafe));",
+                "const boundary=ui.createProjectSelectionRegistry().replace([",
+                " {project_id:'boundary-ok',visible_label:'界'.repeat(200),selectable:true},",
+                " {project_id:'boundary-long',visible_label:'界'.repeat(201),selectable:true}]);",
+                "if(!boundary[0].selectable||boundary[0].label.length!==200||!boundary[1].label.startsWith('项目显示名称不可用'))throw new Error(JSON.stringify(boundary));",
             ]
         )
     )
@@ -157,7 +205,7 @@ def test_project_selector_keeps_ids_out_of_dom_and_requires_explicit_visible_sel
                 "let projectsRefreshBusy=false,projects=[],projectId='',projectLoadGeneration=0,projectLoadBusy=false,activeWorkspace='cockpit',activeParseStudyId='';",
                 "let loadCount=0;const loadProject=async()=>{loadCount+=1;return 'loaded';};",
                 "const getPayload=async()=>[",
-                " {project_id:'technical-old-v2',topic:'同题综述',visible_label:'历史复核',selectable:true,selection_message:''},",
+                " {project_id:'technical-old-v2',topic:'同题综述',visible_label:'<img src=x onerror=alert(1)> 历史复核',selectable:true,selection_message:''},",
                 " {project_id:'technical-fresh-v2',topic:'同题综述',visible_label:'新一轮证据复核',selectable:true,selection_message:''}];",
                 refresh,
                 select,
@@ -167,6 +215,7 @@ def test_project_selector_keeps_ids_out_of_dom_and_requires_explicit_visible_sel
                 " const serialized=JSON.stringify(selectNode.options);",
                 " if(serialized.includes('technical-old-v2')||serialized.includes('technical-fresh-v2'))throw new Error(`technical id leaked into DOM ${serialized}`);",
                 " if(JSON.stringify(selectNode.options.map(option=>option.value))!==JSON.stringify(['','project-option-1','project-option-2']))throw new Error(serialized);",
+                " if(selectNode.options[1].textContent!=='<img src=x onerror=alert(1)> 历史复核')throw new Error(serialized);",
                 " if(selectNode.options[2].textContent!=='新一轮证据复核')throw new Error(serialized);",
                 " const result=await selectProject({target:{value:'project-option-2'}});",
                 " if(result!=='loaded'||projectId!=='technical-fresh-v2'||loadCount!==1)throw new Error(JSON.stringify({result,projectId,loadCount}));",
@@ -175,6 +224,7 @@ def test_project_selector_keeps_ids_out_of_dom_and_requires_explicit_visible_sel
             ]
         )
     )
+    assert ".innerHTML" not in refresh
 
 
 def test_initial_project_load_and_bfcache_share_one_bounded_scheduler() -> None:
