@@ -36,7 +36,15 @@ def _write_json(path: Path, payload: object) -> None:
 def _legacy_three_paper_fixture(root: Path) -> Path:
     _write_json(
         root / "00_brief/review_state.json",
-        {"project_id": "legacy-project", "status": "in_progress"},
+        {
+            "schema_version": "vertical-review-state.v1",
+            "project_id": "legacy-project",
+            "brief": {"topic": "Three-paper regression"},
+            "status": "in_progress",
+            "current_stage": "drafting",
+            "counts": {"sources": 3, "evidence": 27, "claims": 16},
+            "blockers": [],
+        },
     )
     for relative in (
         "00_discovery/candidate_pool.json",
@@ -46,6 +54,10 @@ def _legacy_three_paper_fixture(root: Path) -> Path:
         "01_evidence/text_layers/text_layers.manifest.json",
     ):
         _write_json(root / relative, {"fixture": relative})
+    _write_json(
+        root / "00_discovery/screening_decisions.json",
+        {"schema_version": "screening-decisions.v1", "decisions": [{"study_id": "paper-0"}]},
+    )
     for index in range(3):
         _write(root / f"00_sources/papers/paper-{index}.pdf", f"pdf-{index}".encode())
         _write(root / f"01_evidence/mineru/markdown/paper-{index}.md", b"# Parsed\n")
@@ -112,6 +124,12 @@ def test_bootstrap_copies_only_source_and_parse_inputs(tmp_path: Path) -> None:
     assert (target / "01_evidence/mineru/manifest.json").is_file()
     review_state = json.loads((target / "00_brief/review_state.json").read_text(encoding="utf-8"))
     assert review_state["project_id"] == target.name
+    assert review_state["brief"] == {"topic": "Three-paper regression"}
+    assert review_state["current_stage"] == "evidence_review"
+    assert review_state["status"] == "in_progress"
+    assert review_state["counts"] == {"sources": 3, "evidence": 0, "claims": 0}
+    assert review_state["blockers"] == []
+    assert not (target / "00_discovery/screening_decisions.json").exists()
     assert not (target / "01_evidence/evidence_cards.jsonl").exists()
     assert not (target / "02_claims").exists()
     assert not (target / "03_review").exists()

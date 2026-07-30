@@ -22,6 +22,7 @@ COPY_ROOTS = (
     Path("01_evidence/text_layers"),
 )
 FORBIDDEN_ROOTS = (
+    Path("00_discovery/screening_decisions.json"),
     Path("01_evidence/evidence_cards.jsonl"),
     Path("02_claims"),
     Path("03_review"),
@@ -98,7 +99,17 @@ def _rewrite_project_identity(project: Path, project_id: str) -> None:
         raise BootstrapError("REVIEW_STATE_INVALID") from exc
     if not isinstance(state, dict):
         raise BootstrapError("REVIEW_STATE_INVALID")
-    state["project_id"] = project_id
+    brief = state.get("brief") if isinstance(state.get("brief"), dict) else {}
+    source_count = len(list((project / "00_sources/papers").glob("*.pdf")))
+    state = {
+        "schema_version": "vertical-review-state.v1",
+        "project_id": project_id,
+        "brief": brief,
+        "current_stage": "evidence_review",
+        "status": "in_progress",
+        "blockers": [],
+        "counts": {"sources": source_count, "evidence": 0, "claims": 0},
+    }
     state_path.write_text(
         json.dumps(state, ensure_ascii=False, allow_nan=False, indent=2) + "\n",
         encoding="utf-8",
@@ -127,6 +138,7 @@ def create_complete_loop_project(source: Path, target: Path) -> dict[str, Any]:
             destination = temporary / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(source_path, destination, copy_function=shutil.copy2)
+        (temporary / "00_discovery/screening_decisions.json").unlink(missing_ok=True)
         _rewrite_project_identity(temporary, target.name)
         result = _validate_copy(temporary)
         os.replace(temporary, target)
