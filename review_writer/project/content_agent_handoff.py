@@ -36,6 +36,7 @@ from .source_truth import (
     canonical_digest,
     declared_study_ids,
     load_source_truth_bundle,
+    source_truth_asset,
 )
 from .synthesis import SynthesisError, register_comparison_protocol, register_coverage_map, register_synthesis_candidates
 
@@ -203,14 +204,51 @@ def _source_artifacts(project: Path, studies: Iterable[str], out: dict[str, list
         _add_artifact(project, out, "parse_quality", parse_rel, "parse_quality_gate")
 
 
+def _chemical_paper_source_artifacts(
+    project: Path,
+    studies: Iterable[str],
+    out: dict[str, list[dict[str, Any]]],
+) -> None:
+    for study_id in studies:
+        try:
+            state = load_chemical_paper_state(project, study_id)
+            pdf_path = source_truth_asset(
+                project,
+                study_id,
+                state["source_id"],
+                "pdf",
+            )
+        except (ChemicalPaperError, SourceTruthError) as exc:
+            raise ContentAgentError(exc.code) from exc
+        state_relative = (
+            CHEMICAL_PAPER_STATE_ROOT / study_id / CHEMICAL_PAPER_STATE_NAME
+        ).as_posix()
+        pdf_relative = pdf_path.relative_to(project).as_posix()
+        _add_artifact(
+            project,
+            out,
+            "chemical_paper",
+            state_relative,
+            "chemical_paper_state",
+        )
+        _add_artifact(
+            project,
+            out,
+            "source_truth",
+            pdf_relative,
+            "source_asset:pdf",
+        )
+
+
 def _collect_inputs(project: Path, request: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     inputs: dict[str, list[dict[str, Any]]] = {}
     studies = request["target_ids"] if request["request_kind"] == "paper_evidence" else declared_study_ids(project)
-    _source_artifacts(project, studies, inputs)
-    for study_id in studies:
-        relative = (CHEMICAL_PAPER_STATE_ROOT / study_id / CHEMICAL_PAPER_STATE_NAME).as_posix()
-        if _existing(project, relative):
-            _add_artifact(project, inputs, "chemical_paper", relative, "chemical_paper_state")
+    # The root commits the project to the Chemical Paper route.  A partial or
+    # stale import must fail closed instead of falling back to generic MinerU.
+    if (project / CHEMICAL_PAPER_STATE_ROOT).exists():
+        _chemical_paper_source_artifacts(project, studies, inputs)
+    else:
+        _source_artifacts(project, studies, inputs)
     evidence_projection = "01_evidence/paper_evidence_projection.jsonl"
     if _existing(project, evidence_projection):
         _add_artifact(project, inputs, "paper_evidence", evidence_projection, "paper_evidence_projection")
