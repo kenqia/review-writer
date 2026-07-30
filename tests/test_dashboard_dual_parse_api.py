@@ -6,7 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from test_chemical_paper_import import PDF_SHA, source_truth_project, write_chemical_zip
+from test_chemical_paper_import import (
+    PDF_SHA,
+    source_truth_project,
+    v2000,
+    write_chemical_zip,
+)
+from test_dual_source import dual_project
 
 
 def _http_request(review_root: Path, raw_request: bytes) -> tuple[int, dict[str, str], bytes]:
@@ -35,11 +41,19 @@ def _http_request(review_root: Path, raw_request: bytes) -> tuple[int, dict[str,
     return int(lines[0].split()[1]), headers, body
 
 
-def _post_zip(review_root: Path, archive: Path) -> tuple[int, dict[str, object]]:
+def _post_zip(
+    review_root: Path,
+    archive: Path,
+    *,
+    project_id: str = "project",
+    study_id: str = "study-1",
+) -> tuple[int, dict[str, object]]:
     payload = archive.read_bytes()
     raw = (
-        b"POST /api/project/project/chemical-paper/preflight?study_id=study-1 HTTP/1.1\r\n"
-        b"Host: localhost\r\nContent-Type: application/zip\r\nContent-Length: "
+        f"POST /api/project/{project_id}/chemical-paper/preflight?study_id={study_id} HTTP/1.1\r\n".encode(
+            "ascii"
+        )
+        + b"Host: localhost\r\nContent-Type: application/zip\r\nContent-Length: "
         + str(len(payload)).encode("ascii")
         + b"\r\n\r\n"
         + payload
@@ -48,10 +62,16 @@ def _post_zip(review_root: Path, archive: Path) -> tuple[int, dict[str, object]]
     return status, json.loads(body)
 
 
-def _post_json(review_root: Path, suffix: str, payload: object) -> tuple[int, dict[str, object]]:
+def _post_json(
+    review_root: Path,
+    suffix: str,
+    payload: object,
+    *,
+    project_id: str = "project",
+) -> tuple[int, dict[str, object]]:
     encoded = json.dumps(payload).encode("utf-8")
     raw = (
-        f"POST /api/project/project/{suffix} HTTP/1.1\r\n".encode("ascii")
+        f"POST /api/project/{project_id}/{suffix} HTTP/1.1\r\n".encode("ascii")
         + b"Host: localhost\r\nContent-Type: application/json\r\nContent-Length: "
         + str(len(encoded)).encode("ascii")
         + b"\r\n\r\n"
@@ -109,6 +129,96 @@ def test_preflight_writes_no_authoritative_state_and_returns_safe_projection(
         "archive_sha256",
         "mol_block",
         "entry_inventory",
+    ):
+        assert forbidden not in encoded
+
+
+def test_post_confirm_http_projects_bound_import_as_researcher_review_not_current(
+    tmp_path: Path,
+) -> None:
+    review_root = tmp_path / "review-root"
+    project = dual_project(review_root, chemical=False)
+    archive = write_chemical_zip(
+        tmp_path / "chemical.zip",
+        pages=1,
+        molecules=[
+            {
+                "mol_id": "mol-a",
+                "page_idx": 0,
+                "bbox_normalized": [0.1, 0.2, 0.3, 0.4],
+                "smiles_expanded": "",
+                "smiles_unexpanded": "",
+                "mol_idt": "",
+                "mol_block": v2000(),
+            }
+        ],
+    )
+    status, preflight = _post_zip(
+        review_root,
+        archive,
+        project_id=project.name,
+        study_id="scholarly-a",
+    )
+    assert status == 200
+
+    status, confirmed = _post_json(
+        review_root,
+        "chemical-paper/confirm",
+        {
+            "study_id": "scholarly-a",
+            "preflight_token": preflight["preflight_token"],
+            "actor_type": "simulated_researcher_agent",
+            "actor_label": "simulated_researcher",
+        },
+        project_id=project.name,
+    )
+    assert status == 200
+    assert confirmed == {"status": "imported", "study_id": "scholarly-a"}
+
+    status, _, body = _http_request(
+        review_root,
+        (
+            f"GET /api/project/{project.name}/dual-parse HTTP/1.1\r\n"
+            "Host: localhost\r\n\r\n"
+        ).encode("ascii"),
+    )
+
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["summary"] == {
+        "core_studies": 1,
+        "pdf_verified": 1,
+        "generic_current": 1,
+        "chemical_bound": 1,
+        "chemical_current": 0,
+        "reaction_data_status": "unavailable_not_provided",
+    }
+    row = payload["studies"][0]
+    assert row["pdf_status"] == "verified"
+    assert row["generic_parse_status"] == "current"
+    assert row["chemical_import_status"] == "needs_review"
+    assert row["completion_status"] == "blocked"
+    assert row["reconciliation_status"] == "blocked"
+    assert row["paper_evidence_status"] == "blocked"
+    assert row["page_count"] == 1
+    assert row["molecule_count"] == 1
+    assert row["backend"] == "pipeline"
+    assert row["version"] == "3.4.4"
+    assert isinstance(row["imported_at"], str) and row["imported_at"]
+    assert row["reaction_data_status"] == "unavailable_not_provided"
+    assert len(payload["completion_queue"]) == 3
+
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    for forbidden in (
+        "source_pdf_sha256",
+        "archive_sha256",
+        "binding_digest",
+        "state_digest",
+        "mol_block",
+        "raw_json",
+        "entry_inventory",
+        "internal_release",
+        str(project),
     ):
         assert forbidden not in encoded
 

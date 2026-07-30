@@ -249,6 +249,7 @@ def test_dashboard_projection_whitelists_researcher_safe_fields(
             "pdf_status": "unknown",
             "generic_parse_status": "current",
             "chemical_import_status": "missing",
+            "chemical_binding_status": "missing",
             "completion_status": "blocked",
             "reconciliation_status": "blocked",
             "page_count": 6,

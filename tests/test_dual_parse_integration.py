@@ -130,6 +130,12 @@ def test_pdf_drift_blocks_saved_dual_binding_and_release(tmp_path: Path) -> None
     assert "DUAL_PARSE_STALE" in release["hard_fails"]
     assert "CORE_GENERIC_PARSE_MISSING_OR_STALE" in release["hard_fails"]
 
+    dashboard = dual_parse_dashboard_projection(project)
+    assert dashboard["summary"]["chemical_bound"] == 0
+    assert dashboard["summary"]["chemical_current"] == 0
+    assert dashboard["studies"][0]["chemical_import_status"] == "stale"
+    assert dashboard["studies"][0]["chemical_binding_status"] == "stale"
+
 
 def test_backend_projection_is_consumable_by_dashboard_ui(tmp_path: Path) -> None:
     project = _ready_project(tmp_path)
@@ -235,6 +241,7 @@ def test_fresh_generic_sources_remain_available_before_parse_and_chemical_review
         "pdf_verified": 3,
         "generic_current": 3,
         "chemical_current": 0,
+        "chemical_bound": 0,
         "reaction_data_status": "unavailable_not_provided",
     }
     assert all(row["pdf_status"] == "verified" for row in dashboard["studies"])
