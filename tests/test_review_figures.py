@@ -10,6 +10,7 @@ import review_writer.project.vertical_review as vertical_review
 from review_writer.project.review_figures import (
     ReviewFigureError,
     build_source_figure_registry,
+    load_source_figure_registry,
     register_synthesis_figure_placeholder,
 )
 from test_source_truth import _source_truth_project
@@ -17,6 +18,14 @@ from test_source_truth import _source_truth_project
 
 def _new_route_project(tmp_path: Path) -> Path:
     project = _source_truth_project(tmp_path)
+    content_path = (
+        project
+        / "01_evidence/parses/extracted/10_1000_example/parse_content_list.json"
+    )
+    content = json.loads(content_path.read_text(encoding="utf-8"))
+    image = next(row for row in content if row.get("type") == "image")
+    image["image_caption"] = ["Figure 1. Source-grounded example figure."]
+    content_path.write_text(json.dumps(content), encoding="utf-8")
     # The source-truth directory is the route discriminator; the bundle itself
     # is written by the production builder so hashes remain authoritative.
     from review_writer.project.source_truth import write_source_truth_bundle
@@ -37,6 +46,90 @@ def test_source_figure_binds_asset_caption_page_and_pdf(tmp_path: Path) -> None:
     assert figure["asset_path"].startswith("01_evidence/parses/extracted/")
     assert registry["figure_budget"]["status"] == "needs_human_selection"
     assert registry["figure_budget"]["gaps"]
+
+
+def test_source_figure_registry_excludes_unlabelled_fragments_and_records_gap(
+    tmp_path: Path,
+) -> None:
+    project = _source_truth_project(tmp_path)
+    extracted = project / "01_evidence/parses/extracted/10_1000_example"
+    (extracted / "images/header.jpg").write_bytes(b"header")
+    (extracted / "images/panel-a.jpg").write_bytes(b"panel-a")
+    (extracted / "images/panel-b.jpg").write_bytes(b"panel-b")
+    (extracted / "images/figure-2.jpg").write_bytes(b"figure-2")
+    content_path = extracted / "parse_content_list.json"
+    content_path.write_text(
+        json.dumps(
+            [
+                {
+                    "type": "image",
+                    "img_path": "images/header.jpg",
+                    "page_idx": 0,
+                    "bbox": [1, 2, 3, 4],
+                    "image_caption": [],
+                },
+                {
+                    "type": "image",
+                    "img_path": "images/panel-a.jpg",
+                    "page_idx": 1,
+                    "bbox": [1, 2, 3, 4],
+                    "image_caption": ["(a)"],
+                },
+                {
+                    "type": "image",
+                    "img_path": "images/panel-b.jpg",
+                    "page_idx": 1,
+                    "bbox": [5, 6, 7, 8],
+                    "image_caption": ["Figure 1. Composite scope figure."],
+                },
+                {
+                    "type": "image",
+                    "img_path": "images/figure-2.jpg",
+                    "page_idx": 2,
+                    "bbox": [1, 2, 3, 4],
+                    "image_caption": ["Figure 2. Independently extracted source figure."],
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    from review_writer.project.source_truth import write_source_truth_bundle
+
+    write_source_truth_bundle(project, "scholarly-a")
+
+    registry = build_source_figure_registry(project)
+
+    assert [row["figure_label"] for row in registry["figures"]] == ["Figure 2"]
+    assert registry["source_truth_digest"]
+    assert registry["locator_gaps"] == [
+        {
+            "study_id": "scholarly-a",
+            "source_id": "stud-a",
+            "page": 1,
+            "reason": "抽取图片未绑定明确的原论文 Figure/Scheme 图注。",
+        },
+        {
+            "study_id": "scholarly-a",
+            "source_id": "stud-a",
+            "page": 2,
+            "reason": "同页多个图片碎片无法可靠归并为一张完整原论文图。",
+        },
+    ]
+
+
+def test_source_figure_registry_fails_closed_after_source_truth_changes(
+    tmp_path: Path,
+) -> None:
+    project = _new_route_project(tmp_path)
+    build_source_figure_registry(project)
+    markdown = project / "01_evidence/mineru/markdown/10_1000_example.md"
+    markdown.write_text("# Canonical\nReparsed content\n", encoding="utf-8")
+    from review_writer.project.source_truth import write_source_truth_bundle
+
+    write_source_truth_bundle(project, "scholarly-a")
+
+    with pytest.raises(ReviewFigureError, match="FIGURE_REGISTRY_STALE"):
+        load_source_figure_registry(project)
 
 
 def test_source_figure_rejects_content_list_drift(tmp_path: Path) -> None:

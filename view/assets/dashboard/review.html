@@ -1022,6 +1022,11 @@
               '',
               `决定者：${previous.actor_label || '未记录'}（${previous.actor_type || '类型未记录'}） · 更新：${previous.decided_at || '时间未记录'}`,
             ));
+            if (previous.pdf_resolution) {
+              item.append(textElement('p', '', `原始 PDF 页：${(previous.pdf_resolution.pages || []).join('、') || '未记录'}`));
+              item.append(textElement('p', '', `可判定范围：${previous.pdf_resolution.source_scope || '未记录'}`));
+              item.append(textElement('p', '', `限制：${previous.pdf_resolution.limitations || '未记录'}`));
+            }
             historyList.append(item);
           });
           history.append(historyList);
@@ -1064,6 +1069,51 @@
           });
           noteLabel.append(note);
           controls.append(noteLabel);
+          const resolution = document.createElement('div');
+          resolution.className = 'parse-quality-pdf-resolution';
+          const pageLabel = document.createElement('label');
+          pageLabel.append(textElement('span', '', '原始 PDF 页码（逗号分隔）'));
+          const pages = document.createElement('input');
+          pages.type = 'text';
+          pages.inputMode = 'numeric';
+          pages.dataset.pdfResolution = 'pages';
+          pages.value = (object.decision?.pdf_resolution?.pages || []).join(', ');
+          pageLabel.append(pages);
+          const scopeLabel = document.createElement('label');
+          scopeLabel.append(textElement('span', '', '原始 PDF 可判定内容'));
+          const scope = document.createElement('textarea');
+          scope.rows = 2;
+          scope.maxLength = 2000;
+          scope.dataset.pdfResolution = 'source_scope';
+          scope.value = object.decision?.pdf_resolution?.source_scope || '';
+          scopeLabel.append(scope);
+          const limitationsLabel = document.createElement('label');
+          limitationsLabel.append(textElement('span', '', '解析限制与下游使用边界'));
+          const limitations = document.createElement('textarea');
+          limitations.rows = 2;
+          limitations.maxLength = 2000;
+          limitations.dataset.pdfResolution = 'limitations';
+          limitations.value = object.decision?.pdf_resolution?.limitations || '';
+          limitationsLabel.append(limitations);
+          resolution.append(pageLabel, scopeLabel, limitationsLabel);
+          const updateResolutionVisibility = () => {
+            const selected = controls.querySelector('input[type="radio"]:checked')?.value;
+            resolution.hidden = selected !== 'pdf_locator_only';
+            resolution.querySelectorAll('input, textarea').forEach(field => {
+              field.required = selected === 'pdf_locator_only';
+            });
+          };
+          controls.querySelectorAll('input[type="radio"]').forEach(input => {
+            input.addEventListener('change', updateResolutionVisibility);
+          });
+          resolution.querySelectorAll('input, textarea').forEach(field => {
+            field.addEventListener('input', () => {
+              parseQualityDirty.add(object.object_id);
+              row.querySelector('.parse-quality-save-note').textContent = '该项决定尚未保存。';
+            });
+          });
+          controls.append(resolution);
+          updateResolutionVisibility();
           const footer = document.createElement('div');
           footer.className = 'parse-quality-save-row';
           const savedCopy = object.decision
@@ -1097,6 +1147,18 @@
         row?.querySelector('.parse-quality-save-note')?.replaceChildren('请选择决定并填写核对理由。');
         return;
       }
+      let pdfResolution = null;
+      if (action === 'pdf_locator_only') {
+        const pageText = row?.querySelector('[data-pdf-resolution="pages"]')?.value || '';
+        const pages = pageText.split(',').map(value => Number.parseInt(value.trim(), 10));
+        const sourceScope = row?.querySelector('[data-pdf-resolution="source_scope"]')?.value.trim() || '';
+        const limitations = row?.querySelector('[data-pdf-resolution="limitations"]')?.value.trim() || '';
+        if (!pages.length || pages.some(page => !Number.isInteger(page) || page < 1) || !sourceScope || !limitations) {
+          row?.querySelector('.parse-quality-save-note')?.replaceChildren('请填写有效页码、可判定内容和解析限制。');
+          return;
+        }
+        pdfResolution = {pages, source_scope:sourceScope, limitations};
+      }
       const submittedProjectId = projectId;
       const submittedGeneration = projectLoadGeneration;
       progressCapabilityProjectId = '';
@@ -1109,7 +1171,7 @@
         const response = await fetch(`/api/project/${encodeURIComponent(submittedProjectId)}/parse-quality`, {
           method:'PUT',
           headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({study_id:studyId,object_id:objectId,decision_token:decisionToken,action,note}),
+          body:JSON.stringify({study_id:studyId,object_id:objectId,decision_token:decisionToken,action,note,...(pdfResolution ? {pdf_resolution:pdfResolution} : {})}),
         });
         if (response.status === 409) {
           if (projectId !== submittedProjectId || projectLoadGeneration !== submittedGeneration) return;

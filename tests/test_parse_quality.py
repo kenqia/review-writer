@@ -57,6 +57,15 @@ def _decide_all(
             if row["status"] in {"incomplete", "failed"}
             else "approve_candidate_extraction"
         )
+        pdf_resolution = (
+            {
+                "pages": [1],
+                "source_scope": "The relevant content is readable on the original PDF page.",
+                "limitations": "Parsed content is excluded from downstream use.",
+            }
+            if action == "pdf_locator_only"
+            else None
+        )
         state = apply_parse_quality_decision(
             project,
             "scholarly-a",
@@ -66,6 +75,11 @@ def _decide_all(
                 "object_digest": row["object_digest"],
                 "action": action,
                 "note": "Compared with the original PDF page.",
+                **(
+                    {"pdf_resolution": pdf_resolution}
+                    if pdf_resolution is not None
+                    else {}
+                ),
             },
         )
     return state
@@ -172,6 +186,106 @@ def test_simulated_agent_decision_records_actor_without_impersonating_owner(
     assert saved["decision"]["actor_label"] == "playwright-reviewer-round-1"
     assert saved["decision"]["bound_object_digest"] == target["object_digest"]
     assert "kenqia" not in json.dumps(saved["decision"]).casefold()
+
+
+def test_pdf_locator_decision_requires_source_backed_resolution_without_partial_write(
+    tmp_path: Path,
+) -> None:
+    project = _parse_project(tmp_path)
+    gate = write_parse_quality_gate(project, "scholarly-a")
+    target = next(
+        row
+        for row in gate["objects"]
+        if row["kind"] == "figure_caption_links"
+    )
+    gate_path = project / "01_evidence/source_truth/scholarly-a/parse_quality.json"
+    before = gate_path.read_bytes()
+
+    with pytest.raises(ParseQualityError, match="PDF_RESOLUTION_REQUIRED"):
+        apply_parse_quality_decision(
+            project,
+            "scholarly-a",
+            {
+                "object_id": target["object_id"],
+                "object_digest": target["object_digest"],
+                "gate_digest": gate["gate_digest"],
+                "action": "pdf_locator_only",
+                "note": "The parsed figure locator is not scientifically reliable.",
+                "actor_type": "simulated_researcher_agent",
+                "actor_label": "playwright-reviewer-round-2",
+            },
+        )
+
+    assert gate_path.read_bytes() == before
+
+    updated = apply_parse_quality_decision(
+        project,
+        "scholarly-a",
+        {
+            "object_id": target["object_id"],
+            "object_digest": target["object_digest"],
+            "gate_digest": gate["gate_digest"],
+            "action": "pdf_locator_only",
+            "note": "Use only the original PDF locator for this object.",
+            "actor_type": "simulated_researcher_agent",
+            "actor_label": "playwright-reviewer-round-2",
+            "pdf_resolution": {
+                "pages": [1],
+                "source_scope": "Scheme 1 and its caption are readable on the original PDF page.",
+                "limitations": "Parsed crops and parsed captions remain excluded from downstream use.",
+            },
+        },
+    )
+    saved = next(
+        row for row in updated["objects"] if row["object_id"] == target["object_id"]
+    )["decision"]
+    bundle = json.loads(
+        (project / "01_evidence/source_truth/scholarly-a/bundle.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    expected_pdf_sha256 = next(
+        source["pdf"]["sha256"]
+        for source in bundle["sources"]
+        if source["source_id"] == target["source_id"]
+    )
+
+    assert saved["pdf_resolution"] == {
+        "pages": [1],
+        "source_scope": "Scheme 1 and its caption are readable on the original PDF page.",
+        "limitations": "Parsed crops and parsed captions remain excluded from downstream use.",
+        "source_pdf_sha256": expected_pdf_sha256,
+    }
+    assert saved["actor_type"] == "simulated_researcher_agent"
+    assert saved["decided_at"]
+
+
+def test_pdf_resolution_with_wrong_source_binding_cannot_authorize_workflow(
+    tmp_path: Path,
+) -> None:
+    project = _parse_project(tmp_path)
+    gate = write_parse_quality_gate(project, "scholarly-a")
+    target = next(
+        row for row in gate["objects"] if row["kind"] == "figure_caption_links"
+    )
+    closed = _decide_all(
+        project,
+        target_object_id=target["object_id"],
+        target_action="pdf_locator_only",
+    )
+    assert closed["workflow_can_continue"] is True
+    gate_path = project / "01_evidence/source_truth/scholarly-a/parse_quality.json"
+    stored = json.loads(gate_path.read_text(encoding="utf-8"))
+    stored_target = next(
+        row for row in stored["objects"] if row["object_id"] == target["object_id"]
+    )
+    stored_target["decision"]["pdf_resolution"]["source_pdf_sha256"] = "0" * 64
+    _write_json(gate_path, stored)
+
+    state = parse_quality_state(project, "scholarly-a")
+
+    assert state["workflow_can_continue"] is False
+    assert state["automatic_extraction_allowed"] is False
 
 
 def test_concurrent_object_decisions_do_not_overwrite_each_other(tmp_path: Path) -> None:
@@ -355,6 +469,11 @@ def test_reparse_rebuild_invalidates_only_requested_objects_and_preserves_histor
             "note": "A second review narrowed this object to original-PDF location only.",
             "actor_type": "simulated_researcher_agent",
             "actor_label": "playwright-reviewer-round-2",
+            "pdf_resolution": {
+                "pages": [1],
+                "source_scope": "The relevant content is readable on the original PDF page.",
+                "limitations": "Parsed content is excluded from downstream use.",
+            },
         },
     )
     revised_object = next(

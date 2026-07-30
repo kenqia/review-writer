@@ -98,6 +98,7 @@ from review_writer.project.section_contract import (  # noqa: E402
 from review_writer.project.review_figures import (  # noqa: E402
     ReviewFigureError,
     build_source_figure_registry,
+    load_source_figure_registry,
     synthesis_figure_placeholders,
 )
 from review_writer.project.manuscript_v2 import (  # noqa: E402
@@ -1088,8 +1089,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def handle_project_source_figure_get(self, project_id: str, figure_id: str) -> None:
         try:
             project = project_dir(self.review_root, project_id)
-            registry = read_json_if_exists(project / "03_figures/source_figure_registry.json")
-            rows = registry.get("figures", []) if isinstance(registry, dict) else []
+            registry = load_source_figure_registry(project)
+            rows = registry.get("figures", [])
             row = next((item for item in rows if isinstance(item, dict) and item.get("figure_id") == figure_id), None)
             if not isinstance(row, dict) or not isinstance(row.get("asset_path"), str):
                 raise ValueError("figure not found")
@@ -2717,6 +2718,17 @@ def project_parse_quality_payload(review_root: Path, project_id: str) -> dict[st
                     "actor_label": visible_text(prior.get("actor_label")),
                     "decided_at": visible_text(prior.get("decided_at")),
                 }
+                prior_resolution = prior.get("pdf_resolution")
+                if isinstance(prior_resolution, dict):
+                    prior_decision["pdf_resolution"] = {
+                        "pages": [
+                            page
+                            for page in prior_resolution.get("pages", [])
+                            if isinstance(page, int) and not isinstance(page, bool) and page >= 1
+                        ],
+                        "source_scope": visible_text(prior_resolution.get("source_scope")),
+                        "limitations": visible_text(prior_resolution.get("limitations")),
+                    }
                 previous_decisions.append(prior_decision)
                 if prior_decision["decided_at"]:
                     study_decision_times.append(prior_decision["decided_at"])
@@ -2747,6 +2759,17 @@ def project_parse_quality_payload(review_root: Path, project_id: str) -> dict[st
                     "actor_label": actor_label,
                     "decided_at": decided_at,
                 }
+                raw_resolution = raw_decision.get("pdf_resolution")
+                if isinstance(raw_resolution, dict):
+                    decision["pdf_resolution"] = {
+                        "pages": [
+                            page
+                            for page in raw_resolution.get("pages", [])
+                            if isinstance(page, int) and not isinstance(page, bool) and page >= 1
+                        ],
+                        "source_scope": visible_text(raw_resolution.get("source_scope")),
+                        "limitations": visible_text(raw_resolution.get("limitations")),
+                    }
                 if decided_at:
                     study_decision_times.append(decided_at)
                 approved += action == "approve_candidate_extraction"
@@ -2879,20 +2902,26 @@ def write_project_parse_quality_decision(
     project_id: str,
     data: Any,
 ) -> dict[str, Any]:
-    if not isinstance(data, dict) or set(data) != {
+    required = {
         "study_id",
         "object_id",
         "decision_token",
         "action",
         "note",
-    }:
+    }
+    optional = {"pdf_resolution"}
+    if (
+        not isinstance(data, dict)
+        or not required.issubset(data)
+        or not set(data).issubset(required | optional)
+    ):
         raise ParseQualityError("DECISION_INVALID")
     study_id = visible_text(data.get("study_id"))
     object_id = visible_text(data.get("object_id"))
     decision_token = visible_text(data.get("decision_token"))
     action = visible_text(data.get("action"))
     note = visible_text(data.get("note"))
-    if not all(isinstance(data.get(key), str) for key in data) or not all(
+    if not all(isinstance(data.get(key), str) for key in required) or not all(
         (study_id, object_id, decision_token, action, note)
     ):
         raise ParseQualityError("DECISION_INVALID")
@@ -2930,6 +2959,11 @@ def write_project_parse_quality_decision(
             "note": note,
             "actor_type": "simulated_researcher_agent",
             "actor_label": "dashboard-playwright-reviewer",
+            **(
+                {"pdf_resolution": data["pdf_resolution"]}
+                if "pdf_resolution" in data
+                else {}
+            ),
         },
     )
     return project_parse_quality_payload(review_root, project_id)
@@ -3164,9 +3198,26 @@ def project_review_figures_workspace_payload(review_root: Path, project_id: str)
     if workflow.get("route") != "evidence-to-release.v1":
         return {"route": workflow.get("route", "legacy"), "status": "legacy", "source_figures": [], "placeholders": []}
     registry_path = project / "03_figures/source_figure_registry.json"
-    registry = read_json_if_exists(registry_path)
-    if not isinstance(registry, dict):
+    registry_status = "current"
+    if not registry_path.is_file():
         registry = build_source_figure_registry(project)
+    else:
+        try:
+            registry = load_source_figure_registry(project)
+        except ReviewFigureError as exc:
+            if exc.code != "FIGURE_REGISTRY_STALE":
+                raise
+            registry_status = "needs_rebuild"
+            registry = {
+                "figures": [],
+                "locator_gaps": [
+                    {
+                        "reason": (
+                            "论文解析来源已更新；原论文图定位必须重建后才能继续使用。"
+                        )
+                    }
+                ],
+            }
     pool = read_json_if_exists(project / "00_discovery/candidate_pool.json") or {}
     candidates = pool.get("candidates") if isinstance(pool, dict) else []
     publication_by_study = {}
@@ -3249,7 +3300,28 @@ def project_review_figures_workspace_payload(review_root: Path, project_id: str)
         item["gap_reason"] = ". ".join(part for part in gap_parts if part)
         item["version_token"] = _workspace_token("review-placeholder", str(row.get("placeholder_id")), row)
         placeholders.append(item)
-    return {"route": "evidence-to-release.v1", "figure_policy": "source_figures_or_synthesis_placeholders_only", "source_figures": source_figures, "placeholders": placeholders, "summary": {"source_count": len(source_figures), "placeholder_count": len(placeholders)}}
+    locator_gaps = [
+        {
+            "study_id": visible_text(row.get("study_id")),
+            "page": row.get("page") if isinstance(row.get("page"), int) else None,
+            "reason": visible_text(row.get("reason")),
+        }
+        for row in registry.get("locator_gaps", [])
+        if isinstance(row, dict) and visible_text(row.get("reason"))
+    ]
+    return {
+        "route": "evidence-to-release.v1",
+        "figure_policy": "source_figures_or_synthesis_placeholders_only",
+        "status": registry_status,
+        "source_figures": source_figures,
+        "locator_gaps": locator_gaps,
+        "placeholders": placeholders,
+        "summary": {
+            "source_count": len(source_figures),
+            "locator_gap_count": len(locator_gaps),
+            "placeholder_count": len(placeholders),
+        },
+    }
 
 
 def project_workspace_payload(review_root: Path, project_id: str, kind: str) -> dict[str, Any]:
@@ -3298,15 +3370,20 @@ def write_project_workspace_decision(review_root: Path, project_id: str, kind: s
         return project_section_contracts_payload(review_root, project_id)
     if kind == "review-figures":
         figure_id = payload.get("figure_id")
-        registry = read_json_if_exists(project / "03_figures/source_figure_registry.json")
-        if not isinstance(registry, dict): raise ReviewFigureError("FIGURE_STATE_INVALID")
+        registry = load_source_figure_registry(project)
         rows = registry.get("figures", []); row = next((r for r in rows if isinstance(r, dict) and r.get("figure_id") == figure_id), None)
         if not isinstance(row, dict): raise ReviewFigureError("FIGURE_NOT_FOUND")
         _require_workspace_token(kind, str(figure_id), row.get("asset_sha256"), payload)
         status = payload.get("selection_status")
         if status not in {"selected", "available", "rejected"}: raise ReviewFigureError("FIGURE_SELECTION_INVALID")
         row["selection_status"] = status
-        registry["registry_digest"] = canonical_digest(registry.get("figures", []))
+        registry["registry_digest"] = canonical_digest(
+            {
+                "source_truth_digest": registry.get("source_truth_digest"),
+                "figures": registry.get("figures", []),
+                "locator_gaps": registry.get("locator_gaps", []),
+            }
+        )
         target = project / "03_figures/source_figure_registry.json"
         if target.is_symlink() or (target.exists() and not target.is_file()):
             raise ReviewFigureError("FIGURE_STATE_INVALID")

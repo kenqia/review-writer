@@ -479,6 +479,11 @@ def test_pdf_locator_decision_never_creates_provider_packet(tmp_path: Path) -> N
             "gate_digest": state["gate_digest"],
             "note": "Use only the original PDF for this object.",
             "object_id": target["object_id"],
+            "pdf_resolution": {
+                "pages": [1],
+                "source_scope": "The relevant content is readable in the original PDF.",
+                "limitations": "Parsed content remains excluded.",
+            },
         },
     )
 
@@ -3089,6 +3094,11 @@ def test_explicit_parse_decision_downgrade_stales_dependent_parsed_evidence(
             "gate_digest": parse["gate_digest"],
             "action": "pdf_locator_only",
             "note": "Parsed evidence is no longer authorized for this object.",
+            "pdf_resolution": {
+                "pages": [1],
+                "source_scope": "The relevant content is readable in the original PDF.",
+                "limitations": "Parsed content remains excluded.",
+            },
         },
     )
     downgraded_dependency = next(
@@ -3218,8 +3228,13 @@ def test_manual_pdf_evidence_cli_requires_pdf_locator_gate_and_hides_content(
                 "object_id": row["object_id"],
                 "object_digest": row["object_digest"],
                 "gate_digest": state["gate_digest"],
-                "action": "pdf_locator_only",
-                "note": "Manual original-PDF evidence is required.",
+                    "action": "pdf_locator_only",
+                    "note": "Manual original-PDF evidence is required.",
+                    "pdf_resolution": {
+                        "pages": [1],
+                        "source_scope": "The relevant content is readable in the original PDF.",
+                        "limitations": "Parsed content remains excluded.",
+                    },
             },
         )
     payload = {
@@ -3253,6 +3268,15 @@ def test_new_route_writer_packet_exposes_source_figures_and_no_generated_map(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project = _source_truth_project(tmp_path)
+    content_path = (
+        project
+        / "01_evidence/parses/extracted/10_1000_example/parse_content_list.json"
+    )
+    content = json.loads(content_path.read_text(encoding="utf-8"))
+    next(row for row in content if row.get("type") == "image")["image_caption"] = [
+        "Figure 1. Source-grounded example figure."
+    ]
+    content_path.write_text(json.dumps(content), encoding="utf-8")
     write_source_truth_bundle(project, "scholarly-a")
 
     def forbidden(*_args: object, **_kwargs: object) -> None:

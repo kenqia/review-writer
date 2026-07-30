@@ -410,6 +410,14 @@ def _project(gate: dict[str, Any]) -> dict[str, Any]:
         if action not in allowed_actions:
             pending = True
             continue
+        if action == "pdf_locator_only" and row.get("source_pdf_sha256"):
+            resolution = decision.get("pdf_resolution")
+            if (
+                not isinstance(resolution, dict)
+                or resolution.get("source_pdf_sha256") != row["source_pdf_sha256"]
+            ):
+                pending = True
+                continue
         row["review_state"] = "decided"
         row["re_review_reason"] = None
         reparse = reparse or action == "reparse_required"
@@ -449,6 +457,11 @@ def _validate_gate(
                 "kind": row["kind"],
                 "status": row["status"],
                 "issues": row["issues"],
+                **(
+                    {"source_pdf_sha256": row["source_pdf_sha256"]}
+                    if row.get("source_pdf_sha256")
+                    else {}
+                ),
             }
         )
         if allow_legacy_object_digest and row.get("object_digest") is None:
@@ -467,17 +480,34 @@ def build_parse_quality_gate(project: Path, bundle: dict[str, object]) -> dict[s
         if not isinstance(source, dict):
             raise ParseQualityError("SOURCE_TRUTH_INVALID")
         markdown, content = _source_inputs(project, source)
-        objects.extend(
-            (
-                _body_order(study_id, source, markdown, content),
-                _section_boundaries(study_id, source, markdown),
-                _figure_caption_links(project, study_id, source, content),
-                _table_structure(study_id, source, content),
-                _formula_chemistry(study_id, source, markdown),
-                _reference_boundary(study_id, source, markdown),
-                _supplement_completeness(project, study_id, source, bundle),
+        source_objects = [
+            _body_order(study_id, source, markdown, content),
+            _section_boundaries(study_id, source, markdown),
+            _figure_caption_links(project, study_id, source, content),
+            _table_structure(study_id, source, content),
+            _formula_chemistry(study_id, source, markdown),
+            _reference_boundary(study_id, source, markdown),
+            _supplement_completeness(project, study_id, source, bundle),
+        ]
+        pdf = source.get("pdf")
+        source_pdf_sha256 = pdf.get("sha256") if isinstance(pdf, dict) else None
+        if (
+            not isinstance(source_pdf_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", source_pdf_sha256) is None
+        ):
+            raise ParseQualityError("SOURCE_PDF_HASH_INVALID")
+        for row in source_objects:
+            row["source_pdf_sha256"] = source_pdf_sha256
+            row["object_digest"] = canonical_digest(
+                {
+                    "source_id": row["source_id"],
+                    "kind": row["kind"],
+                    "status": row["status"],
+                    "issues": row["issues"],
+                    "source_pdf_sha256": source_pdf_sha256,
+                }
             )
-        )
+        objects.extend(source_objects)
     gate: dict[str, Any] = {
         "schema_version": "parse-quality-gate.v1",
         "study_id": study_id,
@@ -631,7 +661,13 @@ def _apply_parse_quality_decision_unlocked(
 ) -> dict[str, object]:
     project = project.resolve(strict=True)
     required = {"object_id", "gate_digest", "action", "note"}
-    optional = {"object_digest", "decision_revision", "actor_type", "actor_label"}
+    optional = {
+        "object_digest",
+        "decision_revision",
+        "actor_type",
+        "actor_label",
+        "pdf_resolution",
+    }
     if (
         not isinstance(payload, dict)
         or not required.issubset(payload)
@@ -686,6 +722,66 @@ def _apply_parse_quality_decision_unlocked(
         raise ParseQualityError("ACTION_NOT_REQUIRED")
     if row["status"] in {"incomplete", "failed"} and action == "approve_candidate_extraction":
         raise ParseQualityError("ACTION_NOT_ALLOWED")
+    raw_pdf_resolution = payload.get("pdf_resolution")
+    pdf_resolution = None
+    if action == "pdf_locator_only":
+        if not isinstance(raw_pdf_resolution, dict) or set(raw_pdf_resolution) != {
+            "pages",
+            "source_scope",
+            "limitations",
+        }:
+            raise ParseQualityError("PDF_RESOLUTION_REQUIRED")
+        pages = raw_pdf_resolution.get("pages")
+        source_scope_value = raw_pdf_resolution.get("source_scope")
+        limitations_value = raw_pdf_resolution.get("limitations")
+        source_scope = (
+            source_scope_value.strip() if isinstance(source_scope_value, str) else ""
+        )
+        limitations = (
+            limitations_value.strip() if isinstance(limitations_value, str) else ""
+        )
+        bundle = load_source_truth_bundle(project, study_id)
+        sources = [
+            source
+            for source in bundle.get("sources", [])
+            if isinstance(source, dict) and source.get("source_id") == row["source_id"]
+        ]
+        if len(sources) != 1:
+            raise ParseQualityError("SOURCE_ID_NOT_FOUND")
+        source = sources[0]
+        page_count = source.get("page_count")
+        pdf = source.get("pdf")
+        source_pdf_sha256 = pdf.get("sha256") if isinstance(pdf, dict) else None
+        if (
+            not isinstance(pages, list)
+            or not pages
+            or len(pages) > 200
+            or any(
+                not isinstance(page, int)
+                or isinstance(page, bool)
+                or page < 1
+                or not isinstance(page_count, int)
+                or page > page_count
+                for page in pages
+            )
+            or len(set(pages)) != len(pages)
+            or not source_scope
+            or len(source_scope) > 2000
+            or not limitations
+            or len(limitations) > 2000
+            or not isinstance(source_pdf_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", source_pdf_sha256) is None
+            or source_pdf_sha256 != row.get("source_pdf_sha256")
+        ):
+            raise ParseQualityError("PDF_RESOLUTION_INVALID")
+        pdf_resolution = {
+            "pages": sorted(pages),
+            "source_scope": source_scope,
+            "limitations": limitations,
+            "source_pdf_sha256": source_pdf_sha256,
+        }
+    elif raw_pdf_resolution is not None:
+        raise ParseQualityError("DECISION_INVALID")
     try:
         decision = verification_decision(
             actor_type=actor_type,
@@ -700,7 +796,11 @@ def _apply_parse_quality_decision_unlocked(
     row.setdefault("prior_decisions", [])
     if isinstance(row.get("decision"), dict):
         row["prior_decisions"].append(copy.deepcopy(row["decision"]))
-    row["decision"] = {**decision, "note": note}
+    row["decision"] = {
+        **decision,
+        "note": note,
+        **({"pdf_resolution": pdf_resolution} if pdf_resolution is not None else {}),
+    }
     row["review_state"] = "decided"
     row["re_review_reason"] = None
     gate = _project(gate)

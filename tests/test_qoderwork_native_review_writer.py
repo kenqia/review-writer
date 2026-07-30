@@ -1077,6 +1077,64 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             )
             self.assertEqual(404, escape_status)
 
+    def test_parse_quality_pdf_resolution_is_visible_without_exposing_source_hash(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from test_source_truth import _source_truth_project
+        from review_writer.project.parse_quality import write_parse_quality_gate
+        from review_writer.project.source_truth import write_source_truth_bundle
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir)
+            project = _source_truth_project(review_root)
+            write_source_truth_bundle(project, "scholarly-a")
+            write_parse_quality_gate(project, "scholarly-a")
+            public = dashboard.project_parse_quality_payload(review_root, "case")
+            target = next(
+                row
+                for row in public["studies"][0]["objects"]
+                if row["automatic_status"] == "usable_with_review"
+            )
+
+            saved = dashboard.write_project_parse_quality_decision(
+                review_root,
+                "case",
+                {
+                    "study_id": "scholarly-a",
+                    "object_id": target["object_id"],
+                    "decision_token": target["decision_token"],
+                    "action": "pdf_locator_only",
+                    "note": "Parsed content is not safe for scientific extraction.",
+                    "pdf_resolution": {
+                        "pages": [1],
+                        "source_scope": "The original PDF page supports a manual locator.",
+                        "limitations": "The parsed representation remains excluded.",
+                    },
+                },
+            )
+            decision = next(
+                row["decision"]
+                for row in saved["studies"][0]["objects"]
+                if row["object_id"] == target["object_id"]
+            )
+            persisted = dashboard.parse_quality_state(project, "scholarly-a")
+            persisted_decision = next(
+                row["decision"]
+                for row in persisted["objects"]
+                if row["object_id"] == target["object_id"]
+            )
+
+            self.assertEqual(
+                {
+                    "pages": [1],
+                    "source_scope": "The original PDF page supports a manual locator.",
+                    "limitations": "The parsed representation remains excluded.",
+                },
+                decision["pdf_resolution"],
+            )
+            self.assertIn("source_pdf_sha256", persisted_decision["pdf_resolution"])
+            self.assertNotIn("sha256", json.dumps(saved))
+
     def test_settled_reparse_block_exposes_persistent_repair_handoff_and_provenance(self) -> None:
         sys.path.insert(0, str(ROOT))
         from test_source_truth import _source_truth_project
@@ -1121,6 +1179,17 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
                         "decision_token": target["decision_token"],
                         "action": action,
                         "note": "Compared with the original PDF; keep the workflow fail-closed.",
+                        **(
+                            {
+                                "pdf_resolution": {
+                                    "pages": [1],
+                                    "source_scope": "The original PDF page is readable.",
+                                    "limitations": "Parsed content remains excluded.",
+                                }
+                            }
+                            if action == "pdf_locator_only"
+                            else {}
+                        ),
                     },
                 )
                 action_index += 1
@@ -4953,6 +5022,10 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             "object.decision?.decided_at",
             "object.previous_decisions",
             "object.review_message",
+            "object.decision?.pdf_resolution",
+            "pdf_resolution:pdfResolution",
+            "dataset.pdfResolution",
+            "data-pdf-resolution",
             "$('parse-quality-refresh').addEventListener('click'",
         ):
             self.assertIn(binding, review_html)
@@ -4975,7 +5048,13 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             "刷新解析状态",
         ):
             self.assertIn(copy, parser.text)
-        for dynamic_copy in ("重新解析已完成，需要重新判断", "此前决定"):
+        for dynamic_copy in (
+            "重新解析已完成，需要重新判断",
+            "此前决定",
+            "原始 PDF 页码（逗号分隔）",
+            "原始 PDF 可判定内容",
+            "解析限制与下游使用边界",
+        ):
             self.assertIn(dynamic_copy, review_html)
         for forbidden in ("Source Truth Bundle", "schema", "digest", "hash", "JSON"):
             self.assertNotIn(forbidden.casefold(), parser.text.casefold())
@@ -4995,6 +5074,7 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             ".parse-quality-decision-option strong { font-size: 13px; }",
             ".parse-quality-decision-option small { font-size: 11px; }",
             ".parse-quality-note-field textarea { font-size: 14px; line-height: 1.55; }",
+            ".parse-quality-pdf-resolution",
             ".context-item p { font-size: 13px; }",
         ):
             self.assertIn(style, review_css)

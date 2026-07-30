@@ -88,10 +88,11 @@
     const summary = object(row.summary);
     const decisions = array(row.studies).flatMap(study => array(object(study).objects).map(item => object(item).decision));
     const actor = decisions.map(decisionActor).find(item => item !== "决策者：未提供") || "决策者：未提供";
+    const updatedAt = string(row.last_decision_at);
     return {
       title: "解析质量",
       status: humanStatus(row.status),
-      freshness: "数据新鲜度：更新时间未提供",
+      freshness: updatedAt ? `数据新鲜度：最近决定 ${updatedAt}` : "数据新鲜度：更新时间未提供",
       counts: `${finite(summary.studies) ? Number(summary.studies) : "—"} 篇研究 · ${finite(summary.objects) ? Number(summary.objects) : "—"} 个解析对象 · ${finite(summary.needs_review) ? Number(summary.needs_review) : "—"} 项待决定`,
       decision: `核对决定：${finite(summary.approved) ? Number(summary.approved) : "—"} 篇已批准；${finite(summary.pdf_locator_only) ? Number(summary.pdf_locator_only) : "—"} 项仅原始 PDF 定位；${finite(summary.reparse_required) ? Number(summary.reparse_required) : "—"} 项需要重新解析`,
       actor,

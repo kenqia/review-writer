@@ -159,26 +159,79 @@ def _verify_source_images(project: Path, source: dict[str, Any]) -> None:
         _fail("FIGURE_IMAGE_SET_DRIFT")
 
 
-def _caption(entries: list[dict[str, Any]], index: int, page: int, label: str) -> str:
-    # Prefer an explicit same-page Figure/Fig./Scheme caption after the asset.
-    candidates: list[str] = []
-    for row in entries[index + 1 :]:
-        row_page = row.get("page_idx")
-        if isinstance(row_page, int) and row_page + 1 != page:
-            if row_page + 1 > page:
-                break
-            continue
-        text = row.get("text")
-        if isinstance(text, str) and text.strip():
-            clean = " ".join(text.split())
-            candidates.append(clean)
-            if re.search(r"(?:Figure|Fig\.?|Scheme|Chart)\s*[A-Za-z]?\s*\d+", clean, re.I):
-                return clean
-            if len(candidates) >= 2:
-                break
-    if candidates:
-        return candidates[0]
-    return f"Source {label} extracted from the original paper."
+_SOURCE_FIGURE_LABEL = re.compile(
+    r"(?:Figure|Fig\.?|Scheme|Chart)\s*[A-Za-z]?\s*\d+",
+    re.I,
+)
+
+
+def _explicit_caption(entry: dict[str, Any]) -> tuple[str, str] | None:
+    raw = entry.get("image_caption")
+    values = raw if isinstance(raw, list) else [raw] if isinstance(raw, str) else []
+    clean = " ".join(
+        " ".join(value.split())
+        for value in values
+        if isinstance(value, str) and value.strip()
+    ).strip()
+    match = _SOURCE_FIGURE_LABEL.search(clean)
+    if not clean or match is None:
+        return None
+    return match.group(0), clean
+
+
+def _source_truth_digest(root: Path) -> str:
+    bindings: list[dict[str, str]] = []
+    try:
+        study_ids = declared_study_ids(root)
+    except SourceTruthError as exc:
+        raise ReviewFigureError(exc.code) from exc
+    for study_id in study_ids:
+        try:
+            bundle = load_source_truth_bundle(root, study_id)
+        except SourceTruthError as exc:
+            raise ReviewFigureError(exc.code) from exc
+        bundle_digest = bundle.get("bundle_digest")
+        if not isinstance(bundle_digest, str) or not _SHA256.fullmatch(bundle_digest):
+            _fail("FIGURE_SOURCE_INVALID")
+        bindings.append({"study_id": study_id, "bundle_digest": bundle_digest})
+    return canonical_digest(bindings)
+
+
+def load_source_figure_registry(project: Path) -> dict[str, Any]:
+    """Load a registry only when it is bound to the current Source Truth."""
+    root = _safe_project(project)
+    path = root / REGISTRY_PATH
+    if path.is_symlink() or not path.is_file():
+        _fail("FIGURE_STATE_INVALID")
+    payload = _read_json(path, "FIGURE_STATE_INVALID")
+    if not isinstance(payload, dict):
+        _fail("FIGURE_STATE_INVALID")
+    figures = payload.get("figures")
+    locator_gaps = payload.get("locator_gaps")
+    if (
+        not isinstance(figures, list)
+        or not all(isinstance(row, dict) for row in figures)
+        or not isinstance(locator_gaps, list)
+        or payload.get("source_truth_digest") != _source_truth_digest(root)
+    ):
+        _fail("FIGURE_REGISTRY_STALE")
+    expected = canonical_digest(
+        {
+            "source_truth_digest": payload["source_truth_digest"],
+            "figures": figures,
+            "locator_gaps": locator_gaps,
+        }
+    )
+    if payload.get("registry_digest") != expected:
+        _fail("FIGURE_REGISTRY_INVALID")
+    figure_ids: set[str] = set()
+    for figure in figures:
+        _validate(figure, SOURCE_FIGURE_SCHEMA, "FIGURE_REGISTRY_INVALID")
+        figure_id = figure.get("figure_id")
+        if not isinstance(figure_id, str) or figure_id in figure_ids:
+            _fail("FIGURE_REGISTRY_INVALID")
+        figure_ids.add(figure_id)
+    return copy.deepcopy(payload)
 
 
 def _evidence_ids(project: Path, study_id: str, source_id: str, page: int, label: str) -> list[str]:
@@ -211,6 +264,8 @@ def build_source_figure_registry(project: Path) -> dict[str, Any]:
     except SourceTruthError as exc:
         raise ReviewFigureError(exc.code) from exc
     figures: list[dict[str, Any]] = []
+    locator_gaps: list[dict[str, Any]] = []
+    source_truth_digest = _source_truth_digest(root)
     for study_id in studies:
         try:
             bundle = load_source_truth_bundle(root, study_id)
@@ -236,7 +291,46 @@ def build_source_figure_registry(project: Path) -> dict[str, Any]:
             if image_root.is_symlink() or not image_root.is_dir():
                 _fail("FIGURE_ASSET_INVALID")
             image_number = 0
-            for index, entry in enumerate(entries):
+            image_entries_by_page: dict[int, list[dict[str, Any]]] = {}
+            for entry in entries:
+                page_idx = entry.get("page_idx")
+                if (
+                    entry.get("type") == "image"
+                    and isinstance(page_idx, int)
+                    and page_idx >= 0
+                ):
+                    image_entries_by_page.setdefault(page_idx + 1, []).append(entry)
+            ambiguous_pages = {
+                page
+                for page, page_entries in image_entries_by_page.items()
+                if len(page_entries) > 1
+                and sum(_explicit_caption(entry) is not None for entry in page_entries) == 1
+            }
+            for page, page_entries in sorted(image_entries_by_page.items()):
+                if page in ambiguous_pages:
+                    locator_gaps.append(
+                        {
+                            "study_id": study_id,
+                            "source_id": source_id,
+                            "page": page,
+                            "reason": (
+                                "同页多个图片碎片无法可靠归并为一张完整原论文图。"
+                            ),
+                        }
+                    )
+                elif not any(_explicit_caption(entry) is not None for entry in page_entries):
+                    locator_gaps.append(
+                        {
+                            "study_id": study_id,
+                            "source_id": source_id,
+                            "page": page,
+                            "reason": (
+                                "抽取图片未绑定明确的原论文 Figure/Scheme 图注。"
+                            ),
+                        }
+                    )
+            seen_labels: set[str] = set()
+            for entry in entries:
                 if entry.get("type") != "image" or not isinstance(entry.get("img_path"), str):
                     continue
                 raw_path = Path(entry["img_path"])
@@ -251,13 +345,28 @@ def build_source_figure_registry(project: Path) -> dict[str, Any]:
                 if not isinstance(page_idx, int) or page_idx < 0:
                     _fail("FIGURE_LOCATOR_INVALID")
                 page = page_idx + 1
+                explicit = _explicit_caption(entry)
+                if page in ambiguous_pages or explicit is None:
+                    continue
+                label, caption = explicit
+                normalized_label = label.casefold().replace(".", "")
+                if normalized_label in seen_labels:
+                    locator_gaps.append(
+                        {
+                            "study_id": study_id,
+                            "source_id": source_id,
+                            "page": page,
+                            "reason": "检测到重复图号，已拒绝重复定位。",
+                        }
+                    )
+                    continue
+                seen_labels.add(normalized_label)
                 image_number += 1
-                fallback_label = f"Figure {image_number}"
-                caption = _caption(entries, index, page, fallback_label)
-                label_match = re.search(r"(?:Figure|Fig\.?|Scheme|Chart)\s*[A-Za-z]?\s*\d+", caption, re.I)
-                label = label_match.group(0) if label_match else fallback_label
                 figure = {
-                    "figure_id": f"{study_id}:{source_id}:{label.replace(' ', '-').lower()}",
+                    "figure_id": (
+                        f"{study_id}:{source_id}:"
+                        f"{label.replace(' ', '-').replace('.', '').lower()}"
+                    ),
                     "study_id": study_id,
                     "source_id": source_id,
                     "page": page,
@@ -293,6 +402,8 @@ def build_source_figure_registry(project: Path) -> dict[str, Any]:
         "selected_count": len(selected),
         "available_count": len(figures),
         "target_figure_slots": {"minimum": minimum_slots, "maximum": maximum_slots},
+        "source_truth_digest": source_truth_digest,
+        "locator_gaps": locator_gaps,
         "figure_budget": {
             "status": budget_status,
             "selected_count": len(selected),
@@ -300,7 +411,13 @@ def build_source_figure_registry(project: Path) -> dict[str, Any]:
             "maximum": maximum_slots,
             "gaps": budget_gaps,
         },
-        "registry_digest": canonical_digest(figures),
+        "registry_digest": canonical_digest(
+            {
+                "source_truth_digest": source_truth_digest,
+                "figures": figures,
+                "locator_gaps": locator_gaps,
+            }
+        ),
     }
     _atomic_json(root, REGISTRY_PATH, registry)
     return registry

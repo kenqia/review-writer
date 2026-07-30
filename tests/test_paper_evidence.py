@@ -46,6 +46,17 @@ def _approve_parse(project: Path, *, pdf_locator_only: bool = False) -> dict:
                     "pdf_locator_only" if pdf_locator_only else "approve_candidate_extraction"
                 ),
                 "note": "Compared with the original PDF.",
+                **(
+                    {
+                        "pdf_resolution": {
+                            "pages": [1],
+                            "source_scope": "The relevant content is readable in the original PDF.",
+                            "limitations": "Parsed content remains excluded.",
+                        }
+                    }
+                    if pdf_locator_only
+                    else {}
+                ),
             },
         )
     return state
@@ -121,6 +132,17 @@ def _add_study_with_parse_action(project: Path, study_id: str, action: str) -> N
                 "gate_digest": state["gate_digest"],
                 "action": selected,
                 "note": "Compared with the original PDF.",
+                **(
+                    {
+                        "pdf_resolution": {
+                            "pages": [1],
+                            "source_scope": "The relevant content is readable in the original PDF.",
+                            "limitations": "Parsed content remains excluded.",
+                        }
+                    }
+                    if selected == "pdf_locator_only"
+                    else {}
+                ),
             },
         )
 

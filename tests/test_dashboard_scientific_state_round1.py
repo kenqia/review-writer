@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -133,6 +135,11 @@ def test_new_route_figure_workspace_projects_publication_rights_and_gap_reason(
         dashboard,
         "workflow_state",
         lambda _project: {"route": "evidence-to-release.v1"},
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "load_source_figure_registry",
+        lambda _project: json.loads(registry_path.read_text(encoding="utf-8")),
     )
     monkeypatch.setattr(
         dashboard,
@@ -269,3 +276,64 @@ def test_frontend_projects_complete_scientific_state() -> None:
     assert "actor_label" in evidence
     assert "actor_type" in synthesis
     assert "actor_label" in synthesis
+
+
+def test_parse_audit_uses_authoritative_decision_freshness() -> None:
+    root = Path(__file__).resolve().parents[1]
+    node = shutil.which("node")
+    assert node is not None
+    script = root / "view/assets/dashboard/review-audit.js"
+    runtime = f"""
+      const ui = require({json.dumps(str(script))});
+      const model = ui.buildAuditModel({{
+        parseQuality: {{last_decision_at:'2026-07-30T05:40:27.024231+00:00'}}
+      }});
+      if (!model.parseQuality.freshness.includes('2026-07-30')) {{
+        throw new Error(model.parseQuality.freshness);
+      }}
+      if (model.parseQuality.freshness.includes('更新时间未提供')) {{
+        throw new Error('authoritative freshness was discarded');
+      }}
+    """
+
+    subprocess.run([node, "-e", runtime], check=True)
+
+
+def test_figure_workspace_refuses_stale_locators_without_rewriting_registry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from review_writer.project.review_figures import build_source_figure_registry
+    from review_writer.project.source_truth import write_source_truth_bundle
+    from test_review_figures import _new_route_project
+    from view import serve_review_dashboard as dashboard
+
+    project = _new_route_project(tmp_path)
+    registry_path = project / "03_figures/source_figure_registry.json"
+    build_source_figure_registry(project)
+    before = registry_path.read_bytes()
+    markdown = project / "01_evidence/mineru/markdown/10_1000_example.md"
+    markdown.write_text("# Canonical\nReparsed source\n", encoding="utf-8")
+    write_source_truth_bundle(project, "scholarly-a")
+    monkeypatch.setattr(
+        dashboard,
+        "workflow_state",
+        lambda _project: {"route": "evidence-to-release.v1"},
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "synthesis_figure_placeholders",
+        lambda _project: [],
+    )
+
+    payload = dashboard.project_review_figures_workspace_payload(tmp_path, "case")
+
+    assert payload["status"] == "needs_rebuild"
+    assert payload["source_figures"] == []
+    assert payload["locator_gaps"] == [
+        {
+            "study_id": "",
+            "page": None,
+            "reason": "论文解析来源已更新；原论文图定位必须重建后才能继续使用。",
+        }
+    ]
+    assert registry_path.read_bytes() == before

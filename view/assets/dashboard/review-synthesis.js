@@ -75,6 +75,10 @@
     const contractPanel = section("Section Contracts");
     (contracts.items || []).forEach((item, index) => { const card = document.createElement("article"); card.className = "synthesis-card"; card.append(text("strong", label(item.heading, `第 ${index + 1} 节`)), text("p", item.research_question), text("p", `预期综合判断：${item.expected_synthesis}`), text("p", `图计划：${describeFigurePlan(item.figure_plan)}`)); if (item.decision) card.append(text("p", decisionLine(item.decision), "decision-line")); const button = document.createElement("button"); button.type = "button"; button.textContent = "记录决定"; button.disabled = !contracts.synthesis_ready; if (!contracts.synthesis_ready) button.title = "先完成 Synthesis Claims 审查"; button.addEventListener("click", () => decide("section-contracts", item)); card.append(button); contractPanel.append(card); });
     const figurePanel = section("原论文图片");
+    (figures.locator_gaps || []).forEach(item => {
+      const page = item.page ? `第 ${item.page} 页 · ` : "";
+      figurePanel.append(text("p", `定位缺口：${page}${label(item.reason, "原论文图定位需要重建")}`, "workspace-error"));
+    });
     (figures.source_figures || []).forEach(item => {
       const row = document.createElement("div"); row.className = "figure-source-row";
       const publication = item.publication_identity || {};
