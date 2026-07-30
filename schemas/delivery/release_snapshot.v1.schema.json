@@ -36,7 +36,7 @@
       "required": [
         "schema_version", "zip_valid", "relationships_valid", "document_xml_sha256",
         "media_sha256", "markdown_roundtrip_match", "attribution_complete",
-        "workflow_digest_match", "document_xml_changed", "media_changed",
+        "workflow_digest_match", "provenance_valid", "document_xml_changed", "media_changed",
         "legacy_repackage_only"
       ],
       "properties": {
@@ -48,6 +48,7 @@
         "markdown_roundtrip_match": {"const": true},
         "attribution_complete": {"const": true},
         "workflow_digest_match": {"const": true},
+        "provenance_valid": {"const": true},
         "document_xml_changed": {"type": ["boolean", "null"]},
         "media_changed": {"type": ["boolean", "null"]},
         "legacy_repackage_only": {"const": false}

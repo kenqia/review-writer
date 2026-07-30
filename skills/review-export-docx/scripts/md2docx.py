@@ -34,6 +34,7 @@ from typing import Dict, List, Optional, Tuple
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.image.image import Image
 from docx.oxml import OxmlElement, parse_xml  # noqa: F401
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
@@ -306,23 +307,45 @@ def _split_script_segments(text: str) -> List[Tuple[str, str]]:
             segments.append((mode, current))
             current = ""
 
-    for idx, char in enumerate(text):
-        if char in _UNICODE_SUPERSCRIPT_MAP:
+    idx = 0
+    while idx < len(text):
+        char = text[idx]
+        exponent = None
+        if char == "^":
+            exponent = re.match(r"[+-]?\d+", text[idx + 1 :])
+            if exponent:
+                char_mode = "superscript"
+                rendered = exponent.group(0)
+                idx += len(rendered) + 1
+        elif (
+            char == "-"
+            and re.search(r"(?:^|[\s(])(?:M|L|m|g|s|K|h)$", text[:idx])
+            and re.match(r"\d+", text[idx + 1 :])
+        ):
+            exponent = re.match(r"\d+", text[idx + 1 :])
+            assert exponent is not None
             char_mode = "superscript"
-            rendered = _UNICODE_SUPERSCRIPT_MAP[char]
-        elif char in _UNICODE_SUBSCRIPT_MAP:
-            char_mode = "subscript"
-            rendered = _UNICODE_SUBSCRIPT_MAP[char]
-        elif looks_like_ascii_subscript(idx):
-            char_mode = "subscript"
-            rendered = char
-        else:
-            char_mode = "normal"
-            rendered = char
+            rendered = "-" + exponent.group(0)
+            idx += len(rendered)
+        if exponent is None:
+            if char in _UNICODE_SUPERSCRIPT_MAP:
+                char_mode = "superscript"
+                rendered = _UNICODE_SUPERSCRIPT_MAP[char]
+            elif char in _UNICODE_SUBSCRIPT_MAP:
+                char_mode = "subscript"
+                rendered = _UNICODE_SUBSCRIPT_MAP[char]
+            elif looks_like_ascii_subscript(idx):
+                char_mode = "subscript"
+                rendered = char
+            else:
+                char_mode = "normal"
+                rendered = char
         if char_mode != mode:
             flush()
             mode = char_mode
         current += rendered
+        if exponent is None:
+            idx += 1
     flush()
     return segments or [("normal", text)]
 
@@ -691,12 +714,39 @@ def _clear_body(doc: Document) -> None:
 # Main converter
 # ---------------------------------------------------------------------------
 
-def convert(md_path: Path, out_path: Path, template_path: Path) -> None:
+def _fit_image_dimensions(doc: Document, path: Path) -> Tuple[int, int]:
+    image = Image.from_file(str(path))
+    width, height = image.scaled_dimensions(width=Inches(_usable_page_width_inches(doc)))
+    max_height = Inches(6.5)
+    if height > max_height:
+        width, height = image.scaled_dimensions(height=max_height)
+    return width, height
+
+
+def _source_attribution(raw_text: str) -> bool:
+    return _plain_text(raw_text).casefold().startswith("source figure attribution:")
+
+
+def convert(
+    md_path: Path,
+    out_path: Path,
+    template_path: Path,
+    *,
+    project_id: str | None = None,
+    release_level: str | None = None,
+) -> None:
     md_text = md_path.read_text(encoding="utf-8")
     blocks  = tokenize(md_text)
     toc_entries = _collect_static_toc_entries(blocks)
     doc     = Document(str(template_path))
     _clear_body(doc)
+    if project_id is not None and release_level is not None:
+        properties = doc.core_properties
+        properties.title = f"{project_id} - {release_level}"
+        properties.subject = f"review-writer project {project_id}"
+        properties.author = "review-writer"
+        properties.last_modified_by = "review-writer"
+        properties.keywords = f"{project_id}; {release_level}; review-writer"
 
     ctx: str           = "body"
     front_matter: bool = False
@@ -712,7 +762,8 @@ def convert(md_path: Path, out_path: Path, template_path: Path) -> None:
         _insert_static_toc(doc, toc_entries)
         inserted_toc_heading = True
 
-    for block in blocks:
+    for block_index, block in enumerate(blocks):
+        next_block = blocks[block_index + 1] if block_index + 1 < len(blocks) else None
 
         if block.kind == "heading":
             plain_heading = block.text.strip().lower()
@@ -764,8 +815,13 @@ def convert(md_path: Path, out_path: Path, template_path: Path) -> None:
                 _para(doc, ctx, spec, text)
             else:
                 cap = _caption_style(text)
-                key = cap if cap else "body"
-                _para(doc, key, key, text)
+                attribution = _source_attribution(text)
+                key = cap if cap else "figure" if attribution else "body"
+                paragraph = _para(doc, key, key, text)
+                if cap or attribution:
+                    paragraph.paragraph_format.keep_together = True
+                if cap and next_block is not None and next_block.kind == "paragraph" and _source_attribution(next_block.text):
+                    paragraph.paragraph_format.keep_with_next = True
 
         elif block.kind == "indented_block":
             if skipping_source_toc:
@@ -823,9 +879,18 @@ def convert(md_path: Path, out_path: Path, template_path: Path) -> None:
             if img_path.exists():
                 p = doc.add_paragraph(style=_S["body"])
                 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                p.add_run().add_picture(str(img_path), width=Inches(_usable_page_width_inches(doc)))
-                if block.alt:
-                    _para(doc, "figure", "figure", f"Figure. {block.alt}")
+                p.paragraph_format.keep_together = True
+                next_is_caption = bool(
+                    next_block is not None
+                    and next_block.kind == "paragraph"
+                    and (_caption_style(next_block.text) or _source_attribution(next_block.text))
+                )
+                p.paragraph_format.keep_with_next = bool(next_is_caption or block.alt)
+                width, height = _fit_image_dimensions(doc, img_path)
+                p.add_run().add_picture(str(img_path), width=width, height=height)
+                if block.alt and not next_is_caption:
+                    caption = _para(doc, "figure", "figure", f"Figure. {block.alt}")
+                    caption.paragraph_format.keep_together = True
             else:
                 continue
 
@@ -864,6 +929,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output",   required=True, metavar="DOCX", help="Output .docx file")
     p.add_argument("--template", default=str(_DEFAULT_TEMPLATE), metavar="DOCX",
                    help=f"Word template (default: {_DEFAULT_TEMPLATE})")
+    p.add_argument("--project-id")
+    p.add_argument(
+        "--release-level",
+        choices=("SELF_REVIEWED_DRAFT", "EXPERT_REVIEWED_RELEASE"),
+    )
     return p
 
 
@@ -882,7 +952,15 @@ def main() -> None:
               "math will render as plain text.\n"
               "          Fix: pip install latex2word")
 
-    convert(md_path, out_path, template_path)
+    if (args.project_id is None) != (args.release_level is None):
+        raise SystemExit("[md2docx] ERROR: project-id and release-level must be provided together")
+    convert(
+        md_path,
+        out_path,
+        template_path,
+        project_id=args.project_id,
+        release_level=args.release_level,
+    )
 
 
 if __name__ == "__main__":

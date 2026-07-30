@@ -15,6 +15,10 @@ _PACKAGE_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 _OFFICE_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 _WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _DRAWING_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_CORE_PROPERTIES_NS = (
+    "http://schemas.openxmlformats.org/package/2006/metadata/core-properties"
+)
+_DC_NS = "http://purl.org/dc/elements/1.1/"
 _REQUIRED_PARTS = frozenset(
     {
         "[Content_Types].xml",
@@ -28,6 +32,7 @@ _MAX_TOTAL_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
 _MAX_XML_BYTES = 16 * 1024 * 1024
 _MAX_MEDIA_BYTES = 64 * 1024 * 1024
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_RELEASE_LEVELS = frozenset({"SELF_REVIEWED_DRAFT", "EXPERT_REVIEWED_RELEASE"})
 _ALLOWED_EXTERNAL_RELATIONSHIP_TYPES = frozenset(
     {
         f"{_OFFICE_REL_NS}/attachedTemplate",
@@ -256,7 +261,33 @@ def _visible_markdown_chunks(markdown: str) -> list[str]:
     return chunks
 
 
-def _package_state(path: Path) -> dict[str, Any]:
+def _core_properties(package: zipfile.ZipFile, names: set[str]) -> dict[str, str]:
+    name = "docProps/core.xml"
+    if name not in names:
+        raise DocxIntegrityError("DOCX_PROVENANCE_INVALID", "core properties are missing")
+    try:
+        root = _xml(package, name)
+    except DocxIntegrityError as exc:
+        raise DocxIntegrityError(
+            "DOCX_PROVENANCE_INVALID", "core properties are malformed"
+        ) from exc
+    if root.tag != f"{{{_CORE_PROPERTIES_NS}}}coreProperties":
+        raise DocxIntegrityError("DOCX_PROVENANCE_INVALID", "core properties root is invalid")
+
+    def value(namespace: str, field: str) -> str:
+        node = root.find(f"{{{namespace}}}{field}")
+        return node.text.strip() if node is not None and isinstance(node.text, str) else ""
+
+    return {
+        "title": value(_DC_NS, "title"),
+        "subject": value(_DC_NS, "subject"),
+        "creator": value(_DC_NS, "creator"),
+        "last_modified_by": value(_CORE_PROPERTIES_NS, "lastModifiedBy"),
+        "keywords": value(_CORE_PROPERTIES_NS, "keywords"),
+    }
+
+
+def _package_state(path: Path, *, read_provenance: bool = False) -> dict[str, Any]:
     if path.is_symlink() or not path.is_file():
         raise DocxIntegrityError("DOCX_ZIP_INVALID", "DOCX must be a regular file")
     try:
@@ -267,11 +298,14 @@ def _package_state(path: Path) -> dict[str, Any]:
             document = _xml(package, "word/document.xml")
             image_targets, _ = _relationship_state(package, names, document)
             media_sha256 = sorted(_sha256(package.read(name)) for name in image_targets)
-            return {
+            state = {
                 "document_xml_sha256": _sha256(document_bytes),
                 "document_text": _document_text(document),
                 "media_sha256": media_sha256,
             }
+            if read_provenance:
+                state["provenance"] = _core_properties(package, names)
+            return state
     except DocxIntegrityError:
         raise
     except (OSError, KeyError, zipfile.BadZipFile, RuntimeError) as exc:
@@ -296,6 +330,8 @@ def validate_docx_integrity(
     workflow_digest: str,
     snapshot_workflow_digest: str,
     legacy_docx: Path | None = None,
+    expected_project_id: str | None = None,
+    expected_release_level: str | None = None,
 ) -> dict[str, Any]:
     """Validate package structure and bind its content to current release inputs."""
     if (
@@ -306,12 +342,33 @@ def validate_docx_integrity(
         raise DocxIntegrityError("DOCX_INTEGRITY_INPUT_INVALID")
     if workflow_digest != snapshot_workflow_digest:
         raise DocxIntegrityError("RELEASE_WORKFLOW_STALE")
+    provenance_required = expected_project_id is not None or expected_release_level is not None
+    if provenance_required and (
+        not isinstance(expected_project_id, str)
+        or not expected_project_id.strip()
+        or expected_project_id != expected_project_id.strip()
+        or expected_release_level not in _RELEASE_LEVELS
+    ):
+        raise DocxIntegrityError("DOCX_INTEGRITY_INPUT_INVALID")
     expected_hashes = _validated_hashes(expected_media_sha256)
     attributions = list(required_attributions)
     if any(not isinstance(value, str) or not value.strip() for value in attributions):
         raise DocxIntegrityError("DOCX_ATTRIBUTION_MISSING")
 
-    current = _package_state(Path(docx_path))
+    current = _package_state(Path(docx_path), read_provenance=provenance_required)
+    if provenance_required:
+        expected_provenance = {
+            "title": f"{expected_project_id} - {expected_release_level}",
+            "subject": f"review-writer project {expected_project_id}",
+            "creator": "review-writer",
+            "last_modified_by": "review-writer",
+            "keywords": f"{expected_project_id}; {expected_release_level}; review-writer",
+        }
+        if current.get("provenance") != expected_provenance:
+            raise DocxIntegrityError(
+                "DOCX_PROVENANCE_INVALID",
+                "core properties do not match the project release",
+            )
     if not set(expected_hashes) <= set(current["media_sha256"]):
         raise DocxIntegrityError("DOCX_MEDIA_INVALID", "expected media is absent from the package")
     document_text = current["document_text"]
@@ -349,6 +406,7 @@ def validate_docx_integrity(
         "markdown_roundtrip_match": True,
         "attribution_complete": True,
         "workflow_digest_match": True,
+        "provenance_valid": True if provenance_required else None,
         "document_xml_changed": document_xml_changed,
         "media_changed": media_changed,
         "legacy_repackage_only": legacy_repackage_only,

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
+import sys
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -19,6 +21,16 @@ ATTRIBUTION = (
     "Figure 1 | Reaction scope."
 )
 MARKDOWN = f"# Current review\n\nEvidence-bound sentence.\n\n{ATTRIBUTION}\n"
+
+
+def _load_converter():
+    path = Path(__file__).resolve().parents[1] / "skills/review-export-docx/scripts/md2docx.py"
+    spec = importlib.util.spec_from_file_location("review_writer_md2docx", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _document_xml(*paragraphs: str, relationship_id: str | None = "rIdImage1") -> bytes:
@@ -243,6 +255,24 @@ def test_integrity_rejects_workflow_digest_drift(tmp_path: Path) -> None:
         )
 
 
+def test_integrity_rejects_template_identity_when_release_provenance_is_required(
+    tmp_path: Path,
+) -> None:
+    docx = _write_docx(tmp_path / "template-identity.docx")
+
+    with pytest.raises(DocxIntegrityError, match="DOCX_PROVENANCE_INVALID"):
+        validate_docx_integrity(
+            docx,
+            markdown=MARKDOWN,
+            expected_media_sha256=[hashlib.sha256(IMAGE_BYTES).hexdigest()],
+            required_attributions=[ATTRIBUTION],
+            workflow_digest=WORKFLOW_DIGEST,
+            snapshot_workflow_digest=WORKFLOW_DIGEST,
+            expected_project_id="project-a",
+            expected_release_level="SELF_REVIEWED_DRAFT",
+        )
+
+
 def test_integrity_detects_legacy_repackage_even_when_outer_zip_changed(tmp_path: Path) -> None:
     legacy = _write_docx(tmp_path / "legacy.docx", metadata="legacy")
     current = _write_docx(tmp_path / "current.docx", metadata="new-package")
@@ -265,3 +295,64 @@ def test_integrity_reports_changed_document_and_media_against_legacy(tmp_path: P
     assert report["document_xml_changed"] is True
     assert report["media_changed"] is True
     assert report["legacy_repackage_only"] is False
+
+
+def test_docx_converter_formats_ascii_scientific_exponents_as_runs() -> None:
+    converter = _load_converter()
+
+    segments = converter._split_script_segments("10^7 M-1 s-1")
+
+    assert segments == [
+        ("normal", "10"),
+        ("superscript", "7"),
+        ("normal", " M"),
+        ("superscript", "-1"),
+        ("normal", " s"),
+        ("superscript", "-1"),
+    ]
+    assert converter._split_script_segments("analysis-1 remains bounded") == [
+        ("normal", "analysis-1 remains bounded")
+    ]
+
+
+def test_docx_converter_keeps_image_caption_and_attribution_chain_together(
+    tmp_path: Path,
+) -> None:
+    converter = _load_converter()
+    image = tmp_path / "figure.png"
+    image.write_bytes(
+        __import__("base64").b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )
+    )
+    markdown = tmp_path / "manuscript.md"
+    markdown.write_text(
+        "# Project\n\n## Evidence synthesis\n\n![Reaction scope](figure.png)\n\n"
+        "Figure 1. Reaction scope.\n\n"
+        "Source Figure Attribution: figure-1 | study-a | page 3 | Figure 1\n\n"
+        "## References\n\n[1] Synthetic reference.\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "output.docx"
+
+    converter.convert(
+        markdown,
+        output,
+        Path(converter.__file__).resolve().parent.parent / "review_template.docx",
+    )
+
+    from docx import Document
+
+    paragraphs = Document(output).paragraphs
+    image_index = next(
+        index for index, paragraph in enumerate(paragraphs) if paragraph._p.xpath(".//w:drawing")
+    )
+    assert paragraphs[image_index].paragraph_format.keep_with_next is True
+    assert paragraphs[image_index].paragraph_format.keep_together is True
+    figure = next(paragraph for paragraph in paragraphs if paragraph.text.startswith("Figure 1."))
+    attribution = next(
+        paragraph for paragraph in paragraphs if paragraph.text.startswith("Source Figure Attribution:")
+    )
+    assert figure.paragraph_format.keep_with_next is True
+    assert figure.paragraph_format.keep_together is True
+    assert attribution.paragraph_format.keep_together is True

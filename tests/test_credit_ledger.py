@@ -12,6 +12,7 @@ from jsonschema import Draft202012Validator
 from review_writer.project.credit_ledger import (
     CREDIT_LEDGER_PATH,
     CreditLedgerError,
+    credit_ledger_summary,
     record_credit_event,
 )
 from review_writer.project import credit_ledger
@@ -58,6 +59,67 @@ def test_credit_ledger_records_reported_baseline(tmp_path: Path) -> None:
     Draft202012Validator(schema).validate(event)
     serialized = json.dumps(event, sort_keys=True).casefold()
     assert all(term not in serialized for term in ("account", "token", "cookie", "session", "auth"))
+
+
+def test_credit_ledger_summary_is_explicitly_unavailable_when_missing(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+
+    assert credit_ledger_summary(project) == {
+        "status": "unavailable",
+        "continuity": "unavailable",
+        "event_count": 0,
+        "measured": None,
+        "forecast": None,
+        "forecast_variance": None,
+        "remaining": None,
+        "cache": {"status": "unavailable", "hits": None, "misses": None},
+        "retries": {"status": "unavailable", "count": None, "events": []},
+    }
+
+
+def test_credit_ledger_summary_uses_validated_chain_without_guessing_operations(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    record_credit_event(
+        project,
+        stage="three_paper_complete_loop",
+        before=2004,
+        after=1351,
+        source="manual_dashboard",
+        forecast=650,
+    )
+
+    assert credit_ledger_summary(project) == {
+        "status": "available",
+        "continuity": "verified",
+        "event_count": 1,
+        "measured": {"before": 2004, "after": 1351, "consumed": 653},
+        "forecast": 650,
+        "forecast_variance": 3,
+        "remaining": 1351,
+        "cache": {"status": "unavailable", "hits": None, "misses": None},
+        "retries": {"status": "unavailable", "count": None, "events": []},
+    }
+
+
+def test_credit_ledger_summary_fails_closed_on_invalid_chain(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    record_credit_event(
+        project,
+        stage="source_review",
+        before=100,
+        after=90,
+        source="manual_dashboard",
+    )
+    ledger = project / CREDIT_LEDGER_PATH
+    ledger.write_text(ledger.read_text(encoding="utf-8").replace('"after":90', '"after":91'), encoding="utf-8")
+
+    with pytest.raises(CreditLedgerError):
+        credit_ledger_summary(project)
 
 
 def test_credit_ledger_rejects_broken_continuity_without_append(tmp_path: Path) -> None:

@@ -351,6 +351,52 @@ def test_resume_without_credit_arguments_preserves_existing_measurement_and_fore
     assert _read_json(project / "01_evidence/batch_progress.json")["credits"] == first["credits"]
 
 
+def test_run_batch_records_explicit_measurement_in_authoritative_credit_ledger(
+    tmp_path: Path,
+) -> None:
+    project, study_id = _prepared_project(tmp_path)
+
+    run_batch(
+        project,
+        [study_id],
+        prepare_study=_prepare_ready,
+        credits_before=400,
+        credits_after=373,
+        forecast_credits=80,
+    )
+
+    rows = [
+        json.loads(line)
+        for line in (project / "06_evaluation/credit_ledger.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert len(rows) == 1
+    assert rows[0]["stage"] == "run_batch"
+    assert rows[0]["study_ids"] == [study_id]
+    assert rows[0]["before"] == 400
+    assert rows[0]["after"] == 373
+    assert rows[0]["forecast"] == 80
+
+
+def test_run_batch_resume_without_new_measurement_does_not_duplicate_credit_event(
+    tmp_path: Path,
+) -> None:
+    project, study_id = _prepared_project(tmp_path)
+    run_batch(
+        project,
+        [study_id],
+        prepare_study=_prepare_ready,
+        credits_before=400,
+        credits_after=373,
+    )
+
+    run_batch(project, [study_id], prepare_study=_prepare_ready)
+
+    ledger = project / "06_evaluation/credit_ledger.jsonl"
+    assert len(ledger.read_text(encoding="utf-8").splitlines()) == 1
+
+
 def test_resume_updates_only_the_credit_value_explicitly_provided(tmp_path: Path) -> None:
     project, study_id = _prepared_project(tmp_path)
     run_batch(
