@@ -116,7 +116,9 @@
   function studyModel(value, index) {
     const row = object(value);
     const pdfStatus = text(row.pdf_status, "unknown");
-    const genericStatus = text(row.generic_parse_status, "unknown");
+    const rawGenericStatus = text(row.generic_parse_status, "unknown");
+    const genericStatus = ["current", "pending", "missing", "stale", "failed"].includes(rawGenericStatus)
+      ? rawGenericStatus : "unknown";
     const rawChemicalStatus = text(object(row.chemical).status, text(row.chemical_import_status, "unknown"));
     const chemicalStatus = rawChemicalStatus === "missing" ? "needs_import" : rawChemicalStatus;
     const missingChemicalFields = [
@@ -140,6 +142,7 @@
       citation: publicText(row.citation, `Core study ${index + 1}`),
       tierLabel: (row.tier || row.source_tier) === "background" ? "Background" : (row.tier || row.source_tier) === "core" ? "Core" : "分层未知",
       pdfLabel: stateLabel("pdf", pdfStatus),
+      genericStatus,
       genericLabel: stateLabel("generic", genericStatus),
       chemicalLabel: stateLabel("chemical", chemicalStatus),
       completionLabel: stateLabel("completion", completionStatus),
@@ -337,12 +340,27 @@
       ? value.dualParse : projectionModel(value.dualParse);
     const coreStudies = nonNegativeInteger(object(dualParse.summary).coreStudies);
     const genericCurrent = nonNegativeInteger(object(dualParse.summary).genericCurrent);
-    const projectedCoreStudies = array(dualParse.studies)
-      .filter(row => object(row).tierLabel === "Core").length;
-    const genericKnown = coreStudies !== null && genericCurrent !== null
+    const projectedCoreRows = array(dualParse.studies)
+      .filter(row => object(row).tierLabel === "Core");
+    const projectedCoreStudies = projectedCoreRows.length;
+    const projectedGenericCurrent = projectedCoreRows
+      .filter(row => object(row).genericStatus === "current").length;
+    const genericRowsKnown = projectedCoreRows.every(row =>
+      object(row).genericStatus !== "unknown"
+    );
+    const coreWithinIncluded = includedStudies !== null
+      && coreStudies !== null && coreStudies <= includedStudies;
+    const genericKnown = dualParse.status === "ready"
+      && coreStudies !== null && genericCurrent !== null
       && genericCurrent <= coreStudies
       && coreStudies === projectedCoreStudies
+      && genericCurrent === projectedGenericCurrent
+      && genericRowsKnown
+      && coreWithinIncluded
       && (coreStudies > 0 || includedStudies === 0);
+    const reviewedEvidence = nonNegativeInteger(value.reviewedEvidenceStudies);
+    const reviewedEvidenceKnown = reviewedEvidence !== null
+      && includedStudies !== null && reviewedEvidence <= includedStudies;
     return {
       mainFullText: {
         available: sourceCoverageKnown
@@ -355,7 +373,7 @@
         total: genericKnown ? coreStudies : includedStudies,
       },
       reviewedEvidence: {
-        available: nonNegativeInteger(value.reviewedEvidenceStudies),
+        available: reviewedEvidenceKnown ? reviewedEvidence : null,
         total: includedStudies,
       },
     };

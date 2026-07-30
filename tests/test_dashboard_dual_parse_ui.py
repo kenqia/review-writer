@@ -179,6 +179,38 @@ def test_authoritative_availability_separates_sources_from_completed_evidence_re
     )
 
 
+def test_availability_fails_closed_for_stale_conflicting_and_overflow_counts() -> None:
+    module_path = json.dumps(str(DUAL_SCRIPT))
+    fixture_path = json.dumps(str(FRESH_V2_FIXTURE))
+    _run_node(
+        "\n".join(
+            [
+                f"const ui=require({module_path});",
+                f"const fixture=require({fixture_path});",
+                "const clone=value=>JSON.parse(JSON.stringify(value));",
+                "for(const status of ['stale','failed']){",
+                " const dual=clone(fixture.dual_parse);dual.status=status;",
+                " const availability=ui.availabilityModel({dualParse:dual,includedStudies:3});",
+                " if(availability.genericSource.available!==null || availability.genericSource.total!==3) throw new Error(JSON.stringify({status,availability}));",
+                "}",
+                "const summaryConflict=clone(fixture.dual_parse);summaryConflict.studies[0].generic_parse_status='stale';",
+                "const conflicting=ui.availabilityModel({dualParse:summaryConflict,includedStudies:3});",
+                "if(conflicting.genericSource.available!==null || conflicting.genericSource.total!==3) throw new Error(JSON.stringify(conflicting));",
+                "summaryConflict.summary.generic_current=2;",
+                "const consistent=ui.availabilityModel({dualParse:summaryConflict,includedStudies:3});",
+                "if(consistent.genericSource.available!==2 || consistent.genericSource.total!==3) throw new Error(JSON.stringify(consistent));",
+                "const reviewedOverflow=ui.availabilityModel({includedStudies:3,reviewedEvidenceStudies:4});",
+                "if(reviewedOverflow.reviewedEvidence.available!==null || reviewedOverflow.reviewedEvidence.total!==3) throw new Error(JSON.stringify(reviewedOverflow));",
+                "const coreOverflow=clone(fixture.dual_parse);coreOverflow.summary={core_studies:4,generic_current:4};coreOverflow.studies.push(clone(coreOverflow.studies[0]));",
+                "const overflowing=ui.availabilityModel({dualParse:coreOverflow,includedStudies:3});",
+                "if(overflowing.genericSource.available!==null || overflowing.genericSource.total!==3) throw new Error(JSON.stringify(overflowing));",
+                "const missingDenominator=ui.availabilityModel({dualParse:fixture.dual_parse,reviewedEvidenceStudies:3});",
+                "if(missingDenominator.genericSource.available!==null || missingDenominator.reviewedEvidence.available!==null) throw new Error(JSON.stringify(missingDenominator));",
+            ]
+        )
+    )
+
+
 def test_rejected_evidence_decision_counts_as_reviewed_without_claiming_approval() -> None:
     module_path = json.dumps(str(DUAL_SCRIPT))
     _run_node(
