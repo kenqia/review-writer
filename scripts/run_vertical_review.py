@@ -71,6 +71,11 @@ from review_writer.project.source_truth import (  # noqa: E402
     load_source_truth_bundle,
     write_source_truth_bundle,
 )
+from review_writer.project.dual_parse_bootstrap import (  # noqa: E402
+    DualParseBootstrapError,
+    bind_generic_parse_outputs,
+    bootstrap_dual_parse_project,
+)
 from review_writer.delivery.project_release import (  # noqa: E402
     ProjectReleaseError,
     bind_authoritative_draft,
@@ -974,6 +979,14 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the offline vertical review projection.")
     commands = parser.add_subparsers(dest="command", required=True)
 
+    dual_bootstrap = commands.add_parser("bootstrap-dual-parse")
+    dual_bootstrap.add_argument("--review-root", type=Path, required=True)
+    dual_bootstrap.add_argument("--request", type=Path, required=True)
+
+    generic_bind = commands.add_parser("bind-generic-parse")
+    generic_bind.add_argument("--project", type=Path, required=True)
+    generic_bind.add_argument("--mineru-output", type=Path, required=True)
+
     preflight = commands.add_parser("preflight")
     preflight.add_argument("--review-root", type=Path, required=True)
     preflight.add_argument("--mineru-token-file", type=Path, default=DEFAULT_MINERU_TOKEN_FILE)
@@ -1079,6 +1092,14 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _run(args: argparse.Namespace) -> int:
+    if args.command == "bootstrap-dual-parse":
+        project = bootstrap_dual_parse_project(args.review_root, _load_json(args.request))
+        _print_summary({"command": args.command, "project_id": project.name, "source_count": 3, "status": "CREATED"})
+        return 0
+    if args.command == "bind-generic-parse":
+        result = bind_generic_parse_outputs(args.project, args.mineru_output)
+        _print_summary({"command": args.command, **result})
+        return 0
     if args.command == "preflight":
         summary = _preflight_status(
             args.review_root,
@@ -1300,6 +1321,12 @@ def main(argv: list[str] | None = None) -> int:
     except PaperEvidenceError as exc:
         _print_summary(
             {"error_code": exc.code, "status": "ERROR"},
+            stream=sys.stderr,
+        )
+        return 2
+    except DualParseBootstrapError as exc:
+        _print_summary(
+            {"command": args.command, "error_code": exc.code, "status": "ERROR"},
             stream=sys.stderr,
         )
         return 2
