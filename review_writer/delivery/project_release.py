@@ -35,7 +35,9 @@ from review_writer.delivery.chemical_paper_release import (
     release_markdown_with_chemical_limitations,
     safe_chemical_paper_projection,
 )
+from review_writer.delivery.dual_parse_release import dual_parse_release_state
 from review_writer.project.manuscript_v2 import manuscript_state
+from review_writer.project.source_truth import canonical_digest
 from review_writer.project.vertical_review import VerticalReviewError, benchmark_metrics
 from review_writer.project.workflow_projection import NEW_ROUTE, workflow_state
 
@@ -1127,6 +1129,54 @@ def _new_route_release(
         or authoritative.get("lineage_digest") != lineage_digest
     ):
         raise ProjectReleaseError("MANUSCRIPT_LINEAGE_STALE", "authoritative manuscript binding is stale")
+    dual_quality: dict[str, Any] = {}
+    dual_source_root = project / "01_evidence/dual_source"
+    has_dual_lineage = isinstance(lineage, dict) and isinstance(
+        lineage.get("dual_parse_bindings"), list
+    )
+    if dual_source_root.exists() or has_dual_lineage:
+        if (
+            dual_source_root.is_symlink()
+            or not dual_source_root.is_dir()
+            or not has_dual_lineage
+        ):
+            raise ProjectReleaseError(
+                "DUAL_PARSE_STALE", "dual-parse manuscript authority is missing or stale"
+            )
+        dual_state = dual_parse_release_state(project)
+        hard_fails = dual_state.get("hard_fails")
+        if (
+            dual_state.get("internal_release_ready") is not True
+            or not isinstance(hard_fails, list)
+            or hard_fails
+        ):
+            code = (
+                hard_fails[0]
+                if isinstance(hard_fails, list)
+                and hard_fails
+                and isinstance(hard_fails[0], str)
+                else "DUAL_PARSE_STALE"
+            )
+            raise ProjectReleaseError(code, "dual-parse release authority is not current")
+        if (
+            dual_state.get("dual_parse_status") != "current"
+            or dual_state.get("reaction_data_status")
+            not in {"available", "unavailable_not_provided"}
+            or dual_state.get("credits_status")
+            != "NOT_APPLICABLE_BY_CURRENT_SCOPE"
+        ):
+            raise ProjectReleaseError(
+                "DUAL_PARSE_STALE", "dual-parse release projection is invalid"
+            )
+        dual_quality = {
+            "dual_parse_status": "current",
+            "dual_parse_binding_digest": canonical_digest(
+                lineage["dual_parse_bindings"]
+            ),
+            "reaction_data_status": dual_state["reaction_data_status"],
+            "reaction_count": dual_state.get("reaction_count"),
+            "credits_status": "NOT_APPLICABLE_BY_CURRENT_SCOPE",
+        }
     chemical_paper = _chemical_paper_release_state(project, lineage)
     if (
         release_level == "EXPERT_REVIEWED_RELEASE"
@@ -1273,6 +1323,7 @@ def _new_route_release(
             "docx_sha256": docx_sha256,
             "figure_validation": figure_validation,
             "integrity": integrity,
+            **dual_quality,
         }
         _validate_release_schema(
             snapshot_payload, "release_snapshot.v1.schema.json"
@@ -1285,7 +1336,7 @@ def _new_route_release(
         )
         _commit_release_files(staged)
         staged = {}
-        return {
+        result = {
             "status": release_level,
             "release_status": release_level,
             "release_level": release_level,
@@ -1305,6 +1356,8 @@ def _new_route_release(
             "release_snapshot": release_snapshot,
             "quality_report": quality,
         }
+        result.update(dual_quality)
+        return result
     finally:
         if temporary_docx is not None:
             temporary_docx.unlink(missing_ok=True)
@@ -1456,6 +1509,29 @@ def new_route_release_docx_is_current(docx_path: Path) -> bool:
             is not chemical_paper["dependency_currentness"]["can_release"]
         ):
             return False
+        dual_source_root = project / "01_evidence/dual_source"
+        has_dual_lineage = isinstance(lineage.get("dual_parse_bindings"), list)
+        if dual_source_root.exists() or has_dual_lineage:
+            if (
+                dual_source_root.is_symlink()
+                or not dual_source_root.is_dir()
+                or not has_dual_lineage
+            ):
+                return False
+            dual_state = dual_parse_release_state(project)
+            if (
+                dual_state.get("internal_release_ready") is not True
+                or dual_state.get("hard_fails") != []
+                or quality.get("dual_parse_status") != "current"
+                or quality.get("dual_parse_binding_digest")
+                != canonical_digest(lineage["dual_parse_bindings"])
+                or quality.get("reaction_data_status")
+                != dual_state.get("reaction_data_status")
+                or quality.get("reaction_count") != dual_state.get("reaction_count")
+                or quality.get("credits_status")
+                != "NOT_APPLICABLE_BY_CURRENT_SCOPE"
+            ):
+                return False
         figure_validation = _new_route_figure_state(
             project,
             markdown,

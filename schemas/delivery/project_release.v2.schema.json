@@ -26,6 +26,13 @@
       "oneOf": [{"type": "null"}, {"$ref": "#/$defs/chemical_paper_safe_summary"}]
     },
     "chemical_paper_dependency_can_release": {"type": "boolean"},
+    "dual_parse_status": {"const": "current"},
+    "dual_parse_binding_digest": {"$ref": "#/$defs/sha256"},
+    "reaction_data_status": {"enum": ["available", "unavailable_not_provided"]},
+    "reaction_count": {
+      "oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0}]
+    },
+    "credits_status": {"const": "NOT_APPLICABLE_BY_CURRENT_SCOPE"},
     "docx_sha256": {"$ref": "#/$defs/sha256"},
     "figure_validation": {
       "type": "object",
@@ -47,6 +54,37 @@
     },
     "integrity": {"type": "object"}
   },
+  "dependentRequired": {
+    "dual_parse_status": [
+      "dual_parse_binding_digest", "reaction_data_status", "reaction_count",
+      "credits_status"
+    ],
+    "dual_parse_binding_digest": [
+      "dual_parse_status", "reaction_data_status", "reaction_count", "credits_status"
+    ],
+    "reaction_data_status": [
+      "dual_parse_status", "dual_parse_binding_digest", "reaction_count", "credits_status"
+    ],
+    "reaction_count": [
+      "dual_parse_status", "dual_parse_binding_digest", "reaction_data_status",
+      "credits_status"
+    ],
+    "credits_status": [
+      "dual_parse_status", "dual_parse_binding_digest", "reaction_data_status",
+      "reaction_count"
+    ]
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "reaction_data_status": {"const": "unavailable_not_provided"}
+        },
+        "required": ["reaction_data_status"]
+      },
+      "then": {"properties": {"reaction_count": {"type": "null"}}}
+    }
+  ],
   "$defs": {
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "chemical_paper_safe_summary": {

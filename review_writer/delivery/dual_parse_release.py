@@ -1,0 +1,1074 @@
+"""Safe dual-parse HTTP staging and release-currentness projection.
+
+Scientific state remains owned by the project-layer modules.  This module only
+stages untrusted Chemical Paper archives, delegates authoritative mutations,
+and compares frozen manuscript bindings with current project authority.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import base64
+import json
+import os
+import re
+import secrets
+import tempfile
+import time
+from pathlib import Path
+from typing import Any, Iterable
+
+from review_writer.project.chemical_paper import (
+    MAX_ARCHIVE_BYTES,
+    ChemicalPaperError,
+    _archive_payload,
+    import_chemical_paper,
+)
+from review_writer.project.source_truth import (
+    SourceTruthError,
+    canonical_digest,
+    load_source_truth_bundle,
+)
+
+
+STAGING_ROOT = Path(".dual-parse-staging/chemical-paper")
+PREFLIGHT_TTL_SECONDS = 30 * 60
+PREFLIGHT_TOKEN_PREFIX = "cp-preflight-v1."
+CREDITS_STATUS = "NOT_APPLICABLE_BY_CURRENT_SCOPE"
+REACTION_UNAVAILABLE = "unavailable_not_provided"
+
+_TOKEN_RE = re.compile(r"^cp-preflight-v1\.[A-Za-z0-9_-]{32,128}$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_ID_RE = re.compile(r"^(?!\.\.?$)(?!.*[/\\\x00\r\n])\S{1,240}$")
+_BINDING_FIELDS = frozenset(
+    {
+        "study_id",
+        "source_tier",
+        "requires_chemical",
+        "dual_source_binding_digest",
+        "generic_version",
+        "chemical_version",
+        "chemical_completion_digest",
+        "reconciliation_digest",
+    }
+)
+
+
+class DualParseReleaseError(ValueError):
+    """Stable, fail-closed error for the dual-parse delivery boundary."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+def _project(project: Path) -> Path:
+    supplied = Path(project)
+    if supplied.is_symlink() or not supplied.is_dir():
+        raise DualParseReleaseError("PROJECT_INVALID")
+    try:
+        return supplied.resolve(strict=True)
+    except OSError as exc:
+        raise DualParseReleaseError("PROJECT_INVALID") from exc
+
+
+def _identifier(value: object, code: str) -> str:
+    if not isinstance(value, str) or not _ID_RE.fullmatch(value):
+        raise DualParseReleaseError(code)
+    return value
+
+
+def _digest(value: object, code: str, *, nullable: bool = False) -> str | None:
+    if nullable and value is None:
+        return None
+    if not isinstance(value, str) or not _SHA256_RE.fullmatch(value):
+        raise DualParseReleaseError(code)
+    return value
+
+
+def _json_bytes(value: object) -> bytes:
+    try:
+        return (
+            json.dumps(
+                value,
+                ensure_ascii=False,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise DualParseReleaseError("PREFLIGHT_STAGING_INVALID") from exc
+
+
+def _sha256_bytes(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _staging_dir(project: Path) -> Path:
+    root = _project(project)
+    current = root
+    for part in STAGING_ROOT.parts:
+        current = current / part
+        if os.path.lexists(current):
+            if current.is_symlink() or not current.is_dir():
+                raise DualParseReleaseError("PREFLIGHT_STAGING_UNSAFE")
+        else:
+            try:
+                current.mkdir(mode=0o700)
+            except OSError as exc:
+                raise DualParseReleaseError("PREFLIGHT_STAGING_FAILED") from exc
+    return current
+
+
+def _atomic_bytes(path: Path, payload: bytes) -> None:
+    if path.parent.is_symlink() or (
+        os.path.lexists(path) and (path.is_symlink() or not path.is_file())
+    ):
+        raise DualParseReleaseError("PREFLIGHT_STAGING_UNSAFE")
+    temporary: Path | None = None
+    try:
+        fd, name = tempfile.mkstemp(
+            dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+        )
+        temporary = Path(name)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        temporary = None
+    except OSError as exc:
+        raise DualParseReleaseError("PREFLIGHT_STAGING_FAILED") from exc
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _main_source(project: Path, study_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    try:
+        bundle = load_source_truth_bundle(project, study_id)
+    except SourceTruthError as exc:
+        raise DualParseReleaseError("PREFLIGHT_SOURCE_STALE") from exc
+    sources = bundle.get("sources")
+    matches = [
+        row
+        for row in sources
+        if isinstance(row, dict)
+        and row.get("document_role") == "MAIN"
+        and isinstance(row.get("pdf"), dict)
+        and _SHA256_RE.fullmatch(str(row["pdf"].get("sha256", "")))
+    ] if isinstance(sources, list) else []
+    if len(matches) != 1:
+        raise DualParseReleaseError("PREFLIGHT_SOURCE_AMBIGUOUS")
+    return bundle, matches[0]
+
+
+def _token_key(token: str) -> str:
+    if not isinstance(token, str) or not _TOKEN_RE.fullmatch(token):
+        raise DualParseReleaseError("PREFLIGHT_TOKEN_INVALID")
+    return _sha256_bytes(token.encode("ascii"))
+
+
+def _stage_paths(stage: Path, key: str) -> dict[str, Path]:
+    return {
+        "archive": stage / f"{key}.zip",
+        "ready": stage / f"{key}.json",
+        "confirming": stage / f"{key}.confirming.json",
+        "consumed": stage / f"{key}.consumed.json",
+        "rejected": stage / f"{key}.rejected.json",
+    }
+
+
+def _read_manifest(path: Path) -> dict[str, Any]:
+    if path.is_symlink() or not path.is_file():
+        raise DualParseReleaseError("PREFLIGHT_TOKEN_INVALID")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise DualParseReleaseError("PREFLIGHT_STAGING_INVALID") from exc
+    if not isinstance(value, dict):
+        raise DualParseReleaseError("PREFLIGHT_STAGING_INVALID")
+    return value
+
+
+def preflight_chemical_paper_import(
+    project: Path,
+    study_id: str,
+    archive_bytes: bytes,
+    *,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Validate untrusted bytes and persist only a non-authoritative stage."""
+
+    root = _project(project)
+    study_id = _identifier(study_id, "STUDY_ID_INVALID")
+    if (
+        not isinstance(archive_bytes, bytes)
+        or not archive_bytes
+        or len(archive_bytes) > MAX_ARCHIVE_BYTES
+    ):
+        raise DualParseReleaseError("CHEMICAL_ZIP_SIZE_INVALID")
+    bundle, source = _main_source(root, study_id)
+    stage = _staging_dir(root)
+    temporary: Path | None = None
+    try:
+        fd, name = tempfile.mkstemp(
+            dir=stage, prefix=".chemical-preflight.", suffix=".zip.tmp"
+        )
+        temporary = Path(name)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(archive_bytes)
+            handle.flush()
+            os.fsync(handle.fileno())
+        parsed = _archive_payload(temporary, int(source["page_count"]))
+        token = PREFLIGHT_TOKEN_PREFIX + secrets.token_urlsafe(32)
+        key = _token_key(token)
+        paths = _stage_paths(stage, key)
+        if any(os.path.lexists(path) for path in paths.values()):
+            raise DualParseReleaseError("PREFLIGHT_TOKEN_COLLISION")
+        created_at = time.time() if now is None else now
+        archive_sha256 = _sha256_bytes(archive_bytes)
+        if parsed.get("archive_sha256") != archive_sha256:
+            raise DualParseReleaseError("PREFLIGHT_STAGED_BYTES_STALE")
+        manifest = {
+            "schema_version": "chemical-paper-preflight-stage.v1",
+            "status": "ready",
+            "token_sha256": key,
+            "study_id": study_id,
+            "source_id": source["source_id"],
+            "source_pdf_sha256": source["pdf"]["sha256"],
+            "source_truth_bundle_digest": bundle["bundle_digest"],
+            "archive_sha256": archive_sha256,
+            "archive_size": len(archive_bytes),
+            "created_at_epoch": created_at,
+            "expires_at_epoch": created_at + PREFLIGHT_TTL_SECONDS,
+            "backend": parsed["backend"],
+            "version": parsed["version"],
+            "page_count": parsed["page_count"],
+            "molecule_count": len(parsed["molecules"]),
+        }
+        os.replace(temporary, paths["archive"])
+        temporary = None
+        _atomic_bytes(paths["ready"], _json_bytes(manifest))
+    except ChemicalPaperError as exc:
+        raise DualParseReleaseError(exc.code) from exc
+    except OSError as exc:
+        raise DualParseReleaseError("PREFLIGHT_STAGING_FAILED") from exc
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return {
+        "status": "ready_for_confirmation",
+        "study_id": study_id,
+        "preflight_token": token,
+        "backend": manifest["backend"],
+        "version": manifest["version"],
+        "page_count": manifest["page_count"],
+        "molecule_count": manifest["molecule_count"],
+        "file_kinds": ["layout", "markdown", "molecule_info"],
+        "reaction_data_status": REACTION_UNAVAILABLE,
+    }
+
+
+def _claim_preflight(paths: dict[str, Path]) -> dict[str, Any]:
+    if paths["consumed"].is_file():
+        raise DualParseReleaseError("PREFLIGHT_ALREADY_CONFIRMED")
+    if paths["confirming"].is_file():
+        raise DualParseReleaseError("PREFLIGHT_CONFIRM_IN_PROGRESS")
+    if paths["rejected"].is_file():
+        raise DualParseReleaseError("PREFLIGHT_REJECTED")
+    try:
+        os.replace(paths["ready"], paths["confirming"])
+    except FileNotFoundError as exc:
+        if paths["consumed"].is_file():
+            raise DualParseReleaseError("PREFLIGHT_ALREADY_CONFIRMED") from exc
+        raise DualParseReleaseError("PREFLIGHT_TOKEN_INVALID") from exc
+    except OSError as exc:
+        raise DualParseReleaseError("PREFLIGHT_STAGING_FAILED") from exc
+    return _read_manifest(paths["confirming"])
+
+
+def confirm_chemical_paper_import(
+    project: Path,
+    payload: object,
+    *,
+    now: float | None = None,
+) -> dict[str, str]:
+    """Consume one stage after revalidating bytes and current source authority."""
+
+    if not isinstance(payload, dict) or set(payload) != {
+        "study_id",
+        "preflight_token",
+        "actor_type",
+        "actor_label",
+    }:
+        raise DualParseReleaseError("CHEMICAL_CONFIRM_REQUEST_INVALID")
+    root = _project(project)
+    study_id = _identifier(payload.get("study_id"), "STUDY_ID_INVALID")
+    token = payload.get("preflight_token")
+    if not isinstance(token, str):
+        raise DualParseReleaseError("PREFLIGHT_TOKEN_INVALID")
+    key = _token_key(token)
+    stage = _staging_dir(root)
+    paths = _stage_paths(stage, key)
+    manifest = _claim_preflight(paths)
+    try:
+        if (
+            manifest.get("schema_version") != "chemical-paper-preflight-stage.v1"
+            or manifest.get("status") != "ready"
+            or manifest.get("token_sha256") != key
+            or manifest.get("study_id") != study_id
+        ):
+            raise DualParseReleaseError("PREFLIGHT_STUDY_MISMATCH")
+        current_time = time.time() if now is None else now
+        expires = manifest.get("expires_at_epoch")
+        if not isinstance(expires, (int, float)) or isinstance(expires, bool) or current_time > expires:
+            raise DualParseReleaseError("PREFLIGHT_EXPIRED")
+        archive = paths["archive"]
+        if archive.is_symlink() or not archive.is_file():
+            raise DualParseReleaseError("PREFLIGHT_STAGED_BYTES_STALE")
+        archive_bytes = archive.read_bytes()
+        if (
+            len(archive_bytes) != manifest.get("archive_size")
+            or _sha256_bytes(archive_bytes) != manifest.get("archive_sha256")
+        ):
+            raise DualParseReleaseError("PREFLIGHT_STAGED_BYTES_STALE")
+        bundle, source = _main_source(root, study_id)
+        if (
+            bundle.get("bundle_digest") != manifest.get("source_truth_bundle_digest")
+            or source.get("source_id") != manifest.get("source_id")
+            or source.get("pdf", {}).get("sha256") != manifest.get("source_pdf_sha256")
+        ):
+            raise DualParseReleaseError("PREFLIGHT_SOURCE_STALE")
+        parsed = _archive_payload(archive, int(source["page_count"]))
+        if (
+            parsed.get("archive_sha256") != manifest.get("archive_sha256")
+            or parsed.get("backend") != manifest.get("backend")
+            or parsed.get("version") != manifest.get("version")
+            or parsed.get("page_count") != manifest.get("page_count")
+            or len(parsed.get("molecules", [])) != manifest.get("molecule_count")
+        ):
+            raise DualParseReleaseError("PREFLIGHT_STAGED_BYTES_STALE")
+        result = import_chemical_paper(
+            root,
+            study_id,
+            str(manifest["source_pdf_sha256"]),
+            archive,
+            {
+                "actor_type": payload.get("actor_type"),
+                "actor_label": payload.get("actor_label"),
+            },
+        )
+        try:
+            consumed = {
+                "schema_version": "chemical-paper-preflight-stage.v1",
+                "status": "consumed",
+                "token_sha256": key,
+                "study_id": study_id,
+            }
+            _atomic_bytes(paths["consumed"], _json_bytes(consumed))
+            paths["confirming"].unlink(missing_ok=True)
+            paths["archive"].unlink(missing_ok=True)
+        except (DualParseReleaseError, OSError):
+            # The authoritative importer has committed successfully.  Staging
+            # bookkeeping is best-effort from this point so an HTTP failure can
+            # never falsely claim that the authoritative write was rolled back.
+            pass
+    except ChemicalPaperError as exc:
+        try:
+            os.replace(paths["confirming"], paths["rejected"])
+        except OSError:
+            pass
+        raise DualParseReleaseError(exc.code) from exc
+    except DualParseReleaseError:
+        try:
+            os.replace(paths["confirming"], paths["rejected"])
+        except OSError:
+            pass
+        raise
+    except OSError as exc:
+        try:
+            os.replace(paths["confirming"], paths["rejected"])
+        except OSError:
+            pass
+        raise DualParseReleaseError("PREFLIGHT_STAGING_FAILED") from exc
+    return {"status": str(result["status"]), "study_id": study_id}
+
+
+def _researcher_actor(payload: dict[str, Any], code: str) -> None:
+    actor_type = payload.get("actor_type")
+    actor_label = payload.get("actor_label")
+    if actor_type not in {"human_researcher", "simulated_researcher_agent"}:
+        raise DualParseReleaseError(code)
+    if (
+        not isinstance(actor_label, str)
+        or not actor_label
+        or actor_label != actor_label.strip()
+        or len(actor_label) > 200
+    ):
+        raise DualParseReleaseError(code)
+
+
+def _authority_error(exc: Exception, fallback: str) -> DualParseReleaseError:
+    code = getattr(exc, "code", fallback)
+    return DualParseReleaseError(code if isinstance(code, str) else fallback)
+
+
+def apply_chemical_completion_http(project: Path, payload: object) -> dict[str, Any]:
+    """Validate the HTTP contract and delegate the authoritative batch write."""
+
+    required = {
+        "study_id",
+        "version_token",
+        "actor_type",
+        "actor_label",
+        "corrections",
+    }
+    if not isinstance(payload, dict) or set(payload) != required:
+        raise DualParseReleaseError("CHEMICAL_COMPLETION_REQUEST_INVALID")
+    _researcher_actor(payload, "CHEMICAL_COMPLETION_RESEARCHER_REQUIRED")
+    study_id = _identifier(
+        payload.get("study_id"), "CHEMICAL_COMPLETION_REQUEST_INVALID"
+    )
+    if not isinstance(payload.get("version_token"), str) or not isinstance(
+        payload.get("corrections"), list
+    ):
+        raise DualParseReleaseError("CHEMICAL_COMPLETION_REQUEST_INVALID")
+    try:
+        from review_writer.project.chemical_completion import (
+            apply_chemical_completion_batch,
+        )
+    except ImportError as exc:
+        raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_UNAVAILABLE") from exc
+    authority_payload = {key: value for key, value in payload.items() if key != "study_id"}
+    try:
+        result = apply_chemical_completion_batch(
+            _project(project), study_id, authority_payload
+        )
+    except Exception as exc:
+        raise _authority_error(exc, "CHEMICAL_COMPLETION_REQUEST_INVALID") from exc
+    if not isinstance(result, dict):
+        raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_INVALID")
+    return result
+
+
+def _opaque_registry_token(value: str) -> str:
+    digest = _digest(value, "PARSE_RECONCILIATION_REQUEST_INVALID")
+    assert isinstance(digest, str)
+    return "rcv1." + base64.urlsafe_b64encode(bytes.fromhex(digest)).decode("ascii").rstrip("=")
+
+
+def _registry_digest_from_token(value: object) -> str:
+    if isinstance(value, str) and value.startswith("rcv1."):
+        encoded = value[5:]
+        try:
+            raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        except (ValueError, TypeError) as exc:
+            raise DualParseReleaseError("PARSE_RECONCILIATION_REQUEST_INVALID") from exc
+        if len(raw) != 32:
+            raise DualParseReleaseError("PARSE_RECONCILIATION_REQUEST_INVALID")
+        return raw.hex()
+    return str(_digest(value, "PARSE_RECONCILIATION_REQUEST_INVALID"))
+
+
+def apply_reconciliation_http(project: Path, payload: object) -> dict[str, Any]:
+    """Validate a researcher PDF decision and delegate the registry mutation."""
+
+    required = {
+        "study_id",
+        "object_id",
+        "registry_digest",
+        "action",
+        "selected_lane",
+        "note",
+        "pdf_locator",
+        "actor_type",
+        "actor_label",
+    }
+    if not isinstance(payload, dict) or set(payload) != required:
+        raise DualParseReleaseError("PARSE_RECONCILIATION_REQUEST_INVALID")
+    _researcher_actor(payload, "PARSE_RECONCILIATION_RESEARCHER_REQUIRED")
+    study_id = _identifier(
+        payload.get("study_id"), "PARSE_RECONCILIATION_REQUEST_INVALID"
+    )
+    authority_payload = {key: value for key, value in payload.items() if key != "study_id"}
+    authority_payload["registry_digest"] = _registry_digest_from_token(
+        payload.get("registry_digest")
+    )
+    try:
+        from review_writer.project.parse_reconciliation import (
+            apply_reconciliation_decision,
+        )
+    except ImportError as exc:
+        raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_UNAVAILABLE") from exc
+    try:
+        result = apply_reconciliation_decision(
+            _project(project), study_id, authority_payload
+        )
+    except Exception as exc:
+        raise _authority_error(exc, "PARSE_RECONCILIATION_REQUEST_INVALID") from exc
+    if not isinstance(result, dict):
+        raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_INVALID")
+    return result
+
+
+def _dashboard_authority_payloads(
+    project: Path,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    try:
+        from review_writer.project.chemical_completion import (
+            project_chemical_completion_state,
+        )
+        from review_writer.project.dual_source import project_dual_source_state
+        from review_writer.project.parse_reconciliation import (
+            project_reconciliation_state,
+        )
+        from review_writer.project.workflow_projection import workflow_state
+        from review_writer.project.chemical_paper import chemical_paper_projection
+    except ImportError as exc:
+        raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_UNAVAILABLE") from exc
+    root = _project(project)
+    values = (
+        project_dual_source_state(root),
+        project_chemical_completion_state(root),
+        project_reconciliation_state(root),
+        chemical_paper_projection(root),
+        workflow_state(root),
+    )
+    if not all(isinstance(value, dict) for value in values):
+        raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_INVALID")
+    return values  # type: ignore[return-value]
+
+
+def _study_rows(value: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = value.get("studies")
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_INVALID")
+    return rows
+
+
+def dual_parse_dashboard_projection(project: Path) -> dict[str, Any]:
+    """Return an explicit researcher-safe whitelist for the dashboard API."""
+
+    dual, completion, reconciliation, chemical, workflow = _dashboard_authority_payloads(
+        _project(project)
+    )
+    completion_by_id = {row.get("study_id"): row for row in _study_rows(completion)}
+    reconciliation_by_id = {
+        row.get("study_id"): row for row in _study_rows(reconciliation)
+    }
+    chemical_by_id = {row.get("study_id"): row for row in _study_rows(chemical)}
+    studies: list[dict[str, Any]] = []
+    for source in _study_rows(dual):
+        study_id = source.get("study_id")
+        if not isinstance(study_id, str):
+            raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_INVALID")
+        complete = completion_by_id.get(study_id, {})
+        registry = reconciliation_by_id.get(study_id, {})
+        chemistry = chemical_by_id.get(study_id, {})
+        row: dict[str, Any] = {
+            "study_id": study_id,
+            "source_tier": source.get("source_tier"),
+            "dual_source_status": source.get("status"),
+            "generic_parse_status": source.get(
+                "generic_status",
+                source.get("generic", {}).get("status")
+                if isinstance(source.get("generic"), dict)
+                else None,
+            ),
+            "chemical_import_status": source.get(
+                "chemical_status",
+                source.get("chemical", {}).get("status")
+                if isinstance(source.get("chemical"), dict)
+                else chemistry.get("status"),
+            ),
+            "completion_status": complete.get("status"),
+            "reconciliation_status": registry.get("status"),
+            "page_count": source.get("page_count", chemistry.get("page_count")),
+            "molecule_count": chemistry.get("molecule_count"),
+            "missing_name_count": complete.get("missing_name_count"),
+            "missing_smiles_expanded_count": complete.get(
+                "missing_smiles_expanded_count"
+            ),
+            "missing_smiles_unexpanded_count": complete.get(
+                "missing_smiles_unexpanded_count"
+            ),
+            "unresolved_reconciliation_count": registry.get(
+                "unresolved_count", registry.get("needs_review_count")
+            ),
+            "backend": chemistry.get("backend"),
+            "version": chemistry.get("version"),
+            "reaction_data_status": chemistry.get(
+                "reaction_data_status", REACTION_UNAVAILABLE
+            ),
+            "completion_version_token": complete.get("version_token"),
+        }
+        registry_digest = registry.get("registry_digest")
+        if isinstance(registry_digest, str) and _SHA256_RE.fullmatch(registry_digest):
+            row["reconciliation_version_token"] = _opaque_registry_token(
+                registry_digest
+            )
+        for key in ("imported_at", "updated_at", "actor_type", "actor_label", "pdf_page_url"):
+            value = chemistry.get(key, complete.get(key, registry.get(key)))
+            if value is not None:
+                row[key] = value
+        studies.append({key: value for key, value in row.items() if value is not None})
+    studies.sort(key=lambda row: row["study_id"])
+    core = [row for row in studies if row.get("source_tier") == "core"]
+    next_action = workflow.get("unique_next_action", workflow.get("next_action"))
+    return {
+        "project_status": dual.get("project_status", dual.get("status")),
+        "summary": {
+            "core_studies": len(core),
+            "generic_current": sum(
+                row.get("generic_parse_status") == "current" for row in core
+            ),
+            "chemical_current": sum(
+                row.get("chemical_import_status") == "current" for row in core
+            ),
+            "reaction_data_status": (
+                "available"
+                if studies
+                and all(row.get("reaction_data_status") == "available" for row in studies)
+                else REACTION_UNAVAILABLE
+            ),
+        },
+        "studies": studies,
+        "unique_next_action": next_action,
+    }
+
+
+def _normalize_binding(row: object) -> dict[str, Any]:
+    if not isinstance(row, dict) or set(row) != _BINDING_FIELDS:
+        raise DualParseReleaseError("DUAL_PARSE_BINDING_INVALID")
+    study_id = _identifier(row.get("study_id"), "DUAL_PARSE_BINDING_INVALID")
+    source_tier = row.get("source_tier")
+    requires_chemical = row.get("requires_chemical")
+    if source_tier not in {"core", "background"} or not isinstance(requires_chemical, bool):
+        raise DualParseReleaseError("DUAL_PARSE_BINDING_INVALID")
+    if source_tier == "core" and not requires_chemical:
+        raise DualParseReleaseError("DUAL_PARSE_BINDING_INVALID")
+    chemical_version = _digest(
+        row.get("chemical_version"),
+        "DUAL_PARSE_BINDING_INVALID",
+        nullable=not requires_chemical,
+    )
+    completion = _digest(
+        row.get("chemical_completion_digest"),
+        "DUAL_PARSE_BINDING_INVALID",
+        nullable=not requires_chemical,
+    )
+    reconciliation = _digest(
+        row.get("reconciliation_digest"),
+        "DUAL_PARSE_BINDING_INVALID",
+        nullable=not requires_chemical,
+    )
+    if not requires_chemical and any(
+        value is not None for value in (chemical_version, completion, reconciliation)
+    ):
+        raise DualParseReleaseError("DUAL_PARSE_BINDING_INVALID")
+    return {
+        "study_id": study_id,
+        "source_tier": source_tier,
+        "requires_chemical": requires_chemical,
+        "dual_source_binding_digest": _digest(
+            row.get("dual_source_binding_digest"), "DUAL_PARSE_BINDING_INVALID"
+        ),
+        "generic_version": _digest(
+            row.get("generic_version"), "DUAL_PARSE_BINDING_INVALID"
+        ),
+        "chemical_version": chemical_version,
+        "chemical_completion_digest": completion,
+        "reconciliation_digest": reconciliation,
+    }
+
+
+def _binding_from_authority(row: dict[str, Any]) -> dict[str, Any]:
+    tier = row.get("source_tier")
+    requires_chemical = bool(tier == "core" or row.get("requires_chemical") is True)
+    return _normalize_binding(
+        {
+            "study_id": row.get("study_id"),
+            "source_tier": tier,
+            "requires_chemical": requires_chemical,
+            "dual_source_binding_digest": row.get("dual_source_binding_digest"),
+            "generic_version": row.get("generic_version"),
+            "chemical_version": row.get("chemical_version") if requires_chemical else None,
+            "chemical_completion_digest": (
+                row.get("chemical_completion_digest") if requires_chemical else None
+            ),
+            "reconciliation_digest": (
+                row.get("reconciliation_digest") if requires_chemical else None
+            ),
+        }
+    )
+
+
+def build_dual_parse_manuscript_bindings(
+    authority_rows: Iterable[dict[str, Any]], study_ids: set[str]
+) -> list[dict[str, Any]]:
+    """Freeze only studies actually referenced by the manuscript."""
+
+    by_study = {
+        str(row.get("study_id")): row
+        for row in authority_rows
+        if isinstance(row, dict) and isinstance(row.get("study_id"), str)
+    }
+    if not study_ids or set(by_study).intersection(study_ids) != study_ids:
+        raise DualParseReleaseError("DUAL_PARSE_DEPENDENCY_MISSING")
+    result = [_binding_from_authority(by_study[study_id]) for study_id in sorted(study_ids)]
+    if len({row["study_id"] for row in result}) != len(result):
+        raise DualParseReleaseError("DUAL_PARSE_BINDING_INVALID")
+    return result
+
+
+def dual_parse_manuscript_bindings(
+    project: Path, study_ids: set[str]
+) -> list[dict[str, Any]]:
+    """Read current authority and freeze the manuscript's exact study set."""
+
+    root = _project(project)
+    return build_dual_parse_manuscript_bindings(
+        _current_authority_rows(root), study_ids
+    )
+
+
+def _current_authority_rows(project: Path) -> list[dict[str, Any]]:
+    """Load current Scientific State through its public, read-only projections."""
+
+    try:
+        from review_writer.project.chemical_completion import (
+            project_chemical_completion_state,
+        )
+        from review_writer.project.dual_source import project_dual_source_state
+        from review_writer.project.parse_reconciliation import (
+            project_reconciliation_state,
+        )
+    except ImportError as exc:
+        raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_UNAVAILABLE") from exc
+    dual = project_dual_source_state(project)
+    completion = project_chemical_completion_state(project)
+    reconciliation = project_reconciliation_state(project)
+    return authority_rows_from_projections(dual, completion, reconciliation)
+
+
+def _first_value(row: dict[str, Any], *keys: str) -> Any:
+    return next((row[key] for key in keys if row.get(key) is not None), None)
+
+
+def authority_rows_from_projections(
+    dual: object, completion: object, reconciliation: object
+) -> list[dict[str, Any]]:
+    """Normalize the three public Scientific State projections for delivery."""
+
+    states = (dual, completion, reconciliation)
+    if any(
+        not isinstance(state, dict) or not isinstance(state.get("studies"), list)
+        for state in states
+    ):
+        raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_INVALID")
+    assert isinstance(dual, dict)
+    assert isinstance(completion, dict)
+    assert isinstance(reconciliation, dict)
+    completion_by_id = {
+        row.get("study_id"): row for row in completion["studies"] if isinstance(row, dict)
+    }
+    reconciliation_by_id = {
+        row.get("study_id"): row for row in reconciliation["studies"] if isinstance(row, dict)
+    }
+    rows: list[dict[str, Any]] = []
+    for source in dual["studies"]:
+        if not isinstance(source, dict):
+            raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_INVALID")
+        study_id = source.get("study_id")
+        if not isinstance(study_id, str):
+            raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_INVALID")
+        chemical = completion_by_id.get(study_id, {})
+        registry = reconciliation_by_id.get(study_id, {})
+        generic_lane = source.get("generic")
+        chemical_lane = source.get("chemical")
+        generic_lane = generic_lane if isinstance(generic_lane, dict) else {}
+        chemical_lane = chemical_lane if isinstance(chemical_lane, dict) else {}
+        generic_version = _first_value(
+            source,
+            "generic_version",
+            "generic_binding_digest",
+        ) or _first_value(
+            generic_lane,
+            "binding_digest",
+            "parse_gate_digest",
+            "source_truth_bundle_digest",
+            "version_digest",
+        )
+        chemical_version = _first_value(
+            source,
+            "chemical_version",
+            "chemical_state_digest",
+            "chemical_import_digest",
+        ) or _first_value(
+            chemical_lane,
+            "state_digest",
+            "import_digest",
+            "binding_digest",
+            "version_digest",
+        )
+        rows.append(
+            {
+                "study_id": study_id,
+                "source_tier": source.get("source_tier", source.get("tier")),
+                "requires_chemical": source.get("requires_chemical") is True,
+                "dual_source_binding_digest": _first_value(
+                    source, "dual_source_binding_digest", "binding_digest"
+                ),
+                "generic_status": source.get(
+                    "generic_status", generic_lane.get("status")
+                ),
+                "generic_version": generic_version,
+                "chemical_status": source.get(
+                    "chemical_status", chemical_lane.get("status")
+                ),
+                "chemical_version": chemical_version,
+                "chemical_completion_digest": _first_value(
+                    chemical,
+                    "chemical_completion_digest",
+                    "completion_digest",
+                    "gate_digest",
+                ),
+                "chemical_completion_status": chemical.get("status"),
+                "reconciliation_digest": _first_value(
+                    registry, "registry_digest", "reconciliation_digest"
+                ),
+                "reconciliation_status": registry.get("status"),
+                "content_result_status": source.get(
+                    "content_result_status", "current"
+                ),
+                "ai_authored_smiles_count": chemical.get("ai_authored_smiles_count", 0),
+                "reaction_data_status": _first_value(
+                    source, "reaction_data_status"
+                )
+                or chemical_lane.get(
+                    "reaction_data_status", REACTION_UNAVAILABLE
+                ),
+                "reaction_count": source.get(
+                    "reaction_count", chemical_lane.get("reaction_count")
+                ),
+                "unreviewed_element_molecule_count": chemical.get(
+                    "unreviewed_element_molecule_count", 0
+                ),
+            }
+        )
+    return rows
+
+
+def dual_parse_release_bindings(project: Path) -> dict[str, Any]:
+    root = _project(project)
+    rows = _current_authority_rows(root)
+    study_ids = {
+        str(row.get("study_id"))
+        for row in rows
+        if row.get("source_tier") == "core" or row.get("requires_chemical") is True
+    }
+    bindings = build_dual_parse_manuscript_bindings(rows, study_ids)
+    payload = {
+        "schema_version": "dual-parse-release-bindings.v1",
+        "dual_parse_bindings": bindings,
+    }
+    payload["binding_digest"] = canonical_digest(payload)
+    return payload
+
+
+def _hard_fails_for_row(
+    current: dict[str, Any] | None, frozen: dict[str, Any]
+) -> set[str]:
+    hard_fails: set[str] = set()
+    core = frozen["source_tier"] == "core"
+    if current is None:
+        hard_fails.update({"DUAL_PARSE_STALE", "DUAL_SOURCE_BINDING_MISMATCH"})
+        if core:
+            hard_fails.update(
+                {
+                    "CORE_GENERIC_PARSE_MISSING_OR_STALE",
+                    "CORE_CHEMICAL_IMPORT_MISSING_OR_STALE",
+                    "CHEMICAL_COMPLETION_INCOMPLETE",
+                    "PARSE_RECONCILIATION_UNRESOLVED",
+                }
+            )
+        return hard_fails
+    current_binding = _binding_from_authority(current)
+    if current_binding != frozen:
+        hard_fails.add("DUAL_PARSE_STALE")
+    if current.get("dual_source_binding_digest") != frozen["dual_source_binding_digest"]:
+        hard_fails.add("DUAL_SOURCE_BINDING_MISMATCH")
+    if current.get("generic_status") != "current" or current.get("generic_version") != frozen["generic_version"]:
+        if core:
+            hard_fails.add("CORE_GENERIC_PARSE_MISSING_OR_STALE")
+        hard_fails.add("DUAL_PARSE_STALE")
+    if frozen["requires_chemical"]:
+        if current.get("chemical_status") != "current" or current.get("chemical_version") != frozen["chemical_version"]:
+            if core:
+                hard_fails.add("CORE_CHEMICAL_IMPORT_MISSING_OR_STALE")
+            hard_fails.add("DUAL_PARSE_STALE")
+        if (
+            current.get("chemical_completion_status") != "current"
+            or current.get("chemical_completion_digest")
+            != frozen["chemical_completion_digest"]
+        ):
+            hard_fails.update({"CHEMICAL_COMPLETION_INCOMPLETE", "DUAL_PARSE_STALE"})
+        if (
+            current.get("reconciliation_status") != "current"
+            or current.get("reconciliation_digest") != frozen["reconciliation_digest"]
+        ):
+            hard_fails.update({"PARSE_RECONCILIATION_UNRESOLVED", "DUAL_PARSE_STALE"})
+    if current.get("content_result_status", "current") != "current":
+        hard_fails.add("STALE_DUAL_PARSE_CONTENT_RESULT")
+    ai_count = current.get("ai_authored_smiles_count", 0)
+    if isinstance(ai_count, bool) or not isinstance(ai_count, int) or ai_count < 0:
+        hard_fails.add("CHEMICAL_COMPLETION_INCOMPLETE")
+    elif ai_count:
+        hard_fails.add("AI_AUTHORED_SMILES")
+    reaction_status = current.get("reaction_data_status", REACTION_UNAVAILABLE)
+    reaction_count = current.get("reaction_count")
+    if reaction_status == REACTION_UNAVAILABLE and reaction_count is not None:
+        hard_fails.add("REACTION_ABSENCE_MISREPRESENTED")
+    return hard_fails
+
+
+def validate_dual_parse_release_bindings(
+    project: Path, bindings: object
+) -> dict[str, Any]:
+    root = _project(project)
+    if not isinstance(bindings, dict) or set(bindings) not in (
+        {"dual_parse_bindings"},
+        {"schema_version", "dual_parse_bindings", "binding_digest"},
+    ):
+        raise DualParseReleaseError("DUAL_PARSE_BINDING_INVALID")
+    rows = bindings.get("dual_parse_bindings")
+    if not isinstance(rows, list) or not rows:
+        raise DualParseReleaseError("DUAL_PARSE_BINDING_INVALID")
+    frozen = [_normalize_binding(row) for row in rows]
+    if frozen != sorted(frozen, key=lambda row: row["study_id"]) or len(
+        {row["study_id"] for row in frozen}
+    ) != len(frozen):
+        raise DualParseReleaseError("DUAL_PARSE_BINDING_INVALID")
+    if "schema_version" in bindings:
+        if bindings.get("schema_version") != "dual-parse-release-bindings.v1":
+            raise DualParseReleaseError("DUAL_PARSE_BINDING_INVALID")
+        expected_digest = canonical_digest(
+            {
+                "schema_version": bindings["schema_version"],
+                "dual_parse_bindings": bindings["dual_parse_bindings"],
+            }
+        )
+        if bindings.get("binding_digest") != expected_digest:
+            raise DualParseReleaseError("DUAL_PARSE_BINDING_INVALID")
+    current_rows = _current_authority_rows(root)
+    current_by_id = {
+        row.get("study_id"): row for row in current_rows if isinstance(row, dict)
+    }
+    hard_fails: set[str] = set()
+    for row in frozen:
+        hard_fails.update(_hard_fails_for_row(current_by_id.get(row["study_id"]), row))
+    return {
+        "status": "current" if not hard_fails else "stale",
+        "workflow_can_continue": not hard_fails,
+        "hard_fails": sorted(hard_fails),
+        "dual_parse_bindings": frozen,
+    }
+
+
+def _awaiting_human_figure(project: Path) -> bool:
+    path = project / "03_figures/synthesis_figure_placeholders.json"
+    if not path.exists():
+        return False
+    if path.is_symlink() or not path.is_file():
+        return True
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return True
+    rows = value.get("placeholders") if isinstance(value, dict) else None
+    return not isinstance(rows, list) or any(
+        not isinstance(row, dict) or row.get("status") == "awaiting_human_figure"
+        for row in rows
+    )
+
+
+def dual_parse_release_state(project: Path) -> dict[str, Any]:
+    root = _project(project)
+    lineage_path = root / "04_manuscript/manuscript_lineage.v2.json"
+    try:
+        lineage = json.loads(lineage_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        lineage = None
+    if not isinstance(lineage, dict) or not isinstance(
+        lineage.get("dual_parse_bindings"), list
+    ):
+        return {
+            "dual_parse_status": "missing",
+            "internal_release_ready": False,
+            "expert_release_ready": False,
+            "hard_fails": ["DUAL_PARSE_STALE"],
+            "issues": [],
+            "reaction_data_status": REACTION_UNAVAILABLE,
+            "reaction_count": None,
+            "credits_status": CREDITS_STATUS,
+        }
+    try:
+        validation = validate_dual_parse_release_bindings(
+            root, {"dual_parse_bindings": lineage["dual_parse_bindings"]}
+        )
+        current_rows = _current_authority_rows(root)
+    except DualParseReleaseError:
+        return {
+            "dual_parse_status": "stale",
+            "internal_release_ready": False,
+            "expert_release_ready": False,
+            "hard_fails": ["DUAL_PARSE_STALE"],
+            "issues": [],
+            "reaction_data_status": REACTION_UNAVAILABLE,
+            "reaction_count": None,
+            "credits_status": CREDITS_STATUS,
+        }
+    hard_fails = set(validation["hard_fails"])
+    reaction_statuses = {
+        row.get("reaction_data_status", REACTION_UNAVAILABLE)
+        for row in current_rows
+        if row.get("study_id")
+        in {binding["study_id"] for binding in validation["dual_parse_bindings"]}
+    }
+    reaction_status = (
+        "available" if reaction_statuses == {"available"} else REACTION_UNAVAILABLE
+    )
+    reaction_counts = [
+        row.get("reaction_count")
+        for row in current_rows
+        if row.get("reaction_data_status") == "available"
+    ]
+    reaction_count = (
+        sum(reaction_counts)
+        if reaction_status == "available"
+        and reaction_counts
+        and all(isinstance(value, int) and not isinstance(value, bool) and value >= 0 for value in reaction_counts)
+        else None
+    )
+    issues: set[str] = set()
+    if reaction_status == REACTION_UNAVAILABLE:
+        issues.add("CHEMICAL_REACTION_DATA_UNAVAILABLE")
+    if any(int(row.get("unreviewed_element_molecule_count", 0) or 0) > 0 for row in current_rows):
+        issues.add("CHEMICAL_ELEMENTS_NOT_REVIEWED")
+    internal_ready = not hard_fails
+    awaiting_figure = _awaiting_human_figure(root)
+    if awaiting_figure:
+        issues.add("SYNTHESIS_FIGURE_PENDING")
+    return {
+        "dual_parse_status": validation["status"],
+        "internal_release_ready": internal_ready,
+        "expert_release_ready": internal_ready and not awaiting_figure,
+        "hard_fails": sorted(hard_fails),
+        "issues": sorted(issues),
+        "reaction_data_status": reaction_status,
+        "reaction_count": reaction_count,
+        "credits_status": CREDITS_STATUS,
+    }

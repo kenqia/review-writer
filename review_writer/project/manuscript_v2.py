@@ -22,6 +22,11 @@ from .source_truth import REPO_ROOT, canonical_digest
 from .synthesis import SynthesisError, synthesis_state
 from .workflow_projection import NEW_ROUTE, workflow_state
 from .chemical_paper import chemical_paper_manuscript_bindings
+from review_writer.delivery.dual_parse_release import (
+    DualParseReleaseError,
+    dual_parse_manuscript_bindings,
+    validate_dual_parse_release_bindings,
+)
 
 
 DRAFTS_PATH = Path("04_manuscript/section_drafts.jsonl")
@@ -580,6 +585,28 @@ def manuscript_state(project: Path) -> dict[str, Any]:
                         "section_approval_digest": approval_digest,
                     }
                 )
+        dual_source_root = root / "01_evidence/dual_source"
+        if dual_source_root.exists():
+            if dual_source_root.is_symlink() or not dual_source_root.is_dir():
+                raise ManuscriptV2Error("MANUSCRIPT_DUAL_PARSE_STALE")
+            expected_dual_studies = _manuscript_dependency_studies(
+                evidence, synthesis, expected_claims
+            )
+            if {
+                row.get("study_id")
+                for row in lineage.get("dual_parse_bindings", [])
+                if isinstance(row, dict)
+            } != expected_dual_studies:
+                raise ManuscriptV2Error("MANUSCRIPT_DUAL_PARSE_STALE")
+            try:
+                dual_currentness = validate_dual_parse_release_bindings(
+                    root,
+                    {"dual_parse_bindings": lineage.get("dual_parse_bindings")},
+                )
+            except DualParseReleaseError as exc:
+                raise ManuscriptV2Error("MANUSCRIPT_DUAL_PARSE_STALE") from exc
+            if dual_currentness.get("workflow_can_continue") is not True:
+                raise ManuscriptV2Error("MANUSCRIPT_DUAL_PARSE_STALE")
         chemical_root = root / "01_evidence/chemical_paper"
         if chemical_root.exists():
             chemical_bindings = chemical_paper_manuscript_bindings(root)
@@ -699,6 +726,49 @@ def _chemical_claim_dependencies(
     return sorted(rows, key=lambda row: (row["claim_id"], row["study_id"], row["molecule_index"]))
 
 
+def _manuscript_dependency_studies(
+    evidence: dict[str, Any],
+    synthesis: dict[str, Any],
+    claim_bindings: list[dict[str, Any]],
+) -> set[str]:
+    evidence_study = {
+        row.get("evidence_id"): row.get("study_id")
+        for row in evidence.get("rows", [])
+        if isinstance(row, dict)
+        and isinstance(row.get("evidence_id"), str)
+        and isinstance(row.get("study_id"), str)
+    }
+    synthesis_evidence: dict[str, set[str]] = {}
+    for row in synthesis.get("rows", []):
+        if not isinstance(row, dict) or not isinstance(row.get("synthesis_id"), str):
+            continue
+        identifiers = {
+            value
+            for key in ("supporting_evidence_ids", "counter_evidence_ids")
+            for value in (row.get(key) if isinstance(row.get(key), list) else [])
+            if isinstance(value, str)
+        }
+        synthesis_evidence[row["synthesis_id"]] = identifiers
+    evidence_ids: set[str] = set()
+    for binding in claim_bindings:
+        evidence_ids.update(
+            value
+            for value in binding.get("paper_evidence_ids", [])
+            if isinstance(value, str)
+        )
+        for synthesis_id in binding.get("synthesis_ids", []):
+            if isinstance(synthesis_id, str):
+                evidence_ids.update(synthesis_evidence.get(synthesis_id, set()))
+    studies = {
+        evidence_study[evidence_id]
+        for evidence_id in evidence_ids
+        if evidence_id in evidence_study
+    }
+    if not studies:
+        raise ManuscriptV2Error("MANUSCRIPT_DUAL_PARSE_DEPENDENCY_MISSING")
+    return studies
+
+
 def _validate_lineage(value: dict[str, Any]) -> None:
     try:
         schema = json.loads(LINEAGE_SCHEMA.read_text(encoding="utf-8"))
@@ -807,6 +877,17 @@ def merge_authoritative_manuscript(project: Path) -> dict[str, Any]:
         "claim_bindings": claim_bindings,
         "manuscript_sha256": hashlib.sha256(manuscript_bytes).hexdigest(),
     }
+    dual_source_root = root / "01_evidence/dual_source"
+    if dual_source_root.exists():
+        if dual_source_root.is_symlink() or not dual_source_root.is_dir():
+            raise ManuscriptV2Error("MANUSCRIPT_DUAL_PARSE_STALE")
+        study_ids = _manuscript_dependency_studies(evidence, synthesis, claim_bindings)
+        try:
+            lineage["dual_parse_bindings"] = dual_parse_manuscript_bindings(
+                root, study_ids
+            )
+        except DualParseReleaseError as exc:
+            raise ManuscriptV2Error("MANUSCRIPT_DUAL_PARSE_STALE") from exc
     if (root / "01_evidence/chemical_paper").exists():
         lineage.update(chemical_paper_manuscript_bindings(root))
         lineage["chemical_paper_claim_dependencies"] = _chemical_claim_dependencies(
