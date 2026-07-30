@@ -30,8 +30,16 @@
     getProjectId: () => projectSelect.value,
     load: id => api(id, "paper-evidence"),
     render,
-    onLoadError: () => { shell.hidden = true; },
+    onProjectChange: () => showEvidenceState("正在读取当前项目的 Paper Evidence…", "workspace-empty"),
+    onLoadError: error => showEvidenceState(error.message, "workspace-error"),
   });
+
+  function showEvidenceState(value, className) {
+    root.replaceChildren(text("p", value, className));
+    shell.hidden = false;
+    status.textContent = className === "workspace-error" ? "Paper Evidence 暂不可用" : "正在读取 Paper Evidence";
+    message.textContent = className === "workspace-error" ? value : "切换项目后正在读取当前证据。";
+  }
 
   function render(payload) {
     root.replaceChildren();

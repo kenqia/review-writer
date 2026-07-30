@@ -11,7 +11,10 @@
     getProjectId: () => projectSelect.value,
     load: id => Promise.all([api(id,"comparison-protocol"), api(id,"synthesis"), api(id,"section-contracts"), api(id,"review-figures")]),
     render: values => render(...values),
+    onProjectChange: () => showSynthesisState("正在读取当前项目的综合判断…", "workspace-empty"),
+    onLoadError: error => showSynthesisState(error.message, "workspace-error"),
   });
+  function showSynthesisState(value, className) { root.replaceChildren(text("p", value, className)); }
   function section(title) { const node = document.createElement("section"); node.className = "synthesis-panel"; node.append(text("h4", title)); return node; }
   function visibleList(value) { return Array.isArray(value) ? value.filter(item => typeof item === "string").join("、") : ""; }
   function describeAxis(value) {

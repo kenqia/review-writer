@@ -69,6 +69,13 @@ def test_project_discovery_uses_one_bounded_non_overlapping_timer() -> None:
                 " const [id,timer]=[...timers.entries()][0];timers.delete(id);const first=timer.fn();const duplicate=timer.fn();await Promise.all([first,duplicate]);",
                 " if(requests!==3||timers.size!==1)throw new Error(`overlap requests=${requests} timers=${timers.size}`);",
                 " scheduler.stop();if(timers.size!==0)throw new Error('timer not stopped');",
+                " scheduler.start();scheduler.start();if(timers.size!==1||[...timers.values()][0].delay!==30000)throw new Error(`restart timers=${timers.size}`);",
+                " scheduler.stop();if(timers.size!==0)throw new Error('restarted timer not stopped');",
+                " const lifecycle={};const fakeWindow={addEventListener:(name,handler)=>{lifecycle[name]=handler}};ui.installProjectRefreshLifecycle(fakeWindow,()=>scheduler);",
+                " lifecycle.pageshow({persisted:false});lifecycle.pageshow({persisted:false});if(timers.size!==1)throw new Error(`normal pageshow duplicated ${timers.size}`);",
+                " lifecycle.pagehide({persisted:true});if(timers.size!==0)throw new Error('pagehide did not stop');",
+                " lifecycle.pageshow({persisted:true});lifecycle.pageshow({persisted:true});if(timers.size!==1)throw new Error(`BFCache restart duplicated ${timers.size}`);",
+                " scheduler.stop();",
                 "})().catch(error=>{console.error(error);process.exit(1)});",
             ]
         )
@@ -131,12 +138,67 @@ def test_mutation_invalidates_same_project_inflight_get_and_reconciles_once() ->
     )
 
 
+def test_project_switch_clears_old_surface_and_current_error_fails_closed() -> None:
+    session_path = json.dumps(str(DASHBOARD / "review-session.js"))
+    _run_node(
+        "\n".join(
+            [
+                f"const ui=require({session_path});",
+                "const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no});return {promise,resolve,reject}};",
+                "const until=async predicate=>{for(let index=0;index<20;index+=1){if(predicate())return;await new Promise(resolve=>setImmediate(resolve));}throw new Error('condition not reached')};",
+                "(async()=>{",
+                " let selected='A';let surface=['A content','A button'];const loads=[];const errors=[];",
+                " const coordinator=ui.createProjectSurfaceCoordinator({getProjectId:()=>selected,load:id=>{const call={id,...deferred()};loads.push(call);return call.promise},",
+                "  render:value=>{surface=[value,'button']},onProjectChange:()=>{surface=['loading']},onLoadError:error=>{surface=['unavailable'];errors.push(error.message)}});",
+                " selected='B';const change=coordinator.projectChanged();",
+                " if(JSON.stringify(surface)!==JSON.stringify(['loading']))throw new Error(`A DOM survived switch ${JSON.stringify(surface)}`);",
+                " await until(()=>loads.length===1);loads[0].reject(new Error('B synthesis unavailable'));await change;",
+                " if(JSON.stringify(surface)!==JSON.stringify(['unavailable'])||JSON.stringify(errors)!==JSON.stringify(['B synthesis unavailable']))throw new Error(JSON.stringify({surface,errors}));",
+                " selected='A';const staleA=coordinator.projectChanged();await until(()=>loads.length===2);selected='B';const currentB=coordinator.projectChanged();loads[1].reject(new Error('stale A error'));",
+                " await until(()=>loads.length===3);loads[2].resolve('B current content');await Promise.all([staleA,currentB]);",
+                " if(JSON.stringify(surface)!==JSON.stringify(['B current content','button']))throw new Error(`stale A error affected B ${JSON.stringify({surface,errors})}`);",
+                " if(errors.includes('stale A error'))throw new Error(JSON.stringify(errors));",
+                "})().catch(error=>{console.error(error);process.exit(1)});",
+            ]
+        )
+    )
+
+
+def test_shared_shell_never_keeps_a_buttons_when_b_synthesis_or_evidence_fails() -> None:
+    session_path = json.dumps(str(DASHBOARD / "review-session.js"))
+    _run_node(
+        "\n".join(
+            [
+                f"const ui=require({session_path});",
+                "const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no});return {promise,resolve,reject}};",
+                "const until=async predicate=>{for(let index=0;index<20;index+=1){if(predicate())return;await new Promise(resolve=>setImmediate(resolve));}throw new Error('condition not reached')};",
+                "(async()=>{",
+                " let selected='A';let evidence=['A evidence','A button'];let synthesis=['A synthesis','A button'];let shellVisible=true;const evidenceLoads=[];const synthesisLoads=[];",
+                " const make=(loads,setSurface)=>ui.createProjectSurfaceCoordinator({getProjectId:()=>selected,load:id=>{const call={id,...deferred()};loads.push(call);return call.promise},",
+                "  render:value=>{shellVisible=true;setSurface([value,'button'])},onProjectChange:()=>setSurface(['loading']),onLoadError:()=>setSurface(['unavailable'])});",
+                " const evidenceCoordinator=make(evidenceLoads,value=>{evidence=value});const synthesisCoordinator=make(synthesisLoads,value=>{synthesis=value});",
+                " selected='B';const evidenceB=evidenceCoordinator.projectChanged();const synthesisB=synthesisCoordinator.projectChanged();",
+                " await until(()=>evidenceLoads.length===1&&synthesisLoads.length===1);evidenceLoads[0].resolve('B evidence');synthesisLoads[0].reject(new Error('B synthesis unavailable'));await Promise.all([evidenceB,synthesisB]);",
+                " if(!shellVisible||JSON.stringify(evidence)!==JSON.stringify(['B evidence','button'])||JSON.stringify(synthesis)!==JSON.stringify(['unavailable']))throw new Error(JSON.stringify({evidence,synthesis,shellVisible}));",
+                " if(JSON.stringify({evidence,synthesis}).includes('A '))throw new Error('A DOM/button leaked into B');",
+                " selected='C';const evidenceC=evidenceCoordinator.projectChanged();const synthesisC=synthesisCoordinator.projectChanged();",
+                " await until(()=>evidenceLoads.length===2&&synthesisLoads.length===2);evidenceLoads[1].reject(new Error('C evidence unavailable'));synthesisLoads[1].resolve('C synthesis');await Promise.all([evidenceC,synthesisC]);",
+                " if(JSON.stringify(evidence)!==JSON.stringify(['unavailable'])||JSON.stringify(synthesis)!==JSON.stringify(['C synthesis','button']))throw new Error(JSON.stringify({evidence,synthesis}));",
+                " if(JSON.stringify({evidence,synthesis}).includes('B evidence'))throw new Error('prior evidence button survived current error');",
+                "})().catch(error=>{console.error(error);process.exit(1)});",
+            ]
+        )
+    )
+
+
 def test_evidence_and_synthesis_route_all_async_rendering_through_project_guard() -> None:
     for filename in ("review-evidence.js", "review-synthesis.js"):
         source = (DASHBOARD / filename).read_text(encoding="utf-8")
         assert "ReviewSessionUI.createProjectSurfaceCoordinator" in source
         assert 'projectSelect.addEventListener("change", coordinator.projectChanged)' in source
         assert 'document.addEventListener("DOMContentLoaded", coordinator.refresh)' in source
+        assert "onProjectChange:" in source
+        assert "onLoadError:" in source
 
     evidence = (DASHBOARD / "review-evidence.js").read_text(encoding="utf-8")
     synthesis = (DASHBOARD / "review-synthesis.js").read_text(encoding="utf-8")
@@ -150,3 +212,4 @@ def test_review_page_uses_refresh_scheduler_instead_of_fixed_interval() -> None:
     assert "ReviewSessionUI.createProjectRefreshScheduler" in html
     assert "setInterval(refreshProjects, 3000)" not in html
     assert html.count("startProjectsRefresh();") == 1
+    assert "ReviewSessionUI.installProjectRefreshLifecycle" in html

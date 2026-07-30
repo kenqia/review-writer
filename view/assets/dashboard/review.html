@@ -2625,11 +2625,11 @@
       event.preventDefault();
       event.returnValue = '';
     });
-    window.addEventListener('pagehide', () => projectsRefreshController?.stop());
     loadProjects().catch(() => {
       $('workbench-message').textContent = '项目暂时无法读取。';
     });
     startProjectsRefresh();
+    ReviewSessionUI.installProjectRefreshLifecycle(window, () => projectsRefreshController);
   </script>
   <script src="/assets/dashboard/review-evidence.js" defer></script>
   <script src="/assets/dashboard/review-synthesis.js" defer></script>

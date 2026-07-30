@@ -69,7 +69,21 @@
         if (timer !== null) clearTimer(timer);
         timer = null;
       },
+      isActive() {
+        return !stopped;
+      },
     };
+  }
+
+  function installProjectRefreshLifecycle(window, getController) {
+    if (!window || typeof window.addEventListener !== "function" || typeof getController !== "function") {
+      throw new Error("window and refresh controller reader required");
+    }
+    window.addEventListener("pagehide", () => getController()?.stop());
+    window.addEventListener("pageshow", event => {
+      const controller = getController();
+      if (event?.persisted === true || controller?.isActive() === false) controller?.start();
+    });
   }
 
   function createProjectSurfaceCoordinator(options) {
@@ -93,6 +107,7 @@
         projectId = nextProjectId;
         generation += 1;
         if (refreshRunning || mutationRunning) refreshQueued = true;
+        options?.onProjectChange?.({projectId, generation, operationEpoch});
       }
       return {projectId, generation, operationEpoch};
     }
@@ -165,5 +180,10 @@
     return {mutate, projectChanged, refresh};
   }
 
-  return {createProjectRefreshScheduler, createProjectSurfaceCoordinator, installDecisionActor};
+  return {
+    createProjectRefreshScheduler,
+    createProjectSurfaceCoordinator,
+    installDecisionActor,
+    installProjectRefreshLifecycle,
+  };
 }));
