@@ -183,6 +183,7 @@ def test_synthesis_ui_does_not_render_raw_json() -> None:
 
 def test_project_polling_preserves_loaded_project_without_full_reload() -> None:
     html = (DASHBOARD / "review.html").read_text(encoding="utf-8")
+    session_path = json.dumps(str(DASHBOARD / "review-session.js"))
     match = re.search(
         r"^    async function refreshProjects\(\) \{[\s\S]*?^    \}",
         html,
@@ -192,7 +193,8 @@ def test_project_polling_preserves_loaded_project_without_full_reload() -> None:
     _run_node(
         "\n".join(
             [
-                "const select={value:'case',append:()=>{}};",
+                f"const ReviewSessionUI=require({session_path});const projectSelection=ReviewSessionUI.createProjectSelectionRegistry();projectSelection.replace([{{project_id:'case',visible_label:'Case',selectable:true}}]);",
+                "const select={value:'project-option-1',append:()=>{}};",
                 "const nodes={project:select,'project-waiting-message':{textContent:''},'workbench-message':{textContent:''}};",
                 "const $=id=>nodes[id];",
                 "const document={createElement:()=>({value:'',textContent:''})};",
@@ -202,7 +204,7 @@ def test_project_polling_preserves_loaded_project_without_full_reload() -> None:
                 "let sourceUploadBusy=false, riskDecisionDirty=false;",
                 "let parseQualityDirty=new Set(), parseQualityBusy=new Set();",
                 "let loadCount=0; const loadProject=async()=>{loadCount+=1; return 'loaded';};",
-                "const getPayload=async()=>[{project_id:'case',topic:'Case'}];",
+                "const getPayload=async()=>[{project_id:'case',topic:'Case',visible_label:'Case',selectable:true,selection_message:''}];",
                 match.group(0),
                 "refreshProjects().then(result=>{",
                 "  if(result!=='unchanged') throw new Error(`unexpected result ${result}`);",
@@ -215,6 +217,7 @@ def test_project_polling_preserves_loaded_project_without_full_reload() -> None:
 
 def test_fresh_project_polling_requires_visible_researcher_selection_without_loading() -> None:
     html = (DASHBOARD / "review.html").read_text(encoding="utf-8")
+    session_path = json.dumps(str(DASHBOARD / "review-session.js"))
     match = re.search(
         r"^    async function refreshProjects\(\) \{[\s\S]*?^    \}",
         html,
@@ -224,6 +227,7 @@ def test_fresh_project_polling_requires_visible_researcher_selection_without_loa
     _run_node(
         "\n".join(
             [
+                f"const ReviewSessionUI=require({session_path});const projectSelection=ReviewSessionUI.createProjectSelectionRegistry();",
                 "const select={value:'',options:[],append(option){this.options.push(option);if(option.selected)this.value=option.value;}};",
                 "const nodes={project:select,'project-waiting-message':{textContent:''},'workbench-message':{textContent:''}};",
                 "const $=id=>nodes[id];",
@@ -233,7 +237,7 @@ def test_fresh_project_polling_requires_visible_researcher_selection_without_loa
                 "const setEmptyProjectWorkspace=()=>{};const setWorkspace=()=>{};const setProjectLoadBusy=()=>{};",
                 "let projectsRefreshBusy=false,projects=[],projectId='',projectLoadGeneration=0,activeWorkspace='cockpit';",
                 "let loadCount=0;const loadProject=async()=>{loadCount+=1;return 'loaded';};",
-                "const calls=[];const getPayload=async url=>{calls.push(url);return [{project_id:'regression-v1',topic:'旧项目'},{project_id:'fresh-v2',topic:'新项目'}];};",
+                "const calls=[];const getPayload=async url=>{calls.push(url);return [{project_id:'regression-v1',topic:'旧项目',visible_label:'历史复核',selectable:true,selection_message:''},{project_id:'fresh-v2',topic:'新项目',visible_label:'新一轮复核',selectable:true,selection_message:''}];};",
                 match.group(0),
                 "refreshProjects().then(result=>{",
                 " if(result!=='selection_required' || projectId!=='' || loadCount!==0) throw new Error(JSON.stringify({result,projectId,loadCount}));",
@@ -248,6 +252,7 @@ def test_fresh_project_polling_requires_visible_researcher_selection_without_loa
 
 def test_empty_project_polling_invalidates_inflight_project_load() -> None:
     html = (DASHBOARD / "review.html").read_text(encoding="utf-8")
+    session_path = json.dumps(str(DASHBOARD / "review-session.js"))
     match = re.search(
         r"^    async function refreshProjects\(\) \{[\s\S]*?^    \}",
         html,
@@ -257,6 +262,7 @@ def test_empty_project_polling_invalidates_inflight_project_load() -> None:
     _run_node(
         "\n".join(
             [
+                f"const ReviewSessionUI=require({session_path});const projectSelection=ReviewSessionUI.createProjectSelectionRegistry();projectSelection.replace([{{project_id:'old-project',visible_label:'旧项目',selectable:true}}]);",
                 "const select={value:'old-project',options:[],append(option){this.options.push(option);}};",
                 "const nodes={project:select,'project-waiting-message':{textContent:''},'workbench-message':{textContent:'loading'}};",
                 "const $=id=>nodes[id];",
@@ -293,13 +299,14 @@ def test_researcher_project_selection_loads_once_and_listener_is_bound_once() ->
             [
                 "let projectId='',activeParseStudyId='old',loadCount=0;",
                 "const projects=[{project_id:'regression-v1'},{project_id:'fresh-v2'}];",
+                "const projectSelection={getProjectId:key=>new Map([['project-option-1','regression-v1'],['project-option-2','fresh-v2']]).get(key)||'',getOptionKey:id=>new Map([['regression-v1','project-option-1'],['fresh-v2','project-option-2']]).get(id)||''};",
                 "const confirmDiscardDraftChanges=()=>true,confirmDiscardRiskDecisions=()=>true,confirmDiscardParseQualityDecisions=()=>true;",
                 "const loadProject=async()=>{loadCount+=1;return 'loaded';};",
                 "const nodes={'workbench-message':{textContent:''}};const $=id=>nodes[id];",
                 match.group(0),
                 "(async()=>{",
-                " await selectProject({target:{value:'fresh-v2'}});",
-                " await selectProject({target:{value:'fresh-v2'}});",
+                " await selectProject({target:{value:'project-option-2'}});",
+                " await selectProject({target:{value:'project-option-2'}});",
                 " if(projectId!=='fresh-v2' || activeParseStudyId!=='' || loadCount!==1) throw new Error(JSON.stringify({projectId,activeParseStudyId,loadCount}));",
                 "})().catch(error=>{console.error(error);process.exit(1);});",
             ]
@@ -327,6 +334,7 @@ def test_failed_explicit_project_selection_can_retry_same_project() -> None:
                 "let progressPayload={release_capabilities:{}},finalPayload={},reviewFigurePayload={};",
                 "let dualParseModel={status:'unavailable'};const ReviewDualParseUI={projectionModel:value=>({...value})};",
                 "const projects=[{project_id:'fresh-v2'}];",
+                "const projectSelection={getProjectId:key=>key==='project-option-1'?'fresh-v2':'',getOptionKey:id=>id==='fresh-v2'?'project-option-1':''};",
                 "const confirmDiscardDraftChanges=()=>true,confirmDiscardRiskDecisions=()=>true,confirmDiscardParseQualityDecisions=()=>true;",
                 "const setProjectLoadBusy=value=>{projectLoadBusy=value;};",
                 "let selectionWorkspaceCount=0;const setProjectSelectionWorkspace=()=>{selectionWorkspaceCount+=1;};",
@@ -335,10 +343,10 @@ def test_failed_explicit_project_selection_can_retry_same_project() -> None:
                 "const nodes={'workbench-message':{textContent:''},'project-waiting-message':{textContent:''}};const $=id=>nodes[id];",
                 match.group(0),
                 "(async()=>{",
-                " const event={target:{value:'fresh-v2'}};",
+                " const event={target:{value:'project-option-1'}};",
                 " const first=await selectProject(event);",
                 " if(first!=='error' || projectId!=='' || event.target.value!=='' || selectionWorkspaceCount!==1 || projectLoadBusy) throw new Error(JSON.stringify({first,projectId,value:event.target.value,selectionWorkspaceCount,projectLoadBusy}));",
-                " event.target.value='fresh-v2';",
+                " event.target.value='project-option-1';",
                 " const second=await selectProject(event);",
                 " const third=await selectProject(event);",
                 " if(second!=='loaded' || third!=='unchanged' || projectId!=='fresh-v2' || loadCount!==2) throw new Error(JSON.stringify({second,third,projectId,loadCount}));",
@@ -366,6 +374,7 @@ def test_failed_project_switch_requires_explicit_reload_of_previous_project() ->
                 "let reviewFigurePayload={source_figures:[],placeholders:[]};",
                 "let dualParseModel={status:'ready',owner:'project-a'};",
                 "const projects=[{project_id:'project-a'},{project_id:'project-b'}];",
+                "const projectSelection={getProjectId:key=>new Map([['project-option-1','project-a'],['project-option-2','project-b']]).get(key)||'',getOptionKey:id=>new Map([['project-a','project-option-1'],['project-b','project-option-2']]).get(id)||''};",
                 "const confirmDiscardDraftChanges=()=>true,confirmDiscardRiskDecisions=()=>true,confirmDiscardParseQualityDecisions=()=>true;",
                 "const setProjectLoadBusy=value=>{projectLoadBusy=value;};",
                 "let selectionWorkspaceCount=0;const setProjectSelectionWorkspace=()=>{selectionWorkspaceCount+=1;};",
@@ -382,13 +391,13 @@ def test_failed_project_switch_requires_explicit_reload_of_previous_project() ->
                 "};",
                 match.group(0),
                 "(async()=>{",
-                " const event={target:{value:'project-b'}};",
+                " const event={target:{value:'project-option-2'}};",
                 " const failed=await selectProject(event);",
                 " if(failed!=='error'||projectId!==''||event.target.value!==''||projectLoadGeneration!==9||projectLoadBusy||selectionWorkspaceCount!==1) throw new Error(JSON.stringify({failed,projectId,value:event.target.value,projectLoadGeneration,projectLoadBusy,selectionWorkspaceCount}));",
                 " if(dualParseModel.status==='loading'||dualRenderCount<2) throw new Error(JSON.stringify({dualParseModel,dualRenderCount}));",
                 " if(progressCapabilityProjectId!==''||progressCapabilityGeneration!==-1||!releaseDisabled||releaseRenderCount<1) throw new Error(JSON.stringify({progressCapabilityProjectId,progressCapabilityGeneration,releaseDisabled,releaseRenderCount}));",
                 " if(finalPayload.final_draft_docx_exists||!nodes['project-waiting-message'].textContent.includes('重新选择')) throw new Error(JSON.stringify({finalPayload,waiting:nodes['project-waiting-message'].textContent}));",
-                " event.target.value='project-a';",
+                " event.target.value='project-option-1';",
                 " const reloaded=await selectProject(event);const duplicate=await selectProject(event);",
                 " if(reloaded!=='loaded'||duplicate!=='unchanged'||loadCount!==2||projectId!=='project-a'||progressCapabilityProjectId!=='project-a'||progressCapabilityGeneration!==projectLoadGeneration||dualParseModel.owner!=='project-a') throw new Error(JSON.stringify({reloaded,duplicate,loadCount,projectId,progressCapabilityProjectId,progressCapabilityGeneration,projectLoadGeneration,dualParseModel}));",
                 "})().catch(error=>{console.error(error);process.exit(1);});",

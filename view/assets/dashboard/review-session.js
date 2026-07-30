@@ -19,6 +19,71 @@
       : {};
   }
 
+  function canonicalProjectVisibleLabel(value) {
+    if (typeof value !== "string") return "";
+    let normalized;
+    try {
+      normalized = value.normalize("NFC");
+    } catch (_) {
+      return "";
+    }
+    if (/\p{C}/u.test(normalized)) return "";
+    normalized = normalized.replace(/\p{Z}+/gu, " ").replace(/ +/g, " ").trim();
+    if (!normalized || [...normalized].length > 200) return "";
+    return normalized;
+  }
+
+  function createProjectSelectionRegistry() {
+    let optionIds = new Map();
+    let optionLabels = new Map();
+    let projectKeys = new Map();
+
+    function replace(projects) {
+      const rows = Array.isArray(projects) ? projects : [];
+      const visibleLabels = rows.map(project => canonicalProjectVisibleLabel(project?.visible_label));
+      const labelCounts = new Map();
+      visibleLabels.forEach(visibleLabel => {
+        const label = visibleLabel || "项目显示名称不可用";
+        labelCounts.set(label, (labelCounts.get(label) || 0) + 1);
+      });
+      const nextOptionIds = new Map();
+      const nextOptionLabels = new Map();
+      const nextProjectKeys = new Map();
+      const choices = rows.map((project, index) => {
+        const key = `project-option-${index + 1}`;
+        const visibleLabel = visibleLabels[index];
+        const hasValidLabel = visibleLabel !== "";
+        const label = visibleLabel || "项目显示名称不可用";
+        const projectId = typeof project?.project_id === "string" ? project.project_id : "";
+        const selectable = project?.selectable === true
+          && hasValidLabel
+          && projectId !== ""
+          && labelCounts.get(label) === 1;
+        nextOptionLabels.set(key, label);
+        if (selectable) {
+          nextOptionIds.set(key, projectId);
+          nextProjectKeys.set(projectId, key);
+        }
+        const message = canonicalProjectVisibleLabel(project?.selection_message)
+          || (hasValidLabel
+            ? "请在 QoderWork 中设置唯一项目显示名称。"
+            : "请在 QoderWork 中设置唯一有效项目显示名称。");
+        return {key, label: selectable ? label : `${label}（${message}）`, selectable};
+      });
+      optionIds = nextOptionIds;
+      optionLabels = nextOptionLabels;
+      projectKeys = nextProjectKeys;
+      return choices;
+    }
+
+    return {
+      replace,
+      getProjectId: key => optionIds.get(key) || "",
+      getVisibleLabel: key => optionLabels.get(key) || "",
+      getOptionKey: projectId => projectKeys.get(projectId) || "",
+    };
+  }
+
   function createProjectRefreshScheduler(options) {
     const refresh = options?.refresh;
     const getProjectId = options?.getProjectId;
@@ -59,9 +124,10 @@
     }
 
     return {
-      start() {
+      start(settings = {}) {
         if (!stopped) return;
         stopped = false;
+        if (settings.immediate === true) return tick();
         schedule();
       },
       stop() {
@@ -88,6 +154,7 @@
 
   function createProjectSurfaceCoordinator(options) {
     const getProjectId = options?.getProjectId;
+    const getProjectLabel = options?.getProjectLabel;
     const load = options?.load;
     const render = options?.render;
     if (typeof getProjectId !== "function" || typeof load !== "function" || typeof render !== "function") {
@@ -95,6 +162,7 @@
     }
 
     let projectId = String(getProjectId() || "");
+    let projectLabel = typeof getProjectLabel === "function" ? String(getProjectLabel() || "") : "";
     let generation = 0;
     let operationEpoch = 0;
     let refreshRunning = false;
@@ -103,13 +171,15 @@
 
     function syncProject() {
       const nextProjectId = String(getProjectId() || "");
+      const nextProjectLabel = typeof getProjectLabel === "function" ? String(getProjectLabel() || "") : "";
+      projectLabel = nextProjectLabel;
       if (nextProjectId !== projectId) {
         projectId = nextProjectId;
         generation += 1;
         if (refreshRunning || mutationRunning) refreshQueued = true;
-        options?.onProjectChange?.({projectId, generation, operationEpoch});
+        options?.onProjectChange?.({projectId, projectLabel, generation, operationEpoch});
       }
-      return {projectId, generation, operationEpoch};
+      return {projectId, projectLabel, generation, operationEpoch};
     }
 
     function isCurrent(context) {
@@ -182,6 +252,7 @@
 
   return {
     createProjectRefreshScheduler,
+    createProjectSelectionRegistry,
     createProjectSurfaceCoordinator,
     installDecisionActor,
     installProjectRefreshLifecycle,

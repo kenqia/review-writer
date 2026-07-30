@@ -5,7 +5,8 @@
   const status = document.getElementById("evidence-workspace-status");
   const message = document.getElementById("evidence-workspace-message");
   const projectSelect = document.getElementById("project");
-  if (!root || !shell || !projectSelect) return;
+  const projectSelection = window.reviewProjectSelection;
+  if (!root || !shell || !projectSelect || !projectSelection) return;
 
   const text = (tag, value, className) => {
     const node = document.createElement(tag);
@@ -27,7 +28,8 @@
   let busy = false;
 
   const coordinator = window.ReviewSessionUI.createProjectSurfaceCoordinator({
-    getProjectId: () => projectSelect.value,
+    getProjectId: () => projectSelection.getProjectId(projectSelect.value),
+    getProjectLabel: () => projectSelection.getVisibleLabel(projectSelect.value),
     load: id => api(id, "paper-evidence"),
     render,
     onProjectChange: () => showEvidenceState("正在读取当前项目的 Paper Evidence…", "workspace-empty"),
