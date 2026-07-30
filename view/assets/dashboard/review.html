@@ -647,6 +647,12 @@
       $('project-title').textContent = '动态科研综述工作台';
     }
 
+    function setProjectSelectionWorkspace() {
+      setEmptyProjectWorkspace(true);
+      $('project-tools').hidden = false;
+      $('project-waiting-message').textContent = '请选择项目';
+    }
+
     function setWorkspace(workspace) {
       let selected = workspace === 'manuscript' ? 'manuscript' : 'cockpit';
       if (selected === 'manuscript' && parseQualityGateActive()) selected = 'cockpit';
@@ -2446,6 +2452,12 @@
       try {
         projects = await getPayload('/api/projects');
         clear($('project'));
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = '请选择项目';
+        placeholder.disabled = true;
+        placeholder.selected = !projectId;
+        $('project').append(placeholder);
         projects.forEach((project, index) => {
           const option = document.createElement('option');
           option.value = project.project_id;
@@ -2464,11 +2476,14 @@
           setWorkspace(activeWorkspace);
           return 'unchanged';
         }
-        projectId = projects[0].project_id;
-        $('project').value = projectId;
-        const loadResult = await loadProject();
-        if (loadResult === 'stale') return 'stale';
-        return loadResult;
+        if (projectId) {
+          projectId = '';
+          projectLoadGeneration += 1;
+          setProjectLoadBusy(false);
+        }
+        $('project').value = '';
+        setProjectSelectionWorkspace();
+        return 'selection_required';
       } catch (error) {
         if (!projectId) setEmptyProjectWorkspace(true);
         $('project-waiting-message').textContent = '暂时无法检查新项目，工作台将继续等待。';
@@ -2483,6 +2498,37 @@
       projectsRefreshTimer = setInterval(refreshProjects, 3000);
     }
 
+    async function selectProject(event) {
+      const nextProjectId = event.target.value;
+      if (!nextProjectId || !projects.some(project => project.project_id === nextProjectId)) {
+        event.target.value = projectId;
+        return 'invalid';
+      }
+      if (nextProjectId === projectId) return 'unchanged';
+      if (!confirmDiscardDraftChanges()) {
+        event.target.value = projectId;
+        return 'cancelled';
+      }
+      if (!confirmDiscardRiskDecisions()) {
+        event.target.value = projectId;
+        return 'cancelled';
+      }
+      if (!confirmDiscardParseQualityDecisions()) {
+        event.target.value = projectId;
+        return 'cancelled';
+      }
+      activeParseStudyId = '';
+      projectId = nextProjectId;
+      try {
+        const loadResult = await loadProject();
+        if (loadResult === 'stale') return 'stale';
+        return loadResult;
+      } catch (error) {
+        $('workbench-message').textContent = '项目暂时无法读取。';
+        return 'error';
+      }
+    }
+
     document.querySelectorAll('[data-workspace]').forEach(button => {
       button.addEventListener('click', () => {
         const nextWorkspace = button.dataset.workspace === 'manuscript' ? 'manuscript' : 'cockpit';
@@ -2491,30 +2537,7 @@
         setWorkspace(nextWorkspace);
       });
     });
-    $('project').addEventListener('change', async event => {
-      const nextProjectId = event.target.value;
-      if (nextProjectId === projectId) return;
-      if (!confirmDiscardDraftChanges()) {
-        event.target.value = projectId;
-        return;
-      }
-      if (!confirmDiscardRiskDecisions()) {
-        event.target.value = projectId;
-        return;
-      }
-      if (!confirmDiscardParseQualityDecisions()) {
-        event.target.value = projectId;
-        return;
-      }
-      activeParseStudyId = '';
-      projectId = nextProjectId;
-      try {
-        const loadResult = await loadProject();
-        if (loadResult === 'stale') return;
-      } catch (error) {
-        $('workbench-message').textContent = '项目暂时无法读取。';
-      }
-    });
+    $('project').addEventListener('change', selectProject);
     $('confirm-brief').addEventListener('click', confirmBrief);
     $('confirm-brief-primary').addEventListener('click', confirmBrief);
     $('source-supplement-form').addEventListener('submit', submitSourceSupplement);

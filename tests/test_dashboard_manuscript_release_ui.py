@@ -213,6 +213,71 @@ def test_project_polling_preserves_loaded_project_without_full_reload() -> None:
     )
 
 
+def test_fresh_project_polling_requires_visible_researcher_selection_without_loading() -> None:
+    html = (DASHBOARD / "review.html").read_text(encoding="utf-8")
+    match = re.search(
+        r"^    async function refreshProjects\(\) \{[\s\S]*?^    \}",
+        html,
+        flags=re.MULTILINE,
+    )
+    assert match is not None
+    _run_node(
+        "\n".join(
+            [
+                "const select={value:'',options:[],append(option){this.options.push(option);if(option.selected)this.value=option.value;}};",
+                "const nodes={project:select,'project-waiting-message':{textContent:''},'workbench-message':{textContent:''}};",
+                "const $=id=>nodes[id];",
+                "const document={createElement:()=>({value:'',textContent:'',disabled:false,selected:false})};",
+                "const clear=node=>{node.options=[];node.value='';};",
+                "let selectionWorkspaceCount=0;const setProjectSelectionWorkspace=()=>{selectionWorkspaceCount+=1;};",
+                "const setEmptyProjectWorkspace=()=>{};const setWorkspace=()=>{};const setProjectLoadBusy=()=>{};",
+                "let projectsRefreshBusy=false,projects=[],projectId='',projectLoadGeneration=0,activeWorkspace='cockpit';",
+                "let loadCount=0;const loadProject=async()=>{loadCount+=1;return 'loaded';};",
+                "const calls=[];const getPayload=async url=>{calls.push(url);return [{project_id:'regression-v1',topic:'旧项目'},{project_id:'fresh-v2',topic:'新项目'}];};",
+                match.group(0),
+                "refreshProjects().then(result=>{",
+                " if(result!=='selection_required' || projectId!=='' || loadCount!==0) throw new Error(JSON.stringify({result,projectId,loadCount}));",
+                " if(JSON.stringify(calls)!==JSON.stringify(['/api/projects'])) throw new Error(JSON.stringify(calls));",
+                " if(selectionWorkspaceCount!==1 || select.value!=='' || select.options[0]?.textContent!=='请选择项目') throw new Error(JSON.stringify({selectionWorkspaceCount,select}));",
+                "}).catch(error=>{console.error(error);process.exit(1);});",
+            ]
+        )
+    )
+    assert "projects[0].project_id" not in match.group(0)
+
+
+def test_researcher_project_selection_loads_once_and_listener_is_bound_once() -> None:
+    html = (DASHBOARD / "review.html").read_text(encoding="utf-8")
+    session_source = (DASHBOARD / "review-session.js").read_text(encoding="utf-8")
+    match = re.search(
+        r"^    async function selectProject\(event\) \{[\s\S]*?^    \}",
+        html,
+        flags=re.MULTILINE,
+    )
+    assert match is not None
+    _run_node(
+        "\n".join(
+            [
+                "let projectId='',activeParseStudyId='old',loadCount=0;",
+                "const projects=[{project_id:'regression-v1'},{project_id:'fresh-v2'}];",
+                "const confirmDiscardDraftChanges=()=>true,confirmDiscardRiskDecisions=()=>true,confirmDiscardParseQualityDecisions=()=>true;",
+                "const loadProject=async()=>{loadCount+=1;return 'loaded';};",
+                "const nodes={'workbench-message':{textContent:''}};const $=id=>nodes[id];",
+                match.group(0),
+                "(async()=>{",
+                " await selectProject({target:{value:'fresh-v2'}});",
+                " await selectProject({target:{value:'fresh-v2'}});",
+                " if(projectId!=='fresh-v2' || activeParseStudyId!=='' || loadCount!==1) throw new Error(JSON.stringify({projectId,activeParseStudyId,loadCount}));",
+                "})().catch(error=>{console.error(error);process.exit(1);});",
+            ]
+        )
+    )
+    assert html.count("$('project').addEventListener('change', selectProject)") == 1
+    for storage in ("localStorage", "sessionStorage"):
+        assert storage not in html
+        assert storage not in session_source
+
+
 def test_audit_component_keeps_closure_visible_without_internal_ids() -> None:
     html = (DASHBOARD / "review.html").read_text(encoding="utf-8")
     parser = _DashboardParser()
