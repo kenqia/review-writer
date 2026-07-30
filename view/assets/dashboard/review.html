@@ -445,6 +445,7 @@
   <script src="/assets/dashboard/review-audit.js"></script>
   <script src="/assets/dashboard/review-chemical-paper.js"></script>
   <script src="/assets/dashboard/review-dual-parse.js"></script>
+  <script src="/assets/dashboard/review-session.js"></script>
   <script>
     const $ = id => document.getElementById(id);
     const stageLabels = {
@@ -513,7 +514,7 @@
     let progressCapabilityProjectId = '';
     let progressCapabilityGeneration = -1;
     let projectLoadBusy = false;
-    let projectsRefreshTimer = null;
+    let projectsRefreshController = null;
     let projectsRefreshBusy = false;
     let sourceUploadBusy = false;
     let chemicalPaperBusy = false;
@@ -2499,8 +2500,16 @@
     }
 
     function startProjectsRefresh() {
-      if (projectsRefreshTimer !== null) return;
-      projectsRefreshTimer = setInterval(refreshProjects, 3000);
+      if (projectsRefreshController !== null) return;
+      projectsRefreshController = ReviewSessionUI.createProjectRefreshScheduler({
+        refresh:refreshProjects,
+        getProjectId:() => projectId,
+        setTimer:(callback, delay) => window.setTimeout(callback, delay),
+        clearTimer:timer => window.clearTimeout(timer),
+        emptyDelay:3000,
+        selectedDelay:30000,
+      });
+      projectsRefreshController.start();
     }
 
     async function selectProject(event) {
@@ -2620,8 +2629,8 @@
       $('workbench-message').textContent = '项目暂时无法读取。';
     });
     startProjectsRefresh();
+    ReviewSessionUI.installProjectRefreshLifecycle(window, () => projectsRefreshController);
   </script>
-  <script src="/assets/dashboard/review-session.js" defer></script>
   <script src="/assets/dashboard/review-evidence.js" defer></script>
   <script src="/assets/dashboard/review-synthesis.js" defer></script>
 </body>

@@ -52,6 +52,7 @@
       chemical: {
         current: "Chemical import 当前有效",
         imported: "Chemical import 当前有效",
+        needs_review: "Chemical import 已导入，待研究者补全/复核",
         needs_import: "Chemical Paper 待确认导入",
         preflight_ready: "Chemical import 预检待确认",
         stale: "Chemical import 已过期",
@@ -119,17 +120,23 @@
     const rawGenericStatus = text(row.generic_parse_status, "unknown");
     const genericStatus = ["current", "pending", "missing", "stale", "failed"].includes(rawGenericStatus)
       ? rawGenericStatus : "unknown";
-    const rawChemicalStatus = text(object(row.chemical).status, text(row.chemical_import_status, "unknown"));
+    const rawChemicalStatus = text(row.chemical_import_status, "unknown");
     const chemicalStatus = rawChemicalStatus === "missing" ? "needs_import" : rawChemicalStatus;
-    const missingChemicalFields = [
-      row.missing_name_count,
-      row.missing_smiles_expanded_count,
-      row.missing_smiles_unexpanded_count,
-    ].some(value => Number.isInteger(value) && value > 0);
-    const completionStatus = text(
-      object(row.completion).status,
-      missingChemicalFields ? "needs_review" : text(row.completion_status, "unknown"),
-    );
+    const chemicalFacts = [];
+    if (chemicalStatus === "needs_review") {
+      const pageCount = positiveInteger(row.page_count);
+      const moleculeCount = nonNegativeInteger(row.molecule_count);
+      const engine = [publicText(row.backend, ""), publicText(row.version, "")].filter(Boolean).join(" · ");
+      const importedAt = publicText(row.imported_at, "");
+      if (pageCount !== null) chemicalFacts.push(`${pageCount} 页`);
+      if (moleculeCount !== null) chemicalFacts.push(`${moleculeCount} 个分子条目`);
+      if (engine) chemicalFacts.push(engine);
+      if (row.reaction_data_status === "unavailable_not_provided") {
+        chemicalFacts.push("反应数据：导出包未提供");
+      }
+      if (importedAt) chemicalFacts.push(`导入时间：${importedAt}`);
+    }
+    const completionStatus = text(row.completion_status, "unknown");
     const unresolvedReconciliation = Number.isInteger(row.unresolved_reconciliation_count)
       && row.unresolved_reconciliation_count > 0;
     const reconciliationStatus = text(
@@ -145,6 +152,7 @@
       genericStatus,
       genericLabel: stateLabel("generic", genericStatus),
       chemicalLabel: stateLabel("chemical", chemicalStatus),
+      chemicalFacts,
       completionLabel: stateLabel("completion", completionStatus),
       reconciliationLabel: stateLabel("reconciliation", reconciliationStatus),
       evidenceLabel: stateLabel("evidence", evidenceStatus),
@@ -627,6 +635,12 @@
         study.evidenceLabel,
       ].forEach(value => appendText(document, states, "li", value));
       card.append(states);
+      if (study.chemicalFacts.length) {
+        const facts = document.createElement("ul");
+        facts.className = "dual-parse-facts";
+        study.chemicalFacts.forEach(value => appendText(document, facts, "li", value));
+        card.append(facts);
+      }
       appendText(document, card, "p", `${study.actorLabel} · ${study.updatedLabel}`, "dual-parse-freshness");
       appendImportControl(document, card, study, handlers);
       list.append(card);

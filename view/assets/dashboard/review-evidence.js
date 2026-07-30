@@ -26,6 +26,21 @@
   });
   let busy = false;
 
+  const coordinator = window.ReviewSessionUI.createProjectSurfaceCoordinator({
+    getProjectId: () => projectSelect.value,
+    load: id => api(id, "paper-evidence"),
+    render,
+    onProjectChange: () => showEvidenceState("正在读取当前项目的 Paper Evidence…", "workspace-empty"),
+    onLoadError: error => showEvidenceState(error.message, "workspace-error"),
+  });
+
+  function showEvidenceState(value, className) {
+    root.replaceChildren(text("p", value, className));
+    shell.hidden = false;
+    status.textContent = className === "workspace-error" ? "Paper Evidence 暂不可用" : "正在读取 Paper Evidence";
+    message.textContent = className === "workspace-error" ? value : "切换项目后正在读取当前证据。";
+  }
+
   function render(payload) {
     root.replaceChildren();
     shell.hidden = payload.route !== "evidence-to-release.v1";
@@ -65,16 +80,14 @@
     if (busy) return; busy = true;
     const reason = window.prompt("请记录这项决定的理由", item.decision?.reason || "研究者核对后决定");
     if (!reason) { busy = false; return; }
-    try { render(await api(projectSelect.value, "paper-evidence", {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({evidence_id:item.evidence_id, action, reason, version_token:item.version_token, ...window.reviewDecisionActor()})})); }
-    catch (error) { message.textContent = error.message; }
-    finally { busy = false; }
+    try {
+      await coordinator.mutate(
+        id => api(id, "paper-evidence", {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({evidence_id:item.evidence_id, action, reason, version_token:item.version_token, ...window.reviewDecisionActor()})}),
+        {renderResult: render, refreshAfterMutation: true, onError: error => { message.textContent = error.message; }},
+      );
+    } finally { busy = false; }
   }
 
-  async function refresh() {
-    const id = projectSelect.value; if (!id || busy) return;
-    try { render(await api(id, "paper-evidence")); } catch (error) { shell.hidden = true; }
-  }
-  projectSelect.addEventListener("change", refresh);
-  document.addEventListener("DOMContentLoaded", refresh);
-  window.setInterval(refresh, 5000);
+  projectSelect.addEventListener("change", coordinator.projectChanged);
+  document.addEventListener("DOMContentLoaded", coordinator.refresh);
 }());

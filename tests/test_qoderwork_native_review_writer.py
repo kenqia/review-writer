@@ -4960,7 +4960,8 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
         self.assertIn("明确选择后读取项目", parser.text)
         self.assertNotIn("项目就绪后自动打开", parser.text)
         self.assertIn("async function refreshProjects()", review_html)
-        self.assertIn("setInterval(refreshProjects, 3000)", review_html)
+        self.assertIn("ReviewSessionUI.createProjectRefreshScheduler", review_html)
+        self.assertNotIn("setInterval(refreshProjects, 3000)", review_html)
 
     def test_review_workbench_exposes_one_zip_drop_and_automatic_progress(self) -> None:
         review_html = (ROOT / "view/assets/dashboard/review.html").read_text(encoding="utf-8")
