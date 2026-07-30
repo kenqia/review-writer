@@ -28,6 +28,13 @@ from review_writer.delivery.docx_integrity import (
     DocxIntegrityError,
     validate_docx_integrity,
 )
+from review_writer.delivery.chemical_paper_release import (
+    ChemicalPaperReleaseError,
+    analyze_chemical_paper_release,
+    dependency_currentness_for_project,
+    release_markdown_with_chemical_limitations,
+    safe_chemical_paper_projection,
+)
 from review_writer.project.manuscript_v2 import manuscript_state
 from review_writer.project.vertical_review import VerticalReviewError, benchmark_metrics
 from review_writer.project.workflow_projection import NEW_ROUTE, workflow_state
@@ -1045,6 +1052,34 @@ def _new_route_release_paths(project: Path, release_level: str) -> tuple[Path, P
     )
 
 
+def _chemical_paper_release_state(
+    project: Path, lineage: dict[str, Any]
+) -> dict[str, Any]:
+    try:
+        state = analyze_chemical_paper_release(lineage)
+        currentness = dependency_currentness_for_project(project, state)
+    except ChemicalPaperReleaseError as exc:
+        raise ProjectReleaseError(exc.code, "Chemical Paper lineage is invalid or stale") from exc
+    if (
+        state["status"] == "available"
+        and currentness["lineage_binding_status"] != "current"
+    ):
+        raise ProjectReleaseError(
+            "CHEMICAL_PAPER_LINEAGE_STALE",
+            "Chemical Paper authority binding is not current",
+        )
+    state["dependency_currentness"] = currentness
+    if (
+        state["status"] == "available"
+        and not currentness["can_release"]
+        and "CHEMICAL_DEPENDENCY_UNRESOLVED" not in state["issues"]
+    ):
+        state["issues"] = sorted(
+            [*state["issues"], "CHEMICAL_DEPENDENCY_UNRESOLVED"]
+        )
+    return state
+
+
 def _new_route_release(
     project: Path,
     workflow: dict[str, Any],
@@ -1092,6 +1127,24 @@ def _new_route_release(
         or authoritative.get("lineage_digest") != lineage_digest
     ):
         raise ProjectReleaseError("MANUSCRIPT_LINEAGE_STALE", "authoritative manuscript binding is stale")
+    chemical_paper = _chemical_paper_release_state(project, lineage)
+    if (
+        release_level == "EXPERT_REVIEWED_RELEASE"
+        and not chemical_paper["dependency_currentness"]["can_release"]
+    ):
+        raise ProjectReleaseError(
+            "CHEMICAL_DEPENDENCY_UNRESOLVED",
+            "expert release depends on unresolved or unreviewed chemical fields",
+        )
+    try:
+        release_markdown = release_markdown_with_chemical_limitations(
+            markdown, chemical_paper
+        )
+    except ChemicalPaperReleaseError as exc:
+        raise ProjectReleaseError(exc.code, "Chemical Paper limitation lineage is ambiguous") from exc
+    release_markdown_bytes = release_markdown.encode("utf-8")
+    release_markdown_sha256 = _sha256_bytes(release_markdown_bytes)
+    chemical_paper_safe = safe_chemical_paper_projection(chemical_paper)
     figure_validation = _new_route_figure_state(
         project,
         markdown,
@@ -1115,7 +1168,7 @@ def _new_route_release(
     try:
         if not converter.is_file():
             raise ProjectReleaseError("DOCX_CONVERTER_MISSING", "repository DOCX converter is unavailable")
-        staged[snapshot] = _stage_release_file(snapshot, manuscript_bytes)
+        staged[snapshot] = _stage_release_file(snapshot, release_markdown_bytes)
         with tempfile.NamedTemporaryFile(
             dir=snapshot.parent,
             prefix=f".{docx.stem}.",
@@ -1152,7 +1205,7 @@ def _new_route_release(
         try:
             integrity = validate_docx_integrity(
                 temporary_docx,
-                markdown=markdown,
+                markdown=release_markdown,
                 expected_media_sha256=figure_validation["expected_media_sha256"],
                 required_attributions=figure_validation["required_attributions"],
                 workflow_digest=workflow_digest,
@@ -1189,6 +1242,12 @@ def _new_route_release(
             "workflow_digest": workflow_digest,
             "lineage_digest": lineage_digest,
             "manuscript_sha256": manuscript_sha256,
+            "release_markdown_sha256": release_markdown_sha256,
+            "chemical_paper_binding_digest": chemical_paper["binding_digest"],
+            "chemical_paper_safe_summary": chemical_paper_safe,
+            "chemical_paper_dependency_can_release": chemical_paper[
+                "dependency_currentness"
+            ]["can_release"],
             "markdown_path": snapshot.relative_to(project).as_posix(),
             "docx_path": docx.relative_to(project).as_posix(),
             "docx_sha256": docx_sha256,
@@ -1205,6 +1264,12 @@ def _new_route_release(
             "workflow_digest": workflow_digest,
             "lineage_digest": lineage_digest,
             "manuscript_sha256": manuscript_sha256,
+            "release_markdown_sha256": release_markdown_sha256,
+            "chemical_paper_binding_digest": chemical_paper["binding_digest"],
+            "chemical_paper_safe_summary": chemical_paper_safe,
+            "chemical_paper_dependency_can_release": chemical_paper[
+                "dependency_currentness"
+            ]["can_release"],
             "docx_sha256": docx_sha256,
             "figure_validation": figure_validation,
             "integrity": integrity,
@@ -1227,6 +1292,12 @@ def _new_route_release(
             "placeholder_count": figure_validation["placeholder_count"],
             "pending_placeholder_count": figure_validation["pending_placeholder_count"],
             "manuscript_sha256": manuscript_sha256,
+            "release_markdown_sha256": release_markdown_sha256,
+            "chemical_paper_binding_digest": chemical_paper["binding_digest"],
+            "chemical_paper_safe_summary": chemical_paper_safe,
+            "chemical_paper_dependency_can_release": chemical_paper[
+                "dependency_currentness"
+            ]["can_release"],
             "docx_sha256": docx_sha256,
             "workflow_digest": workflow_digest,
             "snapshot": snapshot,
@@ -1332,8 +1403,6 @@ def new_route_release_docx_is_current(docx_path: Path) -> bool:
         ):
             return False
         manuscript_bytes = source.read_bytes()
-        if released_markdown.read_bytes() != manuscript_bytes:
-            return False
         manuscript_sha256 = _sha256_bytes(manuscript_bytes)
         lineage_digest = lineage.get("lineage_digest")
         docx_sha256 = _sha256_bytes(released_docx.read_bytes())
@@ -1359,6 +1428,34 @@ def new_route_release_docx_is_current(docx_path: Path) -> bool:
         ):
             return False
         markdown = manuscript_bytes.decode("utf-8")
+        chemical_paper = _chemical_paper_release_state(project, lineage)
+        if (
+            release_level == "EXPERT_REVIEWED_RELEASE"
+            and not chemical_paper["dependency_currentness"]["can_release"]
+        ):
+            return False
+        release_markdown = release_markdown_with_chemical_limitations(
+            markdown, chemical_paper
+        )
+        release_markdown_bytes = release_markdown.encode("utf-8")
+        release_markdown_sha256 = _sha256_bytes(release_markdown_bytes)
+        chemical_paper_safe = safe_chemical_paper_projection(chemical_paper)
+        if (
+            released_markdown.read_bytes() != release_markdown_bytes
+            or snapshot.get("release_markdown_sha256") != release_markdown_sha256
+            or quality.get("release_markdown_sha256") != release_markdown_sha256
+            or snapshot.get("chemical_paper_binding_digest")
+            != chemical_paper["binding_digest"]
+            or quality.get("chemical_paper_binding_digest")
+            != chemical_paper["binding_digest"]
+            or snapshot.get("chemical_paper_safe_summary") != chemical_paper_safe
+            or quality.get("chemical_paper_safe_summary") != chemical_paper_safe
+            or snapshot.get("chemical_paper_dependency_can_release")
+            is not chemical_paper["dependency_currentness"]["can_release"]
+            or quality.get("chemical_paper_dependency_can_release")
+            is not chemical_paper["dependency_currentness"]["can_release"]
+        ):
+            return False
         figure_validation = _new_route_figure_state(
             project,
             markdown,
@@ -1370,7 +1467,7 @@ def new_route_release_docx_is_current(docx_path: Path) -> bool:
         legacy_docx = project / "05_final_audit/final_draft.docx"
         integrity = validate_docx_integrity(
             released_docx,
-            markdown=markdown,
+            markdown=release_markdown,
             expected_media_sha256=figure_validation["expected_media_sha256"],
             required_attributions=figure_validation["required_attributions"],
             workflow_digest=workflow_digest,

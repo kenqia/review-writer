@@ -6,7 +6,9 @@
   "additionalProperties": false,
   "required": [
     "schema_version", "project_id", "route", "release_level", "status",
-    "workflow_digest", "lineage_digest", "manuscript_sha256", "markdown_path",
+    "workflow_digest", "lineage_digest", "manuscript_sha256", "release_markdown_sha256",
+    "chemical_paper_binding_digest", "chemical_paper_safe_summary",
+    "chemical_paper_dependency_can_release", "markdown_path",
     "docx_path", "docx_sha256", "placeholder_count", "pending_placeholder_count",
     "hard_fail_signals", "system_generated_synthesis_figure", "integrity"
   ],
@@ -19,6 +21,14 @@
     "workflow_digest": {"$ref": "#/$defs/sha256"},
     "lineage_digest": {"$ref": "#/$defs/sha256"},
     "manuscript_sha256": {"$ref": "#/$defs/sha256"},
+    "release_markdown_sha256": {"$ref": "#/$defs/sha256"},
+    "chemical_paper_binding_digest": {
+      "oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]
+    },
+    "chemical_paper_safe_summary": {
+      "oneOf": [{"type": "null"}, {"$ref": "#/$defs/chemical_paper_safe_summary"}]
+    },
+    "chemical_paper_dependency_can_release": {"type": "boolean"},
     "markdown_path": {"pattern": "^05_release/(?:self_reviewed_draft|expert_reviewed_release)\\.md$"},
     "docx_path": {"pattern": "^05_release/(?:self_reviewed_draft|expert_reviewed_release)\\.docx$"},
     "docx_sha256": {"$ref": "#/$defs/sha256"},
@@ -30,6 +40,32 @@
   },
   "$defs": {
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "chemical_paper_safe_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "route", "study_count", "molecule_count",
+        "unresolved_field_count", "element_review_counts", "reaction_data_status"
+      ],
+      "properties": {
+        "schema_version": {"const": "chemical-paper-safe-summary.v1"},
+        "route": {"const": "chemical-paper-zip-only"},
+        "study_count": {"type": "integer", "minimum": 1},
+        "molecule_count": {"type": "integer", "minimum": 0},
+        "unresolved_field_count": {"type": "integer", "minimum": 0},
+        "element_review_counts": {
+          "type": "object", "additionalProperties": false,
+          "required": ["not_reviewed", "confirmed", "corrected", "not_applicable"],
+          "properties": {
+            "not_reviewed": {"type": "integer", "minimum": 0},
+            "confirmed": {"type": "integer", "minimum": 0},
+            "corrected": {"type": "integer", "minimum": 0},
+            "not_applicable": {"type": "integer", "minimum": 0}
+          }
+        },
+        "reaction_data_status": {"enum": ["available", "unavailable_not_provided"]}
+      }
+    },
     "integrity": {
       "type": "object",
       "additionalProperties": false,

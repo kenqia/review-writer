@@ -69,6 +69,82 @@ def _placeholder(*, status: str = "awaiting_human_figure") -> dict[str, object]:
     }
 
 
+def _chemical_lineage(*, with_dependency: bool) -> dict[str, object]:
+    return {
+        "chemical_paper_import_digests": [
+            {
+                "study_id": "study-a",
+                "import_digest": "a" * 64,
+                "state_digest": "b" * 64,
+            }
+        ],
+        "chemical_paper_safe_summary": {
+            "schema_version": "chemical-paper-safe-summary.v1",
+            "route": "chemical-paper-zip-only",
+            "study_count": 1,
+            "molecule_count": 125,
+            "unresolved_field_count": 32,
+            "element_review_counts": {
+                "not_reviewed": 125,
+                "confirmed": 0,
+                "corrected": 0,
+                "not_applicable": 0,
+            },
+            "reaction_data_status": "unavailable_not_provided",
+        },
+        "chemical_paper_claim_dependencies": (
+            [
+                {
+                    "claim_id": "claim-a",
+                    "study_id": "study-a",
+                    "molecule_index": 0,
+                    "required_fields": ["smiles_expanded"],
+                    "requires_element_review": False,
+                    "requires_reaction_data": False,
+                }
+            ]
+            if with_dependency
+            else []
+        ),
+    }
+
+
+def _chemical_currentness(*, blocked: bool) -> dict[str, object]:
+    if not blocked:
+        return {
+            "schema_version": "chemical-paper-dependency-currentness.v1",
+            "lineage_binding_status": "current",
+            "claims": [],
+            "can_release": True,
+            "blocking_reasons": [],
+        }
+    reasons = ["CHEMICAL_REQUIRED_FIELD_UNRESOLVED"]
+    return {
+        "schema_version": "chemical-paper-dependency-currentness.v1",
+        "lineage_binding_status": "current",
+        "claims": [
+            {
+                "claim_id": "claim-a",
+                "status": "needs_review",
+                "dependencies": [
+                    {
+                        "study_id": "study-a",
+                        "molecule_index": 0,
+                        "status": "needs_review",
+                        "required_field_statuses": {"smiles_expanded": "unresolved"},
+                        "element_review_state": "not_reviewed",
+                        "reaction_data_status": "unavailable_not_provided",
+                        "blocking_reasons": reasons,
+                    }
+                ],
+                "blocking_reasons": reasons,
+            }
+        ],
+        "can_release": False,
+        "blocking_reasons": reasons,
+    }
+
+
 def _project_release(
     root: Path,
     monkeypatch: pytest.MonkeyPatch | None,
@@ -78,6 +154,8 @@ def _project_release(
     authoritative: bool = True,
     snapshot_manuscript_sha256: str | None = None,
     embed_verified_figures: bool = True,
+    chemical_paper: dict[str, object] | None = None,
+    chemical_blocked: bool = False,
 ) -> Path:
     placeholders = list(placeholders or [])
     manuscript = "# Synthetic review\n"
@@ -104,6 +182,8 @@ def _project_release(
             "lineage_digest": "c" * 64,
             "synthesis_figure_placeholder_digest": canonical_digest(placeholders),
         }
+        if chemical_paper is not None:
+            lineage.update(chemical_paper)
         lineage_path.write_text(json.dumps(lineage) + "\n", encoding="utf-8")
         if any(row.get("status") == "verified" for row in placeholders):
             asset_path = root / "03_figures/synthesis-figure-01.png"
@@ -173,6 +253,25 @@ def _project_release(
         "docx_path": docx_path.relative_to(root).as_posix(),
         "docx_sha256": _sha256(docx_path),
     }
+    if chemical_paper is not None:
+        from review_writer.delivery.chemical_paper_release import (
+            analyze_chemical_paper_release,
+            safe_chemical_paper_projection,
+        )
+
+        chemical_state = analyze_chemical_paper_release(lineage)
+        currentness = _chemical_currentness(blocked=chemical_blocked)
+        snapshot["chemical_paper_binding_digest"] = chemical_state["binding_digest"]
+        snapshot["chemical_paper_safe_summary"] = safe_chemical_paper_projection(
+            chemical_state
+        )
+        snapshot["chemical_paper_dependency_can_release"] = not chemical_blocked
+        if monkeypatch is not None:
+            monkeypatch.setattr(
+                review_benchmark,
+                "dependency_currentness_for_project",
+                lambda *_args, **_kwargs: currentness,
+            )
     (root / "05_release/release_snapshot.json").write_text(
         json.dumps(snapshot) + "\n",
         encoding="utf-8",
@@ -277,6 +376,98 @@ def test_internal_placeholder_is_reported_but_not_internal_hard_fail(
     assert report["hard_fails"] == []
     assert report["issues"] == ["SYNTHESIS_FIGURE_PENDING"]
     assert report["expert_release_ready"] is False
+
+
+def test_internal_chemical_gaps_are_issues_and_blocked_dependency_is_not_internal_hard_fail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = evaluate_review(
+        _project_release(
+            tmp_path / "project",
+            monkeypatch,
+            chemical_paper=_chemical_lineage(with_dependency=True),
+            chemical_blocked=True,
+        ),
+        _scores((10, 15, 20, 20, 15, 10, 10)),
+    )
+
+    assert report["status"] == "pass_internal"
+    assert report["hard_fails"] == []
+    assert "CHEMICAL_DEPENDENCY_UNRESOLVED" in report["issues"]
+    assert report["chemical_paper_safe_summary"]["reaction_data_status"] == (
+        "unavailable_not_provided"
+    )
+    assert report["expert_release_ready"] is False
+
+
+def test_expert_evaluation_hard_fails_only_when_claim_dependency_is_blocked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    blocked = evaluate_review(
+        _project_release(
+            tmp_path / "blocked",
+            monkeypatch,
+            level="EXPERT_REVIEWED_RELEASE",
+            chemical_paper=_chemical_lineage(with_dependency=True),
+            chemical_blocked=True,
+        ),
+        _scores((10, 15, 20, 20, 15, 10, 10)),
+    )
+    unused_gaps = evaluate_review(
+        _project_release(
+            tmp_path / "unused",
+            monkeypatch,
+            level="EXPERT_REVIEWED_RELEASE",
+            chemical_paper=_chemical_lineage(with_dependency=False),
+        ),
+        _scores((10, 15, 20, 20, 15, 10, 10)),
+    )
+
+    assert blocked["hard_fails"] == ["CHEMICAL_DEPENDENCY_UNRESOLVED"]
+    assert blocked["expert_release_ready"] is False
+    assert unused_gaps["hard_fails"] == []
+    assert unused_gaps["status"] == "pass_expert"
+    assert unused_gaps["expert_release_ready"] is True
+
+
+def test_benchmark_validator_rejects_tampered_chemical_dependency_consistency(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = evaluate_review(
+        _project_release(
+            tmp_path / "project",
+            monkeypatch,
+            chemical_paper=_chemical_lineage(with_dependency=True),
+            chemical_blocked=True,
+        ),
+        _scores((10, 15, 20, 20, 15, 10, 10)),
+    )
+    report["issues"].remove("CHEMICAL_DEPENDENCY_UNRESOLVED")
+    report["expert_release_ready"] = True
+
+    with pytest.raises(BenchmarkError, match="BENCHMARK_REPORT_INCONSISTENT"):
+        review_benchmark.validate_report(report)
+
+
+def test_benchmark_validator_rejects_safe_summary_gap_omitted_from_issues(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = evaluate_review(
+        _project_release(
+            tmp_path / "project",
+            monkeypatch,
+            chemical_paper=_chemical_lineage(with_dependency=False),
+        ),
+        _scores((10, 15, 20, 20, 15, 10, 10)),
+    )
+    report["issues"].remove("CHEMICAL_FIELDS_UNRESOLVED")
+
+    with pytest.raises(BenchmarkError, match="BENCHMARK_REPORT_INCONSISTENT"):
+        review_benchmark.validate_report(report)
 
 
 def test_expert_release_hard_fails_while_required_synthesis_figure_is_pending(

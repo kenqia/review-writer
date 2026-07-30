@@ -36,6 +36,87 @@ def _write_json(path: Path, value: object) -> None:
     )
 
 
+def _chemical_lineage(*, with_dependency: bool = False) -> dict[str, object]:
+    return {
+        "chemical_paper_import_digests": [
+            {
+                "study_id": "study-a",
+                "import_digest": "d" * 64,
+                "state_digest": "e" * 64,
+            }
+        ],
+        "chemical_paper_safe_summary": {
+            "schema_version": "chemical-paper-safe-summary.v1",
+            "route": "chemical-paper-zip-only",
+            "study_count": 1,
+            "molecule_count": 125,
+            "unresolved_field_count": 32,
+            "element_review_counts": {
+                "not_reviewed": 125,
+                "confirmed": 0,
+                "corrected": 0,
+                "not_applicable": 0,
+            },
+            "reaction_data_status": "unavailable_not_provided",
+        },
+        "chemical_paper_claim_dependencies": (
+            [
+                {
+                    "claim_id": "claim-a",
+                    "study_id": "study-a",
+                    "molecule_index": 0,
+                    "required_fields": ["smiles_expanded"],
+                    "requires_element_review": False,
+                    "requires_reaction_data": False,
+                }
+            ]
+            if with_dependency
+            else []
+        ),
+    }
+
+
+def _attach_chemical_lineage(
+    project: Path, *, with_dependency: bool = False
+) -> dict[str, object]:
+    chemical = _chemical_lineage(with_dependency=with_dependency)
+    lineage_path = project / "04_manuscript/manuscript_lineage.v2.json"
+    lineage = json.loads(lineage_path.read_text(encoding="utf-8"))
+    lineage.update(chemical)
+    _write_json(lineage_path, lineage)
+    return chemical
+
+
+def _dependency_currentness(*, blocked: bool) -> dict[str, object]:
+    reasons = ["CHEMICAL_REQUIRED_FIELD_UNRESOLVED"] if blocked else []
+    return {
+        "schema_version": "chemical-paper-dependency-currentness.v1",
+        "lineage_binding_status": "current",
+        "claims": [
+            {
+                "claim_id": "claim-a",
+                "status": "needs_review" if blocked else "current",
+                "dependencies": [
+                    {
+                        "study_id": "study-a",
+                        "molecule_index": 0,
+                        "status": "needs_review" if blocked else "current",
+                        "required_field_statuses": {
+                            "smiles_expanded": "unresolved" if blocked else "resolved"
+                        },
+                        "element_review_state": "not_reviewed",
+                        "reaction_data_status": "unavailable_not_provided",
+                        "blocking_reasons": reasons,
+                    }
+                ],
+                "blocking_reasons": reasons,
+            }
+        ],
+        "can_release": not blocked,
+        "blocking_reasons": reasons,
+    }
+
+
 def _placeholder(*, status: str = "awaiting_human_figure") -> dict[str, object]:
     return {
         "placeholder_id": "synthesis-figure-1",
@@ -225,6 +306,141 @@ def test_new_route_internal_release_reads_only_manuscript_v2_and_writes_release_
     assert document.core_properties.keywords == (
         "new-route; SELF_REVIEWED_DRAFT; review-writer"
     )
+
+
+def test_internal_docx_binds_chemical_lineage_and_adds_explicit_limitations(
+    new_route_project: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from docx import Document
+    from review_writer.delivery.project_release import build_project_release
+
+    chemical = _attach_chemical_lineage(new_route_project)
+    from review_writer.delivery import project_release
+
+    monkeypatch.setattr(
+        project_release,
+        "dependency_currentness_for_project",
+        lambda *_args, **_kwargs: {
+            "schema_version": "chemical-paper-dependency-currentness.v1",
+            "lineage_binding_status": "current",
+            "claims": [],
+            "can_release": True,
+            "blocking_reasons": [],
+        },
+    )
+
+    result = build_project_release(
+        new_route_project, release_level="SELF_REVIEWED_DRAFT"
+    )
+
+    released_markdown = Path(result["snapshot"]).read_text(encoding="utf-8")
+    assert "Original PDFs remain the scientific source of truth" in released_markdown
+    assert "does not mean zero confirmed reactions" in released_markdown
+    document_text = "\n".join(
+        paragraph.text for paragraph in Document(result["docx"]).paragraphs
+    )
+    assert "Chemical Paper output is a manual-export parsing aid, not scientific truth" in document_text
+    snapshot = json.loads(
+        (new_route_project / "05_release/release_snapshot.json").read_text(encoding="utf-8")
+    )
+    assert snapshot["chemical_paper_binding_digest"] == canonical_digest(chemical)
+    assert snapshot["chemical_paper_safe_summary"]["unresolved_field_count"] == 32
+    assert "import_digest" not in json.dumps(snapshot["chemical_paper_safe_summary"])
+
+
+def test_expert_release_fails_closed_on_used_unresolved_chemical_field_without_overwrite(
+    new_route_project: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from review_writer.delivery import project_release
+    from review_writer.delivery.project_release import ProjectReleaseError, build_project_release
+
+    _attach_chemical_lineage(
+        new_route_project,
+        with_dependency=True,
+    )
+    monkeypatch.setattr(
+        project_release,
+        "dependency_currentness_for_project",
+        lambda *_args, **_kwargs: _dependency_currentness(blocked=True),
+    )
+    stage = new_route_project / "05_release"
+    stage.mkdir(parents=True)
+    for name in (
+        "expert_reviewed_release.md",
+        "expert_reviewed_release.docx",
+        "release_snapshot.json",
+        "quality_report.json",
+    ):
+        (stage / name).write_bytes(f"sentinel:{name}".encode())
+    before = _release_bytes(new_route_project)
+
+    with pytest.raises(ProjectReleaseError, match="CHEMICAL_DEPENDENCY_UNRESOLVED"):
+        build_project_release(
+            new_route_project, release_level="EXPERT_REVIEWED_RELEASE"
+        )
+
+    assert _release_bytes(new_route_project) == before
+
+
+def test_internal_docx_allows_explicitly_dependent_gap_but_discloses_release_limit(
+    new_route_project: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from review_writer.delivery import project_release
+    from review_writer.delivery.project_release import build_project_release
+
+    _attach_chemical_lineage(new_route_project, with_dependency=True)
+    monkeypatch.setattr(
+        project_release,
+        "dependency_currentness_for_project",
+        lambda *_args, **_kwargs: _dependency_currentness(blocked=True),
+    )
+
+    result = build_project_release(
+        new_route_project, release_level="SELF_REVIEWED_DRAFT"
+    )
+
+    released_markdown = Path(result["snapshot"]).read_text(encoding="utf-8")
+    assert "claim-dependent chemical values still require review" in released_markdown
+    snapshot = json.loads(
+        (new_route_project / "05_release/release_snapshot.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert snapshot["chemical_paper_dependency_can_release"] is False
+
+
+def test_released_docx_becomes_stale_when_chemical_binding_changes(
+    new_route_project: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from review_writer.delivery import project_release
+    from review_writer.delivery.project_release import (
+        build_project_release,
+        new_route_release_docx_is_current,
+    )
+
+    _attach_chemical_lineage(new_route_project)
+    monkeypatch.setattr(
+        project_release,
+        "dependency_currentness_for_project",
+        lambda *_args, **_kwargs: {
+            "schema_version": "chemical-paper-dependency-currentness.v1",
+            "lineage_binding_status": "current",
+            "claims": [],
+            "can_release": True,
+            "blocking_reasons": [],
+        },
+    )
+    result = build_project_release(
+        new_route_project, release_level="SELF_REVIEWED_DRAFT"
+    )
+    assert new_route_release_docx_is_current(Path(result["docx"])) is True
+
+    lineage_path = new_route_project / "04_manuscript/manuscript_lineage.v2.json"
+    lineage = json.loads(lineage_path.read_text(encoding="utf-8"))
+    lineage["chemical_paper_safe_summary"]["unresolved_field_count"] = 31
+    _write_json(lineage_path, lineage)
+
+    assert new_route_release_docx_is_current(Path(result["docx"])) is False
 
 
 def test_expert_release_rejects_pending_placeholder_without_overwrite(
