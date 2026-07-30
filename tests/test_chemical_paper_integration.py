@@ -402,6 +402,193 @@ def test_cli_exposes_only_the_four_frozen_commands(tmp_path: Path) -> None:
     assert "source_pdf_sha256" not in projected.stdout
 
 
+def test_primary_vertical_cli_exposes_all_frozen_chemical_commands() -> None:
+    script = ROOT / "scripts/run_vertical_review.py"
+    commands = {
+        "import-chemical-paper": (
+            "--project",
+            "--study-id",
+            "--source-pdf-sha256",
+            "--zip",
+            "--actor-type",
+            "--actor-label",
+        ),
+        "chemical-paper-state": ("--project",),
+        "correct-chemical-paper-field": (
+            "--project",
+            "--study-id",
+            "--molecule-index",
+            "--field",
+            "--value",
+            "--reason",
+            "--version-token",
+            "--actor-type",
+            "--actor-label",
+        ),
+        "review-chemical-paper-elements": (
+            "--project",
+            "--study-id",
+            "--molecule-index",
+            "--state",
+            "--reason",
+            "--version-token",
+            "--element",
+            "--actor-type",
+            "--actor-label",
+        ),
+    }
+    root_help = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    for command, options in commands.items():
+        assert command in root_help.stdout
+        result = subprocess.run(
+            [sys.executable, str(script), command, "--help"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "invalid choice" not in result.stderr
+        for option in options:
+            assert option in result.stdout
+
+
+def test_primary_vertical_cli_executes_safe_chemical_workflow(tmp_path: Path) -> None:
+    script = ROOT / "scripts/run_vertical_review.py"
+    project = content_project(tmp_path)
+    pdf_sha, _, pages = _main_binding(project, "scholarly-a")
+    archive = _archive(tmp_path / "chemical.zip", pages)
+
+    def invoke(*arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(script), *arguments],
+            check=check,
+            capture_output=True,
+            text=True,
+        )
+
+    imported_process = invoke(
+        "import-chemical-paper",
+        "--project",
+        str(project),
+        "--study-id",
+        "scholarly-a",
+        "--source-pdf-sha256",
+        pdf_sha,
+        "--zip",
+        str(archive),
+        "--actor-type",
+        ACTOR["actor_type"],
+        "--actor-label",
+        ACTOR["actor_label"],
+    )
+    imported = json.loads(imported_process.stdout)
+    assert imported["ok"] is True
+    assert imported["result"]["status"] == "imported"
+
+    state_process = invoke("chemical-paper-state", "--project", str(project))
+    state = json.loads(state_process.stdout)
+    assert state["ok"] is True
+    projection = state["result"]
+    assert projection["schema_version"] == "chemical-paper-projection.v1"
+    assert projection["route"] == "chemical-paper-zip-only"
+    version = projection["studies"][0]["version_token"]
+
+    corrected_process = invoke(
+        "correct-chemical-paper-field",
+        "--project",
+        str(project),
+        "--study-id",
+        "scholarly-a",
+        "--molecule-index",
+        "0",
+        "--field",
+        "smiles_expanded",
+        "--value",
+        "CC",
+        "--reason",
+        "Checked against the original PDF.",
+        "--version-token",
+        version,
+        "--actor-type",
+        ACTOR["actor_type"],
+        "--actor-label",
+        ACTOR["actor_label"],
+    )
+    corrected = json.loads(corrected_process.stdout)
+    assert corrected["ok"] is True
+    assert corrected["result"]["status"] == "corrected"
+    assert corrected["result"]["molecule_index"] == 0
+
+    reviewed_process = invoke(
+        "review-chemical-paper-elements",
+        "--project",
+        str(project),
+        "--study-id",
+        "scholarly-a",
+        "--molecule-index",
+        "0",
+        "--state",
+        "confirmed",
+        "--reason",
+        "Optional element review against the original PDF.",
+        "--version-token",
+        corrected["result"]["version_token"],
+        "--actor-type",
+        ACTOR["actor_type"],
+        "--actor-label",
+        ACTOR["actor_label"],
+    )
+    reviewed = json.loads(reviewed_process.stdout)
+    assert reviewed["ok"] is True
+    assert reviewed["result"]["status"] == "confirmed"
+
+    final_state_process = invoke("chemical-paper-state", "--project", str(project))
+    final_state = json.loads(final_state_process.stdout)["result"]
+    molecule = final_state["studies"][0]["molecules"][0]
+    assert molecule["smiles_expanded"] == "CC"
+    assert molecule["element_review_state"] == "confirmed"
+
+    encoded_outputs = "\n".join(
+        process.stdout
+        for process in (
+            imported_process,
+            state_process,
+            corrected_process,
+            reviewed_process,
+            final_state_process,
+        )
+    )
+    for forbidden in (
+        str(project),
+        pdf_sha,
+        "source_pdf_sha256",
+        "archive_sha256",
+        "mol_block",
+        '"molecule_id"',
+        "entry_inventory",
+    ):
+        assert forbidden not in encoded_outputs
+
+    invalid_project = tmp_path / "does-not-exist"
+    failed = invoke(
+        "chemical-paper-state",
+        "--project",
+        str(invalid_project),
+        check=False,
+    )
+    assert failed.returncode == 2
+    assert failed.stdout == ""
+    error = json.loads(failed.stderr)
+    assert error["ok"] is False
+    assert set(error) == {"ok", "error_code"}
+    assert str(invalid_project) not in failed.stderr
+
+
 def test_http_get_and_patch_follow_safe_frozen_v1_contract(tmp_path: Path) -> None:
     review_root = tmp_path / "review-root"
     project = source_truth_project(review_root / "review-projects")

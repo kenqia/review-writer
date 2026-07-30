@@ -23,6 +23,14 @@ from review_writer.project.chemical_paper import (  # noqa: E402
 )
 
 
+COMMANDS = (
+    "import-chemical-paper",
+    "chemical-paper-state",
+    "correct-chemical-paper-field",
+    "review-chemical-paper-elements",
+)
+
+
 def _actor(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--actor-type",
@@ -32,12 +40,7 @@ def _actor(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--actor-label", required=True)
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Import and review bound MinerU Chemical Paper manual exports."
-    )
-    commands = parser.add_subparsers(dest="command", required=True)
-
+def add_subcommands(commands: argparse._SubParsersAction) -> None:
     importer = commands.add_parser("import-chemical-paper")
     importer.add_argument("--project", type=Path, required=True)
     importer.add_argument("--study-id", required=True)
@@ -73,6 +76,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Corrected element count; repeat for corrected state only.",
     )
     _actor(review)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Import and review bound MinerU Chemical Paper manual exports."
+    )
+    commands = parser.add_subparsers(dest="command", required=True)
+    add_subcommands(commands)
     return parser
 
 
