@@ -200,47 +200,75 @@ def test_import_preserves_exported_molecule_order_for_stable_review_indexes(
 ) -> None:
     from review_writer.project.chemical_paper import (
         chemical_paper_projection,
+        correct_chemical_paper_field,
         import_chemical_paper,
         load_chemical_paper_state,
     )
 
     project = source_truth_project(tmp_path)
-    molecules = [
+    exported = [
         {
-            "mol_id": "mol-later-page",
+            "mol_id": "export-first",
             "page_idx": 1,
-            "bbox_normalized": [0.2, 0.3, 0.5, 0.6],
-            "smiles_expanded": "",
-            "smiles_unexpanded": "",
-            "mol_idt": "",
+            "bbox_normalized": [0.1, 0.2, 0.3, 0.4],
+            "smiles_expanded": "C",
+            "smiles_unexpanded": "C",
+            "mol_idt": "export-first",
+            "mol_block": v2000(("C",)),
+        },
+        {
+            "mol_id": "export-second",
+            "page_idx": 0,
+            "bbox_normalized": [0.2, 0.3, 0.4, 0.5],
+            "smiles_expanded": "N",
+            "smiles_unexpanded": "N",
+            "mol_idt": "export-second",
             "mol_block": v2000(("N",)),
         },
-        {
-            "mol_id": "mol-earlier-page",
-            "page_idx": 0,
-            "bbox_normalized": [0.1, 0.2, 0.3, 0.4],
-            "smiles_expanded": "CO",
-            "smiles_unexpanded": "CO",
-            "mol_idt": "methanol-candidate",
-            "mol_block": v2000(),
-        },
     ]
-    archive = write_chemical_zip(tmp_path / "chemical.zip", molecules=molecules)
-
-    import_chemical_paper(project, "study-1", PDF_SHA, archive, ACTOR)
+    archive = write_chemical_zip(tmp_path / "export-order.zip", molecules=exported)
+    first = import_chemical_paper(
+        project,
+        "study-1",
+        PDF_SHA,
+        archive,
+        ACTOR,
+    )
 
     state = load_chemical_paper_state(project, "study-1")
     assert [row["molecule_id"] for row in state["molecules"]] == [
-        "mol-later-page",
-        "mol-earlier-page",
+        "export-first",
+        "export-second",
     ]
     projected = chemical_paper_projection(project)["studies"][0]["molecules"]
-    assert projected[0]["molecule_index"] == 0
-    assert projected[0]["missing_fields"] == [
-        "mol_idt",
-        "smiles_expanded",
-        "smiles_unexpanded",
+    assert [(row["molecule_index"], row["page"]) for row in projected] == [
+        (0, 2),
+        (1, 1),
     ]
+    corrected = correct_chemical_paper_field(
+        project,
+        study_id="study-1",
+        molecule_index=0,
+        field="smiles_expanded",
+        value="CC",
+        actor=ACTOR,
+        reason="Checked exported index against the original PDF.",
+        version_token=first["version_token"],
+    )
+    state = load_chemical_paper_state(project, "study-1")
+    assert state["field_corrections"][-1]["molecule_id"] == "export-first"
+    assert chemical_paper_projection(project)["studies"][0]["molecules"][0][
+        "smiles_expanded"
+    ] == "CC"
+    state_path = project / "01_evidence/chemical_paper/study-1/state.json"
+    before = state_path.read_bytes()
+    second = import_chemical_paper(project, "study-1", PDF_SHA, archive, ACTOR)
+    assert state_path.read_bytes() == before
+    assert second == {
+        "status": "unchanged",
+        "study_id": "study-1",
+        "version_token": corrected["version_token"],
+    }
 
 
 @pytest.mark.parametrize(
