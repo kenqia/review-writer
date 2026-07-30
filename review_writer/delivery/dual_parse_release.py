@@ -1113,9 +1113,13 @@ def _hard_fails_for_row(
                 }
             )
         return hard_fails
-    current_binding = _binding_from_authority(current)
-    if current_binding != frozen:
-        hard_fails.add("DUAL_PARSE_STALE")
+    try:
+        current_binding = _binding_from_authority(current)
+    except DualParseReleaseError:
+        hard_fails.update({"DUAL_PARSE_STALE", "DUAL_SOURCE_BINDING_MISMATCH"})
+    else:
+        if current_binding != frozen:
+            hard_fails.add("DUAL_PARSE_STALE")
     if current.get("dual_source_binding_digest") != frozen["dual_source_binding_digest"]:
         hard_fails.add("DUAL_SOURCE_BINDING_MISMATCH")
     if current.get("generic_status") != "current" or current.get("generic_version") != frozen["generic_version"]:

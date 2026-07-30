@@ -35,7 +35,10 @@ from review_writer.project.dual_source import (
 from review_writer.project.paper_evidence import paper_evidence_state
 from review_writer.project.parse_quality import write_parse_quality_gate
 from review_writer.project.parse_reconciliation import write_parse_reconciliation
-from review_writer.project.source_truth import write_source_truth_bundle
+from review_writer.project.source_truth import (
+    load_source_truth_bundle,
+    write_source_truth_bundle,
+)
 from review_writer.project.workflow_projection import workflow_state
 from test_parse_quality import _decide_all
 from test_dual_parse_content_package import paper_request
@@ -98,6 +101,33 @@ def test_reparse_stales_ui_package_and_release_together(tmp_path: Path) -> None:
     ):
         build_content_task_package(project, paper_request(project))
     assert dual_parse_release_state(project)["internal_release_ready"] is False
+
+
+def test_pdf_drift_blocks_saved_dual_binding_and_release(tmp_path: Path) -> None:
+    project = _ready_project(tmp_path)
+    bundle = load_source_truth_bundle(project, "scholarly-a")
+    main = next(
+        row for row in bundle["sources"] if row["document_role"] == "MAIN"
+    )
+    pdf = project / main["pdf"]["path"]
+    pdf.write_bytes(pdf.read_bytes() + b"\npost-binding drift")
+
+    scientific = project_dual_source_state(project)
+    workflow = workflow_state(project)
+    release = dual_parse_release_state(project)
+
+    row = scientific["studies"][0]
+    assert row["pdf_status"] == "stale"
+    assert row["generic_parse_status"] != "current"
+    assert row["status"] == "blocked"
+    assert scientific["workflow_can_continue"] is False
+    assert scientific["main_source_available_count"] == 0
+    assert scientific["generic_source_available_count"] == 0
+    assert workflow["dual_source_ready"] is False
+    assert release["dual_parse_status"] == "stale"
+    assert release["internal_release_ready"] is False
+    assert "DUAL_PARSE_STALE" in release["hard_fails"]
+    assert "CORE_GENERIC_PARSE_MISSING_OR_STALE" in release["hard_fails"]
 
 
 def test_backend_projection_is_consumable_by_dashboard_ui(tmp_path: Path) -> None:

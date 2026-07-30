@@ -213,6 +213,23 @@ def project_dual_source_state(project: Path) -> dict[str, object]:
             "requires_chemical": tier == "core",
             "generic": {"status": row["generic_parse_status"]},
         })
+        if (
+            row["pdf_status"] != "verified"
+            or row["generic_parse_status"] != "current"
+        ):
+            source_statuses = {
+                row["pdf_status"], row["generic_parse_status"]
+            }
+            rows.append({
+                **row,
+                "status": "blocked",
+                "reason_code": (
+                    "SOURCE_AUTHORITY_STALE"
+                    if "stale" in source_statuses
+                    else "SOURCE_AUTHORITY_UNAVAILABLE"
+                ),
+            })
+            continue
         try:
             binding = load_dual_source_binding(root, study_id)
             require_dual_source_ready(root, study_id, requires_chemical=binding["source_tier"] == "core")
