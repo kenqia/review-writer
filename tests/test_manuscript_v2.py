@@ -295,6 +295,63 @@ def test_approved_sections_merge_to_authoritative_manuscript_and_lineage(project
     assert build_manuscript_workspace(project)["status"] == "in_progress"
 
 
+def test_manuscript_lineage_binds_current_dual_versions(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from review_writer.delivery import dual_parse_release
+
+    (project / "01_evidence/dual_source").mkdir()
+    authority_rows = [
+        {
+            "study_id": "study-a",
+            "source_tier": "core",
+            "generic_status": "current",
+            "chemical_status": "current",
+            "dual_source_binding_digest": SHA_A,
+            "generic_version": SHA_A,
+            "chemical_version": SHA_B,
+            "chemical_completion_digest": SHA_C,
+            "chemical_completion_status": "current",
+            "reconciliation_digest": SHA_D,
+            "reconciliation_status": "current",
+            "content_result_status": "current",
+            "ai_authored_smiles_count": 0,
+            "reaction_data_status": "unavailable_not_provided",
+        }
+    ]
+    monkeypatch.setattr(
+        dual_parse_release,
+        "_current_authority_rows",
+        lambda _: [dict(row) for row in authority_rows],
+    )
+    draft = register_section_draft(
+        project,
+        _draft("The experiment reported the product. [evidence:evidence-low]"),
+    )
+    approve_section(
+        project,
+        draft["section_id"],
+        actor=_actor(),
+        reason="Compared against the approved evidence.",
+    )
+
+    merge_authoritative_manuscript(project)
+    lineage = json.loads(
+        (project / "04_manuscript/manuscript_lineage.v2.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert len(lineage["dual_parse_bindings"]) == 1
+    assert lineage["dual_parse_bindings"][0]["study_id"] == "study-a"
+    assert manuscript_state(project)["workflow_can_continue"] is True
+
+    authority_rows[0]["chemical_completion_digest"] = "1" * 64
+    stale = manuscript_state(project)
+    assert stale["workflow_can_continue"] is False
+    assert stale["reason_code"] == "MANUSCRIPT_DUAL_PARSE_STALE"
+
+
 def test_merge_failure_does_not_overwrite_existing_authoritative_pair(project: Path) -> None:
     target = project / "04_manuscript"
     target.mkdir(parents=True)

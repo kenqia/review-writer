@@ -348,6 +348,84 @@ def test_internal_docx_binds_chemical_lineage_and_adds_explicit_limitations(
     assert "import_digest" not in json.dumps(snapshot["chemical_paper_safe_summary"])
 
 
+def test_dual_parse_release_is_bound_and_stale_state_is_zero_write(
+    new_route_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from review_writer.delivery import project_release
+    from review_writer.delivery.project_release import (
+        ProjectReleaseError,
+        build_project_release,
+    )
+
+    (new_route_project / "01_evidence/dual_source").mkdir()
+    lineage_path = new_route_project / "04_manuscript/manuscript_lineage.v2.json"
+    lineage = json.loads(lineage_path.read_text(encoding="utf-8"))
+    lineage["dual_parse_bindings"] = [
+        {
+            "study_id": "study-a",
+            "source_tier": "core",
+            "requires_chemical": True,
+            "dual_source_binding_digest": "1" * 64,
+            "generic_version": "2" * 64,
+            "chemical_version": "3" * 64,
+            "chemical_completion_digest": "4" * 64,
+            "reconciliation_digest": "5" * 64,
+        }
+    ]
+    _write_json(lineage_path, lineage)
+    current = {
+        "dual_parse_status": "current",
+        "internal_release_ready": True,
+        "expert_release_ready": False,
+        "hard_fails": [],
+        "issues": ["CHEMICAL_REACTION_DATA_UNAVAILABLE", "SYNTHESIS_FIGURE_PENDING"],
+        "reaction_data_status": "unavailable_not_provided",
+        "reaction_count": None,
+        "credits_status": "NOT_APPLICABLE_BY_CURRENT_SCOPE",
+    }
+    monkeypatch.setattr(
+        project_release, "dual_parse_release_state", lambda _: dict(current)
+    )
+
+    result = build_project_release(
+        new_route_project, release_level="SELF_REVIEWED_DRAFT"
+    )
+
+    binding_digest = canonical_digest(lineage["dual_parse_bindings"])
+    assert result["dual_parse_status"] == "current"
+    assert result["dual_parse_binding_digest"] == binding_digest
+    quality = json.loads(
+        (new_route_project / "05_release/quality_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert quality["dual_parse_status"] == "current"
+    assert quality["dual_parse_binding_digest"] == binding_digest
+    assert quality["reaction_data_status"] == "unavailable_not_provided"
+    assert quality["reaction_count"] is None
+    assert quality["credits_status"] == "NOT_APPLICABLE_BY_CURRENT_SCOPE"
+    assert "credits" not in quality
+    docx = Path(result["docx"])
+    assert project_release.new_route_release_docx_is_current(docx) is True
+
+    before = _release_bytes(new_route_project)
+    current.update(
+        {
+            "dual_parse_status": "stale",
+            "internal_release_ready": False,
+            "hard_fails": ["CORE_GENERIC_PARSE_MISSING_OR_STALE"],
+        }
+    )
+    with pytest.raises(
+        ProjectReleaseError, match="CORE_GENERIC_PARSE_MISSING_OR_STALE"
+    ):
+        build_project_release(
+            new_route_project, release_level="SELF_REVIEWED_DRAFT"
+        )
+    assert _release_bytes(new_route_project) == before
+    assert project_release.new_route_release_docx_is_current(docx) is False
+
+
 def test_expert_release_fails_closed_on_used_unresolved_chemical_field_without_overwrite(
     new_route_project: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

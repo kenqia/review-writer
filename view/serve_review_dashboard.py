@@ -120,6 +120,15 @@ from review_writer.project.chemical_paper import (  # noqa: E402
     correct_chemical_paper_field,
     review_chemical_paper_elements,
 )
+from review_writer.delivery.dual_parse_release import (  # noqa: E402
+    MAX_ARCHIVE_BYTES as DUAL_PARSE_MAX_ARCHIVE_BYTES,
+    DualParseReleaseError,
+    apply_chemical_completion_http,
+    apply_reconciliation_http,
+    confirm_chemical_paper_import,
+    dual_parse_dashboard_projection,
+    preflight_chemical_paper_import,
+)
 
 
 _RESEARCHER_SHA256_RE = re.compile(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{64}(?![0-9A-Fa-f])")
@@ -330,6 +339,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
                 return
             self.handle_project_chemical_paper_get(project_id)
+        elif parsed.path.startswith("/api/project/") and parsed.path.endswith("/dual-parse"):
+            project_id = project_id_from_route(parsed.path, "dual-parse")
+            if project_id is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                return
+            self.handle_project_dual_parse_get(project_id)
         elif parsed.path.startswith("/api/project/") and parsed.path.endswith("/draft"):
             project_id = project_id_from_route(parsed.path, "draft")
             if project_id is None:
@@ -388,6 +403,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:
         parsed = urlparse(self.path)
+        for action in ("chemical-completion", "parse-reconciliation"):
+            if parsed.path.startswith("/api/project/") and parsed.path.endswith(
+                f"/{action}"
+            ):
+                project_id = project_id_from_route(parsed.path, action)
+                if project_id is None:
+                    self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                    return
+                self.handle_project_dual_parse_put(project_id, action)
+                return
         if parsed.path.startswith("/api/metadata/"):
             paper_id = unquote(parsed.path.rsplit("/", 1)[-1])
             self.handle_metadata_put(paper_id)
@@ -451,6 +476,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/project/") and parsed.path.endswith(
+            "/chemical-paper/preflight"
+        ):
+            project_path = parsed.path[: -len("/chemical-paper/preflight")] + "/chemical-paper"
+            project_id = project_id_from_route(project_path, "chemical-paper")
+            if project_id is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                return
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            studies = query.get("study_id", [])
+            if set(query) != {"study_id"} or len(studies) != 1:
+                self._dual_parse_error("STUDY_ID_INVALID")
+                return
+            self.handle_project_chemical_preflight_post(project_id, studies[0])
+            return
+        if parsed.path.startswith("/api/project/") and parsed.path.endswith(
+            "/chemical-paper/confirm"
+        ):
+            project_path = parsed.path[: -len("/chemical-paper/confirm")] + "/chemical-paper"
+            project_id = project_id_from_route(project_path, "chemical-paper")
+            if project_id is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                return
+            self.handle_project_chemical_confirm_post(project_id)
+            return
         if parsed.path.startswith("/api/project/") and parsed.path.endswith("/source-mapping"):
             project_id = project_id_from_route(parsed.path, "source-mapping")
             if project_id is None:
@@ -481,6 +531,180 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.handle_project_export_docx(project_id)
             return
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+
+    def _dual_parse_error(self, code: str) -> None:
+        if code == "CHEMICAL_ZIP_CONTENT_TYPE_INVALID":
+            status = HTTPStatus.UNSUPPORTED_MEDIA_TYPE
+        elif code in {"CHEMICAL_ZIP_SIZE_INVALID", "ZIP_SIZE_LIMIT"}:
+            status = HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+        elif code in {
+            "PREFLIGHT_EXPIRED",
+            "PREFLIGHT_SOURCE_STALE",
+            "PREFLIGHT_STAGED_BYTES_STALE",
+            "PREFLIGHT_STUDY_MISMATCH",
+            "PREFLIGHT_ALREADY_CONFIRMED",
+            "PREFLIGHT_CONFIRM_IN_PROGRESS",
+            "PREFLIGHT_REJECTED",
+        }:
+            status = HTTPStatus.CONFLICT
+        elif code in {"PROJECT_INVALID"}:
+            status = HTTPStatus.NOT_FOUND
+        else:
+            status = HTTPStatus.UNPROCESSABLE_ENTITY
+        self.send_json(
+            {
+                "ok": False,
+                "error_code": code,
+                "message": "双层解析操作未保存，请刷新并核对输入后重试。",
+            },
+            status=status,
+        )
+
+    def handle_project_chemical_preflight_post(
+        self, project_id: str, study_id: str
+    ) -> None:
+        try:
+            project = project_dir(self.review_root, project_id)
+            if not project.is_dir():
+                raise DualParseReleaseError("PROJECT_INVALID")
+            content_type = (
+                (self.headers.get("Content-Type") or "")
+                .split(";", 1)[0]
+                .strip()
+                .casefold()
+            )
+            if content_type != "application/zip":
+                raise DualParseReleaseError("CHEMICAL_ZIP_CONTENT_TYPE_INVALID")
+            raw_length = self.headers.get("Content-Length")
+            if not isinstance(raw_length, str) or not re.fullmatch(r"[0-9]+", raw_length):
+                raise DualParseReleaseError("CHEMICAL_ZIP_SIZE_INVALID")
+            normalized = raw_length.lstrip("0") or "0"
+            maximum = str(DUAL_PARSE_MAX_ARCHIVE_BYTES)
+            if len(normalized) > len(maximum) or (
+                len(normalized) == len(maximum) and normalized > maximum
+            ):
+                raise DualParseReleaseError("CHEMICAL_ZIP_SIZE_INVALID")
+            length = int(normalized)
+            if length <= 0 or length > DUAL_PARSE_MAX_ARCHIVE_BYTES:
+                raise DualParseReleaseError("CHEMICAL_ZIP_SIZE_INVALID")
+            payload = self.rfile.read(length)
+            if len(payload) != length:
+                raise DualParseReleaseError("CHEMICAL_ZIP_SIZE_INVALID")
+            result = preflight_chemical_paper_import(project, study_id, payload)
+        except (ValueError, DualParseReleaseError) as exc:
+            code = exc.code if isinstance(exc, DualParseReleaseError) else "PROJECT_INVALID"
+            self._dual_parse_error(code)
+            return
+        self.send_json(result)
+
+    def handle_project_chemical_confirm_post(self, project_id: str) -> None:
+        try:
+            project = project_dir(self.review_root, project_id)
+            if not project.is_dir():
+                raise DualParseReleaseError("PROJECT_INVALID")
+            if (
+                (self.headers.get("Content-Type") or "")
+                .split(";", 1)[0]
+                .strip()
+                .casefold()
+                != "application/json"
+            ):
+                raise DualParseReleaseError("CHEMICAL_CONFIRM_REQUEST_INVALID")
+            raw_length = self.headers.get("Content-Length")
+            if not isinstance(raw_length, str) or not re.fullmatch(r"[0-9]+", raw_length):
+                raise DualParseReleaseError("CHEMICAL_CONFIRM_REQUEST_INVALID")
+            length = int(raw_length)
+            if length <= 0 or length > 64 * 1024:
+                raise DualParseReleaseError("CHEMICAL_CONFIRM_REQUEST_INVALID")
+            value = json.loads(self.rfile.read(length).decode("utf-8"))
+            result = confirm_chemical_paper_import(project, value)
+        except (json.JSONDecodeError, UnicodeError):
+            self._dual_parse_error("CHEMICAL_CONFIRM_REQUEST_INVALID")
+            return
+        except (ValueError, DualParseReleaseError) as exc:
+            code = exc.code if isinstance(exc, DualParseReleaseError) else "PROJECT_INVALID"
+            self._dual_parse_error(code)
+            return
+        self.send_json(result)
+
+    def _dual_parse_json_body(self, required: set[str]) -> dict[str, Any]:
+        if (
+            (self.headers.get("Content-Type") or "")
+            .split(";", 1)[0]
+            .strip()
+            .casefold()
+            != "application/json"
+        ):
+            raise DualParseReleaseError("DUAL_PARSE_REQUEST_INVALID")
+        raw_length = self.headers.get("Content-Length")
+        if not isinstance(raw_length, str) or not re.fullmatch(r"[0-9]+", raw_length):
+            raise DualParseReleaseError("DUAL_PARSE_REQUEST_INVALID")
+        length = int(raw_length)
+        if length <= 0 or length > 64 * 1024:
+            raise DualParseReleaseError("DUAL_PARSE_REQUEST_INVALID")
+        try:
+            value = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise DualParseReleaseError("DUAL_PARSE_REQUEST_INVALID") from exc
+        if not isinstance(value, dict) or set(value) != required:
+            raise DualParseReleaseError("DUAL_PARSE_REQUEST_INVALID")
+        return value
+
+    def handle_project_dual_parse_get(self, project_id: str) -> None:
+        try:
+            project = project_dir(self.review_root, project_id)
+            if not project.is_dir():
+                raise DualParseReleaseError("PROJECT_INVALID")
+            result = dual_parse_dashboard_projection(project)
+        except (ValueError, DualParseReleaseError) as exc:
+            code = exc.code if isinstance(exc, DualParseReleaseError) else "PROJECT_INVALID"
+            self._dual_parse_error(code)
+            return
+        self.send_json(result)
+
+    def handle_project_dual_parse_put(self, project_id: str, action: str) -> None:
+        completion_fields = {
+            "study_id",
+            "version_token",
+            "actor_type",
+            "actor_label",
+            "corrections",
+        }
+        reconciliation_fields = {
+            "study_id",
+            "object_id",
+            "registry_digest",
+            "action",
+            "selected_lane",
+            "note",
+            "pdf_locator",
+            "actor_type",
+            "actor_label",
+        }
+        invalid_code = (
+            "CHEMICAL_COMPLETION_REQUEST_INVALID"
+            if action == "chemical-completion"
+            else "PARSE_RECONCILIATION_REQUEST_INVALID"
+        )
+        try:
+            project = project_dir(self.review_root, project_id)
+            if not project.is_dir():
+                raise DualParseReleaseError("PROJECT_INVALID")
+            required = completion_fields if action == "chemical-completion" else reconciliation_fields
+            try:
+                value = self._dual_parse_json_body(required)
+            except DualParseReleaseError as exc:
+                raise DualParseReleaseError(invalid_code) from exc
+            result = (
+                apply_chemical_completion_http(project, value)
+                if action == "chemical-completion"
+                else apply_reconciliation_http(project, value)
+            )
+        except (ValueError, DualParseReleaseError) as exc:
+            code = exc.code if isinstance(exc, DualParseReleaseError) else invalid_code
+            self._dual_parse_error(code)
+            return
+        self.send_json(result)
 
     def handle_project_source_mapping_post(self, project_id: str) -> None:
         try:
@@ -4096,6 +4320,16 @@ def _project_benchmark_payload(project: Path) -> dict[str, Any]:
 
 
 def project_evaluation_payload(project: Path) -> dict[str, Any]:
+    dual_source_root = project / "01_evidence/dual_source"
+    if dual_source_root.exists():
+        if dual_source_root.is_symlink() or not dual_source_root.is_dir():
+            raise ValueError("dual-parse authority is unavailable")
+        return {
+            "schema_version": "release-evaluation.v1",
+            "project_id": project.name,
+            "benchmark": _project_benchmark_payload(project),
+            "credits_status": "NOT_APPLICABLE_BY_CURRENT_SCOPE",
+        }
     try:
         credits = credit_ledger_summary(project)
     except (CreditLedgerError, OSError, ValueError):

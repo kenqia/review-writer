@@ -79,7 +79,16 @@
           "LEGACY_DRAFT_REPACKAGED",
           "SYSTEM_GENERATED_SYNTHESIS_FIGURE",
           "SYNTHESIS_FIGURE_PENDING",
-          "CHEMICAL_DEPENDENCY_UNRESOLVED"
+          "CHEMICAL_DEPENDENCY_UNRESOLVED",
+          "DUAL_PARSE_STALE",
+          "CORE_GENERIC_PARSE_MISSING_OR_STALE",
+          "CORE_CHEMICAL_IMPORT_MISSING_OR_STALE",
+          "CHEMICAL_COMPLETION_INCOMPLETE",
+          "PARSE_RECONCILIATION_UNRESOLVED",
+          "DUAL_SOURCE_BINDING_MISMATCH",
+          "STALE_DUAL_PARSE_CONTENT_RESULT",
+          "AI_AUTHORED_SMILES",
+          "REACTION_ABSENCE_MISREPRESENTED"
         ]
       }
     },
@@ -98,6 +107,16 @@
         {"$ref": "#/$defs/chemical_paper_safe_summary"}
       ]
     },
+    "dual_parse_status": {
+      "enum": ["not_applicable", "current", "stale"]
+    },
+    "reaction_data_status": {
+      "enum": ["not_applicable", "available", "unavailable_not_provided"]
+    },
+    "reaction_count": {
+      "oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0}]
+    },
+    "credits_status": {"const": "NOT_APPLICABLE_BY_CURRENT_SCOPE"},
     "release_binding": {
       "type": "object",
       "additionalProperties": false,
@@ -111,7 +130,10 @@
         "chemical_paper_binding_digest": {
           "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
         },
-        "chemical_paper_dependency_can_release": {"type": "boolean"}
+        "chemical_paper_dependency_can_release": {"type": "boolean"},
+        "dual_parse_binding_digest": {
+          "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+        }
       }
     },
     "standard_corpus": {

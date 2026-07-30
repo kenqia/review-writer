@@ -358,6 +358,93 @@ def test_hard_fail_overrides_numeric_score(
     assert report["hard_fails"] == ["WRONG_SOURCE_BINDING"]
 
 
+@pytest.mark.parametrize(
+    "hard_fail",
+    [
+        "DUAL_PARSE_STALE",
+        "CORE_GENERIC_PARSE_MISSING_OR_STALE",
+        "CORE_CHEMICAL_IMPORT_MISSING_OR_STALE",
+        "CHEMICAL_COMPLETION_INCOMPLETE",
+        "PARSE_RECONCILIATION_UNRESOLVED",
+        "DUAL_SOURCE_BINDING_MISMATCH",
+        "STALE_DUAL_PARSE_CONTENT_RESULT",
+        "AI_AUTHORED_SMILES",
+        "REACTION_ABSENCE_MISREPRESENTED",
+    ],
+)
+def test_dual_parse_hard_fails_override_internal_benchmark(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    hard_fail: str,
+) -> None:
+    report = evaluate_review(
+        _project_release(tmp_path / hard_fail.casefold(), monkeypatch),
+        _scores((10, 15, 20, 20, 15, 10, 10)),
+        hard_fails=[hard_fail],
+    )
+
+    assert report["status"] == "fail"
+    assert report["hard_fails"] == [hard_fail]
+    assert report["credits_status"] == "NOT_APPLICABLE_BY_CURRENT_SCOPE"
+    assert "credits" not in report
+
+
+def test_benchmark_binds_current_dual_release_without_faking_reaction_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _project_release(tmp_path / "project", monkeypatch)
+    (project / "01_evidence/dual_source").mkdir(parents=True)
+    lineage_path = project / "04_manuscript/manuscript_lineage.v2.json"
+    lineage = json.loads(lineage_path.read_text(encoding="utf-8"))
+    lineage["dual_parse_bindings"] = [
+        {
+            "study_id": "study-a",
+            "source_tier": "core",
+            "requires_chemical": True,
+            "dual_source_binding_digest": "1" * 64,
+            "generic_version": "2" * 64,
+            "chemical_version": "3" * 64,
+            "chemical_completion_digest": "4" * 64,
+            "reconciliation_digest": "5" * 64,
+        }
+    ]
+    lineage_path.write_text(json.dumps(lineage) + "\n", encoding="utf-8")
+    binding_digest = canonical_digest(lineage["dual_parse_bindings"])
+    quality = {
+        "dual_parse_status": "current",
+        "dual_parse_binding_digest": binding_digest,
+        "reaction_data_status": "unavailable_not_provided",
+        "reaction_count": None,
+        "credits_status": "NOT_APPLICABLE_BY_CURRENT_SCOPE",
+    }
+    (project / "05_release/quality_report.json").write_text(
+        json.dumps(quality) + "\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        review_benchmark,
+        "dual_parse_release_state",
+        lambda _: {
+            "dual_parse_status": "current",
+            "internal_release_ready": True,
+            "hard_fails": [],
+            "reaction_data_status": "unavailable_not_provided",
+            "reaction_count": None,
+            "credits_status": "NOT_APPLICABLE_BY_CURRENT_SCOPE",
+        },
+    )
+
+    report = evaluate_review(
+        project,
+        _scores((10, 15, 20, 20, 15, 10, 10)),
+    )
+
+    assert report["dual_parse_status"] == "current"
+    assert report["reaction_data_status"] == "unavailable_not_provided"
+    assert report["reaction_count"] is None
+    assert report["release_binding"]["dual_parse_binding_digest"] == binding_digest
+    assert report["credits_status"] == "NOT_APPLICABLE_BY_CURRENT_SCOPE"
+
+
 def test_internal_placeholder_is_reported_but_not_internal_hard_fail(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -19,6 +19,7 @@ from review_writer.delivery.chemical_paper_release import (
     dependency_currentness_for_project,
     safe_chemical_paper_projection,
 )
+from review_writer.delivery.dual_parse_release import dual_parse_release_state
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -54,6 +55,15 @@ COMMON_HARD_FAILS = frozenset(
         "UNSOURCED_SCIENTIFIC_CLAIM",
         "LEGACY_DRAFT_REPACKAGED",
         "SYSTEM_GENERATED_SYNTHESIS_FIGURE",
+        "DUAL_PARSE_STALE",
+        "CORE_GENERIC_PARSE_MISSING_OR_STALE",
+        "CORE_CHEMICAL_IMPORT_MISSING_OR_STALE",
+        "CHEMICAL_COMPLETION_INCOMPLETE",
+        "PARSE_RECONCILIATION_UNRESOLVED",
+        "DUAL_SOURCE_BINDING_MISMATCH",
+        "STALE_DUAL_PARSE_CONTENT_RESULT",
+        "AI_AUTHORED_SMILES",
+        "REACTION_ABSENCE_MISREPRESENTED",
     }
 )
 EXPERT_HARD_FAILS = frozenset(
@@ -389,6 +399,71 @@ def _release_payload(release: Path, release_level: str | None) -> dict[str, Any]
         or snapshot.get("chemical_paper_dependency_can_release", True) is not True
     ):
         divergence = True
+    dual_status = "not_applicable"
+    dual_binding_digest: str | None = None
+    reaction_data_status = "not_applicable"
+    reaction_count: int | None = None
+    dual_hard_fails: list[str] = []
+    dual_source_root = project / "01_evidence/dual_source"
+    has_dual_lineage = isinstance(lineage.get("dual_parse_bindings"), list)
+    if dual_source_root.exists() or has_dual_lineage:
+        dual_status = "stale"
+        if (
+            dual_source_root.is_symlink()
+            or not dual_source_root.is_dir()
+            or not has_dual_lineage
+        ):
+            dual_hard_fails.append("DUAL_PARSE_STALE")
+            divergence = True
+        else:
+            expected_dual_digest = canonical_digest(lineage["dual_parse_bindings"])
+            try:
+                quality = _read_json(
+                    project / "05_release/quality_report.json",
+                    "BENCHMARK_RELEASE_INVALID",
+                )
+                dual = dual_parse_release_state(project)
+            except Exception:
+                quality = None
+                dual = None
+            if not isinstance(quality, dict) or not isinstance(dual, dict):
+                dual_hard_fails.append("DUAL_PARSE_STALE")
+                divergence = True
+            else:
+                raw_hard_fails = dual.get("hard_fails")
+                if isinstance(raw_hard_fails, list) and all(
+                    isinstance(code, str) for code in raw_hard_fails
+                ):
+                    dual_hard_fails.extend(raw_hard_fails)
+                else:
+                    dual_hard_fails.append("DUAL_PARSE_STALE")
+                reaction_data_status = dual.get("reaction_data_status")
+                reaction_count = dual.get("reaction_count")
+                if (
+                    dual.get("dual_parse_status") != "current"
+                    or dual.get("internal_release_ready") is not True
+                    or dual_hard_fails
+                    or quality.get("dual_parse_status") != "current"
+                    or quality.get("dual_parse_binding_digest")
+                    != expected_dual_digest
+                    or quality.get("reaction_data_status")
+                    != reaction_data_status
+                    or quality.get("reaction_count") != reaction_count
+                    or quality.get("credits_status")
+                    != "NOT_APPLICABLE_BY_CURRENT_SCOPE"
+                    or reaction_data_status
+                    not in {"available", "unavailable_not_provided"}
+                    or (
+                        reaction_data_status == "unavailable_not_provided"
+                        and reaction_count is not None
+                    )
+                ):
+                    if not dual_hard_fails:
+                        dual_hard_fails.append("DUAL_PARSE_STALE")
+                    divergence = True
+                else:
+                    dual_status = "current"
+                    dual_binding_digest = expected_dual_digest
     for row in placeholders:
         if isinstance(row, dict) and row.get("status") != "verified":
             placeholder_id = row.get("placeholder_id")
@@ -413,6 +488,7 @@ def _release_payload(release: Path, release_level: str | None) -> dict[str, Any]
     if not isinstance(signals, list) or not all(isinstance(code, str) for code in signals):
         raise BenchmarkError("BENCHMARK_RELEASE_INVALID")
     signals = list(signals)
+    signals.extend(dual_hard_fails)
     if snapshot.get("system_generated_synthesis_figure") is True:
         signals.append("SYSTEM_GENERATED_SYNTHESIS_FIGURE")
     if divergence:
@@ -430,6 +506,10 @@ def _release_payload(release: Path, release_level: str | None) -> dict[str, Any]
         "chemical_paper_dependency_can_release": chemical_currentness.get(
             "can_release", False
         ),
+        "dual_parse_status": dual_status,
+        "dual_parse_binding_digest": dual_binding_digest,
+        "reaction_data_status": reaction_data_status,
+        "reaction_count": reaction_count,
         "hard_fail_signals": signals,
     }
 
@@ -520,6 +600,10 @@ def validate_report(report: object) -> dict[str, Any]:
     actual_chemical_issues = {
         code for code in report["issues"] if code.startswith("CHEMICAL_")
     }
+    dual_status = report.get("dual_parse_status", "not_applicable")
+    dual_binding = report["release_binding"].get("dual_parse_binding_digest")
+    reaction_status = report.get("reaction_data_status", "not_applicable")
+    reaction_count = report.get("reaction_count")
     expected_ids = [key for key, _ in RUBRIC_DIMENSIONS]
     if (
         [row["dimension_id"] for row in rows] != expected_ids
@@ -530,6 +614,17 @@ def validate_report(report: object) -> dict[str, Any]:
         != _expected_status(report["release_level"], report["score"], report["hard_fails"])
         or report["comparison_metrics"] != list(COMPARISON_METRICS)
         or actual_chemical_issues != expected_chemical_issues
+        or report.get("credits_status", "NOT_APPLICABLE_BY_CURRENT_SCOPE")
+        != "NOT_APPLICABLE_BY_CURRENT_SCOPE"
+        or (dual_status == "current") != isinstance(dual_binding, str)
+        or (
+            dual_status == "not_applicable"
+            and (dual_binding is not None or reaction_status != "not_applicable")
+        )
+        or (
+            reaction_status in {"not_applicable", "unavailable_not_provided"}
+            and reaction_count is not None
+        )
         or (
             report["release_level"] == "SELF_REVIEWED_DRAFT"
             and any(code in EXPERT_HARD_FAILS for code in report["hard_fails"])
@@ -612,6 +707,10 @@ def evaluate_review(
         "hard_fails": unique_hard_fails,
         "issues": sorted(set(issues)),
         "chemical_paper_safe_summary": binding["chemical_paper_safe_summary"],
+        "dual_parse_status": binding["dual_parse_status"],
+        "reaction_data_status": binding["reaction_data_status"],
+        "reaction_count": binding["reaction_count"],
+        "credits_status": "NOT_APPLICABLE_BY_CURRENT_SCOPE",
         "release_binding": {
             "manuscript_sha256": binding["manuscript_sha256"],
             "release_sha256": binding["release_sha256"],
@@ -621,6 +720,7 @@ def evaluate_review(
             "chemical_paper_dependency_can_release": binding[
                 "chemical_paper_dependency_can_release"
             ],
+            "dual_parse_binding_digest": binding["dual_parse_binding_digest"],
         },
         "standard_corpus": standard_corpus,
         "comparison_metrics": list(COMPARISON_METRICS),

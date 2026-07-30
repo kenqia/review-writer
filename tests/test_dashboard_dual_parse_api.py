@@ -1,0 +1,400 @@
+from __future__ import annotations
+
+import io
+import json
+from pathlib import Path
+
+import pytest
+
+from test_chemical_paper_import import PDF_SHA, source_truth_project, write_chemical_zip
+
+
+def _http_request(review_root: Path, raw_request: bytes) -> tuple[int, dict[str, str], bytes]:
+    from view import serve_review_dashboard as dashboard
+
+    class FakeSocket:
+        def __init__(self, incoming: bytes) -> None:
+            self.input = io.BytesIO(incoming)
+            self.output = io.BytesIO()
+
+        def makefile(self, mode: str, *args, **kwargs):
+            return self.input if "r" in mode else self.output
+
+        def sendall(self, data: bytes) -> None:
+            self.output.write(data)
+
+        def close(self) -> None:
+            pass
+
+    dashboard.DashboardHandler.review_root = review_root
+    socket = FakeSocket(raw_request)
+    dashboard.DashboardHandler(socket, ("127.0.0.1", 0), object())
+    head, body = socket.output.getvalue().split(b"\r\n\r\n", 1)
+    lines = head.decode("iso-8859-1").split("\r\n")
+    headers = dict(line.split(": ", 1) for line in lines[1:] if ": " in line)
+    return int(lines[0].split()[1]), headers, body
+
+
+def _post_zip(review_root: Path, archive: Path) -> tuple[int, dict[str, object]]:
+    payload = archive.read_bytes()
+    raw = (
+        b"POST /api/project/project/chemical-paper/preflight?study_id=study-1 HTTP/1.1\r\n"
+        b"Host: localhost\r\nContent-Type: application/zip\r\nContent-Length: "
+        + str(len(payload)).encode("ascii")
+        + b"\r\n\r\n"
+        + payload
+    )
+    status, _, body = _http_request(review_root, raw)
+    return status, json.loads(body)
+
+
+def _post_json(review_root: Path, suffix: str, payload: object) -> tuple[int, dict[str, object]]:
+    encoded = json.dumps(payload).encode("utf-8")
+    raw = (
+        f"POST /api/project/project/{suffix} HTTP/1.1\r\n".encode("ascii")
+        + b"Host: localhost\r\nContent-Type: application/json\r\nContent-Length: "
+        + str(len(encoded)).encode("ascii")
+        + b"\r\n\r\n"
+        + encoded
+    )
+    status, _, body = _http_request(review_root, raw)
+    return status, json.loads(body)
+
+
+def _put_json(review_root: Path, suffix: str, payload: object) -> tuple[int, dict[str, object]]:
+    encoded = json.dumps(payload).encode("utf-8")
+    raw = (
+        f"PUT /api/project/project/{suffix} HTTP/1.1\r\n".encode("ascii")
+        + b"Host: localhost\r\nContent-Type: application/json\r\nContent-Length: "
+        + str(len(encoded)).encode("ascii")
+        + b"\r\n\r\n"
+        + encoded
+    )
+    status, _, body = _http_request(review_root, raw)
+    return status, json.loads(body)
+
+
+def _authoritative_snapshot(project: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(project).as_posix(): path.read_bytes()
+        for path in project.rglob("*")
+        if path.is_file()
+        and ".dual-parse-staging" not in path.relative_to(project).parts
+    }
+
+
+def test_preflight_writes_no_authoritative_state_and_returns_safe_projection(
+    tmp_path: Path,
+) -> None:
+    review_root = tmp_path / "review-root"
+    project = source_truth_project(review_root / "review-projects")
+    archive = write_chemical_zip(tmp_path / "chemical.zip")
+    before = _authoritative_snapshot(project)
+
+    status, body = _post_zip(review_root, archive)
+
+    assert status == 200
+    assert body["status"] == "ready_for_confirmation"
+    assert body["study_id"] == "study-1"
+    assert body["page_count"] == 2
+    assert body["molecule_count"] == 2
+    assert body["reaction_data_status"] == "unavailable_not_provided"
+    assert body["preflight_token"].startswith("cp-preflight-v1.")
+    assert _authoritative_snapshot(project) == before
+    encoded = json.dumps(body, sort_keys=True)
+    for forbidden in (
+        PDF_SHA,
+        str(project),
+        "source_pdf_sha256",
+        "archive_sha256",
+        "mol_block",
+        "entry_inventory",
+    ):
+        assert forbidden not in encoded
+
+
+def test_confirm_revalidates_records_actor_and_rejects_second_confirm(
+    tmp_path: Path,
+) -> None:
+    review_root = tmp_path / "review-root"
+    project = source_truth_project(review_root / "review-projects")
+    status, preflight = _post_zip(
+        review_root, write_chemical_zip(tmp_path / "chemical.zip")
+    )
+    assert status == 200
+    request = {
+        "study_id": "study-1",
+        "preflight_token": preflight["preflight_token"],
+        "actor_type": "simulated_researcher_agent",
+        "actor_label": "simulated_researcher",
+    }
+
+    status, body = _post_json(review_root, "chemical-paper/confirm", request)
+
+    assert status == 200
+    assert body == {"status": "imported", "study_id": "study-1"}
+    state = json.loads(
+        (project / "01_evidence/chemical_paper/study-1/state.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    event = state["imports"][state["current_import_digest"]]
+    assert event["actor"] == {
+        "actor_type": "simulated_researcher_agent",
+        "actor_label": "simulated_researcher",
+    }
+
+    before = _authoritative_snapshot(project)
+    status, body = _post_json(review_root, "chemical-paper/confirm", request)
+    assert status == 409
+    assert body["error_code"] == "PREFLIGHT_ALREADY_CONFIRMED"
+    assert _authoritative_snapshot(project) == before
+
+
+def test_confirm_never_reports_failure_after_authoritative_import_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from review_writer.delivery import dual_parse_release as release
+
+    review_root = tmp_path / "review-root"
+    project = source_truth_project(review_root / "review-projects")
+    status, preflight = _post_zip(
+        review_root, write_chemical_zip(tmp_path / "chemical.zip")
+    )
+    assert status == 200
+    real_atomic_bytes = release._atomic_bytes
+
+    def fail_consumed_marker(path: Path, payload: bytes) -> None:
+        if path.name.endswith(".consumed.json"):
+            raise release.DualParseReleaseError("PREFLIGHT_STAGING_FAILED")
+        real_atomic_bytes(path, payload)
+
+    monkeypatch.setattr(release, "_atomic_bytes", fail_consumed_marker)
+
+    status, body = _post_json(
+        review_root,
+        "chemical-paper/confirm",
+        {
+            "study_id": "study-1",
+            "preflight_token": preflight["preflight_token"],
+            "actor_type": "simulated_researcher_agent",
+            "actor_label": "simulated_researcher",
+        },
+    )
+
+    assert status == 200
+    assert body == {"status": "imported", "study_id": "study-1"}
+    assert (project / "01_evidence/chemical_paper/study-1/state.json").is_file()
+
+
+def test_confirm_rejects_staged_drift_with_zero_authoritative_write(
+    tmp_path: Path,
+) -> None:
+    review_root = tmp_path / "review-root"
+    project = source_truth_project(review_root / "review-projects")
+    status, preflight = _post_zip(
+        review_root, write_chemical_zip(tmp_path / "chemical.zip")
+    )
+    assert status == 200
+    staged_archives = list(
+        (project / ".dual-parse-staging/chemical-paper").glob("*.zip")
+    )
+    assert len(staged_archives) == 1
+    staged_archives[0].write_bytes(b"changed-after-preflight")
+    before = _authoritative_snapshot(project)
+
+    status, body = _post_json(
+        review_root,
+        "chemical-paper/confirm",
+        {
+            "study_id": "study-1",
+            "preflight_token": preflight["preflight_token"],
+            "actor_type": "simulated_researcher_agent",
+            "actor_label": "simulated_researcher",
+        },
+    )
+
+    assert status == 409
+    assert body["error_code"] == "PREFLIGHT_STAGED_BYTES_STALE"
+    assert _authoritative_snapshot(project) == before
+    assert str(project) not in json.dumps(body)
+
+
+def test_preflight_rejects_bad_content_type_without_writing(tmp_path: Path) -> None:
+    review_root = tmp_path / "review-root"
+    project = source_truth_project(review_root / "review-projects")
+    archive = write_chemical_zip(tmp_path / "chemical.zip")
+    payload = archive.read_bytes()
+    before = _authoritative_snapshot(project)
+    raw = (
+        b"POST /api/project/project/chemical-paper/preflight?study_id=study-1 HTTP/1.1\r\n"
+        b"Host: localhost\r\nContent-Type: application/octet-stream\r\nContent-Length: "
+        + str(len(payload)).encode("ascii")
+        + b"\r\n\r\n"
+        + payload
+    )
+
+    status, _, body = _http_request(review_root, raw)
+
+    assert status == 415
+    assert json.loads(body)["error_code"] == "CHEMICAL_ZIP_CONTENT_TYPE_INVALID"
+    assert _authoritative_snapshot(project) == before
+    assert not (project / ".dual-parse-staging").exists()
+
+
+def test_get_dual_parse_returns_only_safe_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    review_root = tmp_path / "review-root"
+    source_truth_project(review_root / "review-projects")
+    monkeypatch.setattr(
+        dashboard,
+        "dual_parse_dashboard_projection",
+        lambda project: {
+            "project_status": "needs_chemical_import",
+            "summary": {
+                "core_studies": 1,
+                "generic_current": 1,
+                "chemical_current": 0,
+                "reaction_data_status": "unavailable_not_provided",
+            },
+            "studies": [
+                {
+                    "study_id": "study-1",
+                    "source_tier": "core",
+                    "generic_parse_status": "current",
+                    "chemical_import_status": "missing",
+                    "completion_status": "blocked",
+                    "reconciliation_status": "blocked",
+                    "pdf_page_url": "/api/project/project/source/study-1/pdf-page?page=1",
+                }
+            ],
+            "unique_next_action": "Import the Chemical Paper export for study-1.",
+        },
+    )
+
+    status, _, body = _http_request(
+        review_root,
+        b"GET /api/project/project/dual-parse HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    )
+
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["summary"]["reaction_data_status"] == "unavailable_not_provided"
+    assert payload["unique_next_action"].startswith("Import")
+    assert "credits" not in json.dumps(payload).casefold()
+
+
+def test_completion_and_reconciliation_put_keep_snake_case_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    review_root = tmp_path / "review-root"
+    source_truth_project(review_root / "review-projects")
+    seen: dict[str, object] = {}
+
+    def completion(project: Path, payload: object) -> dict[str, object]:
+        seen["completion"] = payload
+        return {"status": "updated", "applied_count": 1}
+
+    def reconciliation(project: Path, payload: object) -> dict[str, object]:
+        seen["reconciliation"] = payload
+        return {"status": "pdf_resolved", "study_id": "study-1"}
+
+    monkeypatch.setattr(dashboard, "apply_chemical_completion_http", completion)
+    monkeypatch.setattr(dashboard, "apply_reconciliation_http", reconciliation)
+    completion_payload = {
+        "study_id": "study-1",
+        "version_token": "opaque-current-token",
+        "actor_type": "simulated_researcher_agent",
+        "actor_label": "simulated_researcher",
+        "corrections": [
+            {
+                "molecule_index": 0,
+                "field": "smiles_expanded",
+                "value": "C",
+                "reason": "Visible in Scheme 1.",
+                "pdf_locator": {"page": 1, "figure_label": "Scheme 1"},
+            }
+        ],
+    }
+    reconciliation_payload = {
+        "study_id": "study-1",
+        "object_id": "molecule-0",
+        "registry_digest": "opaque-registry-token",
+        "action": "pdf_resolved",
+        "selected_lane": "chemical",
+        "note": "The original PDF supports the Chemical Paper candidate.",
+        "pdf_locator": {"page": 1, "figure_label": "Scheme 1"},
+        "actor_type": "simulated_researcher_agent",
+        "actor_label": "simulated_researcher",
+    }
+
+    completion_status, completion_body = _put_json(
+        review_root, "chemical-completion", completion_payload
+    )
+    reconciliation_status, reconciliation_body = _put_json(
+        review_root, "parse-reconciliation", reconciliation_payload
+    )
+
+    assert completion_status == 200
+    assert completion_body["applied_count"] == 1
+    assert reconciliation_status == 200
+    assert reconciliation_body["status"] == "pdf_resolved"
+    assert seen == {
+        "completion": completion_payload,
+        "reconciliation": reconciliation_payload,
+    }
+
+
+def test_completion_route_rejects_camel_case_before_authority_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    review_root = tmp_path / "review-root"
+    project = source_truth_project(review_root / "review-projects")
+    called = False
+
+    def completion(project: Path, payload: object) -> dict[str, object]:
+        nonlocal called
+        called = True
+        return {"status": "updated"}
+
+    monkeypatch.setattr(dashboard, "apply_chemical_completion_http", completion)
+    before = _authoritative_snapshot(project)
+
+    status, body = _put_json(
+        review_root,
+        "chemical-completion",
+        {
+            "studyId": "study-1",
+            "versionToken": "opaque",
+            "actorType": "simulated_researcher_agent",
+            "actorLabel": "simulated_researcher",
+            "corrections": [],
+        },
+    )
+
+    assert status == 422
+    assert body["error_code"] == "CHEMICAL_COMPLETION_REQUEST_INVALID"
+    assert called is False
+    assert _authoritative_snapshot(project) == before
+
+
+def test_dual_parse_evaluation_marks_credits_not_applicable_without_zero(
+    tmp_path: Path,
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    project = tmp_path / "project"
+    (project / "01_evidence/dual_source").mkdir(parents=True)
+
+    payload = dashboard.project_evaluation_payload(project)
+
+    assert payload["credits_status"] == "NOT_APPLICABLE_BY_CURRENT_SCOPE"
+    assert "credit_ledger" not in payload
+    assert "credits" not in payload
