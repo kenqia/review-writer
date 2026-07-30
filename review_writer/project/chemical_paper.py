@@ -408,7 +408,6 @@ def _normalize_molecules(value: object, page_count: int, import_digest_seed: str
         }
         body["molecule_digest"] = canonical_digest(body)
         rows.append(body)
-    rows.sort(key=lambda row: (row["page_index"], row["molecule_id"]))
     return rows
 
 
