@@ -797,6 +797,9 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
                     "automatic_status",
                     "issues",
                     "decision",
+                    "previous_decisions",
+                    "review_state",
+                    "review_message",
                     "actions",
                     "note_required",
                     "decision_token",
@@ -1155,6 +1158,53 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             self.assertEqual(
                 restored["next_action"]["label"], progress["recommended_next"]
             )
+
+            reparse_object = next(
+                row
+                for row in study["objects"]
+                if row["decision"] and row["decision"]["action"] == "reparse_required"
+            )
+            previous_decision = reparse_object["decision"]
+            markdown = project / "01_evidence/mineru/markdown/10_1000_example.md"
+            markdown.write_text(
+                "# Canonical\nBody after successful reparse\n", encoding="utf-8"
+            )
+            write_source_truth_bundle(project, "scholarly-a")
+            write_parse_quality_gate(project, "scholarly-a")
+
+            completed = importlib.reload(dashboard).project_parse_quality_payload(
+                review_root, "case"
+            )
+            completed_object = next(
+                row
+                for row in completed["studies"][0]["objects"]
+                if row["object_id"] == reparse_object["object_id"]
+            )
+
+            self.assertEqual(0, completed["summary"]["reparse_required"])
+            self.assertEqual(1, completed["summary"]["needs_re_review"])
+            self.assertEqual(1, completed["summary"]["reparse_completed"])
+            self.assertEqual("review_reparsed_objects", completed["next_action"]["code"])
+            self.assertFalse(completed["workflow_can_continue"])
+            self.assertIsNone(completed_object["decision"])
+            self.assertEqual("needs_re_review", completed_object["review_state"])
+            self.assertIn("重新解析已完成", completed_object["review_message"])
+            self.assertEqual(
+                {
+                    "action": previous_decision["action"],
+                    "note": previous_decision["note"],
+                    "actor_type": previous_decision["actor_type"],
+                    "actor_label": previous_decision["actor_label"],
+                    "decided_at": previous_decision["decided_at"],
+                },
+                completed_object["previous_decisions"][0],
+            )
+            completed_progress = dashboard.project_progress_payload(review_root, "case")
+            self.assertEqual(
+                completed["next_action"]["label"],
+                completed_progress["recommended_next"],
+            )
+            self.assertEqual("", completed_progress["blocker_code"])
 
     def test_parse_quality_pdf_page_route_accepts_authoritative_four_digit_page(self) -> None:
         sys.path.insert(0, str(ROOT))
@@ -4901,6 +4951,8 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             "study?.repair_handoff",
             "object.decision?.actor_label",
             "object.decision?.decided_at",
+            "object.previous_decisions",
+            "object.review_message",
             "$('parse-quality-refresh').addEventListener('click'",
         ):
             self.assertIn(binding, review_html)
@@ -4923,6 +4975,8 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             "刷新解析状态",
         ):
             self.assertIn(copy, parser.text)
+        for dynamic_copy in ("重新解析已完成，需要重新判断", "此前决定"):
+            self.assertIn(dynamic_copy, review_html)
         for forbidden in ("Source Truth Bundle", "schema", "digest", "hash", "JSON"):
             self.assertNotIn(forbidden.casefold(), parser.text.casefold())
         for style in (

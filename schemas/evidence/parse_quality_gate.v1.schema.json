@@ -18,6 +18,11 @@
     "schema_version": {"const": "parse-quality-gate.v1"},
     "study_id": {"type": "string", "minLength": 1},
     "bundle_digest": {"$ref": "#/$defs/sha256"},
+    "prior_gate_digests": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/sha256"}
+    },
     "objects": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/object"}},
     "gate_digest": {"$ref": "#/$defs/sha256"},
     "status": {
@@ -87,7 +92,17 @@
         },
         "status": {"enum": ["usable", "usable_with_review", "incomplete", "failed"]},
         "issues": {"type": "array", "items": {"$ref": "#/$defs/issue"}},
-        "decision": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/decision"}]}
+        "decision": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/decision"}]},
+        "prior_decisions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/decision"}
+        },
+        "review_state": {
+          "enum": ["not_required", "needs_review", "needs_re_review", "decided"]
+        },
+        "re_review_reason": {
+          "enum": [null, "reparse_completed", "reparse_completed_object_changed", "object_changed"]
+        }
       }
     }
   }

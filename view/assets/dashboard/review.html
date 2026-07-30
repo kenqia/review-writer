@@ -893,6 +893,8 @@
     function parseStudyState(study) {
       const objects = study?.objects || [];
       if (objects.some(row => row.decision?.action === 'reparse_required')) return '等待重新解析';
+      const reReview = objects.filter(row => row.review_state === 'needs_re_review').length;
+      if (reReview) return `重新解析已完成，需要重新判断 · ${reReview} 项`;
       if (objects.some(row => row.decision?.action === 'pdf_locator_only')) return '含人工定位部分';
       const pending = objects.filter(row => (row.actions || []).length && !row.decision).length;
       return pending ? `${pending} 项待决定` : '核对已关闭';
@@ -928,7 +930,9 @@
       const studies = parseQualityPayload.studies || [];
       const summary = parseQualityPayload.summary || {};
       const nextAction = parseQualityPayload.next_action || {};
-      $('parse-quality-count').textContent = `${summary.needs_review || 0} 项待决定`;
+      $('parse-quality-count').textContent = summary.needs_re_review
+        ? `${summary.needs_re_review} 项需要重新判断`
+        : `${summary.needs_review || 0} 项待决定`;
       $('parse-quality-next-action-label').textContent = nextAction.label || '等待解析检查就绪';
       $('parse-quality-next-action-description').textContent = nextAction.description || 'Evidence 保持锁定。';
       $('parse-quality-refresh').hidden = nextAction.code !== 'repair_parse';
@@ -997,6 +1001,32 @@
           issues.append(textElement('li', 'parse-quality-no-issue', '自动检查未发现需要人工处理的问题。'));
         }
         row.append(issues);
+
+        if (object.review_message) {
+          row.append(textElement('p', 'parse-quality-review-lifecycle', object.review_message));
+        }
+        if ((object.previous_decisions || []).length) {
+          const history = document.createElement('details');
+          history.className = 'parse-quality-decision-history';
+          const historySummary = document.createElement('summary');
+          historySummary.textContent = `此前决定（${object.previous_decisions.length}）`;
+          history.append(historySummary);
+          const historyList = document.createElement('ol');
+          object.previous_decisions.forEach(previous => {
+            const item = document.createElement('li');
+            const actionLabel = parseActionLabels[previous.action]?.title || '此前判断';
+            item.append(textElement('strong', '', actionLabel));
+            item.append(textElement('p', '', previous.note || '未记录理由'));
+            item.append(textElement(
+              'small',
+              '',
+              `决定者：${previous.actor_label || '未记录'}（${previous.actor_type || '类型未记录'}） · 更新：${previous.decided_at || '时间未记录'}`,
+            ));
+            historyList.append(item);
+          });
+          history.append(historyList);
+          row.append(history);
+        }
 
         if ((object.actions || []).length) {
           const controls = document.createElement('fieldset');

@@ -2644,8 +2644,10 @@ def _parse_decision_token(
     return hashlib.sha256(material).hexdigest()
 
 
-def _parse_object_actions(status: str) -> list[str]:
-    if status == "usable_with_review":
+def _parse_object_actions(status: str, review_state: str = "") -> list[str]:
+    if status == "usable_with_review" or (
+        status == "usable" and review_state in {"needs_re_review", "decided"}
+    ):
         return sorted(HUMAN_ACTIONS)
     if status in {"incomplete", "failed"}:
         return ["pdf_locator_only", "reparse_required"]
@@ -2661,6 +2663,8 @@ def project_parse_quality_payload(review_root: Path, project_id: str) -> dict[st
     approved = 0
     pdf_locator_only = 0
     reparse_required = 0
+    needs_re_review = 0
+    reparse_completed = 0
     last_decision_at = ""
     for gate in state.get("studies", []):
         if not isinstance(gate, dict):
@@ -2698,9 +2702,38 @@ def project_parse_quality_payload(review_root: Path, project_id: str) -> dict[st
             object_digest = visible_text(row.get("object_digest"))
             kind = visible_text(row.get("kind"))
             automatic_status = visible_text(row.get("status"))
-            actions = _parse_object_actions(automatic_status)
+            review_state = visible_text(row.get("review_state"))
+            actions = _parse_object_actions(automatic_status, review_state)
             raw_decision = row.get("decision")
             decision = None
+            previous_decisions = []
+            for prior in row.get("prior_decisions", []):
+                if not isinstance(prior, dict):
+                    continue
+                prior_decision = {
+                    "action": visible_text(prior.get("action")),
+                    "note": visible_text(prior.get("note") or prior.get("reason")),
+                    "actor_type": visible_text(prior.get("actor_type")),
+                    "actor_label": visible_text(prior.get("actor_label")),
+                    "decided_at": visible_text(prior.get("decided_at")),
+                }
+                previous_decisions.append(prior_decision)
+                if prior_decision["decided_at"]:
+                    study_decision_times.append(prior_decision["decided_at"])
+            re_review_reason = visible_text(row.get("re_review_reason"))
+            review_message = ""
+            if review_state == "needs_re_review":
+                needs_re_review += 1
+                if re_review_reason.startswith("reparse_completed"):
+                    reparse_completed += 1
+                    review_message = (
+                        "重新解析已完成且解析对象发生变化，需要重新判断；"
+                        "此前决定仅作为历史记录。"
+                        if re_review_reason == "reparse_completed_object_changed"
+                        else "重新解析已完成，需要重新判断；此前决定仅作为历史记录。"
+                    )
+                else:
+                    review_message = "解析对象已变化，需要重新对照原始 PDF 判断。"
             if isinstance(raw_decision, dict):
                 action = visible_text(raw_decision.get("action"))
                 note = visible_text(raw_decision.get("note"))
@@ -2739,6 +2772,9 @@ def project_parse_quality_payload(review_root: Path, project_id: str) -> dict[st
                     "automatic_status": automatic_status,
                     "issues": issues,
                     "decision": decision,
+                    "previous_decisions": previous_decisions,
+                    "review_state": review_state,
+                    "review_message": review_message,
                     "actions": actions,
                     "note_required": bool(actions),
                     "decision_token": _parse_decision_token(
@@ -2781,7 +2817,16 @@ def project_parse_quality_payload(review_root: Path, project_id: str) -> dict[st
             }
         )
     status = visible_text(state.get("status")) or "needs_review"
-    if needs_review:
+    if needs_re_review:
+        next_action = {
+            "code": "review_reparsed_objects",
+            "label": "重新判断已完成重解析的对象",
+            "description": (
+                f"{needs_re_review} 项解析对象需要重新对照原始 PDF 判断；"
+                "此前决定保留为历史，但不会授权 Evidence。"
+            ),
+        }
+    elif needs_review:
         next_action = {
             "code": "review_parse_decisions",
             "label": "完成剩余解析决定",
@@ -2822,6 +2867,8 @@ def project_parse_quality_payload(review_root: Path, project_id: str) -> dict[st
             "approved": approved,
             "pdf_locator_only": pdf_locator_only,
             "reparse_required": reparse_required,
+            "needs_re_review": needs_re_review,
+            "reparse_completed": reparse_completed,
         },
         "studies": studies,
     }
@@ -3307,6 +3354,17 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
         )
     ]
     parse_reparse_required = bool(parse_reparse_studies)
+    parse_needs_re_review = bool(
+        parse_projection
+        and any(
+            isinstance(row, dict)
+            and any(
+                isinstance(obj, dict) and obj.get("review_state") == "needs_re_review"
+                for obj in row.get("objects", [])
+            )
+            for row in parse_projection.get("studies", [])
+        )
+    )
     state = read_json_if_exists(project / "00_brief/review_state.json") or {}
     source_payload = project_source_handoff_payload(review_root, project_id)
     screening = read_json_if_exists(project / "00_discovery/screening_decisions.json") or {}
@@ -3669,6 +3727,8 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
         recommended = "重新生成解析质量记录"
     elif parse_reparse_required and active_stage == "parsing":
         recommended = "交接并重新解析受阻研究"
+    elif parse_needs_re_review and active_stage == "parsing":
+        recommended = "重新判断已完成重解析的对象"
     elif source_truth_managed and active_stage == "parsing":
         recommended = (
             "生成并核对解析质量"

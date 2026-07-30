@@ -275,36 +275,170 @@ def test_explicit_actor_fields_must_be_valid_strings(tmp_path: Path) -> None:
         )
 
 
-def test_unrelated_object_change_keeps_object_digests_local_but_stales_gate_decisions(
+def test_reparse_rebuild_invalidates_only_requested_objects_and_preserves_history(
     tmp_path: Path,
 ) -> None:
     project = _parse_project(tmp_path)
+    gate = write_parse_quality_gate(project, "scholarly-a")
+    reviewable = [row for row in gate["objects"] if row["status"] == "usable_with_review"]
+    assert len(reviewable) >= 2
+    reparse_target = reviewable[0]
+    state = _decide_all(
+        project,
+        target_object_id=reparse_target["object_id"],
+        target_action="reparse_required",
+    )
+    before_by_id = {row["object_id"]: row for row in state["objects"]}
+    prior_reparse = before_by_id[reparse_target["object_id"]]["decision"]
+    stable_decisions = {
+        object_id: row["decision"]
+        for object_id, row in before_by_id.items()
+        if object_id != reparse_target["object_id"] and isinstance(row["decision"], dict)
+    }
+
+    markdown = project / "01_evidence/mineru/markdown/10_1000_example.md"
+    markdown.write_text("# Canonical\nBody after successful reparse\n", encoding="utf-8")
+    write_source_truth_bundle(project, "scholarly-a")
+    rebuilt = write_parse_quality_gate(project, "scholarly-a")
+    rebuilt_by_id = {row["object_id"]: row for row in rebuilt["objects"]}
+    affected = rebuilt_by_id[reparse_target["object_id"]]
+
+    assert rebuilt["gate_digest"] != state["gate_digest"]
+    assert {
+        (row["object_id"], row["object_digest"]) for row in rebuilt["objects"]
+    } == {
+        (row["object_id"], row["object_digest"]) for row in state["objects"]
+    }
+    assert affected["decision"] is None
+    assert affected["review_state"] == "needs_re_review"
+    assert affected["re_review_reason"] == "reparse_completed"
+    assert affected["prior_decisions"] == [prior_reparse]
+    assert all(
+        rebuilt_by_id[object_id]["decision"] == decision
+        for object_id, decision in stable_decisions.items()
+    )
+    assert rebuilt["status"] == "needs_review"
+    assert rebuilt["workflow_can_continue"] is False
+
+    rereviewed = apply_parse_quality_decision(
+        project,
+        "scholarly-a",
+        {
+            "object_id": affected["object_id"],
+            "object_digest": affected["object_digest"],
+            "gate_digest": rebuilt["gate_digest"],
+            "action": "approve_candidate_extraction",
+            "note": "Rechecked the completed reparse against the original PDF.",
+            "actor_type": "simulated_researcher_agent",
+            "actor_label": "playwright-reviewer-round-2",
+        },
+    )
+    rereviewed_object = next(
+        row for row in rereviewed["objects"] if row["object_id"] == affected["object_id"]
+    )
+
+    assert rereviewed_object["decision"]["action"] == "approve_candidate_extraction"
+    assert rereviewed_object["decision"]["actor_type"] == "simulated_researcher_agent"
+    assert rereviewed_object["prior_decisions"] == [prior_reparse]
+    assert rereviewed_object["review_state"] == "decided"
+    assert rereviewed_object["re_review_reason"] is None
+    assert rereviewed["workflow_can_continue"] is True
+
+    revised = apply_parse_quality_decision(
+        project,
+        "scholarly-a",
+        {
+            "object_id": affected["object_id"],
+            "object_digest": affected["object_digest"],
+            "gate_digest": rereviewed["gate_digest"],
+            "action": "pdf_locator_only",
+            "note": "A second review narrowed this object to original-PDF location only.",
+            "actor_type": "simulated_researcher_agent",
+            "actor_label": "playwright-reviewer-round-2",
+        },
+    )
+    revised_object = next(
+        row for row in revised["objects"] if row["object_id"] == affected["object_id"]
+    )
+    assert revised_object["prior_decisions"] == [
+        prior_reparse,
+        rereviewed_object["decision"],
+    ]
+    assert revised_object["decision"]["action"] == "pdf_locator_only"
+
+
+def test_changed_object_binding_fails_closed_without_invalidating_stable_objects(
+    tmp_path: Path,
+) -> None:
+    project = _parse_project(tmp_path, incomplete_table=True)
     write_parse_quality_gate(project, "scholarly-a")
-    approved = _decide_all(project)
-    approved_digest = approved["gate_digest"]
+    reviewed = _decide_all(project)
+    before_by_kind = {row["kind"]: row for row in reviewed["objects"]}
+    prior_table_decision = before_by_kind["table_structure"]["decision"]
 
     content_path = (
         project
         / "01_evidence/parses/extracted/10_1000_example/parse_content_list.json"
     )
     content = json.loads(content_path.read_text(encoding="utf-8"))
-    content.append(
-        {
-            "type": "table",
-            "page_idx": 0,
-            "bbox": [1, 2, 3, 4],
-            "table_body": "condition | yield",
-            "table_caption": ["Optimization"],
-        }
-    )
+    table = next(row for row in content if row.get("type") == "table")
+    table["table_body"] = "condition | yield"
     _write_json(content_path, content)
     write_source_truth_bundle(project, "scholarly-a")
-
     rebuilt = write_parse_quality_gate(project, "scholarly-a")
+    after_by_kind = {row["kind"]: row for row in rebuilt["objects"]}
+    changed = after_by_kind["table_structure"]
 
-    assert rebuilt["status"] == "needs_review"
-    assert rebuilt["gate_digest"] != approved_digest
-    assert all(row["decision"] is None for row in rebuilt["objects"])
+    assert changed["object_id"] == before_by_kind["table_structure"]["object_id"]
+    assert changed["object_digest"] != before_by_kind["table_structure"]["object_digest"]
+    assert changed["decision"] is None
+    assert changed["review_state"] == "needs_re_review"
+    assert changed["re_review_reason"] == "object_changed"
+    assert changed["prior_decisions"] == [prior_table_decision]
+    assert all(
+        after_by_kind[kind]["decision"] == before_by_kind[kind]["decision"]
+        for kind in set(PARSE_OBJECT_KINDS) - {"table_structure"}
+        if isinstance(before_by_kind[kind]["decision"], dict)
+    )
+    assert rebuilt["workflow_can_continue"] is False
+
+
+def test_changed_object_that_now_looks_usable_still_requires_re_review(
+    tmp_path: Path,
+) -> None:
+    project = _parse_project(tmp_path)
+    write_parse_quality_gate(project, "scholarly-a")
+    reviewed = _decide_all(project)
+    previous = next(row for row in reviewed["objects"] if row["kind"] == "reference_boundary")
+    assert previous["status"] == "usable_with_review"
+
+    markdown = project / "01_evidence/mineru/markdown/10_1000_example.md"
+    markdown.write_text(
+        "# Canonical\nBody\n# References\n1. Synthetic reference.\n",
+        encoding="utf-8",
+    )
+    write_source_truth_bundle(project, "scholarly-a")
+    rebuilt = write_parse_quality_gate(project, "scholarly-a")
+    changed = next(row for row in rebuilt["objects"] if row["kind"] == "reference_boundary")
+
+    assert changed["status"] == "usable"
+    assert changed["decision"] is None
+    assert changed["prior_decisions"] == [previous["decision"]]
+    assert changed["review_state"] == "needs_re_review"
+    assert rebuilt["workflow_can_continue"] is False
+
+    rereviewed = apply_parse_quality_decision(
+        project,
+        "scholarly-a",
+        {
+            "object_id": changed["object_id"],
+            "object_digest": changed["object_digest"],
+            "gate_digest": rebuilt["gate_digest"],
+            "action": "approve_candidate_extraction",
+            "note": "Rechecked the changed reference boundary against the original PDF.",
+        },
+    )
+    assert rereviewed["workflow_can_continue"] is True
 
 
 def test_decision_with_wrong_bound_gate_digest_cannot_authorize(
@@ -353,8 +487,12 @@ def test_rebuild_upgrades_legacy_gate_objects_without_reusing_old_decisions(
     approved = _decide_all(project)
     gate_path = project / "01_evidence/source_truth/scholarly-a/parse_quality.json"
     legacy = json.loads(gate_path.read_text(encoding="utf-8"))
+    legacy.pop("prior_gate_digests")
     for row in legacy["objects"]:
         row.pop("object_digest")
+        row.pop("prior_decisions")
+        row.pop("review_state")
+        row.pop("re_review_reason")
         if isinstance(row.get("decision"), dict):
             row["decision"] = {
                 key: row["decision"][key]

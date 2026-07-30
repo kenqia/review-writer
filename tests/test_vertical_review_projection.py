@@ -3032,7 +3032,17 @@ def test_stale_parse_gate_invalidates_only_evidence_depending_on_changed_source(
     )
     assert refreshed_main["object_digest"] == digests[("CANARY_MAIN", "reference_boundary")]
     assert refreshed_main["status"] == "usable_with_review"
-    assert refreshed_main["decision"] is None
+    assert refreshed_main["decision"]["action"] == "approve_candidate_extraction"
+    refreshed_si = next(
+        row
+        for row in refreshed_gate["objects"]
+        if row["source_id"] == "CANARY_SI" and row["kind"] == "formula_chemistry"
+    )
+    assert refreshed_si["object_digest"] != digests[("CANARY_SI", "formula_chemistry")]
+    assert refreshed_si["decision"] is None
+    assert refreshed_si["review_state"] == "needs_re_review"
+    assert refreshed_si["re_review_reason"] == "object_changed"
+    assert refreshed_si["prior_decisions"] == []
 
     refreshed_evidence = paper_evidence_state(project)
     refreshed_workflow = workflow_state(project)

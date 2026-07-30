@@ -125,6 +125,9 @@ def _object(
             }
         ),
         "decision": None,
+        "prior_decisions": [],
+        "review_state": "not_required" if status == "usable" else "needs_review",
+        "re_review_reason": None,
     }
 
 
@@ -345,7 +348,17 @@ def _supplement_completeness(
 
 def _assessment_digest(gate: dict[str, Any]) -> str:
     objects = [
-        {key: value for key, value in row.items() if key != "decision"}
+        {
+            key: value
+            for key, value in row.items()
+            if key
+            not in {
+                "decision",
+                "prior_decisions",
+                "review_state",
+                "re_review_reason",
+            }
+        }
         for row in gate["objects"]
     ]
     return canonical_digest(
@@ -360,17 +373,25 @@ def _assessment_digest(gate: dict[str, Any]) -> str:
 
 def _project(gate: dict[str, Any]) -> dict[str, Any]:
     result = copy.deepcopy(gate)
+    result.setdefault("prior_gate_digests", [])
+    valid_gate_digests = {result["gate_digest"], *result["prior_gate_digests"]}
     pending = False
     reparse = False
     pdf_only = False
     for row in result["objects"]:
-        if row["status"] == "usable":
+        row.setdefault("prior_decisions", [])
+        row.setdefault(
+            "review_state",
+            "not_required" if row["status"] == "usable" else "needs_review",
+        )
+        row.setdefault("re_review_reason", None)
+        if row["status"] == "usable" and row["review_state"] == "not_required":
             continue
         decision = row.get("decision")
         if (
             not isinstance(decision, dict)
             or decision.get("bound_object_digest") != row["object_digest"]
-            or decision.get("bound_gate_digest") != result["gate_digest"]
+            or decision.get("bound_gate_digest") not in valid_gate_digests
             or decision.get("schema_version") != "verification-decision.v1"
             or decision.get("actor_type") not in ACTOR_TYPES
             or not isinstance(decision.get("actor_label"), str)
@@ -383,12 +404,14 @@ def _project(gate: dict[str, Any]) -> dict[str, Any]:
         action = decision.get("action")
         allowed_actions = (
             HUMAN_ACTIONS
-            if row["status"] == "usable_with_review"
+            if row["status"] in {"usable", "usable_with_review"}
             else frozenset({"pdf_locator_only", "reparse_required"})
         )
         if action not in allowed_actions:
             pending = True
             continue
+        row["review_state"] = "decided"
+        row["re_review_reason"] = None
         reparse = reparse or action == "reparse_required"
         pdf_only = pdf_only or action == "pdf_locator_only"
     if reparse:
@@ -416,6 +439,9 @@ def _validate_gate(
         raise ParseQualityError("PARSE_QUALITY_SCHEMA_INVALID")
     if _assessment_digest(gate) != gate.get("gate_digest"):
         raise ParseQualityError("PARSE_QUALITY_DIGEST_MISMATCH")
+    prior_gate_digests = gate.get("prior_gate_digests", [])
+    if gate.get("gate_digest") in prior_gate_digests:
+        raise ParseQualityError("PARSE_QUALITY_HISTORY_INVALID")
     for row in gate["objects"]:
         expected = canonical_digest(
             {
@@ -456,6 +482,7 @@ def build_parse_quality_gate(project: Path, bundle: dict[str, object]) -> dict[s
         "schema_version": "parse-quality-gate.v1",
         "study_id": study_id,
         "bundle_digest": bundle["bundle_digest"],
+        "prior_gate_digests": [],
         "objects": objects,
         "gate_digest": "",
         "status": "needs_review",
@@ -511,17 +538,58 @@ def write_parse_quality_gate(project: Path, study_id: str) -> dict[str, object]:
         if not isinstance(previous, dict):
             raise ParseQualityError("PARSE_QUALITY_INVALID")
         _validate_gate(previous, allow_legacy_object_digest=True)
-        if previous["gate_digest"] == gate["gate_digest"]:
-            decisions = {
-                (row["object_id"], row.get("object_digest")): row.get("decision")
-                for row in previous["objects"]
-                if isinstance(row.get("decision"), dict)
-                and row.get("object_digest") is not None
-                and row["decision"].get("bound_object_digest") == row["object_digest"]
-            }
-            for row in gate["objects"]:
-                row["decision"] = decisions.get((row["object_id"], row["object_digest"]))
-            gate = _project(gate)
+        gate_changed = previous["gate_digest"] != gate["gate_digest"]
+        prior_gate_digests = list(previous.get("prior_gate_digests", []))
+        if gate_changed and previous["gate_digest"] not in prior_gate_digests:
+            prior_gate_digests.append(previous["gate_digest"])
+        gate["prior_gate_digests"] = prior_gate_digests
+        previous_by_id = {row["object_id"]: row for row in previous["objects"]}
+        for row in gate["objects"]:
+            prior = previous_by_id.get(row["object_id"])
+            if not isinstance(prior, dict):
+                continue
+            history = copy.deepcopy(prior.get("prior_decisions", []))
+            decision = prior.get("decision")
+            decision_is_bound = (
+                isinstance(decision, dict)
+                and prior.get("object_digest") is not None
+                and decision.get("bound_object_digest") == prior.get("object_digest")
+            )
+            same_object = (
+                prior.get("object_digest") is not None
+                and prior.get("object_digest") == row["object_digest"]
+            )
+            row["prior_decisions"] = history
+            if not gate_changed:
+                row["decision"] = copy.deepcopy(decision) if decision_is_bound else None
+                row["review_state"] = prior.get(
+                    "review_state",
+                    "decided" if decision_is_bound else "needs_review",
+                )
+                row["re_review_reason"] = prior.get("re_review_reason")
+                continue
+            if same_object and decision_is_bound and decision.get("action") != "reparse_required":
+                row["decision"] = copy.deepcopy(decision)
+                row["review_state"] = "decided"
+                row["re_review_reason"] = None
+                continue
+            if isinstance(decision, dict):
+                row["prior_decisions"].append(copy.deepcopy(decision))
+            row["decision"] = None
+            if decision_is_bound and decision.get("action") == "reparse_required":
+                row["review_state"] = "needs_re_review"
+                row["re_review_reason"] = (
+                    "reparse_completed"
+                    if same_object
+                    else "reparse_completed_object_changed"
+                )
+            elif not same_object or isinstance(decision, dict):
+                row["review_state"] = "needs_re_review"
+                row["re_review_reason"] = "object_changed"
+            else:
+                row["review_state"] = prior.get("review_state", "needs_review")
+                row["re_review_reason"] = prior.get("re_review_reason")
+        gate = _project(gate)
     _validate_gate(gate)
     _atomic_json(path, gate)
     return gate
@@ -614,7 +682,7 @@ def _apply_parse_quality_decision_unlocked(
         and decision_revision != parse_decision_revision(row.get("decision"))
     ):
         raise ParseQualityError("PARSE_QUALITY_STALE")
-    if row["status"] == "usable":
+    if row["status"] == "usable" and row.get("review_state") == "not_required":
         raise ParseQualityError("ACTION_NOT_REQUIRED")
     if row["status"] in {"incomplete", "failed"} and action == "approve_candidate_extraction":
         raise ParseQualityError("ACTION_NOT_ALLOWED")
@@ -629,7 +697,12 @@ def _apply_parse_quality_decision_unlocked(
         )
     except VerificationDecisionError as exc:
         raise ParseQualityError("DECISION_INVALID") from exc
+    row.setdefault("prior_decisions", [])
+    if isinstance(row.get("decision"), dict):
+        row["prior_decisions"].append(copy.deepcopy(row["decision"]))
     row["decision"] = {**decision, "note": note}
+    row["review_state"] = "decided"
+    row["re_review_reason"] = None
     gate = _project(gate)
     _validate_gate(gate)
     _atomic_json(_gate_path(project, study_id), gate)
