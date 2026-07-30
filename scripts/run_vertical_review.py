@@ -81,6 +81,12 @@ from review_writer.project.dual_source import (  # noqa: E402
     project_dual_source_state,
     write_dual_source_binding,
 )
+from review_writer.project.parse_reconciliation import (  # noqa: E402
+    ParseReconciliationError,
+    apply_reconciliation_decision,
+    project_reconciliation_state,
+    write_parse_reconciliation,
+)
 from review_writer.delivery.project_release import (  # noqa: E402
     ProjectReleaseError,
     bind_authoritative_draft,
@@ -999,6 +1005,18 @@ def _parser() -> argparse.ArgumentParser:
     dual_state = commands.add_parser("dual-source-state")
     dual_state.add_argument("--project", type=Path, required=True)
 
+    reconcile = commands.add_parser("build-parse-reconciliation")
+    reconcile.add_argument("--project", type=Path, required=True)
+    reconcile.add_argument("--study-id")
+
+    reconcile_state = commands.add_parser("parse-reconciliation-state")
+    reconcile_state.add_argument("--project", type=Path, required=True)
+
+    reconcile_decision = commands.add_parser("record-parse-reconciliation")
+    reconcile_decision.add_argument("--project", type=Path, required=True)
+    reconcile_decision.add_argument("--study-id", required=True)
+    reconcile_decision.add_argument("--input", type=Path, required=True)
+
     preflight = commands.add_parser("preflight")
     preflight.add_argument("--review-root", type=Path, required=True)
     preflight.add_argument("--mineru-token-file", type=Path, default=DEFAULT_MINERU_TOKEN_FILE)
@@ -1119,6 +1137,19 @@ def _run(args: argparse.Namespace) -> int:
         return 0
     if args.command == "dual-source-state":
         _print_summary({"command": args.command, **project_dual_source_state(args.project)})
+        return 0
+    if args.command == "build-parse-reconciliation":
+        state = project_reconciliation_state(args.project)
+        study_ids = [args.study_id] if args.study_id else [row["study_id"] for row in state["studies"]]
+        registries = [write_parse_reconciliation(args.project, study_id) for study_id in study_ids]
+        _print_summary({"command": args.command, "registry_count": len(registries), "status": "BUILT"})
+        return 0
+    if args.command == "parse-reconciliation-state":
+        _print_summary({"command": args.command, **project_reconciliation_state(args.project)})
+        return 0
+    if args.command == "record-parse-reconciliation":
+        result = apply_reconciliation_decision(args.project, args.study_id, _load_json(args.input))
+        _print_summary({"command": args.command, "status": "RECORDED", "workflow_can_continue": result["workflow_can_continue"]})
         return 0
     if args.command == "preflight":
         summary = _preflight_status(
@@ -1351,6 +1382,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     except DualSourceError as exc:
+        _print_summary(
+            {"command": args.command, "error_code": exc.code, "status": "ERROR"},
+            stream=sys.stderr,
+        )
+        return 2
+    except ParseReconciliationError as exc:
         _print_summary(
             {"command": args.command, "error_code": exc.code, "status": "ERROR"},
             stream=sys.stderr,

@@ -27,6 +27,16 @@ from review_writer.project.source_truth import (
     load_source_truth_bundle,
     source_truth_asset,
 )
+from review_writer.project.dual_source import DualSourceError, require_dual_source_ready
+from review_writer.project.chemical_completion import (
+    ChemicalCompletionError,
+    require_chemical_completion_ready,
+)
+from review_writer.project.parse_reconciliation import (
+    ParseReconciliationError,
+    require_reconciliation_ready,
+)
+from review_writer.project.source_truth import study_source_tier
 from review_writer.project.verification_decision import (
     VerificationDecisionError,
     verification_decision,
@@ -314,6 +324,39 @@ def _normalize_string_list(value: object, code: str) -> list[str]:
     return list(value)
 
 
+def _field_dependencies(value: object) -> list[str]:
+    if value is None:
+        return []
+    rows = _normalize_string_list(value, "FIELD_DEPENDENCIES_INVALID")
+    if not set(rows).issubset({"molecule", "smiles", "molblock"}):
+        raise PaperEvidenceError("FIELD_DEPENDENCIES_INVALID")
+    return sorted(rows)
+
+
+def require_dual_evidence_ready(
+    project: Path,
+    study_id: str,
+    *,
+    requires_chemical: bool,
+) -> dict[str, str | None]:
+    """Fail closed on every current dual-parse dependency before Evidence writes."""
+    try:
+        chemical_required = study_source_tier(project, study_id) == "core" or requires_chemical
+        bindings: dict[str, str | None] = {
+            "dual_source_binding_digest": require_dual_source_ready(
+                project, study_id, requires_chemical=chemical_required
+            ),
+            "chemical_completion_digest": None,
+            "reconciliation_digest": None,
+        }
+        if chemical_required:
+            bindings["chemical_completion_digest"] = require_chemical_completion_ready(project, study_id)
+            bindings["reconciliation_digest"] = require_reconciliation_ready(project, study_id)
+        return bindings
+    except (SourceTruthError, DualSourceError, ChemicalCompletionError, ParseReconciliationError) as exc:
+        raise PaperEvidenceError(exc.code) from exc
+
+
 def _normalize_locator(value: object, expected_mode: str) -> dict[str, Any]:
     required = {"source_mode", "page", "section_or_item", "figure_or_table", "exact_quote"}
     if not isinstance(value, dict) or set(value) != required:
@@ -360,6 +403,7 @@ def _normalize_candidate(
         "limitations",
         "mechanism_grade",
         "risk_classes",
+        "field_dependencies",
         "bound_parse_object_digests",
         "source_pdf_sha256",
         "candidate_digest",
@@ -442,6 +486,20 @@ def _normalize_candidate(
         raise PaperEvidenceError("SOURCE_PDF_STALE")
     if payload.get("decision") is not None:
         raise PaperEvidenceError("PAPER_EVIDENCE_DECISION_FORBIDDEN")
+    field_dependencies = _field_dependencies(payload.get("field_dependencies"))
+    dual_enabled = (
+        "field_dependencies" in payload
+        or (project / f"01_evidence/dual_source/{study_id}/binding.json").is_file()
+    )
+    dual_parse_bindings = (
+        require_dual_evidence_ready(
+            project,
+            study_id,
+            requires_chemical=bool(field_dependencies),
+        )
+        if dual_enabled
+        else None
+    )
     row: dict[str, Any] = {
         "evidence_id": evidence_id,
         "study_id": study_id,
@@ -458,6 +516,8 @@ def _normalize_candidate(
         "limitations": _normalize_string_list(payload.get("limitations"), "LIMITATIONS_INVALID"),
         "mechanism_grade": mechanism_grade,
         "risk_classes": _normalize_string_list(payload.get("risk_classes"), "RISK_CLASSES_INVALID"),
+        "field_dependencies": field_dependencies,
+        "dual_parse_bindings": dual_parse_bindings,
         "bound_parse_object_digests": bound_digests,
         "source_pdf_sha256": source_sha256,
         "candidate_digest": "",
@@ -527,6 +587,7 @@ def _validate_persisted_candidate(
         ("risk_classes", "RISK_CLASSES_INVALID"),
     ):
         _normalize_string_list(row.get(key), code)
+    _field_dependencies(row.get("field_dependencies"))
     _source_descriptor(project, study_id, row["source_id"])
     if row["locator"]["source_mode"] == "parsed_candidate":
         if not row["bound_parse_object_digests"]:
@@ -826,6 +887,18 @@ def _freshness(project: Path, candidate: dict[str, Any]) -> tuple[bool, str | No
         return False, "SOURCE_PDF_STALE"
     if candidate["locator"]["page"] > source["page_count"]:
         return False, "LOCATOR_PAGE_STALE"
+    bindings = candidate.get("dual_parse_bindings")
+    if isinstance(bindings, dict):
+        try:
+            current_bindings = require_dual_evidence_ready(
+                project,
+                candidate["study_id"],
+                requires_chemical=bool(candidate.get("field_dependencies")),
+            )
+        except PaperEvidenceError as exc:
+            return False, exc.code
+        if bindings != current_bindings:
+            return False, "DUAL_PARSE_BINDING_STALE"
     if candidate["locator"]["source_mode"] == "original_pdf_manual":
         return (not candidate["bound_parse_object_digests"], "MANUAL_PDF_PARSE_BINDING_INVALID")
     reviewed_objects = {

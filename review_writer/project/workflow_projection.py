@@ -17,6 +17,9 @@ from review_writer.project.source_truth import (
     canonical_digest,
     declared_study_ids,
 )
+from review_writer.project.dual_source import project_dual_source_state
+from review_writer.project.chemical_completion import project_chemical_completion_state
+from review_writer.project.parse_reconciliation import project_reconciliation_state
 
 
 NEW_ROUTE = "evidence-to-release.v1"
@@ -101,7 +104,31 @@ def _new_route_state(project: Path) -> dict[str, Any]:
 
     paper_evidence_ready = False
     paper_evidence_error = False
-    if parse_ready:
+    dual_route = (project / "01_evidence/dual_source").is_dir()
+    dual_source_ready = not dual_route
+    chemical_completion_ready = not dual_route
+    reconciliation_ready = not dual_route
+    dual_blocker: str | None = None
+    if parse_ready and dual_route:
+        dual_state = project_dual_source_state(project)
+        dual_source_ready = bool(dual_state.get("workflow_can_continue"))
+        if not dual_source_ready:
+            blocked = next((row for row in dual_state["studies"] if row["status"] == "blocked"), {})
+            dual_blocker = str(blocked.get("reason_code") or "DUAL_SOURCE_NOT_READY")
+        if dual_source_ready:
+            completion_state = project_chemical_completion_state(project)
+            chemical_completion_ready = bool(completion_state.get("workflow_can_continue"))
+            if not chemical_completion_ready:
+                blocked = next((row for row in completion_state["studies"] if not row.get("workflow_can_continue")), {})
+                dual_blocker = str(blocked.get("reason_code") or "CHEMICAL_COMPLETION_INCOMPLETE")
+        if chemical_completion_ready:
+            reconciliation_state = project_reconciliation_state(project)
+            reconciliation_ready = bool(reconciliation_state.get("workflow_can_continue"))
+            if not reconciliation_ready:
+                blocked = next((row for row in reconciliation_state["studies"] if row["status"] == "blocked"), {})
+                dual_blocker = str(blocked.get("reason_code") or "PARSE_RECONCILIATION_UNRESOLVED")
+
+    if parse_ready and dual_source_ready and chemical_completion_ready and reconciliation_ready:
         try:
             evidence_state = paper_evidence_state(project)
             paper_evidence_ready = bool(evidence_state.get("workflow_can_continue"))
@@ -146,6 +173,15 @@ def _new_route_state(project: Path) -> dict[str, Any]:
         blockers.append(
             "PARSE_QUALITY_INVALID" if parse_error else "PARSE_QUALITY_REVIEW_REQUIRED"
         )
+    elif dual_route and not dual_source_ready:
+        active_stage = "chemical_import"
+        blockers.append(dual_blocker or "DUAL_SOURCE_NOT_READY")
+    elif dual_route and not chemical_completion_ready:
+        active_stage = "chemical_completion"
+        blockers.append(dual_blocker or "CHEMICAL_COMPLETION_INCOMPLETE")
+    elif dual_route and not reconciliation_ready:
+        active_stage = "reconciliation"
+        blockers.append(dual_blocker or "PARSE_RECONCILIATION_UNRESOLVED")
     elif not paper_evidence_ready:
         active_stage = "evidence"
         blockers.append(
@@ -164,12 +200,26 @@ def _new_route_state(project: Path) -> dict[str, Any]:
         if not internal_draft_export_ready:
             blockers.append("INTERNAL_DRAFT_EXPORT_NOT_READY")
 
+    next_actions = {
+        "sources": "Verify the next source PDF.",
+        "parsing": "Review the next Generic parse quality item.",
+        "chemical_import": "Import and bind the next required Chemical Paper ZIP.",
+        "chemical_completion": "Complete the next missing molecule field from the PDF.",
+        "reconciliation": "Resolve the next dual-parse conflict against the PDF.",
+        "evidence": "Review the next Paper Evidence candidate.",
+        "synthesis": "Review the next synthesis object.",
+        "drafting": "Review the next manuscript section.",
+        "final": "Review internal release readiness.",
+    }
     return _finalize(
         {
             "schema_version": "evidence-to-release-workflow-state.v1",
             "route": NEW_ROUTE,
             "active_stage": active_stage,
             "parse_ready": parse_ready,
+            "dual_source_ready": dual_source_ready,
+            "chemical_completion_ready": chemical_completion_ready,
+            "reconciliation_ready": reconciliation_ready,
             "paper_evidence_ready": paper_evidence_ready,
             "synthesis_ready": synthesis_ready,
             "section_contracts_ready": section_contracts_ready,
@@ -177,6 +227,7 @@ def _new_route_state(project: Path) -> dict[str, Any]:
             "internal_draft_export_ready": internal_draft_export_ready,
             "verified_release_ready": verified_release_ready,
             "blockers": blockers,
+            "unique_next_action": next_actions[active_stage],
         }
     )
 
