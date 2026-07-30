@@ -19,6 +19,7 @@ from review_writer.project.content_agent_handoff import (
 )
 from review_writer.project.manuscript_v2 import approve_section, merge_authoritative_manuscript, register_section_draft
 from review_writer.project.review_figures import build_source_figure_registry, load_source_figure_registry
+from review_writer.project.source_truth import canonical_digest
 from test_chemical_paper_import import ACTOR, PDF_SHA, snapshot, source_truth_project, v2000, write_chemical_zip
 from test_content_agent_handoff import _project as content_project, _request, _result
 from test_manuscript_v2 import _actor, _draft, project
@@ -211,6 +212,76 @@ def test_chemical_content_package_rejects_pdf_drift_before_writing_output(
 
     assert snapshot(project) == before
     assert not destination.exists()
+
+
+def test_paper_evidence_package_digest_is_isolated_from_existing_evidence(
+    tmp_path: Path,
+) -> None:
+    project = content_project(tmp_path)
+    first_bundle_path = project / "01_evidence/source_truth/scholarly-a/bundle.json"
+    first_bundle = json.loads(first_bundle_path.read_text(encoding="utf-8"))
+    second_body = {
+        key: value for key, value in first_bundle.items() if key != "bundle_digest"
+    }
+    second_body["study_id"] = "scholarly-b"
+    second_body["study_identity"] = {
+        "doi": "10.1000/example-b",
+        "title": "Example B",
+    }
+    second_bundle_path = project / "01_evidence/source_truth/scholarly-b/bundle.json"
+    second_bundle_path.parent.mkdir(parents=True)
+    second_bundle_path.write_text(
+        json.dumps(
+            {**second_body, "bundle_digest": canonical_digest(second_body)},
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    receipt_path = project / "00_sources/acquisition_final_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["studies"].append({"study_id": "scholarly-b"})
+    receipt_path.write_text(json.dumps(receipt, sort_keys=True), encoding="utf-8")
+
+    pdf_sha, _, pages = _main_binding(project, "scholarly-a")
+    for study_id in ("scholarly-a", "scholarly-b"):
+        import_chemical_paper(
+            project,
+            study_id,
+            pdf_sha,
+            _archive(tmp_path / f"{study_id}.zip", pages),
+            ACTOR,
+        )
+
+    second_request = _request(project, targets=["scholarly-b"])
+    before = build_content_task_package(project, second_request)
+    evidence_projection = project / "01_evidence/paper_evidence_projection.jsonl"
+    evidence_projection.write_text(
+        json.dumps({"study_id": "scholarly-a", "evidence_id": "study-a-candidate"})
+        + "\n",
+        encoding="utf-8",
+    )
+    target_candidates = project / "01_evidence/scholarly-b/paper_evidence_candidates.json"
+    target_candidates.parent.mkdir(parents=True, exist_ok=True)
+    target_candidates.write_text(
+        json.dumps({"candidates": [{"evidence_id": "existing-study-b-candidate"}]}),
+        encoding="utf-8",
+    )
+    after = build_content_task_package(project, second_request)
+
+    assert "paper_evidence" not in after["inputs"]
+    assert after["task_package_digest"] == before["task_package_digest"]
+    synthesis = build_content_task_package(
+        project,
+        _request(
+            project,
+            kind="synthesis_claims",
+            targets=["scholarly-a", "scholarly-b"],
+        ),
+    )
+    assert {row["kind"] for row in synthesis["inputs"]["paper_evidence"]} == {
+        "paper_evidence_projection",
+        "paper_evidence_candidates",
+    }
 
 
 def test_source_figure_registry_is_bound_to_chemical_import_without_fake_figure(tmp_path: Path) -> None:
