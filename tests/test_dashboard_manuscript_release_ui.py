@@ -246,6 +246,39 @@ def test_fresh_project_polling_requires_visible_researcher_selection_without_loa
     assert "projects[0].project_id" not in match.group(0)
 
 
+def test_empty_project_polling_invalidates_inflight_project_load() -> None:
+    html = (DASHBOARD / "review.html").read_text(encoding="utf-8")
+    match = re.search(
+        r"^    async function refreshProjects\(\) \{[\s\S]*?^    \}",
+        html,
+        flags=re.MULTILINE,
+    )
+    assert match is not None
+    _run_node(
+        "\n".join(
+            [
+                "const select={value:'old-project',options:[],append(option){this.options.push(option);}};",
+                "const nodes={project:select,'project-waiting-message':{textContent:''},'workbench-message':{textContent:'loading'}};",
+                "const $=id=>nodes[id];",
+                "const document={createElement:()=>({value:'',textContent:'',disabled:false,selected:false})};",
+                "const clear=node=>{node.options=[];node.value='';};",
+                "let emptyWorkspace=false;const setEmptyProjectWorkspace=value=>{emptyWorkspace=value;};",
+                "const setWorkspace=()=>{throw new Error('empty project list restored stale workspace');};",
+                "const setProjectSelectionWorkspace=()=>{throw new Error('empty project list exposed stale selection');};",
+                "let projectLoadBusy=true;const setProjectLoadBusy=value=>{projectLoadBusy=value;};",
+                "let projectsRefreshBusy=false,projects=[],projectId='old-project',projectLoadGeneration=7,activeWorkspace='cockpit';",
+                "const inflightGeneration=projectLoadGeneration;",
+                "const getPayload=async()=>[];",
+                match.group(0),
+                "refreshProjects().then(result=>{",
+                " if(result!=='empty' || projectId!=='' || projectLoadGeneration!==8 || projectLoadBusy || !emptyWorkspace) throw new Error(JSON.stringify({result,projectId,projectLoadGeneration,projectLoadBusy,emptyWorkspace}));",
+                " if(inflightGeneration===projectLoadGeneration) throw new Error('inflight load was not invalidated');",
+                "}).catch(error=>{console.error(error);process.exit(1);});",
+            ]
+        )
+    )
+
+
 def test_researcher_project_selection_loads_once_and_listener_is_bound_once() -> None:
     html = (DASHBOARD / "review.html").read_text(encoding="utf-8")
     session_source = (DASHBOARD / "review-session.js").read_text(encoding="utf-8")
@@ -276,6 +309,46 @@ def test_researcher_project_selection_loads_once_and_listener_is_bound_once() ->
     for storage in ("localStorage", "sessionStorage"):
         assert storage not in html
         assert storage not in session_source
+
+
+def test_failed_explicit_project_selection_can_retry_same_project() -> None:
+    html = (DASHBOARD / "review.html").read_text(encoding="utf-8")
+    match = re.search(
+        r"^    async function selectProject\(event\) \{[\s\S]*?^    \}",
+        html,
+        flags=re.MULTILINE,
+    )
+    assert match is not None
+    _run_node(
+        "\n".join(
+            [
+                "let projectId='',activeParseStudyId='old',projectLoadGeneration=0,projectLoadBusy=false,loadCount=0;",
+                "const projects=[{project_id:'fresh-v2'}];",
+                "const confirmDiscardDraftChanges=()=>true,confirmDiscardRiskDecisions=()=>true,confirmDiscardParseQualityDecisions=()=>true;",
+                "const setProjectLoadBusy=value=>{projectLoadBusy=value;};",
+                "let selectionWorkspaceCount=0;const setProjectSelectionWorkspace=()=>{selectionWorkspaceCount+=1;};",
+                "const loadProject=async()=>{projectLoadGeneration+=1;setProjectLoadBusy(true);loadCount+=1;try{if(loadCount===1)throw new Error('temporary failure');return 'loaded';}finally{setProjectLoadBusy(false);}};",
+                "const nodes={'workbench-message':{textContent:''}};const $=id=>nodes[id];",
+                match.group(0),
+                "(async()=>{",
+                " const event={target:{value:'fresh-v2'}};",
+                " const first=await selectProject(event);",
+                " if(first!=='error' || projectId!=='' || event.target.value!=='' || selectionWorkspaceCount!==1 || projectLoadBusy) throw new Error(JSON.stringify({first,projectId,value:event.target.value,selectionWorkspaceCount,projectLoadBusy}));",
+                " event.target.value='fresh-v2';",
+                " const second=await selectProject(event);",
+                " const third=await selectProject(event);",
+                " if(second!=='loaded' || third!=='unchanged' || projectId!=='fresh-v2' || loadCount!==2) throw new Error(JSON.stringify({second,third,projectId,loadCount}));",
+                "})().catch(error=>{console.error(error);process.exit(1);});",
+            ]
+        )
+    )
+
+
+def test_empty_workspace_copy_requires_explicit_project_selection() -> None:
+    html = (DASHBOARD / "review.html").read_text(encoding="utf-8")
+    assert "请选择项目开始审查" in html
+    assert "明确选择后读取项目" in html
+    assert "项目就绪后自动打开" not in html
 
 
 def test_audit_component_keeps_closure_visible_without_internal_ids() -> None:

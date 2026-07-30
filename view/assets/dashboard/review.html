@@ -43,9 +43,9 @@
 
     <section id="empty-project-workspace" class="manuscript-empty" aria-labelledby="empty-project-heading">
       <p class="section-label">QoderWork research review</p>
-      <h2 id="empty-project-heading">等待 QoderWork 创建科研综述</h2>
-      <p>请在 QoderWork CN 中选择科研综述专家并创建任务。工作台会保持运行，并在项目就绪后自动打开。</p>
-      <p id="project-waiting-message" role="status" aria-live="polite">正在等待新项目…</p>
+      <h2 id="empty-project-heading">请选择项目开始审查</h2>
+      <p>请先在 QoderWork CN 中创建科研综述任务，再从上方项目列表明确选择后读取项目。</p>
+      <p id="project-waiting-message" role="status" aria-live="polite">正在检查可用项目…</p>
     </section>
 
     <nav id="workspace-switcher" class="workspace-switcher" aria-label="项目工作区" hidden>
@@ -650,7 +650,7 @@
     function setProjectSelectionWorkspace() {
       setEmptyProjectWorkspace(true);
       $('project-tools').hidden = false;
-      $('project-waiting-message').textContent = '请选择项目';
+      $('project-waiting-message').textContent = '请选择上方项目列表中的项目。';
     }
 
     function setWorkspace(workspace) {
@@ -2465,8 +2465,13 @@
           $('project').append(option);
         });
         if (!projects.length) {
+          if (projectId || projectLoadBusy) {
+            projectId = '';
+            projectLoadGeneration += 1;
+            setProjectLoadBusy(false);
+          }
           setEmptyProjectWorkspace(true);
-          $('project-waiting-message').textContent = '正在等待新项目…';
+          $('project-waiting-message').textContent = '尚无可用项目，请先在 QoderWork CN 中创建任务。';
           $('workbench-message').textContent = '';
           return 'empty';
         }
@@ -2517,6 +2522,7 @@
         event.target.value = projectId;
         return 'cancelled';
       }
+      const previousProjectId = projectId;
       activeParseStudyId = '';
       projectId = nextProjectId;
       try {
@@ -2524,6 +2530,13 @@
         if (loadResult === 'stale') return 'stale';
         return loadResult;
       } catch (error) {
+        if (projectId === nextProjectId) {
+          projectId = previousProjectId;
+          projectLoadGeneration += 1;
+          setProjectLoadBusy(false);
+          event.target.value = previousProjectId;
+          if (!previousProjectId) setProjectSelectionWorkspace();
+        }
         $('workbench-message').textContent = '项目暂时无法读取。';
         return 'error';
       }
