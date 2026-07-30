@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="/assets/dashboard/review-manuscript.css">
   <link rel="stylesheet" href="/assets/dashboard/review-release.css">
   <link rel="stylesheet" href="/assets/dashboard/review-audit.css">
+  <link rel="stylesheet" href="/assets/dashboard/review-chemical-paper.css">
 </head>
 <body class="page-review">
   <a class="skip-link" href="#primary-workspace">跳到主要工作区</a>
@@ -139,6 +140,19 @@
               <input id="source-archive-input" type="file" accept=".zip,application/zip">
             </label>
             <p id="source-upload-message" class="inline-message" role="status" aria-live="polite"></p>
+          </section>
+
+          <section id="chemical-paper-panel" class="chemical-paper-panel" aria-labelledby="chemical-paper-heading">
+            <header class="chemical-paper-heading">
+              <div>
+                <p class="section-label">Chemical structure handoff</p>
+                <h3 id="chemical-paper-heading">MinerU Chemical Paper 手工导出</h3>
+              </div>
+              <strong>原始 PDF 仍是科学事实来源</strong>
+            </header>
+            <p class="chemical-paper-lead">这里仅审查已由正式 CLI 导入的完整 Chemical Paper ZIP。候选结构、SMILES 与元素信息不自动批准任何科学结论；更正记录采用不可覆盖历史与当前版本保护。</p>
+            <div id="chemical-paper-root"></div>
+            <p id="chemical-paper-message" class="inline-message" role="status" aria-live="polite"></p>
           </section>
 
           <section id="processing-stage-panel" class="stage-task-panel" hidden>
@@ -414,6 +428,7 @@
   <script src="/assets/dashboard/review-manuscript.js"></script>
   <script src="/assets/dashboard/review-release.js"></script>
   <script src="/assets/dashboard/review-audit.js"></script>
+  <script src="/assets/dashboard/review-chemical-paper.js"></script>
   <script>
     const $ = id => document.getElementById(id);
     const stageLabels = {
@@ -465,6 +480,7 @@
     let comparisonProtocolPayload = {status:'unavailable', protocol:{}};
     let finalPayload = {final_draft_docx_exists:false, final_draft_docx_path:''};
     let sourcePayload = {counts:{total:0,ready:0,missing:0}, sources:[], supplements:[], unresolved:[], upload_required:false};
+    let chemicalPaperPayload = {status:'unavailable', studies:[]};
     let progressPayload = {active_stage:'sources', stages:[], studies:[], blocker:'', recommended_next:'', release_capabilities:{internal_draft_export_ready:false,verified_release_ready:false}};
     let parseQualityPayload = {status:'unavailable', workflow_can_continue:false, summary:{}, studies:[]};
     let parseQualityBusy = new Set();
@@ -483,6 +499,7 @@
     let projectsRefreshTimer = null;
     let projectsRefreshBusy = false;
     let sourceUploadBusy = false;
+    let chemicalPaperBusy = false;
     let sourceSupplementBusy = false;
     let sourceMappingBusy = false;
     let exportBusy = false;
@@ -558,6 +575,9 @@
       $('high-risk-reason').disabled = busy;
       $('approve-high-risk-edit').disabled = busy;
       $('source-archive-input').disabled = busy || sourceUploadBusy;
+      document.querySelectorAll('#chemical-paper-panel input, #chemical-paper-panel select, #chemical-paper-panel button').forEach(control => {
+        control.disabled = busy || chemicalPaperBusy;
+      });
       document.querySelectorAll('#source-supplement-form input, #source-supplement-form button').forEach(control => {
         control.disabled = busy || sourceSupplementBusy;
       });
@@ -787,6 +807,61 @@
       $('brief-stage-summary').textContent = [brief.review_question || brief.topic || '研究问题待确认', years, target].join(' · ');
     }
 
+    function chemicalPaperActor() {
+      return typeof window.reviewDecisionActor === 'function'
+        ? window.reviewDecisionActor()
+        : {actor_type:'human_researcher',actor_label:'研究者'};
+    }
+
+    async function submitChemicalPaperMutation(kind, payload) {
+      if (chemicalPaperBusy || projectLoadBusy || !projectId) return;
+      const submittedProjectId = projectId;
+      const submittedGeneration = projectLoadGeneration;
+      const route = ReviewChemicalPaperUI.routes(submittedProjectId)[kind];
+      chemicalPaperBusy = true;
+      applyWorkbenchBusyState(editorBusy || projectLoadBusy);
+      $('chemical-paper-message').textContent = '正在保存并核对当前版本…';
+      try {
+        const result = await ReviewChemicalPaperUI.saveMutation({
+          request:fetch,
+          url:route,
+          payload,
+          onConflict:() => {
+            $('chemical-paper-message').textContent = '未保存：Chemical Paper 状态已有更新，请重新读取后再决定。';
+          },
+        });
+        if (projectId !== submittedProjectId || projectLoadGeneration !== submittedGeneration) return;
+        if (result.status === 'conflict') return;
+        if (result.status !== 'saved') {
+          $('chemical-paper-message').textContent = result.httpStatus === 404
+            ? '未保存：对应候选条目已不可用，请重新读取项目。'
+            : '未保存：提交内容未通过核对，原记录保持不变。';
+          return;
+        }
+        $('chemical-paper-message').textContent = '已保存追加记录，正在读取最新 Chemical Paper 状态…';
+        await loadProject();
+        if (projectId === submittedProjectId) $('chemical-paper-message').textContent = '追加记录已保存；原始 PDF 仍是科学事实来源。';
+      } catch (_) {
+        if (projectId === submittedProjectId) $('chemical-paper-message').textContent = '保存失败；原记录保持不变，请重新读取后再试。';
+      } finally {
+        chemicalPaperBusy = false;
+        applyWorkbenchBusyState(editorBusy || projectLoadBusy);
+      }
+    }
+
+    function renderChemicalPaper() {
+      ReviewChemicalPaperUI.renderChemicalPaper(
+        $('chemical-paper-root'),
+        chemicalPaperPayload,
+        {
+          onCorrectField:payload => submitChemicalPaperMutation('field', payload),
+          onReviewElements:payload => submitChemicalPaperMutation('elements', payload),
+          onValidationError:message => { $('chemical-paper-message').textContent = message; },
+        },
+        chemicalPaperActor(),
+      );
+    }
+
     function renderSourceStage() {
       const counts = sourcePayload.counts || {};
       $('source-coverage').textContent = `${counts.ready || 0} / ${counts.total || 0} 已就绪`;
@@ -848,6 +923,7 @@
         row.append(copy, select, button);
         $('source-unresolved-list').append(row);
       });
+      renderChemicalPaper();
     }
 
     function renderProcessingStage() {
@@ -2137,10 +2213,12 @@
           optionalPayload(`/api/project/${encoded}/synthesis`, {items:[]}),
           optionalPayload(`/api/project/${encoded}/review-figures`, {source_figures:[],placeholders:[]}),
           optionalPayload(`/api/project/${encoded}/comparison-protocol`, {status:'unavailable',protocol:{}}),
+          optionalPayload(ReviewChemicalPaperUI.routes(requestedProjectId).read, {}),
         ]);
         const [nextProjectState, nextCockpitPayload, nextDraftPayload, nextEvidencePayload, nextRiskPayload, nextSourcePayload, nextProgressPayload, nextParseQualityPayload, nextFigurePayload, nextFinalPayload] = projectPayloads;
         const [nextManuscriptEvidencePayload, nextManuscriptSynthesisPayload, nextReviewFigurePayload] = projectPayloads.slice(10);
         const nextComparisonProtocolPayload = projectPayloads[13];
+        const nextChemicalPaperPayload = projectPayloads[14];
         if (
           generation !== projectLoadGeneration
           || projectId !== requestedProjectId
@@ -2161,6 +2239,7 @@
         manuscriptSynthesisPayload = nextManuscriptSynthesisPayload;
         reviewFigurePayload = nextReviewFigurePayload;
         comparisonProtocolPayload = nextComparisonProtocolPayload;
+        chemicalPaperPayload = nextChemicalPaperPayload;
         editorDirty = false;
         riskDecisionDirty = false;
         parseQualityDirty.clear();
