@@ -3033,14 +3033,13 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             self.assertEqual("研究 BATCH-ONLY", payload["studies"][0]["label"])
             self.assertEqual("等待证据提取", payload["studies"][0]["status"])
 
-    def test_processing_ui_labels_measured_and_forecast_credits_separately(self) -> None:
+    def test_processing_ui_hides_credits_from_current_scope(self) -> None:
         html = (ROOT / "view/assets/dashboard/review.html").read_text(encoding="utf-8")
 
-        self.assertIn('id="processing-credit-measured"', html)
-        self.assertIn('id="processing-credit-forecast"', html)
-        self.assertIn("实测消耗", html)
-        self.assertIn("预测用量", html)
-        self.assertNotIn("实测/预测", html)
+        self.assertNotIn('id="processing-credit-measured"', html)
+        self.assertNotIn('id="processing-credit-forecast"', html)
+        self.assertNotIn("实测消耗", html)
+        self.assertNotIn("预测用量", html)
 
     def test_blocked_progress_gives_safe_specific_recovery_for_common_scientific_stages(
         self,
