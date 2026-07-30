@@ -167,6 +167,14 @@
               <strong id="parse-quality-count">—</strong>
             </div>
             <p class="stage-task-lead">先对照原始论文确认正文、图表、公式与参考文献是否可靠，再决定哪些部分可以进入候选证据提取。</p>
+            <section id="parse-quality-next-action" class="parse-quality-next-action" aria-labelledby="parse-quality-next-action-label">
+              <div>
+                <p class="section-label">Authoritative next action</p>
+                <strong id="parse-quality-next-action-label">正在计算下一步</strong>
+                <span id="parse-quality-next-action-description"></span>
+              </div>
+              <button id="parse-quality-refresh" type="button" hidden>已重新解析，刷新解析状态</button>
+            </section>
             <ul class="parse-quality-action-key" aria-label="可选决定说明">
               <li><strong>允许机器从该部分提取候选证据</strong><span>仍需在后续证据工作区逐条核对。</span></li>
               <li><strong>仅回到原始 PDF 人工定位</strong><span>关闭自动提取，保留人工证据定位路线。</span></li>
@@ -919,7 +927,11 @@
     function renderParseQualityStage() {
       const studies = parseQualityPayload.studies || [];
       const summary = parseQualityPayload.summary || {};
+      const nextAction = parseQualityPayload.next_action || {};
       $('parse-quality-count').textContent = `${summary.needs_review || 0} 项待决定`;
+      $('parse-quality-next-action-label').textContent = nextAction.label || '等待解析检查就绪';
+      $('parse-quality-next-action-description').textContent = nextAction.description || 'Evidence 保持锁定。';
+      $('parse-quality-refresh').hidden = nextAction.code !== 'repair_parse';
       if (!studies.some(study => study.study_id === activeParseStudyId)) {
         activeParseStudyId = studies[0]?.study_id || '';
       }
@@ -945,6 +957,10 @@
       });
 
       const study = activeParseStudy();
+      const repairHandoff = study?.repair_handoff;
+      if (nextAction.code === 'repair_parse' && repairHandoff?.instructions) {
+        $('parse-quality-next-action-description').textContent = repairHandoff.instructions;
+      }
       $('parse-quality-study-title').textContent = study?.label || '解析检查尚未就绪';
       $('parse-quality-study-status').textContent = study ? parseStudyState(study) : '等待检查';
       clear($('parse-quality-object-list'));
@@ -1020,7 +1036,10 @@
           controls.append(noteLabel);
           const footer = document.createElement('div');
           footer.className = 'parse-quality-save-row';
-          footer.append(textElement('p', 'parse-quality-save-note', object.decision ? '已保存，可重新核对后修改。' : '请选择决定并填写理由。'));
+          const savedCopy = object.decision
+            ? `已保存 · 决定者：${object.decision?.actor_label || '未记录'}（${object.decision?.actor_type || '类型未记录'}） · 更新：${object.decision?.decided_at || '时间未记录'}`
+            : '请选择决定并填写理由。';
+          footer.append(textElement('p', 'parse-quality-save-note', savedCopy));
           const save = document.createElement('button');
           save.type = 'button';
           save.textContent = '保存该项决定';
@@ -2183,6 +2202,16 @@
     $('parse-quality-preview-pdf').addEventListener('click', () => setParsePreview('pdf'));
     $('parse-quality-preview-markdown').addEventListener('click', () => setParsePreview('parsed-markdown'));
     $('parse-quality-preview-page').addEventListener('change', () => setParsePreview('pdf'));
+    $('parse-quality-refresh').addEventListener('click', async () => {
+      parseQualityNotice = '正在刷新解析状态…';
+      renderParseQualityStage();
+      try {
+        await loadProject();
+      } catch (_) {
+        parseQualityNotice = '解析状态刷新失败；Evidence 保持锁定，请稍后重试。';
+        renderParseQualityStage();
+      }
+    });
     $('export-docx').addEventListener('click', exportDocx);
     $('export-verified-release').addEventListener('click', exportVerifiedRelease);
     $('save-section').addEventListener('click', () => saveDraftBody($('section-editor').value));

@@ -2661,6 +2661,7 @@ def project_parse_quality_payload(review_root: Path, project_id: str) -> dict[st
     approved = 0
     pdf_locator_only = 0
     reparse_required = 0
+    last_decision_at = ""
     for gate in state.get("studies", []):
         if not isinstance(gate, dict):
             continue
@@ -2688,6 +2689,8 @@ def project_parse_quality_payload(review_root: Path, project_id: str) -> dict[st
             f"{quote(source_id, safe='')}"
         )
         objects: list[dict[str, Any]] = []
+        study_reparse_required = 0
+        study_decision_times: list[str] = []
         for row in gate.get("objects", []):
             if not isinstance(row, dict):
                 continue
@@ -2701,10 +2704,22 @@ def project_parse_quality_payload(review_root: Path, project_id: str) -> dict[st
             if isinstance(raw_decision, dict):
                 action = visible_text(raw_decision.get("action"))
                 note = visible_text(raw_decision.get("note"))
-                decision = {"action": action, "note": note}
+                actor_type = visible_text(raw_decision.get("actor_type"))
+                actor_label = visible_text(raw_decision.get("actor_label"))
+                decided_at = visible_text(raw_decision.get("decided_at"))
+                decision = {
+                    "action": action,
+                    "note": note,
+                    "actor_type": actor_type,
+                    "actor_label": actor_label,
+                    "decided_at": decided_at,
+                }
+                if decided_at:
+                    study_decision_times.append(decided_at)
                 approved += action == "approve_candidate_extraction"
                 pdf_locator_only += action == "pdf_locator_only"
                 reparse_required += action == "reparse_required"
+                study_reparse_required += action == "reparse_required"
             elif actions:
                 needs_review += 1
             issues = [
@@ -2737,6 +2752,20 @@ def project_parse_quality_payload(review_root: Path, project_id: str) -> dict[st
                 }
             )
         object_count += len(objects)
+        study_last_decision_at = max(study_decision_times, default="")
+        if study_last_decision_at:
+            last_decision_at = max(last_decision_at, study_last_decision_at)
+        repair_handoff = None
+        if study_reparse_required:
+            repair_handoff = {
+                "action": "reparse_source",
+                "label": "交接重新解析",
+                "instructions": (
+                    "将原始 PDF 与本页标记的问题交给解析负责人重新运行解析；"
+                    "新结果生成后返回本页刷新。Evidence 在此之前保持锁定。"
+                ),
+                "blocked_object_count": study_reparse_required,
+            }
         studies.append(
             {
                 "study_id": study_id,
@@ -2745,14 +2774,47 @@ def project_parse_quality_payload(review_root: Path, project_id: str) -> dict[st
                 "pdf_page_href": f"{base_href}/pdf-page",
                 "pdf_page_count": page_count,
                 "markdown_href": f"{base_href}/parsed-markdown",
+                "workflow_can_continue": bool(gate.get("workflow_can_continue")),
+                "last_decision_at": study_last_decision_at,
+                "repair_handoff": repair_handoff,
                 "objects": objects,
             }
         )
     status = visible_text(state.get("status")) or "needs_review"
+    if needs_review:
+        next_action = {
+            "code": "review_parse_decisions",
+            "label": "完成剩余解析决定",
+            "description": f"还有 {needs_review} 项需要对照原始 PDF 作出决定。",
+        }
+    elif reparse_required:
+        blocked_studies = sum(bool(row.get("repair_handoff")) for row in studies)
+        next_action = {
+            "code": "repair_parse",
+            "label": "交接并重新解析受阻研究",
+            "description": (
+                f"{blocked_studies} 篇研究仍需重新解析；完成交接并生成新解析结果后，"
+                "请刷新解析状态。Evidence 继续保持锁定。"
+            ),
+        }
+    elif state.get("workflow_can_continue"):
+        next_action = {
+            "code": "continue_evidence",
+            "label": "继续核对候选证据",
+            "description": "所有研究的 Parse workflow 已闭合，可以进入 Evidence。",
+        }
+    else:
+        next_action = {
+            "code": "wait_for_parse",
+            "label": "等待解析检查就绪",
+            "description": "解析检查尚未形成可继续的权威状态，Evidence 保持锁定。",
+        }
     return {
         "project_id": project_id,
         "status": status,
         "workflow_can_continue": bool(state.get("workflow_can_continue")),
+        "next_action": next_action,
+        "last_decision_at": last_decision_at,
         "summary": {
             "studies": len(studies),
             "objects": object_count,
@@ -3233,6 +3295,18 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
         and parse_projection.get("status") == "needs_attention"
         and parse_reason != "PARSE_QUALITY_MISSING"
     )
+    parse_reparse_studies = [
+        row
+        for row in (parse_projection or {}).get("studies", [])
+        if isinstance(row, dict)
+        and any(
+            isinstance(obj, dict)
+            and isinstance(obj.get("decision"), dict)
+            and obj["decision"].get("action") == "reparse_required"
+            for obj in row.get("objects", [])
+        )
+    ]
+    parse_reparse_required = bool(parse_reparse_studies)
     state = read_json_if_exists(project / "00_brief/review_state.json") or {}
     source_payload = project_source_handoff_payload(review_root, project_id)
     screening = read_json_if_exists(project / "00_discovery/screening_decisions.json") or {}
@@ -3440,6 +3514,11 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
     blocker = (
         "解析质量记录不可读取，请重新生成后再核对原始 PDF。"
         if parse_needs_attention
+        else (
+            f"{len(parse_reparse_studies)} 篇研究仍需重新解析；"
+            "新解析结果生成前 Evidence 保持锁定。"
+        )
+        if parse_reparse_required
         else "上传的压缩包未通过来源核验，请按缺失清单修正后重新上传。"
         if source_invalid
         else "项目来源清单与后续证据状态不一致，请在 QoderWork 中恢复后继续。"
@@ -3588,6 +3667,8 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
     )
     if parse_needs_attention:
         recommended = "重新生成解析质量记录"
+    elif parse_reparse_required and active_stage == "parsing":
+        recommended = "交接并重新解析受阻研究"
     elif source_truth_managed and active_stage == "parsing":
         recommended = (
             "生成并核对解析质量"
@@ -3620,6 +3701,8 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
         "blocker_code": (
             "PARSING_RECORD_INVALID"
             if parse_needs_attention
+            else "PARSE_REPARSE_REQUIRED"
+            if parse_reparse_required
             else "SOURCE_ARCHIVE_INVALID"
             if source_invalid
             else "PIPELINE_STATE_INCONSISTENT"

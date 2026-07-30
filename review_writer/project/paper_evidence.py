@@ -17,6 +17,7 @@ from review_writer.project.parse_quality import (
     ParseQualityError,
     build_parse_quality_gate,
     parse_quality_state,
+    project_parse_quality_state,
 )
 from review_writer.project.source_truth import (
     REPO_ROOT,
@@ -276,6 +277,21 @@ def _parse_state(project: Path, study_id: str) -> dict[str, Any]:
     if not isinstance(state, dict) or not isinstance(state.get("objects"), list):
         raise PaperEvidenceError("PARSE_QUALITY_INVALID")
     return state
+
+
+def _require_project_parse_ready(project: Path) -> None:
+    state = project_parse_quality_state(project)
+    studies = state.get("studies") if isinstance(state, dict) else None
+    if (
+        not isinstance(studies, list)
+        or not studies
+        or not state.get("workflow_can_continue")
+        or not all(
+            isinstance(row, dict) and row.get("workflow_can_continue") is True
+            for row in studies
+        )
+    ):
+        raise PaperEvidenceError("PROJECT_PARSE_QUALITY_NOT_READY")
 
 
 def _candidate_digest(row: dict[str, Any]) -> str:
@@ -584,6 +600,7 @@ def register_paper_evidence_candidates(
 
     project = _project_root(project)
     study_id = _identifier(study_id, "STUDY_ID_INVALID")
+    _require_project_parse_ready(project)
     raw_candidates = _candidate_rows(payload)
     # Validate before creating the lockfile so rejected cross-source input is byte-preserving.
     [
@@ -596,6 +613,7 @@ def register_paper_evidence_candidates(
     ]
     _check_candidate_id_conflicts(project, study_id, candidates)
     with _mutation(project) as project:
+        _require_project_parse_ready(project)
         candidates = [
             _normalize_candidate(project, study_id, row, source_mode="parsed_candidate")
             for row in raw_candidates
@@ -619,11 +637,13 @@ def register_manual_pdf_evidence(project: Path, payload: object) -> dict[str, An
     if not isinstance(payload, dict):
         raise PaperEvidenceError("PAPER_EVIDENCE_INVALID")
     study_id = _identifier(payload.get("study_id"), "STUDY_ID_INVALID")
+    _require_project_parse_ready(project)
     prevalidated = _normalize_candidate(
         project, study_id, payload, source_mode="original_pdf_manual"
     )
     _check_candidate_id_conflicts(project, study_id, [prevalidated])
     with _mutation(project) as project:
+        _require_project_parse_ready(project)
         state = _parse_state(project, study_id)
         actions = {
             row.get("decision", {}).get("action")

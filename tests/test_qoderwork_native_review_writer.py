@@ -760,12 +760,31 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             payload = dashboard.project_parse_quality_payload(review_root, "case")
 
             self.assertEqual(
-                {"project_id", "status", "workflow_can_continue", "summary", "studies"},
+                {
+                    "project_id",
+                    "status",
+                    "workflow_can_continue",
+                    "next_action",
+                    "last_decision_at",
+                    "summary",
+                    "studies",
+                },
                 set(payload),
             )
             study = payload["studies"][0]
             self.assertEqual(
-                {"study_id", "label", "pdf_href", "pdf_page_href", "pdf_page_count", "markdown_href", "objects"},
+                {
+                    "study_id",
+                    "label",
+                    "pdf_href",
+                    "pdf_page_href",
+                    "pdf_page_count",
+                    "markdown_href",
+                    "workflow_can_continue",
+                    "last_decision_at",
+                    "repair_handoff",
+                    "objects",
+                },
                 set(study),
             )
             self.assertEqual(1, study["pdf_page_count"])
@@ -1054,6 +1073,88 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
                 b"GET /api/project/case/source/..%2F..%2F00_sources/pdf HTTP/1.1\r\nHost: localhost\r\n\r\n",
             )
             self.assertEqual(404, escape_status)
+
+    def test_settled_reparse_block_exposes_persistent_repair_handoff_and_provenance(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from test_source_truth import _source_truth_project
+        from review_writer.project.parse_quality import write_parse_quality_gate
+        from review_writer.project.source_truth import write_source_truth_bundle
+        from view import serve_review_dashboard as dashboard
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_root = Path(temp_dir)
+            project = _source_truth_project(review_root)
+            write_source_truth_bundle(project, "scholarly-a")
+            write_parse_quality_gate(project, "scholarly-a")
+
+            action_index = 0
+            while True:
+                public = dashboard.project_parse_quality_payload(review_root, "case")
+                target = next(
+                    (
+                        row
+                        for row in public["studies"][0]["objects"]
+                        if row["actions"] and row["decision"] is None
+                    ),
+                    None,
+                )
+                if target is None:
+                    break
+                action = (
+                    "reparse_required"
+                    if action_index == 0
+                    else "pdf_locator_only"
+                    if action_index == 1
+                    else "approve_candidate_extraction"
+                )
+                if action not in target["actions"]:
+                    action = "pdf_locator_only"
+                dashboard.write_project_parse_quality_decision(
+                    review_root,
+                    "case",
+                    {
+                        "study_id": "scholarly-a",
+                        "object_id": target["object_id"],
+                        "decision_token": target["decision_token"],
+                        "action": action,
+                        "note": "Compared with the original PDF; keep the workflow fail-closed.",
+                    },
+                )
+                action_index += 1
+
+            import importlib
+
+            restored = importlib.reload(dashboard).project_parse_quality_payload(
+                review_root, "case"
+            )
+            study = restored["studies"][0]
+            decisions = [row["decision"] for row in study["objects"] if row["decision"]]
+
+            self.assertEqual(0, restored["summary"]["needs_review"])
+            self.assertGreater(restored["summary"]["reparse_required"], 0)
+            self.assertGreater(restored["summary"]["pdf_locator_only"], 0)
+            self.assertFalse(restored["workflow_can_continue"])
+            self.assertEqual("repair_parse", restored["next_action"]["code"])
+            self.assertEqual("reparse_source", study["repair_handoff"]["action"])
+            self.assertGreater(study["repair_handoff"]["blocked_object_count"], 0)
+            self.assertIn("刷新", study["repair_handoff"]["instructions"])
+            self.assertTrue(restored["last_decision_at"])
+            self.assertEqual(restored["last_decision_at"], study["last_decision_at"])
+            self.assertTrue(
+                all(row["actor_type"] == "simulated_researcher_agent" for row in decisions)
+            )
+            self.assertTrue(
+                all(row["actor_label"] == "dashboard-playwright-reviewer" for row in decisions)
+            )
+            self.assertTrue(all(row["decided_at"] for row in decisions))
+            progress = dashboard.project_progress_payload(review_root, "case")
+            parsing_stage = next(row for row in progress["stages"] if row["id"] == "parsing")
+            self.assertEqual("parsing", progress["active_stage"])
+            self.assertEqual("PARSE_REPARSE_REQUIRED", progress["blocker_code"])
+            self.assertEqual("blocked", parsing_stage["status"])
+            self.assertEqual(
+                restored["next_action"]["label"], progress["recommended_next"]
+            )
 
     def test_parse_quality_pdf_page_route_accepts_authoritative_four_digit_page(self) -> None:
         sys.path.insert(0, str(ROOT))
@@ -4781,6 +4882,8 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             "parse-quality-study-list",
             "parse-quality-object-list",
             "parse-quality-preview",
+            "parse-quality-next-action",
+            "parse-quality-refresh",
             "parse-quality-message",
         ):
             self.assertIn(f'id="{element_id}"', review_html)
@@ -4794,6 +4897,11 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             "progressPayload.active_stage === 'parsing'",
             "parseQualityPayload.status === 'needs_attention'",
             "parseQualityDirty",
+            "parseQualityPayload.next_action",
+            "study?.repair_handoff",
+            "object.decision?.actor_label",
+            "object.decision?.decided_at",
+            "$('parse-quality-refresh').addEventListener('click'",
         ):
             self.assertIn(binding, review_html)
         self.assertIn(
@@ -4812,6 +4920,7 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             "允许机器从该部分提取候选证据",
             "仅回到原始 PDF 人工定位",
             "必须重新解析",
+            "刷新解析状态",
         ):
             self.assertIn(copy, parser.text)
         for forbidden in ("Source Truth Bundle", "schema", "digest", "hash", "JSON"):

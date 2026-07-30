@@ -91,6 +91,40 @@ def pdf_locator_only_project(tmp_path: Path) -> Path:
     return value
 
 
+def _add_study_with_parse_action(project: Path, study_id: str, action: str) -> None:
+    bundle_path = project / f"01_evidence/source_truth/{STUDY_ID}/bundle.json"
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    bundle["study_id"] = study_id
+    bundle["bundle_digest"] = canonical_digest(
+        {key: value for key, value in bundle.items() if key != "bundle_digest"}
+    )
+    destination = project / f"01_evidence/source_truth/{study_id}/bundle.json"
+    destination.parent.mkdir(parents=True)
+    destination.write_text(json.dumps(bundle), encoding="utf-8")
+    receipt_path = project / "00_sources/acquisition_final_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["studies"].append({"study_id": study_id})
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    state = write_parse_quality_gate(project, study_id)
+    for row in state["objects"]:
+        if row["status"] == "usable":
+            continue
+        selected = action
+        if selected == "approve_candidate_extraction" and row["status"] in {"incomplete", "failed"}:
+            selected = "pdf_locator_only"
+        state = apply_parse_quality_decision(
+            project,
+            study_id,
+            {
+                "object_id": row["object_id"],
+                "object_digest": row["object_digest"],
+                "gate_digest": state["gate_digest"],
+                "action": selected,
+                "note": "Compared with the original PDF.",
+            },
+        )
+
+
 def manual_pdf_payload(*, page: int) -> dict:
     value = candidate()
     value["locator"] = {
@@ -155,6 +189,31 @@ def test_pdf_locator_only_accepts_manual_hash_bound_evidence(tmp_path: Path) -> 
 
     assert row["locator"]["source_mode"] == "original_pdf_manual"
     assert row["source_pdf_sha256"] == current_source_pdf_sha256(project)
+
+
+def test_all_project_studies_must_close_parse_before_any_evidence_import(tmp_path: Path) -> None:
+    project = _source_truth_project(tmp_path)
+    _approve_parse(project)
+    _add_study_with_parse_action(project, "scholarly-b", "pdf_locator_only")
+    _add_study_with_parse_action(project, "scholarly-c", "reparse_required")
+    before = {
+        path.relative_to(project).as_posix(): path.read_bytes()
+        for path in project.rglob("*")
+        if path.is_file()
+    }
+
+    with pytest.raises(PaperEvidenceError, match="PROJECT_PARSE_QUALITY_NOT_READY"):
+        register_paper_evidence_candidates(project, STUDY_ID, candidate())
+    manual = {**manual_pdf_payload(page=1), "study_id": "scholarly-b"}
+    with pytest.raises(PaperEvidenceError, match="PROJECT_PARSE_QUALITY_NOT_READY"):
+        register_manual_pdf_evidence(project, manual)
+
+    after = {
+        path.relative_to(project).as_posix(): path.read_bytes()
+        for path in project.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
 
 
 def test_legacy_approved_claim_becomes_unapproved_candidate() -> None:
@@ -397,6 +456,26 @@ def _duplicate_study_candidate(project: Path, row: dict) -> None:
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     receipt["studies"].append({"study_id": "scholarly-b"})
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    state = write_parse_quality_gate(project, "scholarly-b")
+    for parse_object in state["objects"]:
+        if parse_object["status"] == "usable":
+            continue
+        action = (
+            "approve_candidate_extraction"
+            if parse_object["status"] == "usable_with_review"
+            else "pdf_locator_only"
+        )
+        state = apply_parse_quality_decision(
+            project,
+            "scholarly-b",
+            {
+                "object_id": parse_object["object_id"],
+                "object_digest": parse_object["object_digest"],
+                "gate_digest": state["gate_digest"],
+                "action": action,
+                "note": "Compared with the original PDF.",
+            },
+        )
     copied = json.loads(json.dumps(row))
     copied["study_id"] = "scholarly-b"
     copied["candidate_digest"] = canonical_digest(

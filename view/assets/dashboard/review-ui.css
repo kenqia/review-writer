@@ -1229,6 +1229,20 @@ textarea.editor {
 .processing-study-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; }
 .processing-study-list article { grid-template-columns: minmax(0, 1fr) auto; }
 .parse-quality-stage-panel { padding-inline: clamp(18px, 2.5vw, 32px); }
+.parse-quality-next-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin: 18px 0;
+  padding: 14px 16px;
+  background: var(--review-amber-soft);
+  border-left: 4px solid var(--review-amber);
+}
+.parse-quality-next-action strong,
+.parse-quality-next-action span { display: block; overflow-wrap: anywhere; }
+.parse-quality-next-action span { margin-top: 4px; color: var(--review-muted); font-size: 10px; line-height: 1.55; }
+.parse-quality-next-action button { flex: 0 0 auto; }
 .parse-quality-action-key {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
