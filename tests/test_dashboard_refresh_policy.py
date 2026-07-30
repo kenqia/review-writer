@@ -31,10 +31,12 @@ def test_evidence_and_synthesis_do_not_poll_five_surfaces_in_background() -> Non
         "\n".join(
             [
                 "const timers=[];const events={};const requests=[];",
-                "class Node{constructor(){this.value='case-01';this.hidden=false;this.textContent='';this.children=[];}addEventListener(name,fn){(events[name]??=[]).push(fn)}replaceChildren(...value){this.children=value}append(...value){this.children.push(...value)}prepend(...value){this.children.unshift(...value)}}",
+                f"const ui=require({session_path});const selection=ui.createProjectSelectionRegistry();const choices=selection.replace([{{project_id:'case-01',visible_label:'Case 01',selectable:true}}]);",
+                "class Node{constructor(){this.value='';this.hidden=false;this.textContent='';this.children=[];}addEventListener(name,fn){(events[name]??=[]).push(fn)}replaceChildren(...value){this.children=value}append(...value){this.children.push(...value)}prepend(...value){this.children.unshift(...value)}}",
                 "const nodes={'evidence-workspace-root':new Node(),'evidence-synthesis-workspace':new Node(),'evidence-workspace-status':new Node(),'evidence-workspace-message':new Node(),project:new Node(),'risk-stage-panel':new Node(),'synthesis-workspace-root':new Node()};",
+                "nodes.project.value=choices[0].key;",
                 "global.document={getElementById:id=>nodes[id]||null,createElement:()=>new Node(),addEventListener:(name,fn)=>{(events[name]??=[]).push(fn)}};",
-                f"global.window={{ReviewSessionUI:require({session_path}),ReviewAuditUI:{{researcherLabel:(value,fallback)=>value||fallback,humanStatus:value=>value,decisionActor:()=>''}},reviewDecisionActor:()=>({{}}),prompt:()=>null,setInterval:(fn,delay)=>{{timers.push({{fn,delay}});return timers.length}}}};",
+                "global.window={ReviewSessionUI:ui,reviewProjectSelection:selection,ReviewAuditUI:{researcherLabel:(value,fallback)=>value||fallback,humanStatus:value=>value,decisionActor:()=>''},reviewDecisionActor:()=>({}),prompt:()=>null,setInterval:(fn,delay)=>{timers.push({fn,delay});return timers.length}};",
                 "global.fetch=async url=>{requests.push(url);return {ok:true,json:async()=>({route:'other',items:[],protocol:{},source_figures:[],placeholders:[]})}};",
                 f"require({evidence_path});require({synthesis_path});",
                 "for(const fn of events.DOMContentLoaded||[])fn();",

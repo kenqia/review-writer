@@ -2,13 +2,15 @@
   "use strict";
   const root = document.getElementById("synthesis-workspace-root");
   const projectSelect = document.getElementById("project");
-  if (!root || !projectSelect) return;
+  const projectSelection = window.reviewProjectSelection;
+  if (!root || !projectSelect || !projectSelection) return;
   const text = (tag, value, className) => { const node = document.createElement(tag); if (className) node.className = className; node.textContent = value == null || value === "" ? "—" : String(value); return node; };
   const label = (value, fallback) => window.ReviewAuditUI.researcherLabel(value, fallback);
   const api = (id, suffix, options) => fetch(`/api/project/${encodeURIComponent(id)}/${suffix}`, options).then(response => { if (!response.ok) throw new Error(response.status === 409 ? "内容已更新，请刷新后重新核对。" : "综合判断暂不可用。"); return response.json(); });
   let busy = false;
   const coordinator = window.ReviewSessionUI.createProjectSurfaceCoordinator({
-    getProjectId: () => projectSelect.value,
+    getProjectId: () => projectSelection.getProjectId(projectSelect.value),
+    getProjectLabel: () => projectSelection.getVisibleLabel(projectSelect.value),
     load: id => Promise.all([api(id,"comparison-protocol"), api(id,"synthesis"), api(id,"section-contracts"), api(id,"review-figures")]),
     render: values => render(...values),
     onProjectChange: () => showSynthesisState("正在读取当前项目的综合判断…", "workspace-empty"),

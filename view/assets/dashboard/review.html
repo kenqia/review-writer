@@ -485,8 +485,8 @@
 
     let projects = [];
     let projectId = '';
-    let projectOptionIds = new Map();
-    let projectOptionKeys = new Map();
+    const projectSelection = ReviewSessionUI.createProjectSelectionRegistry();
+    window.reviewProjectSelection = projectSelection;
     let projectState = {};
     let cockpitPayload = {metrics:{}, mode_coverage:[]};
     let draftPayload = {available:false, sections:[], claim_lineage:[], revision_status:{pending_scientific_edits:[]}};
@@ -2454,8 +2454,7 @@
       projectsRefreshBusy = true;
       try {
         projects = await getPayload('/api/projects');
-        projectOptionIds = new Map();
-        projectOptionKeys = new Map();
+        const choices = projectSelection.replace(projects);
         clear($('project'));
         const placeholder = document.createElement('option');
         placeholder.value = '';
@@ -2463,13 +2462,11 @@
         placeholder.disabled = true;
         placeholder.selected = !projectId;
         $('project').append(placeholder);
-        projects.forEach((project, index) => {
-          const optionKey = `project-option-${index + 1}`;
-          projectOptionIds.set(optionKey, project.project_id);
-          projectOptionKeys.set(project.project_id, optionKey);
+        choices.forEach(choice => {
           const option = document.createElement('option');
-          option.value = optionKey;
-          option.textContent = project.visible_label || `未命名综述项目（项目 ${index + 1}/${projects.length}）`;
+          option.value = choice.key;
+          option.textContent = choice.label;
+          option.disabled = !choice.selectable;
           $('project').append(option);
         });
         if (!projects.length) {
@@ -2483,8 +2480,9 @@
           $('workbench-message').textContent = '';
           return 'empty';
         }
-        if (projectId && projects.some(project => project.project_id === projectId)) {
-          $('project').value = projectOptionKeys.get(projectId) || '';
+        const currentOptionKey = projectSelection.getOptionKey(projectId);
+        if (projectId && currentOptionKey) {
+          $('project').value = currentOptionKey;
           setEmptyProjectWorkspace(false);
           setWorkspace(activeWorkspace);
           return 'unchanged';
@@ -2520,22 +2518,22 @@
     }
 
     async function selectProject(event) {
-      const nextProjectId = projectOptionIds.get(event.target.value) || '';
+      const nextProjectId = projectSelection.getProjectId(event.target.value);
       if (!nextProjectId || !projects.some(project => project.project_id === nextProjectId)) {
-        event.target.value = projectOptionKeys.get(projectId) || '';
+        event.target.value = projectSelection.getOptionKey(projectId);
         return 'invalid';
       }
       if (nextProjectId === projectId) return 'unchanged';
       if (!confirmDiscardDraftChanges()) {
-        event.target.value = projectOptionKeys.get(projectId) || '';
+        event.target.value = projectSelection.getOptionKey(projectId);
         return 'cancelled';
       }
       if (!confirmDiscardRiskDecisions()) {
-        event.target.value = projectOptionKeys.get(projectId) || '';
+        event.target.value = projectSelection.getOptionKey(projectId);
         return 'cancelled';
       }
       if (!confirmDiscardParseQualityDecisions()) {
-        event.target.value = projectOptionKeys.get(projectId) || '';
+        event.target.value = projectSelection.getOptionKey(projectId);
         return 'cancelled';
       }
       activeParseStudyId = '';

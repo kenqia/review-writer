@@ -4586,6 +4586,22 @@ def infer_project_topic(project: Path) -> str:
     return ""
 
 
+def infer_project_label(project: Path) -> str:
+    review_state = read_json_if_exists(project / "00_brief" / "review_state.json")
+    if not isinstance(review_state, dict):
+        return ""
+    brief = review_state.get("brief")
+    if not isinstance(brief, dict):
+        return ""
+    label = brief.get("project_label")
+    if not isinstance(label, str):
+        return ""
+    label = label.strip()
+    if not label or len(label) > 200 or any(ord(character) < 32 for character in label):
+        return ""
+    return label
+
+
 def is_direct_output_root(review_root: Path) -> bool:
     return (review_root / "checkpoint_log.json").exists() and (review_root / "05_final_audit").exists()
 
@@ -4680,17 +4696,29 @@ def has_review_product_data(project: Path) -> bool:
 
 
 def with_visible_project_labels(projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    total = len(projects)
-    return [
-        {
-            **project,
-            "visible_label": (
-                f"{visible_text(project.get('topic')) or '未命名综述项目'}"
-                f"（项目 {index}/{total}）"
-            ),
-        }
-        for index, project in enumerate(projects, start=1)
+    labels = [
+        visible_text(project.get("project_label"))
+        or visible_text(project.get("topic"))
+        or "未命名综述项目"
+        for project in projects
     ]
+    counts = {label: labels.count(label) for label in set(labels)}
+    labeled: list[dict[str, Any]] = []
+    for project, label in zip(projects, labels, strict=True):
+        duplicate = counts[label] > 1
+        labeled.append(
+            {
+                **{key: value for key, value in project.items() if key != "project_label"},
+                "visible_label": label,
+                "selectable": not duplicate,
+                "selection_message": (
+                    "多个项目使用相同显示名称，请在 QoderWork 中设置唯一项目显示名称。"
+                    if duplicate
+                    else ""
+                ),
+            }
+        )
+    return labeled
 
 
 def list_review_projects(review_root: Path) -> list[dict[str, Any]]:
@@ -4700,6 +4728,7 @@ def list_review_projects(review_root: Path) -> list[dict[str, Any]]:
             {
                 "project_id": project_id,
                 "topic": infer_project_topic(review_root),
+                "project_label": infer_project_label(review_root),
                 "has_discovery": (review_root / "00_discovery" / "discovery_candidates.json").exists(),
                 "discovery_status": "approved_mock",
                 "has_matrix_outline": (review_root / "01_matrix_outline" / "literature_matrix.json").exists(),
@@ -4732,6 +4761,7 @@ def list_review_projects(review_root: Path) -> list[dict[str, Any]]:
             {
                 "project_id": project.name,
                 "topic": infer_project_topic(project),
+                "project_label": infer_project_label(project),
                 "has_discovery": discovery_publication is not None,
                 "discovery_status": (
                     "invalid"
