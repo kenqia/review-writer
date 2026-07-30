@@ -127,6 +127,7 @@ from review_writer.delivery.dual_parse_release import (  # noqa: E402
     confirm_chemical_paper_import,
     dual_parse_dashboard_projection,
     preflight_chemical_paper_import,
+    refresh_dual_parse_derived_state,
 )
 
 
@@ -1349,6 +1350,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 raise ValueError("invalid body size")
             data = json.loads(self.rfile.read(length).decode("utf-8"))
             result = write_project_parse_quality_decision(self.review_root, project_id, data)
+            refresh_dual_parse_derived_state(project, visible_text(data.get("study_id")))
         except (json.JSONDecodeError, UnicodeError):
             self.send_json({"error": "决定内容无法读取"}, status=HTTPStatus.BAD_REQUEST)
             return

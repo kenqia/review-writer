@@ -8,9 +8,17 @@ from pathlib import Path
 import pytest
 
 from review_writer.delivery.dual_parse_release import (
+    apply_chemical_completion_http,
+    confirm_chemical_paper_import,
     dual_parse_dashboard_projection,
     dual_parse_manuscript_bindings,
     dual_parse_release_state,
+    preflight_chemical_paper_import,
+    refresh_dual_parse_derived_state,
+)
+from review_writer.project.chemical_completion import (
+    apply_chemical_completion_batch,
+    chemical_completion_state,
 )
 from review_writer.project.content_agent_handoff import (
     ContentAgentError,
@@ -20,9 +28,12 @@ from review_writer.project.dual_source import write_dual_source_binding
 from review_writer.project.parse_quality import write_parse_quality_gate
 from review_writer.project.parse_reconciliation import write_parse_reconciliation
 from review_writer.project.source_truth import write_source_truth_bundle
+from review_writer.project.workflow_projection import workflow_state
 from test_parse_quality import _decide_all
 from test_dual_parse_content_package import paper_request
 from test_chemical_completion import completion_project
+from test_chemical_paper_import import v2000, write_chemical_zip
+from test_dual_source import dual_project
 from test_parse_reconciliation import reconciliation_project
 from view.serve_review_dashboard import project_cockpit_payload
 from view.serve_review_dashboard import project_review_figures_workspace_payload
@@ -181,3 +192,124 @@ def test_fresh_figure_workspace_get_is_read_only(tmp_path: Path) -> None:
     ]
     assert not (project / "03_figures").exists()
     assert after == before
+
+
+def test_browser_mutations_can_advance_only_deterministic_dual_gates(
+    tmp_path: Path,
+) -> None:
+    project = completion_project(tmp_path)
+    missing_before = chemical_completion_state(project, "scholarly-a")
+
+    blocked = refresh_dual_parse_derived_state(project, "scholarly-a")
+
+    assert blocked["status"] == "blocked"
+    assert not (project / "01_evidence/dual_source").exists()
+    assert chemical_completion_state(project, "scholarly-a") == missing_before
+
+    write_parse_quality_gate(project, "scholarly-a")
+    _decide_all(project)
+    awaiting_completion = refresh_dual_parse_derived_state(project, "scholarly-a")
+
+    assert awaiting_completion == {
+        "status": "blocked",
+        "stage": "chemical_completion",
+        "reason_code": "CHEMICAL_COMPLETION_INCOMPLETE",
+    }
+    assert (
+        project / "01_evidence/dual_source/scholarly-a/binding.json"
+    ).is_file()
+    assert not (project / "01_evidence/parse_reconciliation").exists()
+    assert workflow_state(project)["active_stage"] == "chemical_completion"
+
+    gate = chemical_completion_state(project, "scholarly-a")
+    apply_chemical_completion_batch(
+        project,
+        "scholarly-a",
+        {
+            "version_token": gate["version_token"],
+            "actor_type": "simulated_researcher_agent",
+            "actor_label": "simulated_researcher",
+            "corrections": [
+                {
+                    "molecule_index": 0,
+                    "field": field,
+                    "value": "compound 3a" if field == "mol_idt" else "CO",
+                    "reason": "Original PDF Scheme 2 supports this value.",
+                    "pdf_locator": {"page": 1, "figure_label": "Scheme 2"},
+                }
+                for field in ("mol_idt", "smiles_expanded", "smiles_unexpanded")
+            ],
+        },
+    )
+
+    advanced = refresh_dual_parse_derived_state(project, "scholarly-a")
+
+    assert advanced["status"] == "current"
+    assert advanced["stage"] == "reconciliation"
+    assert (
+        project / "01_evidence/parse_reconciliation/scholarly-a/registry.json"
+    ).is_file()
+    assert workflow_state(project)["active_stage"] == "evidence"
+
+
+def test_confirm_and_completion_http_advance_derived_gates(tmp_path: Path) -> None:
+    project = dual_project(tmp_path, chemical=False)
+    archive = write_chemical_zip(
+        tmp_path / "chemical.zip",
+        pages=1,
+        molecules=[
+            {
+                "mol_id": "mol-a",
+                "page_idx": 0,
+                "bbox_normalized": [0.1, 0.2, 0.3, 0.4],
+                "smiles_expanded": "",
+                "smiles_unexpanded": "",
+                "mol_idt": "",
+                "mol_block": v2000(),
+            }
+        ],
+    )
+    preflight = preflight_chemical_paper_import(
+        project, "scholarly-a", archive.read_bytes()
+    )
+
+    confirm_chemical_paper_import(
+        project,
+        {
+            "study_id": "scholarly-a",
+            "preflight_token": preflight["preflight_token"],
+            "actor_type": "simulated_researcher_agent",
+            "actor_label": "simulated_researcher",
+        },
+    )
+
+    assert (
+        project / "01_evidence/dual_source/scholarly-a/binding.json"
+    ).is_file()
+    assert workflow_state(project)["active_stage"] == "chemical_completion"
+    gate = chemical_completion_state(project, "scholarly-a")
+
+    apply_chemical_completion_http(
+        project,
+        {
+            "study_id": "scholarly-a",
+            "version_token": gate["version_token"],
+            "actor_type": "simulated_researcher_agent",
+            "actor_label": "simulated_researcher",
+            "corrections": [
+                {
+                    "molecule_index": 0,
+                    "field": field,
+                    "value": "compound 3a" if field == "mol_idt" else "CO",
+                    "reason": "Original PDF Scheme 2 supports this value.",
+                    "pdf_locator": {"page": 1, "figure_label": "Scheme 2"},
+                }
+                for field in ("mol_idt", "smiles_expanded", "smiles_unexpanded")
+            ],
+        },
+    )
+
+    assert (
+        project / "01_evidence/parse_reconciliation/scholarly-a/registry.json"
+    ).is_file()
+    assert workflow_state(project)["active_stage"] == "evidence"

@@ -104,7 +104,10 @@ def _new_route_state(project: Path) -> dict[str, Any]:
 
     paper_evidence_ready = False
     paper_evidence_error = False
-    dual_route = (project / "01_evidence/dual_source").is_dir()
+    dual_route = (
+        (project / "01_evidence/dual_source").is_dir()
+        or (project / "01_evidence/chemical_paper").is_dir()
+    )
     dual_source_ready = not dual_route
     chemical_completion_ready = not dual_route
     reconciliation_ready = not dual_route

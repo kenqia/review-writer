@@ -361,6 +361,7 @@ def confirm_chemical_paper_import(
                 "actor_label": payload.get("actor_label"),
             },
         )
+        refresh_dual_parse_derived_state(root, study_id)
         try:
             consumed = {
                 "schema_version": "chemical-paper-preflight-stage.v1",
@@ -416,6 +417,62 @@ def _authority_error(exc: Exception, fallback: str) -> DualParseReleaseError:
     return DualParseReleaseError(code if isinstance(code, str) else fallback)
 
 
+def refresh_dual_parse_derived_state(
+    project: Path, study_id: str
+) -> dict[str, Any]:
+    """Recompute version-bound gates without making a scientific decision."""
+
+    root = _project(project)
+    study_id = _identifier(study_id, "STUDY_ID_INVALID")
+    try:
+        from review_writer.project.chemical_completion import (
+            ChemicalCompletionError,
+            require_chemical_completion_ready,
+        )
+        from review_writer.project.dual_source import (
+            DualSourceError,
+            write_dual_source_binding,
+        )
+        from review_writer.project.parse_reconciliation import (
+            ParseReconciliationError,
+            write_parse_reconciliation,
+        )
+    except ImportError as exc:
+        raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_UNAVAILABLE") from exc
+
+    try:
+        write_dual_source_binding(root, study_id)
+    except DualSourceError as exc:
+        return {
+            "status": "blocked",
+            "stage": "dual_source",
+            "reason_code": exc.code,
+        }
+    try:
+        require_chemical_completion_ready(root, study_id)
+    except ChemicalCompletionError as exc:
+        return {
+            "status": "blocked",
+            "stage": "chemical_completion",
+            "reason_code": exc.code,
+        }
+    try:
+        registry = write_parse_reconciliation(root, study_id)
+    except ParseReconciliationError as exc:
+        return {
+            "status": "blocked",
+            "stage": "reconciliation",
+            "reason_code": exc.code,
+        }
+    return {
+        "status": (
+            "current" if registry.get("workflow_can_continue") is True else "needs_review"
+        ),
+        "stage": "reconciliation",
+        "workflow_can_continue": registry.get("workflow_can_continue") is True,
+    }
+
+
 def apply_chemical_completion_http(project: Path, payload: object) -> dict[str, Any]:
     """Validate the HTTP contract and delegate the authoritative batch write."""
 
@@ -432,6 +489,7 @@ def apply_chemical_completion_http(project: Path, payload: object) -> dict[str, 
     study_id = _identifier(
         payload.get("study_id"), "CHEMICAL_COMPLETION_REQUEST_INVALID"
     )
+    root = _project(project)
     if not isinstance(payload.get("version_token"), str) or not isinstance(
         payload.get("corrections"), list
     ):
@@ -445,12 +503,13 @@ def apply_chemical_completion_http(project: Path, payload: object) -> dict[str, 
     authority_payload = {key: value for key, value in payload.items() if key != "study_id"}
     try:
         result = apply_chemical_completion_batch(
-            _project(project), study_id, authority_payload
+            root, study_id, authority_payload
         )
     except Exception as exc:
         raise _authority_error(exc, "CHEMICAL_COMPLETION_REQUEST_INVALID") from exc
     if not isinstance(result, dict):
         raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_INVALID")
+    refresh_dual_parse_derived_state(root, study_id)
     return result
 
 
