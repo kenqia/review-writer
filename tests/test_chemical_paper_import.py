@@ -12,20 +12,28 @@ import pytest
 from review_writer.project.source_truth import canonical_digest
 
 
-PDF_SHA = "a" * 64
+PDF_BYTES = b"%PDF-1.4\nchemical-paper-fixture\n%%EOF\n"
+PDF_SHA = hashlib.sha256(PDF_BYTES).hexdigest()
 ACTOR = {"actor_type": "simulated_researcher_agent", "actor_label": "fixture-researcher"}
 
 
-def _file(path: str, sha256: str = "b" * 64) -> dict[str, object]:
-    return {"path": path, "sha256": sha256, "size_bytes": 1}
+def _file(
+    path: str,
+    sha256: str = "b" * 64,
+    size_bytes: int = 1,
+) -> dict[str, object]:
+    return {"path": path, "sha256": sha256, "size_bytes": size_bytes}
 
 
 def source_truth_project(root: Path, *, study_id: str = "study-1", pages: int = 2) -> Path:
     project = root / "project"
     target = project / "01_evidence/source_truth" / study_id
     target.mkdir(parents=True)
+    pdf_path = project / "00_sources/main.pdf"
+    pdf_path.parent.mkdir(parents=True)
+    pdf_path.write_bytes(PDF_BYTES)
     receipt = project / "00_sources/acquisition_final_receipt.json"
-    receipt.parent.mkdir(parents=True)
+    receipt.parent.mkdir(parents=True, exist_ok=True)
     receipt.write_text(
         json.dumps(
             {
@@ -40,7 +48,7 @@ def source_truth_project(root: Path, *, study_id: str = "study-1", pages: int = 
         "document_role": "MAIN",
         "source_type": "primary_study",
         "mineru_slug": "study-1-main",
-        "pdf": _file("00_sources/main.pdf", PDF_SHA),
+        "pdf": _file("00_sources/main.pdf", PDF_SHA, len(PDF_BYTES)),
         "canonical_markdown": _file("01_evidence/mineru/markdown/main.md"),
         "content_list": _file("01_evidence/parses/extracted/main/content_list.json"),
         "content_list_v2": _file("01_evidence/parses/extracted/main/content_list_v2.json"),
@@ -319,6 +327,157 @@ def test_safe_projection_fails_closed_for_invalid_current_source_binding(
     else:
         state["molecules"][0]["page_index"] = 2
 
+    state["state_digest"] = canonical_digest(
+        {key: value for key, value in state.items() if key != "state_digest"}
+    )
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(
+        ChemicalPaperError,
+        match="CHEMICAL_PAPER_SOURCE_TRUTH_STALE",
+    ):
+        chemical_paper_projection(project)
+
+
+def test_safe_projection_rejects_cross_study_duplicate_source_id(
+    tmp_path: Path,
+) -> None:
+    from review_writer.project.chemical_paper import (
+        ChemicalPaperError,
+        chemical_paper_projection,
+        import_chemical_paper,
+    )
+
+    project = source_truth_project(tmp_path)
+    import_chemical_paper(
+        project,
+        "study-1",
+        PDF_SHA,
+        write_chemical_zip(tmp_path / "chemical.zip"),
+        ACTOR,
+    )
+    first_path = project / "01_evidence/source_truth/study-1/bundle.json"
+    first = json.loads(first_path.read_text(encoding="utf-8"))
+    second_body = {
+        key: copy.deepcopy(value)
+        for key, value in first.items()
+        if key != "bundle_digest"
+    }
+    second_body["study_id"] = "study-2"
+    second_body["study_identity"] = {
+        "doi": "10.1000/test-2",
+        "title": "Fixture study 2",
+    }
+    second_path = project / "01_evidence/source_truth/study-2/bundle.json"
+    second_path.parent.mkdir(parents=True)
+    second_path.write_text(
+        json.dumps(
+            {**second_body, "bundle_digest": canonical_digest(second_body)}
+        ),
+        encoding="utf-8",
+    )
+    receipt_path = project / "00_sources/acquisition_final_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["studies"].append({"study_id": "study-2"})
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    with pytest.raises(
+        ChemicalPaperError,
+        match="CHEMICAL_PAPER_SOURCE_TRUTH_STALE",
+    ):
+        chemical_paper_projection(project)
+
+
+@pytest.mark.parametrize(
+    ("asset_failure", "error_code"),
+    (
+        ("deleted", "SOURCE_ASSET_INVALID"),
+        ("drift", "SOURCE_ASSET_DRIFT"),
+        ("symlink", "SOURCE_ASSET_INVALID"),
+        ("invalid", "SOURCE_ASSET_INVALID"),
+    ),
+)
+def test_safe_projection_requires_the_current_bound_original_pdf_file(
+    tmp_path: Path,
+    asset_failure: str,
+    error_code: str,
+) -> None:
+    from review_writer.project.chemical_paper import (
+        ChemicalPaperError,
+        chemical_paper_projection,
+        import_chemical_paper,
+    )
+
+    project = source_truth_project(tmp_path)
+    import_chemical_paper(
+        project,
+        "study-1",
+        PDF_SHA,
+        write_chemical_zip(tmp_path / "chemical.zip"),
+        ACTOR,
+    )
+    pdf_path = project / "00_sources/main.pdf"
+    pdf_path.unlink()
+    if asset_failure == "drift":
+        pdf_path.write_bytes(b"drifted original PDF")
+    elif asset_failure == "symlink":
+        outside = tmp_path / "outside.pdf"
+        outside.write_bytes(PDF_BYTES)
+        pdf_path.symlink_to(outside)
+    elif asset_failure == "invalid":
+        pdf_path.mkdir()
+
+    with pytest.raises(
+        ChemicalPaperError,
+        match=error_code,
+    ):
+        chemical_paper_projection(project)
+
+
+@pytest.mark.parametrize(
+    "identity_failure",
+    ("bundle_project", "bundle_study", "state_study"),
+)
+def test_safe_projection_rejects_digest_valid_wrong_self_identity(
+    tmp_path: Path,
+    identity_failure: str,
+) -> None:
+    from review_writer.project.chemical_paper import (
+        ChemicalPaperError,
+        chemical_paper_projection,
+        import_chemical_paper,
+    )
+
+    project = source_truth_project(tmp_path)
+    import_chemical_paper(
+        project,
+        "study-1",
+        PDF_SHA,
+        write_chemical_zip(tmp_path / "chemical.zip"),
+        ACTOR,
+    )
+    state_path = project / "01_evidence/chemical_paper/study-1/state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    if identity_failure == "state_study":
+        state["study_id"] = "wrong-study"
+    else:
+        bundle_path = project / "01_evidence/source_truth/study-1/bundle.json"
+        bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+        body = {key: value for key, value in bundle.items() if key != "bundle_digest"}
+        body["project_id" if identity_failure == "bundle_project" else "study_id"] = (
+            "wrong-project" if identity_failure == "bundle_project" else "wrong-study"
+        )
+        bundle_digest = canonical_digest(body)
+        bundle_path.write_text(
+            json.dumps({**body, "bundle_digest": bundle_digest}),
+            encoding="utf-8",
+        )
+        state["source_truth_bundle_digest"] = bundle_digest
+        active = state["imports"][state["current_import_digest"]]
+        active["source_truth_bundle_digest"] = bundle_digest
+        active["import_event_digest"] = canonical_digest(
+            {key: value for key, value in active.items() if key != "import_event_digest"}
+        )
     state["state_digest"] = canonical_digest(
         {key: value for key, value in state.items() if key != "state_digest"}
     )

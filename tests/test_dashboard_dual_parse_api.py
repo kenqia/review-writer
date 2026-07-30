@@ -6,7 +6,10 @@ from pathlib import Path
 
 import pytest
 
+from review_writer.project.chemical_paper import import_chemical_paper
+from review_writer.project.source_truth import canonical_digest
 from test_chemical_paper_import import (
+    ACTOR,
     PDF_SHA,
     source_truth_project,
     v2000,
@@ -305,6 +308,70 @@ def test_first_smiles_completion_locator_serves_the_bound_original_pdf_page(
     assert headers["Content-Type"] == "image/png"
     assert body == rendered
     assert seen == [(bound_pdf, 1)]
+
+
+def test_dual_parse_route_returns_zero_locators_for_cross_study_source_collision(
+    tmp_path: Path,
+) -> None:
+    review_root = tmp_path / "review-root"
+    project = dual_project(review_root, chemical=False)
+    bundle_path = project / "01_evidence/source_truth/scholarly-a/bundle.json"
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    source = bundle["sources"][0]
+    import_chemical_paper(
+        project,
+        "scholarly-a",
+        source["pdf"]["sha256"],
+        write_chemical_zip(
+            tmp_path / "chemical.zip",
+            pages=1,
+            molecules=[
+                {
+                    "mol_id": "mol-a",
+                    "page_idx": 0,
+                    "bbox_normalized": [0.1, 0.2, 0.3, 0.4],
+                    "smiles_expanded": "",
+                    "smiles_unexpanded": "",
+                    "mol_idt": "",
+                    "mol_block": v2000(),
+                }
+            ],
+        ),
+        ACTOR,
+    )
+    second_body = {
+        key: value for key, value in bundle.items() if key != "bundle_digest"
+    }
+    second_body["study_id"] = "scholarly-b"
+    second_body["study_identity"] = {
+        "doi": "10.1000/example-b",
+        "title": "Example B",
+    }
+    second_path = project / "01_evidence/source_truth/scholarly-b/bundle.json"
+    second_path.parent.mkdir(parents=True)
+    second_path.write_text(
+        json.dumps(
+            {**second_body, "bundle_digest": canonical_digest(second_body)}
+        ),
+        encoding="utf-8",
+    )
+    receipt_path = project / "00_sources/acquisition_final_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["studies"].append({"study_id": "scholarly-b"})
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    status, _, body = _http_request(
+        review_root,
+        (
+            f"GET /api/project/{project.name}/dual-parse HTTP/1.1\r\n"
+            "Host: localhost\r\n\r\n"
+        ).encode("ascii"),
+    )
+
+    payload = json.loads(body)
+    assert status == 404
+    assert payload["error_code"] == "PROJECT_INVALID"
+    assert "pdf_page_url" not in json.dumps(payload, sort_keys=True)
 
 
 def test_confirm_revalidates_records_actor_and_rejects_second_confirm(

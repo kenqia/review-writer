@@ -228,6 +228,7 @@ def test_paper_evidence_package_digest_is_isolated_from_existing_evidence(
         "doi": "10.1000/example-b",
         "title": "Example B",
     }
+    second_body["sources"][0]["source_id"] = "stud-b"
     second_bundle_path = project / "01_evidence/source_truth/scholarly-b/bundle.json"
     second_bundle_path.parent.mkdir(parents=True)
     second_bundle_path.write_text(
