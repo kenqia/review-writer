@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import heapq
 import json
+import math
 import os
 import re
 import tempfile
@@ -163,20 +165,244 @@ _SOURCE_FIGURE_LABEL = re.compile(
     r"(?:Figure|Fig\.?|Scheme|Chart)\s*[A-Za-z]?\s*\d+",
     re.I,
 )
+_V2_LAYOUT_GAP = 80.0
 
 
-def _explicit_caption(entry: dict[str, Any]) -> tuple[str, str] | None:
-    raw = entry.get("image_caption")
-    values = raw if isinstance(raw, list) else [raw] if isinstance(raw, str) else []
-    clean = " ".join(
-        " ".join(value.split())
-        for value in values
-        if isinstance(value, str) and value.strip()
-    ).strip()
-    match = _SOURCE_FIGURE_LABEL.search(clean)
-    if not clean or match is None:
+def _content_v2_pages(project: Path, source: dict[str, Any]) -> list[list[dict[str, Any]]]:
+    descriptor = source.get("content_list_v2")
+    if not isinstance(descriptor, dict):
+        _fail("FIGURE_CONTENT_LIST_V2_INVALID")
+    relative = descriptor.get("path")
+    expected_sha256 = descriptor.get("sha256")
+    if (
+        not isinstance(relative, str)
+        or not isinstance(expected_sha256, str)
+        or not _SHA256.fullmatch(expected_sha256)
+    ):
+        _fail("FIGURE_CONTENT_LIST_V2_INVALID")
+    path = _safe_asset(project, relative)
+    if _sha256(path) != expected_sha256:
+        _fail("FIGURE_CONTENT_LIST_V2_DRIFT")
+    payload = _read_json(path, "FIGURE_CONTENT_LIST_V2_INVALID")
+    page_count = source.get("page_count")
+    if (
+        not isinstance(page_count, int)
+        or isinstance(page_count, bool)
+        or not isinstance(payload, list)
+        or len(payload) != page_count
+        or not all(
+            isinstance(page, list) and all(isinstance(row, dict) for row in page)
+            for page in payload
+        )
+    ):
+        _fail("FIGURE_CONTENT_LIST_V2_INVALID")
+    return payload
+
+
+def _content_list_v2_digest(root: Path) -> str:
+    bindings: list[dict[str, str]] = []
+    try:
+        studies = declared_study_ids(root)
+    except SourceTruthError as exc:
+        raise ReviewFigureError(exc.code) from exc
+    for study_id in studies:
+        try:
+            bundle = load_source_truth_bundle(root, study_id)
+        except SourceTruthError as exc:
+            raise ReviewFigureError(exc.code) from exc
+        for source in bundle.get("sources", []):
+            if not isinstance(source, dict) or source.get("document_role") != "MAIN":
+                continue
+            _content_v2_pages(root, source)
+            descriptor = source["content_list_v2"]
+            bindings.append(
+                {
+                    "study_id": study_id,
+                    "source_id": source["source_id"],
+                    "sha256": descriptor["sha256"],
+                }
+            )
+    return canonical_digest(bindings)
+
+
+def _caption_text(raw: object) -> str | None:
+    if not isinstance(raw, list):
         return None
-    return match.group(0), clean
+    parts: list[str] = []
+    for item in raw:
+        if not isinstance(item, dict) or not isinstance(item.get("content"), str):
+            return None
+        clean = " ".join(item["content"].split())
+        if clean:
+            parts.append(clean)
+    return " ".join(parts)
+
+
+def _valid_bbox(value: object) -> list[int | float] | None:
+    if (
+        not isinstance(value, list)
+        or len(value) != 4
+        or any(
+            isinstance(item, bool)
+            or not isinstance(item, (int, float))
+            or not math.isfinite(item)
+            for item in value
+        )
+    ):
+        return None
+    x0, y0, x1, y1 = value
+    if x0 < 0 or y0 < 0 or x1 <= x0 or y1 <= y0:
+        return None
+    return list(value)
+
+
+def _v2_image_blocks(
+    root: Path,
+    *,
+    study_id: str,
+    source_id: str,
+    source: dict[str, Any],
+    extracted: Path,
+    image_root: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    blocks: list[dict[str, Any]] = []
+    gaps: list[dict[str, Any]] = []
+    for page_index, page_rows in enumerate(_content_v2_pages(root, source)):
+        page = page_index + 1
+        for block_index, entry in enumerate(page_rows):
+            if entry.get("type") != "image":
+                continue
+            bbox = _valid_bbox(entry.get("bbox"))
+            content = entry.get("content")
+            image_source = content.get("image_source") if isinstance(content, dict) else None
+            image_path = image_source.get("path") if isinstance(image_source, dict) else None
+            caption = _caption_text(
+                content.get("image_caption") if isinstance(content, dict) else None
+            )
+            if bbox is None or not isinstance(image_path, str) or caption is None:
+                gaps.append(
+                    {
+                        "study_id": study_id,
+                        "source_id": source_id,
+                        "page": page,
+                        "reason": "content_list_v2 图块缺少完整 bbox、图片来源或图注关系，已拒绝定位。",
+                    }
+                )
+                continue
+            raw_path = Path(image_path)
+            if raw_path.is_absolute() or ".." in raw_path.parts:
+                _fail("FIGURE_ASSET_INVALID")
+            asset = _safe_asset(
+                root,
+                (extracted / raw_path).relative_to(root).as_posix(),
+            )
+            try:
+                asset.relative_to(image_root)
+            except ValueError as exc:
+                raise ReviewFigureError("FIGURE_ASSET_INVALID") from exc
+            labels = [match.group(0) for match in _SOURCE_FIGURE_LABEL.finditer(caption)]
+            blocks.append(
+                {
+                    "page": page,
+                    "block_index": block_index,
+                    "bbox": bbox,
+                    "asset_path": asset.relative_to(root).as_posix(),
+                    "asset_sha256": _sha256(asset),
+                    "caption": caption,
+                    "labels": labels,
+                }
+            )
+    return blocks, gaps
+
+
+def _spatially_related(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    lx0, ly0, lx1, ly1 = left["bbox"]
+    rx0, ry0, rx1, ry1 = right["bbox"]
+    overlap_x = min(lx1, rx1) - max(lx0, rx0)
+    overlap_y = min(ly1, ry1) - max(ly0, ry0)
+    horizontal_gap = max(rx0 - lx1, lx0 - rx1, 0)
+    vertical_gap = max(ry0 - ly1, ly0 - ry1, 0)
+    return (
+        overlap_x > 0 and vertical_gap <= _V2_LAYOUT_GAP
+    ) or (
+        overlap_y > 0 and horizontal_gap <= _V2_LAYOUT_GAP
+    )
+
+
+def _spatial_cost(left: dict[str, Any], right: dict[str, Any]) -> float:
+    if not _spatially_related(left, right):
+        return math.inf
+    lx0, ly0, lx1, ly1 = left["bbox"]
+    rx0, ry0, rx1, ry1 = right["bbox"]
+    overlap_x = max(0.0, min(lx1, rx1) - max(lx0, rx0))
+    overlap_y = max(0.0, min(ly1, ry1) - max(ly0, ry0))
+    horizontal_gap = max(rx0 - lx1, lx0 - rx1, 0)
+    vertical_gap = max(ry0 - ly1, ly0 - ry1, 0)
+    costs: list[float] = []
+    if overlap_x > 0:
+        overlap_ratio = overlap_x / min(lx1 - lx0, rx1 - rx0)
+        costs.append(vertical_gap / overlap_ratio)
+    if overlap_y > 0:
+        overlap_ratio = overlap_y / min(ly1 - ly0, ry1 - ry0)
+        costs.append(horizontal_gap / overlap_ratio)
+    return min(costs, default=math.inf)
+
+
+def _anchor_distances(
+    blocks: list[dict[str, Any]],
+    anchor_index: int,
+) -> list[float]:
+    distances = [math.inf] * len(blocks)
+    distances[anchor_index] = 0.0
+    queue: list[tuple[float, int]] = [(0.0, anchor_index)]
+    while queue:
+        distance, current = heapq.heappop(queue)
+        if distance != distances[current]:
+            continue
+        for candidate in range(len(blocks)):
+            if candidate == current or (
+                candidate != anchor_index and blocks[candidate]["labels"]
+            ):
+                continue
+            edge = _spatial_cost(blocks[current], blocks[candidate])
+            proposed = distance + edge
+            if proposed < distances[candidate]:
+                distances[candidate] = proposed
+                heapq.heappush(queue, (proposed, candidate))
+    return distances
+
+
+def _spatial_components(blocks: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    remaining = set(range(len(blocks)))
+    components: list[list[dict[str, Any]]] = []
+    while remaining:
+        pending = [remaining.pop()]
+        indexes: list[int] = []
+        while pending:
+            current = pending.pop()
+            indexes.append(current)
+            neighbours = {
+                candidate
+                for candidate in remaining
+                if not (blocks[current]["labels"] and blocks[candidate]["labels"])
+                and _spatially_related(blocks[current], blocks[candidate])
+            }
+            remaining.difference_update(neighbours)
+            pending.extend(neighbours)
+        components.append(
+            sorted(
+                (blocks[index] for index in indexes),
+                key=lambda row: (row["bbox"][1], row["bbox"][0], row["block_index"]),
+            )
+        )
+    return sorted(
+        components,
+        key=lambda rows: (rows[0]["page"], rows[0]["bbox"][1], rows[0]["bbox"][0]),
+    )
+
+
+def _normalized_label(label: str) -> str:
+    return re.sub(r"[.\s]+", "", label.casefold())
 
 
 def _source_truth_digest(root: Path) -> str:
@@ -208,16 +434,22 @@ def load_source_figure_registry(project: Path) -> dict[str, Any]:
         _fail("FIGURE_STATE_INVALID")
     figures = payload.get("figures")
     locator_gaps = payload.get("locator_gaps")
+    try:
+        content_list_v2_digest = _content_list_v2_digest(root)
+    except ReviewFigureError as exc:
+        raise ReviewFigureError("FIGURE_REGISTRY_STALE") from exc
     if (
         not isinstance(figures, list)
         or not all(isinstance(row, dict) for row in figures)
         or not isinstance(locator_gaps, list)
         or payload.get("source_truth_digest") != _source_truth_digest(root)
+        or payload.get("content_list_v2_digest") != content_list_v2_digest
     ):
         _fail("FIGURE_REGISTRY_STALE")
     expected = canonical_digest(
         {
             "source_truth_digest": payload["source_truth_digest"],
+            "content_list_v2_digest": content_list_v2_digest,
             "figures": figures,
             "locator_gaps": locator_gaps,
         }
@@ -266,6 +498,7 @@ def build_source_figure_registry(project: Path) -> dict[str, Any]:
     figures: list[dict[str, Any]] = []
     locator_gaps: list[dict[str, Any]] = []
     source_truth_digest = _source_truth_digest(root)
+    content_list_v2_digest = _content_list_v2_digest(root)
     for study_id in studies:
         try:
             bundle = load_source_truth_bundle(root, study_id)
@@ -286,82 +519,144 @@ def build_source_figure_registry(project: Path) -> dict[str, Any]:
                 _fail("SOURCE_PDF_HASH_MISMATCH")
             _verify_source_images(root, source)
             extracted = root / "01_evidence/parses/extracted" / slug
-            entries = _content_entries(root, source)
+            # v1 remains part of Source Truth byte integrity, but is never used
+            # for page, caption, label, or grouping decisions.
+            _content_entries(root, source)
             image_root = (extracted / "images").resolve(strict=True)
             if image_root.is_symlink() or not image_root.is_dir():
                 _fail("FIGURE_ASSET_INVALID")
-            image_number = 0
-            image_entries_by_page: dict[int, list[dict[str, Any]]] = {}
-            for entry in entries:
-                page_idx = entry.get("page_idx")
-                if (
-                    entry.get("type") == "image"
-                    and isinstance(page_idx, int)
-                    and page_idx >= 0
-                ):
-                    image_entries_by_page.setdefault(page_idx + 1, []).append(entry)
-            ambiguous_pages = {
-                page
-                for page, page_entries in image_entries_by_page.items()
-                if len(page_entries) > 1
-                and sum(_explicit_caption(entry) is not None for entry in page_entries) == 1
+            blocks, block_gaps = _v2_image_blocks(
+                root,
+                study_id=study_id,
+                source_id=source_id,
+                source=source,
+                extracted=extracted,
+                image_root=image_root,
+            )
+            locator_gaps.extend(block_gaps)
+            label_counts: dict[str, int] = {}
+            for block in blocks:
+                for label in block["labels"]:
+                    normalized = _normalized_label(label)
+                    label_counts[normalized] = label_counts.get(normalized, 0) + 1
+            duplicate_labels = {
+                label for label, count in label_counts.items() if count > 1
             }
-            for page, page_entries in sorted(image_entries_by_page.items()):
-                if page in ambiguous_pages:
+            for normalized in sorted(duplicate_labels):
+                duplicate_blocks = [
+                    block
+                    for block in blocks
+                    if any(_normalized_label(label) == normalized for label in block["labels"])
+                ]
+                locator_gaps.append(
+                    {
+                        "study_id": study_id,
+                        "source_id": source_id,
+                        "page": min(block["page"] for block in duplicate_blocks),
+                        "reason": "检测到重复图号，所有重复定位均已拒绝。",
+                    }
+                )
+            candidates: list[dict[str, Any]] = []
+            blocks_by_page: dict[int, list[dict[str, Any]]] = {}
+            for block in blocks:
+                blocks_by_page.setdefault(block["page"], []).append(block)
+            for page, page_blocks in sorted(blocks_by_page.items()):
+                anchors = [
+                    index
+                    for index, block in enumerate(page_blocks)
+                    if len(block["labels"]) == 1
+                ]
+                invalid_anchors = {
+                    index
+                    for index, block in enumerate(page_blocks)
+                    if len(block["labels"]) > 1
+                    or (
+                        len(block["labels"]) == 1
+                        and _normalized_label(block["labels"][0]) in duplicate_labels
+                    )
+                }
+                for index, block in enumerate(page_blocks):
+                    if len(block["labels"]) > 1:
+                        locator_gaps.append(
+                            {
+                                "study_id": study_id,
+                                "source_id": source_id,
+                                "page": page,
+                                "reason": "单个 content_list_v2 图块图注包含多个图号，已拒绝定位。",
+                            }
+                        )
+                distances = {
+                    anchor: _anchor_distances(page_blocks, anchor)
+                    for anchor in anchors
+                }
+                assignments: dict[int, list[int]] = {anchor: [] for anchor in anchors}
+                missing: list[dict[str, Any]] = []
+                for index, block in enumerate(page_blocks):
+                    if block["labels"]:
+                        continue
+                    reachable = sorted(
+                        (values[index], anchor)
+                        for anchor, values in distances.items()
+                        if math.isfinite(values[index])
+                    )
+                    if not reachable:
+                        missing.append(block)
+                        continue
+                    best_distance, best_anchor = reachable[0]
+                    ambiguity_limit = best_distance * 1.10 + 5.0
+                    ambiguous_anchors = [
+                        anchor
+                        for distance, anchor in reachable
+                        if distance <= ambiguity_limit
+                    ]
+                    if len(ambiguous_anchors) > 1:
+                        invalid_anchors.update(ambiguous_anchors)
+                        locator_gaps.append(
+                            {
+                                "study_id": study_id,
+                                "source_id": source_id,
+                                "page": page,
+                                "reason": "同一图块可关联多个图号，无法可靠确定 caption 聚合关系。",
+                            }
+                        )
+                        continue
+                    assignments[best_anchor].append(index)
+                for _component in _spatial_components(missing):
                     locator_gaps.append(
                         {
                             "study_id": study_id,
                             "source_id": source_id,
                             "page": page,
-                            "reason": (
-                                "同页多个图片碎片无法可靠归并为一张完整原论文图。"
-                            ),
+                            "reason": "content_list_v2 图块未绑定明确的原论文 Figure/Scheme/Chart 图注。",
                         }
                     )
-                elif not any(_explicit_caption(entry) is not None for entry in page_entries):
-                    locator_gaps.append(
+                for anchor_index in anchors:
+                    if anchor_index in invalid_anchors:
+                        continue
+                    anchor = page_blocks[anchor_index]
+                    label = anchor["labels"][0]
+                    fragment_indexes = sorted(
+                        [anchor_index, *assignments[anchor_index]],
+                        key=lambda index: (
+                            page_blocks[index]["bbox"][1],
+                            page_blocks[index]["bbox"][0],
+                            page_blocks[index]["block_index"],
+                        ),
+                    )
+                    candidates.append(
                         {
-                            "study_id": study_id,
-                            "source_id": source_id,
                             "page": page,
-                            "reason": (
-                                "抽取图片未绑定明确的原论文 Figure/Scheme 图注。"
-                            ),
+                            "label": label,
+                            "caption": anchor["caption"],
+                            "anchor": anchor,
+                            "fragments": [page_blocks[index] for index in fragment_indexes],
                         }
                     )
-            seen_labels: set[str] = set()
-            for entry in entries:
-                if entry.get("type") != "image" or not isinstance(entry.get("img_path"), str):
-                    continue
-                raw_path = Path(entry["img_path"])
-                if raw_path.is_absolute() or ".." in raw_path.parts:
-                    _fail("FIGURE_ASSET_INVALID")
-                asset = _safe_asset(root, (extracted / raw_path).relative_to(root).as_posix())
-                try:
-                    asset.relative_to(image_root)
-                except ValueError as exc:
-                    raise ReviewFigureError("FIGURE_ASSET_INVALID") from exc
-                page_idx = entry.get("page_idx")
-                if not isinstance(page_idx, int) or page_idx < 0:
-                    _fail("FIGURE_LOCATOR_INVALID")
-                page = page_idx + 1
-                explicit = _explicit_caption(entry)
-                if page in ambiguous_pages or explicit is None:
-                    continue
-                label, caption = explicit
-                normalized_label = label.casefold().replace(".", "")
-                if normalized_label in seen_labels:
-                    locator_gaps.append(
-                        {
-                            "study_id": study_id,
-                            "source_id": source_id,
-                            "page": page,
-                            "reason": "检测到重复图号，已拒绝重复定位。",
-                        }
-                    )
-                    continue
-                seen_labels.add(normalized_label)
-                image_number += 1
+            for image_number, candidate in enumerate(candidates, start=1):
+                page = candidate["page"]
+                label = candidate["label"]
+                caption = candidate["caption"]
+                anchor = candidate["anchor"]
                 figure = {
                     "figure_id": (
                         f"{study_id}:{source_id}:"
@@ -372,11 +667,26 @@ def build_source_figure_registry(project: Path) -> dict[str, Any]:
                     "page": page,
                     "figure_label": label,
                     "caption": caption,
-                    "asset_path": asset.relative_to(root).as_posix(),
-                    "asset_sha256": _sha256(asset),
+                    "asset_path": anchor["asset_path"],
+                    "asset_sha256": anchor["asset_sha256"],
                     "source_pdf_sha256": source["pdf"]["sha256"],
                     "evidence_ids": _evidence_ids(root, study_id, source_id, page, label),
                     "selection_status": "selected" if image_number == 1 else "available",
+                    "fragments": [
+                        {
+                            "page": fragment["page"],
+                            "block_index": fragment["block_index"],
+                            "bbox": fragment["bbox"],
+                            "asset_path": fragment["asset_path"],
+                            "asset_sha256": fragment["asset_sha256"],
+                            "caption_association": (
+                                "explicit_caption_anchor"
+                                if fragment is anchor
+                                else "same_page_spatial_group"
+                            ),
+                        }
+                        for fragment in candidate["fragments"]
+                    ],
                 }
                 _validate(figure, SOURCE_FIGURE_SCHEMA, "FIGURE_REGISTRY_INVALID")
                 figures.append(figure)
@@ -403,6 +713,7 @@ def build_source_figure_registry(project: Path) -> dict[str, Any]:
         "available_count": len(figures),
         "target_figure_slots": {"minimum": minimum_slots, "maximum": maximum_slots},
         "source_truth_digest": source_truth_digest,
+        "content_list_v2_digest": content_list_v2_digest,
         "locator_gaps": locator_gaps,
         "figure_budget": {
             "status": budget_status,
@@ -414,6 +725,7 @@ def build_source_figure_registry(project: Path) -> dict[str, Any]:
         "registry_digest": canonical_digest(
             {
                 "source_truth_digest": source_truth_digest,
+                "content_list_v2_digest": content_list_v2_digest,
                 "figures": figures,
                 "locator_gaps": locator_gaps,
             }

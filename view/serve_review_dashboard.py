@@ -262,10 +262,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             query = parse_qs(parsed.query, keep_blank_values=True)
             figure_ids = query.get("figure_id", [])
-            if set(query) != {"figure_id"} or len(figure_ids) != 1 or not figure_ids[0]:
+            fragment_values = query.get("fragment", [])
+            if (
+                set(query) not in ({"figure_id"}, {"figure_id", "fragment"})
+                or len(figure_ids) != 1
+                or not figure_ids[0]
+                or (
+                    fragment_values
+                    and (
+                        len(fragment_values) != 1
+                        or not re.fullmatch(r"0|[1-9][0-9]*", fragment_values[0])
+                    )
+                )
+            ):
                 self.send_error(HTTPStatus.BAD_REQUEST, "figure_id is invalid")
                 return
-            self.handle_project_source_figure_get(project_id, figure_ids[0])
+            self.handle_project_source_figure_get(
+                project_id,
+                figure_ids[0],
+                int(fragment_values[0]) if fragment_values else None,
+            )
         elif parsed.path.startswith("/api/project/") and parsed.path.endswith("/review-state"):
             project_id = project_id_from_route(parsed.path, "review-state")
             if project_id is None:
@@ -1086,16 +1102,33 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self.send_file(path, content_type)
 
-    def handle_project_source_figure_get(self, project_id: str, figure_id: str) -> None:
+    def handle_project_source_figure_get(
+        self,
+        project_id: str,
+        figure_id: str,
+        fragment_index: int | None = None,
+    ) -> None:
         try:
             project = project_dir(self.review_root, project_id)
             registry = load_source_figure_registry(project)
             rows = registry.get("figures", [])
             row = next((item for item in rows if isinstance(item, dict) and item.get("figure_id") == figure_id), None)
-            if not isinstance(row, dict) or not isinstance(row.get("asset_path"), str):
+            if not isinstance(row, dict):
                 raise ValueError("figure not found")
-            image_path = validate_project_file_path(project, Path(row["asset_path"]), "FIGURE_ASSET_INVALID")
-            if hashlib.sha256(image_path.read_bytes()).hexdigest() != row.get("asset_sha256"):
+            asset = row
+            if fragment_index is not None:
+                fragments = row.get("fragments")
+                if (
+                    not isinstance(fragments, list)
+                    or fragment_index >= len(fragments)
+                    or not isinstance(fragments[fragment_index], dict)
+                ):
+                    raise ValueError("figure fragment not found")
+                asset = fragments[fragment_index]
+            if not isinstance(asset.get("asset_path"), str):
+                raise ValueError("figure asset not found")
+            image_path = validate_project_file_path(project, Path(asset["asset_path"]), "FIGURE_ASSET_INVALID")
+            if hashlib.sha256(image_path.read_bytes()).hexdigest() != asset.get("asset_sha256"):
                 raise ValueError("figure hash mismatch")
             content_type = mimetypes.guess_type(image_path.name)[0]
             if not content_type or not content_type.startswith("image/"):
@@ -3280,6 +3313,17 @@ def project_review_figures_workspace_payload(review_root: Path, project_id: str)
         }
         item["version_token"] = _workspace_token("review-figure", str(row.get("figure_id")), row.get("asset_sha256"))
         item["image_url"] = f"/api/project/{quote(project_id, safe='')}/source-figure?figure_id={quote(str(row.get('figure_id')), safe='')}"
+        fragments = row.get("fragments")
+        item["fragment_urls"] = [
+            (
+                f"/api/project/{quote(project_id, safe='')}/source-figure"
+                f"?figure_id={quote(str(row.get('figure_id')), safe='')}"
+                f"&fragment={index}"
+            )
+            for index, fragment in enumerate(fragments if isinstance(fragments, list) else [])
+            if isinstance(fragment, dict)
+        ]
+        item["fragment_count"] = len(item["fragment_urls"])
         item["pdf_page_url"] = f"/api/project/{quote(project_id, safe='')}/source/{quote(str(row.get('source_id')), safe='')}/pdf-page?page={int(row.get('page') or 1)}"
         source_figures.append(item)
     placeholders = []
@@ -3380,6 +3424,7 @@ def write_project_workspace_decision(review_root: Path, project_id: str, kind: s
         registry["registry_digest"] = canonical_digest(
             {
                 "source_truth_digest": registry.get("source_truth_digest"),
+                "content_list_v2_digest": registry.get("content_list_v2_digest"),
                 "figures": registry.get("figures", []),
                 "locator_gaps": registry.get("locator_gaps", []),
             }

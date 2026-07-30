@@ -249,6 +249,18 @@ def _canonical_prepare_project(
                 }
             ],
         )
+        _write_prepare_json(
+            extracted / f"{source_id}_content_list_v2.json",
+            [
+                [
+                    {
+                        "bbox": [1, 2, 3, 4],
+                        "content": {"content": f"Parsed {role}"},
+                        "type": "text",
+                    }
+                ]
+            ],
+        )
         _write_prepare_json(extracted / "layout.json", {"pages": [{"page_idx": 0}]})
         completed.append({
             "markdown_copy": rf"C:\runtime\mineru\markdown\{source_id}.md",

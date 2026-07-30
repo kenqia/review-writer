@@ -209,6 +209,26 @@ def _unique_content_list(extracted: Path) -> Path:
     return matches[0]
 
 
+def _unique_content_list_v2(extracted: Path, *, page_count: int) -> Path:
+    matches = sorted(extracted.glob("*_content_list_v2.json"))
+    if len(matches) != 1:
+        raise SourceTruthError(
+            "CONTENT_LIST_V2_MISSING" if not matches else "CONTENT_LIST_V2_AMBIGUOUS"
+        )
+    path = matches[0]
+    payload = _read_json(path, "CONTENT_LIST_V2_INVALID")
+    if (
+        not isinstance(payload, list)
+        or len(payload) != page_count
+        or not all(
+            isinstance(page, list) and all(isinstance(row, dict) for row in page)
+            for page in payload
+        )
+    ):
+        raise SourceTruthError("CONTENT_LIST_V2_INVALID")
+    return path
+
+
 def _relative_descriptor(project: Path, path: Path) -> dict[str, Any]:
     try:
         relative = path.relative_to(project).as_posix()
@@ -337,6 +357,10 @@ def build_source_truth_bundle(project: Path, study_id: str) -> dict[str, object]
         if layer["source_id"] in seen_source_ids:
             raise SourceTruthError("SOURCE_ID_AMBIGUOUS")
         seen_source_ids.add(layer["source_id"])
+        content_list_v2_path = _unique_content_list_v2(
+            extracted,
+            page_count=layer["page_count"],
+        )
         sources.append(
             {
                 "source_id": layer["source_id"],
@@ -346,6 +370,7 @@ def build_source_truth_bundle(project: Path, study_id: str) -> dict[str, object]
                 "pdf": pdf,
                 "canonical_markdown": canonical_markdown,
                 "content_list": _relative_descriptor(project, content_list_path),
+                "content_list_v2": _relative_descriptor(project, content_list_v2_path),
                 "layout": _relative_descriptor(project, layout_path),
                 "reading_layer": layer["reading_layer"],
                 "layout_layer": layer["layout_layer"],

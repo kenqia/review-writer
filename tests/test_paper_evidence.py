@@ -284,6 +284,13 @@ def test_locator_page_becoming_out_of_range_stales_approved_evidence(tmp_path: P
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["sources"][0]["page_count"] = 2
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    content_v2_path = (
+        project
+        / "01_evidence/parses/extracted/10_1000_example/parse_content_list_v2.json"
+    )
+    content_v2 = json.loads(content_v2_path.read_text(encoding="utf-8"))
+    content_v2.append([])
+    content_v2_path.write_text(json.dumps(content_v2), encoding="utf-8")
     _approve_parse(project)
     payload = candidate()
     payload["locator"] = {**payload["locator"], "page": 2}
@@ -292,6 +299,7 @@ def test_locator_page_becoming_out_of_range_stales_approved_evidence(tmp_path: P
 
     manifest["sources"][0]["page_count"] = 1
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    content_v2_path.write_text(json.dumps(content_v2[:1]), encoding="utf-8")
     write_source_truth_bundle(project, STUDY_ID)
 
     state = paper_evidence_state(project)

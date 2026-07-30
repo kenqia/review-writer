@@ -337,3 +337,59 @@ def test_figure_workspace_refuses_stale_locators_without_rewriting_registry(
         }
     ]
     assert registry_path.read_bytes() == before
+
+
+def test_figure_workspace_exposes_grouped_fragment_previews_without_internal_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from review_writer.project.review_figures import build_source_figure_registry
+    from review_writer.project.source_truth import write_source_truth_bundle
+    from test_review_figures import _v2_image, _write_v2
+    from test_source_truth import _source_truth_project
+    from view import serve_review_dashboard as dashboard
+
+    project = _source_truth_project(tmp_path)
+    extracted = project / "01_evidence/parses/extracted/10_1000_example"
+    for name in ("panel-a.jpg", "panel-b.jpg", "anchor.jpg"):
+        (extracted / "images" / name).write_bytes(name.encode())
+    _write_v2(
+        project,
+        [
+            [
+                _v2_image("images/panel-a.jpg", [100, 100, 400, 200], "(a)"),
+                _v2_image("images/panel-b.jpg", [105, 220, 405, 320], "(b)"),
+                _v2_image(
+                    "images/anchor.jpg",
+                    [100, 340, 410, 440],
+                    "Figure 3. Composite figure.",
+                ),
+            ]
+        ],
+    )
+    write_source_truth_bundle(project, "scholarly-a")
+    build_source_figure_registry(project)
+    monkeypatch.setattr(
+        dashboard,
+        "workflow_state",
+        lambda _project: {"route": "evidence-to-release.v1"},
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "synthesis_figure_placeholders",
+        lambda _project: [],
+    )
+
+    payload = dashboard.project_review_figures_workspace_payload(tmp_path, "case")
+
+    figure = payload["source_figures"][0]
+    assert figure["fragment_count"] == 3
+    assert len(figure["fragment_urls"]) == 3
+    serialized = json.dumps(payload)
+    assert "asset_path" not in serialized
+    assert "asset_sha256" not in serialized
+    assert "content_list_v2_digest" not in serialized
+    synthesis = (
+        Path(__file__).resolve().parents[1]
+        / "view/assets/dashboard/review-synthesis.js"
+    ).read_text(encoding="utf-8")
+    assert "fragment_urls" in synthesis

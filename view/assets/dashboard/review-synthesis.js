@@ -86,9 +86,11 @@
       details.append(text("strong", label(publication.title, "论文身份未提供")));
       details.append(text("p", `作者：${visibleList(publication.authors) || "—"}；年份：${publication.year || "—"}；期刊：${publication.journal || "—"}；DOI：${publication.doi || "—"}`));
       details.append(text("p", `${item.figure_label} · 第 ${item.page} 页：${item.caption}`));
+      details.append(text("p", `原始图块：${item.fragment_count || 1} 个；均来自同一论文页并按 content_list_v2 图注关系聚合。`, "evidence-meta"));
       details.append(text("p", item.attribution ? `出处：${item.attribution}` : "来源署名未提供"));
       details.append(text("p", item.rights_context?.status ? `复用权利状态已记录；${item.rights_context?.notice || "请按记录范围使用"}` : "复用权利状态未提供", "decision-line"));
-      if (item.image_url) { const preview = document.createElement("img"); preview.src = item.image_url; preview.alt = item.caption || item.figure_label || "原论文图片"; preview.loading = "lazy"; preview.className = "source-figure-preview"; details.append(preview); }
+      const previews = item.fragment_urls?.length ? item.fragment_urls : (item.image_url ? [item.image_url] : []);
+      previews.forEach((url, index) => { const preview = document.createElement("img"); preview.src = url; preview.alt = `${item.caption || item.figure_label || "原论文图片"} · 图块 ${index + 1}`; preview.loading = "lazy"; preview.className = "source-figure-preview"; details.append(preview); });
       const links = document.createElement("div"); links.className = "figure-links";
       [[item.image_url, "新标签查看原图"], [item.pdf_page_url, "打开论文页"]].forEach(([href, label]) => { if (!href) return; const link = document.createElement("a"); link.href = href; link.target = "_blank"; link.rel = "noopener"; link.textContent = label; links.append(link); });
       details.append(links); row.append(details);

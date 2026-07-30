@@ -60,7 +60,33 @@ def _source_truth_project(
             {"type": "image", "img_path": "images/figure.jpg", "page_idx": 0, "bbox": [5, 6, 7, 8]},
         ],
     )
-    _write_json(extracted / "parse_content_list_v2.json", [])
+    _write_json(
+        extracted / "parse_content_list_v2.json",
+        [
+            [
+                {
+                    "type": "text",
+                    "bbox": [1, 2, 3, 4],
+                    "content": {"content": "Canonical"},
+                },
+                {
+                    "type": "image",
+                    "bbox": [5, 6, 70, 80],
+                    "content": {
+                        "content": "",
+                        "image_source": {"path": "images/figure.jpg"},
+                        "image_caption": [
+                            {
+                                "type": "text",
+                                "content": "Figure 1. Source-grounded example figure.",
+                            }
+                        ],
+                        "image_footnote": [],
+                    },
+                },
+            ]
+        ],
+    )
     _write_json(extracted / "layout.json", {"pages": [{"page_idx": 0}]})
     _write_bytes(extracted / "images/figure.jpg", b"jpeg")
     reading_sha = _write_bytes(
@@ -188,6 +214,10 @@ def test_bundle_closes_study_slug_and_source_id_by_verified_pdf(tmp_path: Path) 
     assert source["canonical_markdown"]["path"] == (
         "01_evidence/mineru/markdown/10_1000_example.md"
     )
+    assert source["content_list_v2"]["path"].endswith(
+        "parse_content_list_v2.json"
+    )
+    assert source["content_list_v2"]["sha256"]
     body = {key: value for key, value in bundle.items() if key != "bundle_digest"}
     assert bundle["bundle_digest"] == canonical_digest(body)
 
@@ -223,6 +253,31 @@ def test_bundle_ignores_absolute_parse_manifest_paths(tmp_path: Path) -> None:
     serialized = json.dumps(bundle)
     assert "C:\\\\" not in serialized
     assert "/home/" not in serialized
+
+
+def test_bundle_requires_one_valid_content_list_v2(tmp_path: Path) -> None:
+    missing = _source_truth_project(tmp_path / "missing")
+    next(
+        (
+            missing
+            / "01_evidence/parses/extracted/10_1000_example"
+        ).glob("*_content_list_v2.json")
+    ).unlink()
+
+    with pytest.raises(SourceTruthError, match="CONTENT_LIST_V2_MISSING"):
+        build_source_truth_bundle(missing, "scholarly-a")
+
+    malformed = _source_truth_project(tmp_path / "malformed")
+    v2 = next(
+        (
+            malformed
+            / "01_evidence/parses/extracted/10_1000_example"
+        ).glob("*_content_list_v2.json")
+    )
+    v2.write_text(json.dumps({"pages": []}), encoding="utf-8")
+
+    with pytest.raises(SourceTruthError, match="CONTENT_LIST_V2_INVALID"):
+        build_source_truth_bundle(malformed, "scholarly-a")
 
 
 def test_bundle_rejects_hash_mismatch_and_symlink(tmp_path: Path) -> None:
@@ -292,6 +347,7 @@ def test_real_three_paper_case_is_read_only_compatible() -> None:
             source["pdf"],
             source["canonical_markdown"],
             source["content_list"],
+            source["content_list_v2"],
             source["layout"],
             source["reading_layer"],
             source["layout_layer"],
