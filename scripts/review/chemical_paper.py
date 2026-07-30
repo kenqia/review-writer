@@ -21,6 +21,12 @@ from review_writer.project.chemical_paper import (  # noqa: E402
     import_chemical_paper,
     review_chemical_paper_elements,
 )
+from review_writer.project.chemical_completion import (  # noqa: E402
+    ChemicalCompletionError,
+    apply_chemical_completion_batch,
+    chemical_completion_state,
+    project_chemical_completion_state,
+)
 
 
 COMMANDS = (
@@ -28,6 +34,8 @@ COMMANDS = (
     "chemical-paper-state",
     "correct-chemical-paper-field",
     "review-chemical-paper-elements",
+    "chemical-completion-state",
+    "complete-chemical-fields",
 )
 
 
@@ -50,6 +58,15 @@ def add_subcommands(commands: argparse._SubParsersAction) -> None:
 
     state = commands.add_parser("chemical-paper-state")
     state.add_argument("--project", type=Path, required=True)
+
+    completion_state = commands.add_parser("chemical-completion-state")
+    completion_state.add_argument("--project", type=Path, required=True)
+    completion_state.add_argument("--study-id")
+
+    complete = commands.add_parser("complete-chemical-fields")
+    complete.add_argument("--project", type=Path, required=True)
+    complete.add_argument("--study-id", required=True)
+    complete.add_argument("--input", type=Path, required=True)
 
     correct = commands.add_parser("correct-chemical-paper-field")
     correct.add_argument("--project", type=Path, required=True)
@@ -115,6 +132,18 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         )
     if args.command == "chemical-paper-state":
         return chemical_paper_projection(args.project)
+    if args.command == "chemical-completion-state":
+        return (
+            chemical_completion_state(args.project, args.study_id)
+            if args.study_id
+            else project_chemical_completion_state(args.project)
+        )
+    if args.command == "complete-chemical-fields":
+        try:
+            payload = json.loads(args.input.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ChemicalCompletionError("CHEMICAL_COMPLETION_BATCH_INVALID") from exc
+        return apply_chemical_completion_batch(args.project, args.study_id, payload)
     actor = {"actor_type": args.actor_type, "actor_label": args.actor_label}
     if args.command == "correct-chemical-paper-field":
         return correct_chemical_paper_field(
@@ -144,7 +173,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         result = run(args)
-    except ChemicalPaperError as exc:
+    except (ChemicalPaperError, ChemicalCompletionError) as exc:
         print(json.dumps({"ok": False, "error_code": exc.code}), file=sys.stderr)
         return 2
     print(json.dumps({"ok": True, "result": result}, ensure_ascii=False, sort_keys=True))

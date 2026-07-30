@@ -821,6 +821,7 @@ def _study_summary(state: dict[str, Any]) -> dict[str, Any]:
                 "prior_state": event.get("prior_state"), "state": event.get("state"),
                 "actor_type": event["actor"]["actor_type"], "actor_label": event["actor"]["actor_label"],
                 "reason": event["reason"], "recorded_at": event["recorded_at"],
+                "pdf_locator": event.get("pdf_locator"),
             })
         missing_fields = [field for field in FIELD_NAMES if values[field] is None]
         molecules.append({
