@@ -25,6 +25,7 @@ from test_dual_parse_content_package import paper_request
 from test_chemical_completion import completion_project
 from test_parse_reconciliation import reconciliation_project
 from view.serve_review_dashboard import project_cockpit_payload
+from view.serve_review_dashboard import project_review_figures_workspace_payload
 
 
 def _ready_project(tmp_path: Path) -> Path:
@@ -152,3 +153,31 @@ def test_backend_projection_exposes_safe_researcher_work_queues(
     assert item["registry_digest"].startswith("rcv1.")
     assert item["generic_candidate"].startswith("名称: compound 1")
     assert item["chemical_candidate"].startswith("名称: compound 1")
+
+
+def test_fresh_figure_workspace_get_is_read_only(tmp_path: Path) -> None:
+    project = _ready_project(tmp_path)
+    before = {
+        path.relative_to(project).as_posix(): path.read_bytes()
+        for path in project.rglob("*")
+        if path.is_file()
+    }
+
+    payload = project_review_figures_workspace_payload(tmp_path, project.name)
+
+    after = {
+        path.relative_to(project).as_posix(): path.read_bytes()
+        for path in project.rglob("*")
+        if path.is_file()
+    }
+    assert payload["status"] == "not_built"
+    assert payload["source_figures"] == []
+    assert payload["locator_gaps"] == [
+        {
+            "study_id": "",
+            "page": None,
+            "reason": "原论文图注册表尚未在正式制图阶段生成。",
+        }
+    ]
+    assert not (project / "03_figures").exists()
+    assert after == before

@@ -97,7 +97,6 @@ from review_writer.project.section_contract import (  # noqa: E402
 )
 from review_writer.project.review_figures import (  # noqa: E402
     ReviewFigureError,
-    build_source_figure_registry,
     load_source_figure_registry,
     synthesis_figure_placeholders,
 )
@@ -3605,7 +3604,15 @@ def project_review_figures_workspace_payload(review_root: Path, project_id: str)
     registry_path = project / "03_figures/source_figure_registry.json"
     registry_status = "current"
     if not registry_path.is_file():
-        registry = build_source_figure_registry(project)
+        registry_status = "not_built"
+        registry = {
+            "figures": [],
+            "locator_gaps": [
+                {
+                    "reason": "原论文图注册表尚未在正式制图阶段生成。"
+                }
+            ],
+        }
     else:
         try:
             registry = load_source_figure_registry(project)
