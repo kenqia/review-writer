@@ -39,6 +39,7 @@
         missing: "PDF 待补齐",
         stale: "PDF 核验已失效",
         failed: "PDF 核验失败",
+        unknown: "PDF 状态未知",
       },
       generic: {
         current: "Generic Parse 当前有效",
@@ -46,14 +47,16 @@
         missing: "Generic Parse 待启动",
         stale: "Generic Parse 已过期",
         failed: "Generic Parse 失败",
+        unknown: "Generic Parse 状态未知",
       },
       chemical: {
         current: "Chemical import 当前有效",
         imported: "Chemical import 当前有效",
-        needs_import: "Chemical import 待确认",
+        needs_import: "Chemical Paper 待确认导入",
         preflight_ready: "Chemical import 预检待确认",
         stale: "Chemical import 已过期",
         failed: "Chemical import 失败",
+        unknown: "Chemical import 状态未知",
       },
       completion: {
         current: "Chemical Completion 已完成",
@@ -61,6 +64,7 @@
         needs_review: "Chemical Completion 待补全",
         blocked: "Chemical Completion 尚未开放",
         stale: "Chemical Completion 已过期",
+        unknown: "Chemical Completion 状态未知",
       },
       reconciliation: {
         current: "Reconciliation 已闭合",
@@ -68,16 +72,18 @@
         needs_review: "Reconciliation 待核对",
         blocked: "Reconciliation 尚未开放",
         stale: "Reconciliation 已过期",
+        unknown: "Reconciliation 状态未知",
       },
       evidence: {
-        available: "Evidence 可用",
-        current: "Evidence 可用",
-        unavailable: "Evidence 尚不可用",
-        blocked: "Evidence 已锁定",
-        stale: "Evidence 已过期",
+        available: "Paper Evidence 可用",
+        current: "Paper Evidence 可用",
+        unavailable: "Paper Evidence 尚不可用",
+        blocked: "Paper Evidence 尚不可用",
+        stale: "Paper Evidence 已过期",
+        unknown: "Paper Evidence 状态未知",
       },
     };
-    return labels[kind]?.[status] || `${kind === "pdf" ? "PDF" : kind} 状态未知`;
+    return labels[kind]?.[status] || labels[kind]?.unknown || "状态未知";
   }
 
   function nonNegativeInteger(value) {
@@ -109,8 +115,11 @@
 
   function studyModel(value, index) {
     const row = object(value);
-    const genericStatus = text(object(row.generic_parse).status, text(row.generic_parse_status, "missing"));
-    const rawChemicalStatus = text(object(row.chemical).status, text(row.chemical_import_status, "missing"));
+    const pdfStatus = text(row.pdf_status, "unknown");
+    const rawGenericStatus = text(row.generic_parse_status, "unknown");
+    const genericStatus = ["current", "pending", "missing", "stale", "failed"].includes(rawGenericStatus)
+      ? rawGenericStatus : "unknown";
+    const rawChemicalStatus = text(object(row.chemical).status, text(row.chemical_import_status, "unknown"));
     const chemicalStatus = rawChemicalStatus === "missing" ? "needs_import" : rawChemicalStatus;
     const missingChemicalFields = [
       row.missing_name_count,
@@ -119,25 +128,21 @@
     ].some(value => Number.isInteger(value) && value > 0);
     const completionStatus = text(
       object(row.completion).status,
-      missingChemicalFields ? "needs_review" : text(row.completion_status, "blocked"),
+      missingChemicalFields ? "needs_review" : text(row.completion_status, "unknown"),
     );
     const unresolvedReconciliation = Number.isInteger(row.unresolved_reconciliation_count)
       && row.unresolved_reconciliation_count > 0;
     const reconciliationStatus = text(
       object(row.reconciliation).status,
-      unresolvedReconciliation ? "needs_review" : text(row.reconciliation_status, "blocked"),
+      unresolvedReconciliation ? "needs_review" : text(row.reconciliation_status, "unknown"),
     );
-    const evidenceStatus = text(
-      object(row.evidence).status,
-      genericStatus === "current" && chemicalStatus === "current"
-        && completionStatus === "current" && reconciliationStatus === "current"
-        ? "available" : "blocked",
-    );
+    const evidenceStatus = text(row.paper_evidence_status, "unknown");
     const model = {
       displayLabel: `研究 ${index + 1}`,
       citation: publicText(row.citation, `Core study ${index + 1}`),
       tierLabel: (row.tier || row.source_tier) === "background" ? "Background" : (row.tier || row.source_tier) === "core" ? "Core" : "分层未知",
-      pdfLabel: stateLabel("pdf", text(object(row.pdf).status, genericStatus === "current" ? "verified" : "stale")),
+      pdfLabel: stateLabel("pdf", pdfStatus),
+      genericStatus,
       genericLabel: stateLabel("generic", genericStatus),
       chemicalLabel: stateLabel("chemical", chemicalStatus),
       completionLabel: stateLabel("completion", completionStatus),
@@ -267,6 +272,10 @@
       importPreflight: null,
       completionQueue: [],
       reconciliationItems: [],
+      summary: {
+        coreStudies: null,
+        genericCurrent: null,
+      },
     };
   }
 
@@ -274,6 +283,7 @@
     const value = object(input);
     if (value.schema_version !== "dual-parse-projection.v1") return emptyModel();
     const nextAction = object(value.next_action);
+    const summary = object(value.summary);
     const status = ["loading", "ready", "failed", "stale", "unavailable"].includes(value.status)
       ? value.status : "unknown";
     return {
@@ -297,6 +307,75 @@
       importPreflight: importPreflightModel(value.import_preflight),
       completionQueue: array(value.completion_queue).map(completionModel),
       reconciliationItems: array(value.reconciliation_items).map(reconciliationModel),
+      summary: {
+        coreStudies: nonNegativeInteger(summary.core_studies),
+        genericCurrent: nonNegativeInteger(summary.generic_current),
+      },
+    };
+  }
+
+  function availabilityModel(input) {
+    const value = object(input);
+    const includedStudies = nonNegativeInteger(value.includedStudies);
+    const sourceRows = array(object(value.sources).sources)
+      .filter(row => text(object(row).role, "").toUpperCase() === "MAIN");
+    const sourceStatusByStudy = new Map();
+    let sourceRowsValid = sourceRows.length > 0;
+    sourceRows.forEach(value => {
+      const row = object(value);
+      const studyId = text(row.study_id, "");
+      const status = text(row.status, "");
+      if (!studyId || !["已获得", "需要上传"].includes(status)) {
+        sourceRowsValid = false;
+        return;
+      }
+      if (!sourceStatusByStudy.has(studyId)) sourceStatusByStudy.set(studyId, new Set());
+      sourceStatusByStudy.get(studyId).add(status);
+    });
+    const sourceTotal = includedStudies !== null
+      ? includedStudies : sourceStatusByStudy.size || null;
+    const sourceCoverageKnown = sourceRowsValid
+      && (includedStudies === null || sourceStatusByStudy.size <= includedStudies);
+    const dualParse = object(value.dualParse).contractValid === true
+      ? value.dualParse : projectionModel(value.dualParse);
+    const coreStudies = nonNegativeInteger(object(dualParse.summary).coreStudies);
+    const genericCurrent = nonNegativeInteger(object(dualParse.summary).genericCurrent);
+    const projectedCoreRows = array(dualParse.studies)
+      .filter(row => object(row).tierLabel === "Core");
+    const projectedCoreStudies = projectedCoreRows.length;
+    const projectedGenericCurrent = projectedCoreRows
+      .filter(row => object(row).genericStatus === "current").length;
+    const genericRowsKnown = projectedCoreRows.every(row =>
+      object(row).genericStatus !== "unknown"
+    );
+    const coreWithinIncluded = includedStudies !== null
+      && coreStudies !== null && coreStudies <= includedStudies;
+    const genericKnown = dualParse.status === "ready"
+      && coreStudies !== null && genericCurrent !== null
+      && genericCurrent <= coreStudies
+      && coreStudies === projectedCoreStudies
+      && genericCurrent === projectedGenericCurrent
+      && genericRowsKnown
+      && coreWithinIncluded
+      && (coreStudies > 0 || includedStudies === 0);
+    const reviewedEvidence = nonNegativeInteger(value.reviewedEvidenceStudies);
+    const reviewedEvidenceKnown = reviewedEvidence !== null
+      && includedStudies !== null && reviewedEvidence <= includedStudies;
+    return {
+      mainFullText: {
+        available: sourceCoverageKnown
+          ? Array.from(sourceStatusByStudy.values()).filter(statuses => statuses.has("已获得")).length
+          : null,
+        total: sourceTotal,
+      },
+      genericSource: {
+        available: genericKnown ? genericCurrent : null,
+        total: genericKnown ? coreStudies : includedStudies,
+      },
+      reviewedEvidence: {
+        available: reviewedEvidenceKnown ? reviewedEvidence : null,
+        total: includedStudies,
+      },
     };
   }
 
@@ -819,6 +898,7 @@
   }
 
   return {
+    availabilityModel,
     completionBatchRequest,
     importConfirmRequest,
     importPreflightRequest,
