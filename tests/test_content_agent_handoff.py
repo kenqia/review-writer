@@ -166,10 +166,15 @@ def test_import_routes_original_pdf_manual_candidates_to_manual_registry(tmp_pat
                 "object_id": row["object_id"],
                 "object_digest": row["object_digest"],
                 "gate_digest": gate["gate_digest"],
-                "action": "pdf_locator_only",
-                "note": "Compared with the original PDF.",
-            },
-        )
+                    "action": "pdf_locator_only",
+                    "note": "Compared with the original PDF.",
+                    "pdf_resolution": {
+                        "pages": [1],
+                        "source_scope": "The candidate statement and locator on the original PDF.",
+                        "limitations": "The manual resolution covers only this evidence candidate.",
+                    },
+                },
+            )
     package = build_content_task_package(project, _request(project))
     candidate = _candidate()
     candidate["locator"] = {**candidate["locator"], "source_mode": "original_pdf_manual"}

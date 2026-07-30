@@ -21,6 +21,7 @@ from .section_contract import SectionContractError, section_contract_state
 from .source_truth import REPO_ROOT, canonical_digest
 from .synthesis import SynthesisError, synthesis_state
 from .workflow_projection import NEW_ROUTE, workflow_state
+from .chemical_paper import chemical_paper_manuscript_bindings
 
 
 DRAFTS_PATH = Path("04_manuscript/section_drafts.jsonl")
@@ -579,6 +580,22 @@ def manuscript_state(project: Path) -> dict[str, Any]:
                         "section_approval_digest": approval_digest,
                     }
                 )
+        chemical_root = root / "01_evidence/chemical_paper"
+        if chemical_root.exists():
+            chemical_bindings = chemical_paper_manuscript_bindings(root)
+            expected_chemical_claims = _chemical_claim_dependencies(
+                expected_claims,
+                _chemical_evidence_dependencies(evidence),
+            )
+            if (
+                lineage.get("chemical_paper_import_digests")
+                != chemical_bindings["chemical_paper_import_digests"]
+                or lineage.get("chemical_paper_safe_summary")
+                != chemical_bindings["chemical_paper_safe_summary"]
+                or lineage.get("chemical_paper_claim_dependencies")
+                != expected_chemical_claims
+            ):
+                raise ManuscriptV2Error("MANUSCRIPT_LINEAGE_STALE")
         contract_rows = contracts.get("rows", [])
         expected_contracts = {
             row["section_id"]: row["contract_digest"]
@@ -642,6 +659,44 @@ def _parse_object_digests(project: Path) -> list[str]:
     if not digests or len(digests) != len(set(digests)):
         raise ManuscriptV2Error("PARSE_QUALITY_INVALID")
     return sorted(digests)
+
+
+def _chemical_evidence_dependencies(evidence: dict[str, Any]) -> list[dict[str, Any]]:
+    dependencies: list[dict[str, Any]] = []
+    for row in evidence.get("rows", []):
+        if not isinstance(row, dict):
+            continue
+        evidence_id = row.get("evidence_id")
+        for dependency in row.get("chemical_dependencies", []):
+            if isinstance(dependency, dict):
+                dependencies.append({"evidence_id": evidence_id, **copy.deepcopy(dependency)})
+    return dependencies
+
+
+def _chemical_claim_dependencies(
+    claim_bindings: list[dict[str, Any]], evidence_dependencies: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    by_evidence: dict[str, list[dict[str, Any]]] = {}
+    for row in evidence_dependencies:
+        evidence_id = row.get("evidence_id")
+        if isinstance(evidence_id, str):
+            by_evidence.setdefault(evidence_id, []).append(row)
+    rows: list[dict[str, Any]] = []
+    for binding in claim_bindings:
+        evidence_ids = binding.get("paper_evidence_ids", [])
+        for evidence_id in evidence_ids:
+            for dependency in by_evidence.get(evidence_id, []):
+                row = {
+                    "claim_id": canonical_digest(binding),
+                    "study_id": dependency.get("study_id"),
+                    "molecule_index": dependency.get("molecule_index"),
+                    "required_fields": sorted(dependency.get("required_fields", [])),
+                    "requires_element_review": dependency.get("requires_element_review", False),
+                    "requires_reaction_data": dependency.get("requires_reaction_data", False),
+                }
+                if row not in rows:
+                    rows.append(row)
+    return sorted(rows, key=lambda row: (row["claim_id"], row["study_id"], row["molecule_index"]))
 
 
 def _validate_lineage(value: dict[str, Any]) -> None:
@@ -752,6 +807,12 @@ def merge_authoritative_manuscript(project: Path) -> dict[str, Any]:
         "claim_bindings": claim_bindings,
         "manuscript_sha256": hashlib.sha256(manuscript_bytes).hexdigest(),
     }
+    if (root / "01_evidence/chemical_paper").exists():
+        lineage.update(chemical_paper_manuscript_bindings(root))
+        lineage["chemical_paper_claim_dependencies"] = _chemical_claim_dependencies(
+            claim_bindings,
+            _chemical_evidence_dependencies(evidence),
+        )
     lineage["lineage_digest"] = canonical_digest(lineage)
     _validate_lineage(lineage)
     try:
