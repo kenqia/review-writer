@@ -120,7 +120,7 @@
     const rawGenericStatus = text(row.generic_parse_status, "unknown");
     const genericStatus = ["current", "pending", "missing", "stale", "failed"].includes(rawGenericStatus)
       ? rawGenericStatus : "unknown";
-    const rawChemicalStatus = text(object(row.chemical).status, text(row.chemical_import_status, "unknown"));
+    const rawChemicalStatus = text(row.chemical_import_status, "unknown");
     const chemicalStatus = rawChemicalStatus === "missing" ? "needs_import" : rawChemicalStatus;
     const chemicalFacts = [];
     if (chemicalStatus === "needs_review") {
@@ -136,15 +136,7 @@
       }
       if (importedAt) chemicalFacts.push(`导入时间：${importedAt}`);
     }
-    const missingChemicalFields = [
-      row.missing_name_count,
-      row.missing_smiles_expanded_count,
-      row.missing_smiles_unexpanded_count,
-    ].some(value => Number.isInteger(value) && value > 0);
-    const completionStatus = text(
-      object(row.completion).status,
-      missingChemicalFields ? "needs_review" : text(row.completion_status, "unknown"),
-    );
+    const completionStatus = text(row.completion_status, "unknown");
     const unresolvedReconciliation = Number.isInteger(row.unresolved_reconciliation_count)
       && row.unresolved_reconciliation_count > 0;
     const reconciliationStatus = text(

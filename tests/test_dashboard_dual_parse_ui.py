@@ -167,6 +167,7 @@ def test_needs_review_chemical_import_renders_safe_confirmed_facts_without_openi
                 "const rows=[[6,125],[11,109],[11,75]].map(([page_count,molecule_count],index)=>({",
                 " source_tier:'core',pdf_status:'verified',generic_parse_status:'current',",
                 " chemical_import_status:'needs_review',completion_status:'blocked',reconciliation_status:'blocked',paper_evidence_status:'blocked',",
+                " missing_name_count:index+1,missing_smiles_expanded_count:1,missing_smiles_unexpanded_count:1,",
                 " page_count,molecule_count,backend:'pipeline',version:'3.4.4',imported_at:`2026-07-30T08:0${index}:00Z`,",
                 " reaction_data_status:'unavailable_not_provided'}));",
                 "const model=ui.projectionModel({schema_version:'dual-parse-projection.v1',status:'ready',studies:rows});",
@@ -185,8 +186,8 @@ def test_needs_review_chemical_import_renders_safe_confirmed_facts_without_openi
                 "for(const expected of ['Chemical import 已导入，待研究者补全/复核','6 页','125 个分子条目','11 页','109 个分子条目','75 个分子条目','pipeline · 3.4.4','反应数据：导出包未提供','导入时间：2026-07-30T08:00:00Z','Chemical Completion 尚未开放','Reconciliation 尚未开放','Paper Evidence 尚不可用'])if(!rendered.includes(expected))throw new Error(`missing ${expected}: ${rendered}`);",
                 "for(const blocked of ['Chemical Completion 尚未开放','Reconciliation 尚未开放','Paper Evidence 尚不可用'])if(rendered.split(blocked).length-1!==3)throw new Error(`wrong blocked count ${blocked}: ${rendered}`);",
                 "if(rendered.includes('Chemical import 状态未知')||rendered.includes('Chemical import 当前有效'))throw new Error(rendered);",
-                "const unknown=ui.projectionModel({schema_version:'dual-parse-projection.v1',status:'ready',studies:[{chemical_import_status:'unknown',page_count:99,molecule_count:99,backend:'private',version:'9'}]}).studies[0];",
-                "const stale=ui.projectionModel({schema_version:'dual-parse-projection.v1',status:'ready',studies:[{chemical_import_status:'stale',page_count:99,molecule_count:99,backend:'private',version:'9'}]}).studies[0];",
+                "const unknown=ui.projectionModel({schema_version:'dual-parse-projection.v1',status:'ready',studies:[{chemical_import_status:'unknown',chemical:{status:'current'},page_count:99,molecule_count:99,backend:'private',version:'9'}]}).studies[0];",
+                "const stale=ui.projectionModel({schema_version:'dual-parse-projection.v1',status:'ready',studies:[{chemical_import_status:'stale',chemical:{status:'current'},page_count:99,molecule_count:99,backend:'private',version:'9'}]}).studies[0];",
                 "if(unknown.chemicalLabel!=='Chemical import 状态未知'||unknown.chemicalFacts.length!==0)throw new Error(JSON.stringify(unknown));",
                 "if(stale.chemicalLabel!=='Chemical import 已过期'||stale.chemicalFacts.length!==0)throw new Error(JSON.stringify(stale));",
             ]

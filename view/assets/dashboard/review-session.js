@@ -72,5 +72,93 @@
     };
   }
 
-  return {createProjectRefreshScheduler, installDecisionActor};
+  function createProjectSurfaceCoordinator(options) {
+    const getProjectId = options?.getProjectId;
+    const load = options?.load;
+    const render = options?.render;
+    if (typeof getProjectId !== "function" || typeof load !== "function" || typeof render !== "function") {
+      throw new Error("project reader, loader, and renderer required");
+    }
+
+    let projectId = String(getProjectId() || "");
+    let generation = 0;
+    let refreshRunning = false;
+    let refreshQueued = false;
+    let mutationRunning = false;
+
+    function syncProject() {
+      const nextProjectId = String(getProjectId() || "");
+      if (nextProjectId !== projectId) {
+        projectId = nextProjectId;
+        generation += 1;
+        if (refreshRunning || mutationRunning) refreshQueued = true;
+      }
+      return {projectId, generation};
+    }
+
+    function isCurrent(context) {
+      const current = syncProject();
+      return current.projectId === context.projectId && current.generation === context.generation;
+    }
+
+    async function drainRefresh() {
+      if (!refreshQueued || refreshRunning || mutationRunning) return;
+      refreshQueued = false;
+      await refresh();
+    }
+
+    async function refresh() {
+      const context = syncProject();
+      if (!context.projectId) return {status: "empty"};
+      if (refreshRunning || mutationRunning) {
+        refreshQueued = true;
+        return {status: "queued"};
+      }
+      refreshRunning = true;
+      try {
+        const value = await load(context.projectId, context);
+        if (!isCurrent(context)) return {status: "stale"};
+        render(value, context);
+        return {status: "rendered"};
+      } catch (error) {
+        if (isCurrent(context)) options?.onLoadError?.(error, context);
+        return {status: "error"};
+      } finally {
+        refreshRunning = false;
+        await drainRefresh();
+      }
+    }
+
+    async function mutate(run, settings) {
+      if (typeof run !== "function") throw new Error("mutation required");
+      const context = syncProject();
+      if (!context.projectId) return {status: "empty"};
+      if (mutationRunning) return {status: "busy"};
+      mutationRunning = true;
+      try {
+        const value = await run(context.projectId, context);
+        const current = isCurrent(context);
+        if (current && typeof settings?.renderResult === "function") {
+          settings.renderResult(value, context);
+        }
+        if (settings?.refreshAfterSuccess === true) refreshQueued = true;
+        return {status: current ? "saved" : "stale"};
+      } catch (error) {
+        if (isCurrent(context)) settings?.onError?.(error, context);
+        return {status: "error"};
+      } finally {
+        mutationRunning = false;
+        await drainRefresh();
+      }
+    }
+
+    function projectChanged() {
+      syncProject();
+      return refresh();
+    }
+
+    return {mutate, projectChanged, refresh};
+  }
+
+  return {createProjectRefreshScheduler, createProjectSurfaceCoordinator, installDecisionActor};
 }));
