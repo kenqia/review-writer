@@ -263,7 +263,12 @@ def project_reconciliation_state(project: Path) -> dict[str, object]:
         try:
             registry = load_parse_reconciliation(root, study_id)
             require_reconciliation_ready(root, study_id)
-            rows.append({"study_id": study_id, "status": "current", "object_count": len(registry["objects"])})
+            rows.append({
+                "study_id": study_id,
+                "status": "current",
+                "object_count": len(registry["objects"]),
+                "registry_digest": registry["registry_digest"],
+            })
         except ParseReconciliationError as exc:
             rows.append({"study_id": study_id, "status": "blocked", "reason_code": exc.code})
     return {"schema_version": "parse-reconciliation-project-state.v1", "studies": rows, "workflow_can_continue": bool(rows) and all(row["status"] == "current" for row in rows)}

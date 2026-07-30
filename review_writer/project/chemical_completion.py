@@ -196,7 +196,19 @@ def project_chemical_completion_state(project: Path) -> dict[str, object]:
     rows = []
     for study_id in study_ids:
         try:
-            rows.append(chemical_completion_state(root, study_id))
+            state = chemical_completion_state(root, study_id)
+            rows.append({
+                **state,
+                "status": (
+                    "current" if state["workflow_can_continue"] else "blocked"
+                ),
+                "ai_authored_smiles_count": 0,
+            })
         except ChemicalCompletionError as exc:
-            rows.append({"study_id": study_id, "workflow_can_continue": False, "reason_code": exc.code})
+            rows.append({
+                "study_id": study_id,
+                "status": "blocked",
+                "workflow_can_continue": False,
+                "reason_code": exc.code,
+            })
     return {"schema_version": "chemical-completion-project-state.v1", "studies": rows, "workflow_can_continue": bool(rows) and all(row["workflow_can_continue"] for row in rows)}

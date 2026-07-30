@@ -549,6 +549,40 @@ def _study_rows(value: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _candidate_label(value: object) -> str | None:
+    if not isinstance(value, dict):
+        return value if isinstance(value, str) and value.strip() else None
+    parts = []
+    for key, label in (
+        ("mol_idt", "名称"),
+        ("smiles_expanded", "展开 SMILES"),
+        ("smiles_unexpanded", "未展开 SMILES"),
+    ):
+        item = value.get(key)
+        if isinstance(item, str) and item.strip():
+            parts.append(f"{label}: {item.strip()}")
+    return " · ".join(parts) or None
+
+
+def _researcher_next_action(value: object) -> dict[str, str]:
+    text = value.strip() if isinstance(value, str) else ""
+    lowered = text.casefold()
+    if "import" in lowered and "chemical" in lowered:
+        label = "确认下一篇 Chemical Paper 导入"
+    elif "completion" in lowered or "missing" in lowered:
+        label = "补全下一项化学字段"
+    elif "reconciliation" in lowered or "dual-parse conflict" in lowered:
+        label = "依据 PDF 仲裁下一项双层解析差异"
+    elif "paper evidence" in lowered:
+        label = "审查下一篇研究证据"
+    else:
+        label = text or "等待双层解析权威状态"
+    return {
+        "label": label,
+        "description": "完成这一项并保存后，系统会重新计算 Evidence 门禁。",
+    }
+
+
 def dual_parse_dashboard_projection(project: Path) -> dict[str, Any]:
     """Return an explicit researcher-safe whitelist for the dashboard API."""
 
@@ -561,6 +595,8 @@ def dual_parse_dashboard_projection(project: Path) -> dict[str, Any]:
     }
     chemical_by_id = {row.get("study_id"): row for row in _study_rows(chemical)}
     studies: list[dict[str, Any]] = []
+    completion_queue: list[dict[str, Any]] = []
+    reconciliation_items: list[dict[str, Any]] = []
     for source in _study_rows(dual):
         study_id = source.get("study_id")
         if not isinstance(study_id, str):
@@ -615,11 +651,118 @@ def dual_parse_dashboard_projection(project: Path) -> dict[str, Any]:
             if value is not None:
                 row[key] = value
         studies.append({key: value for key, value in row.items() if value is not None})
+
+        molecules = chemistry.get("molecules")
+        molecule_by_index = {
+            molecule.get("molecule_index"): molecule
+            for molecule in molecules
+            if isinstance(molecule, dict)
+            and isinstance(molecule.get("molecule_index"), int)
+        } if isinstance(molecules, list) else {}
+        missing_fields = complete.get("missing_fields")
+        for missing in missing_fields if isinstance(missing_fields, list) else []:
+            if not isinstance(missing, dict):
+                continue
+            molecule_index = missing.get("molecule_index")
+            field = missing.get("field")
+            if (
+                not isinstance(molecule_index, int)
+                or isinstance(molecule_index, bool)
+                or field not in {"mol_idt", "smiles_expanded", "smiles_unexpanded"}
+                or not isinstance(complete.get("version_token"), str)
+            ):
+                continue
+            molecule = molecule_by_index.get(molecule_index, {})
+            queue_row = {
+                "study_id": study_id,
+                "molecule_index": molecule_index,
+                "version_token": complete["version_token"],
+                "field": field,
+                "page": missing.get("page"),
+                "bbox_normalized": missing.get("bbox_normalized"),
+                "pdf_page_url": molecule.get("pdf_page_url"),
+            }
+            history = molecule.get("history")
+            latest = history[-1] if isinstance(history, list) and history and isinstance(history[-1], dict) else {}
+            for key in ("actor_label", "recorded_at"):
+                if latest.get(key) is not None:
+                    queue_row["updated_at" if key == "recorded_at" else key] = latest[key]
+            completion_queue.append(
+                {key: value for key, value in queue_row.items() if value is not None}
+            )
+
+        try:
+            from review_writer.project.parse_reconciliation import (
+                ParseReconciliationError,
+                load_parse_reconciliation,
+            )
+        except ImportError as exc:
+            raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_UNAVAILABLE") from exc
+        try:
+            saved_registry = load_parse_reconciliation(_project(project), study_id)
+        except ParseReconciliationError as exc:
+            if exc.code not in {
+                "PARSE_RECONCILIATION_MISSING",
+                "PARSE_RECONCILIATION_INVALID",
+                "PARSE_RECONCILIATION_STALE",
+            }:
+                raise
+            saved_registry = None
+        if isinstance(saved_registry, dict):
+            registry_digest = saved_registry.get("registry_digest")
+            if isinstance(registry_digest, str) and _SHA256_RE.fullmatch(registry_digest):
+                version_token = _opaque_registry_token(registry_digest)
+                for item in saved_registry.get("objects", []):
+                    if (
+                        not isinstance(item, dict)
+                        or item.get("status") not in {
+                            "conflict", "single_lane_only", "needs_review", "stale", "blocked"
+                        }
+                        or isinstance(item.get("decision"), dict)
+                    ):
+                        continue
+                    page = item.get("page")
+                    page_molecule = next(
+                        (
+                            molecule
+                            for molecule in molecule_by_index.values()
+                            if molecule.get("page") == page
+                        ),
+                        {},
+                    )
+                    reconciliation_items.append({
+                        "study_id": study_id,
+                        "object_id": item.get("object_id"),
+                        "registry_digest": version_token,
+                        "kind": item.get("kind"),
+                        "status": item.get("status"),
+                        "generic_candidate": _candidate_label(item.get("generic_candidate")),
+                        "chemical_candidate": _candidate_label(item.get("chemical_candidate")),
+                        "page": page,
+                        "pdf_page_url": page_molecule.get("pdf_page_url"),
+                    })
     studies.sort(key=lambda row: row["study_id"])
+    completion_queue.sort(key=lambda row: (row["study_id"], row["molecule_index"], row["field"]))
+    reconciliation_items.sort(key=lambda row: (str(row.get("study_id")), str(row.get("object_id"))))
     core = [row for row in studies if row.get("source_tier") == "core"]
     next_action = workflow.get("unique_next_action", workflow.get("next_action"))
+    project_current = bool(studies) and all(
+        row.get("generic_parse_status") == "current"
+        and (
+            row.get("source_tier") != "core"
+            or (
+                row.get("chemical_import_status") == "current"
+                and row.get("completion_status") == "current"
+                and row.get("reconciliation_status") == "current"
+            )
+        )
+        for row in studies
+    )
     return {
-        "project_status": dual.get("project_status", dual.get("status")),
+        "schema_version": "dual-parse-projection.v1",
+        "status": "ready",
+        "next_action": _researcher_next_action(next_action),
+        "project_status": "current" if project_current else "needs_review",
         "summary": {
             "core_studies": len(core),
             "generic_current": sum(
@@ -636,6 +779,9 @@ def dual_parse_dashboard_projection(project: Path) -> dict[str, Any]:
             ),
         },
         "studies": studies,
+        "import_preflight": None,
+        "completion_queue": completion_queue,
+        "reconciliation_items": reconciliation_items,
         "unique_next_action": next_action,
     }
 

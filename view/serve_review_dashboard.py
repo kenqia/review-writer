@@ -2525,8 +2525,35 @@ def project_cockpit_payload(review_root: Path, project_id: str) -> dict[str, Any
         blockers = workflow.get("blockers")
         blockers = blockers if isinstance(blockers, list) else []
         progress = project_progress_payload(review_root, project_id)
+        dual_parse_status = "not_applicable"
+        if (project / "01_evidence/dual_source").is_dir():
+            try:
+                from review_writer.project.chemical_completion import (
+                    project_chemical_completion_state,
+                )
+                from review_writer.project.dual_source import project_dual_source_state
+                from review_writer.project.parse_reconciliation import (
+                    project_reconciliation_state,
+                )
+
+                dual_states = (
+                    project_dual_source_state(project),
+                    project_chemical_completion_state(project),
+                    project_reconciliation_state(project),
+                )
+                dual_parse_status = (
+                    "current"
+                    if all(
+                        state.get("workflow_can_continue") is True
+                        for state in dual_states
+                    )
+                    else "stale"
+                )
+            except (OSError, ValueError, KeyError, TypeError):
+                dual_parse_status = "stale"
         return {
             "project_id": project_id,
+            "dual_parse_status": dual_parse_status,
             "current_stage": progress["active_stage"],
             "metrics": {
                 "included_studies": study_count,
@@ -4241,7 +4268,7 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
         "recommended_next": recommended,
         "archive_received": archive_received,
         "credits": {"measured": measured_credits, "forecast": forecast_credits},
-        "credit_ledger": evaluation["credit_ledger"],
+        "credit_ledger": evaluation.get("credit_ledger"),
         "release_capabilities": {
             "internal_draft_export_ready": bool(
                 authoritative_workflow["internal_draft_export_ready"]

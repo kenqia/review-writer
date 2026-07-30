@@ -160,7 +160,29 @@ def project_dual_source_state(project: Path) -> dict[str, object]:
         try:
             binding = load_dual_source_binding(root, study_id)
             require_dual_source_ready(root, study_id, requires_chemical=binding["source_tier"] == "core")
-            rows.append({"study_id": study_id, "status": binding["status"], "source_tier": binding["source_tier"]})
+            generic = binding["generic"]
+            chemical = binding["chemical"]
+            rows.append({
+                "study_id": study_id,
+                "status": binding["status"],
+                "source_tier": binding["source_tier"],
+                "requires_chemical": binding["source_tier"] == "core",
+                "binding_digest": binding["binding_digest"],
+                "generic": {
+                    "status": "current",
+                    "binding_digest": generic["parse_gate_digest"],
+                },
+                "chemical": (
+                    {
+                        "status": "current",
+                        "state_digest": chemical["state_digest"],
+                        "reaction_data_status": binding["reaction_data_status"],
+                    }
+                    if chemical is not None
+                    else None
+                ),
+                "reaction_data_status": binding["reaction_data_status"],
+            })
         except DualSourceError as exc:
             rows.append({"study_id": study_id, "status": "blocked", "reason_code": exc.code})
     return {

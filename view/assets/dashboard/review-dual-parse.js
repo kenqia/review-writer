@@ -109,16 +109,40 @@
 
   function studyModel(value, index) {
     const row = object(value);
+    const genericStatus = text(object(row.generic_parse).status, text(row.generic_parse_status, "missing"));
+    const rawChemicalStatus = text(object(row.chemical).status, text(row.chemical_import_status, "missing"));
+    const chemicalStatus = rawChemicalStatus === "missing" ? "needs_import" : rawChemicalStatus;
+    const missingChemicalFields = [
+      row.missing_name_count,
+      row.missing_smiles_expanded_count,
+      row.missing_smiles_unexpanded_count,
+    ].some(value => Number.isInteger(value) && value > 0);
+    const completionStatus = text(
+      object(row.completion).status,
+      missingChemicalFields ? "needs_review" : text(row.completion_status, "blocked"),
+    );
+    const unresolvedReconciliation = Number.isInteger(row.unresolved_reconciliation_count)
+      && row.unresolved_reconciliation_count > 0;
+    const reconciliationStatus = text(
+      object(row.reconciliation).status,
+      unresolvedReconciliation ? "needs_review" : text(row.reconciliation_status, "blocked"),
+    );
+    const evidenceStatus = text(
+      object(row.evidence).status,
+      genericStatus === "current" && chemicalStatus === "current"
+        && completionStatus === "current" && reconciliationStatus === "current"
+        ? "available" : "blocked",
+    );
     const model = {
       displayLabel: `研究 ${index + 1}`,
       citation: publicText(row.citation, `Core study ${index + 1}`),
-      tierLabel: row.tier === "background" ? "Background" : row.tier === "core" ? "Core" : "分层未知",
-      pdfLabel: stateLabel("pdf", object(row.pdf).status),
-      genericLabel: stateLabel("generic", object(row.generic_parse).status),
-      chemicalLabel: stateLabel("chemical", object(row.chemical).status),
-      completionLabel: stateLabel("completion", object(row.completion).status),
-      reconciliationLabel: stateLabel("reconciliation", object(row.reconciliation).status),
-      evidenceLabel: stateLabel("evidence", object(row.evidence).status),
+      tierLabel: (row.tier || row.source_tier) === "background" ? "Background" : (row.tier || row.source_tier) === "core" ? "Core" : "分层未知",
+      pdfLabel: stateLabel("pdf", text(object(row.pdf).status, genericStatus === "current" ? "verified" : "stale")),
+      genericLabel: stateLabel("generic", genericStatus),
+      chemicalLabel: stateLabel("chemical", chemicalStatus),
+      completionLabel: stateLabel("completion", completionStatus),
+      reconciliationLabel: stateLabel("reconciliation", reconciliationStatus),
+      evidenceLabel: stateLabel("evidence", evidenceStatus),
       actorLabel: publicText(row.actor_label, "决定者未提供"),
       updatedLabel: publicText(row.updated_at, "更新时间未提供"),
     };
