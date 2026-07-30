@@ -4956,8 +4956,9 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
         parser.feed(review_html)
 
         self.assertIn('id="empty-project-workspace"', review_html)
-        self.assertIn("等待 QoderWork 创建科研综述", parser.text)
-        self.assertIn("请在 QoderWork CN 中选择科研综述专家并创建任务", parser.text)
+        self.assertIn("请选择项目开始审查", parser.text)
+        self.assertIn("明确选择后读取项目", parser.text)
+        self.assertNotIn("项目就绪后自动打开", parser.text)
         self.assertIn("async function refreshProjects()", review_html)
         self.assertIn("setInterval(refreshProjects, 3000)", review_html)
 

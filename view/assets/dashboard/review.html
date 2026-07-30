@@ -43,9 +43,9 @@
 
     <section id="empty-project-workspace" class="manuscript-empty" aria-labelledby="empty-project-heading">
       <p class="section-label">QoderWork research review</p>
-      <h2 id="empty-project-heading">等待 QoderWork 创建科研综述</h2>
-      <p>请在 QoderWork CN 中选择科研综述专家并创建任务。工作台会保持运行，并在项目就绪后自动打开。</p>
-      <p id="project-waiting-message" role="status" aria-live="polite">正在等待新项目…</p>
+      <h2 id="empty-project-heading">请选择项目开始审查</h2>
+      <p>请先在 QoderWork CN 中创建科研综述任务，再从上方项目列表明确选择后读取项目。</p>
+      <p id="project-waiting-message" role="status" aria-live="polite">正在检查可用项目…</p>
     </section>
 
     <nav id="workspace-switcher" class="workspace-switcher" aria-label="项目工作区" hidden>
@@ -645,6 +645,12 @@
       $('cockpit-workspace').hidden = true;
       $('manuscript-workspace').hidden = true;
       $('project-title').textContent = '动态科研综述工作台';
+    }
+
+    function setProjectSelectionWorkspace() {
+      setEmptyProjectWorkspace(true);
+      $('project-tools').hidden = false;
+      $('project-waiting-message').textContent = '请选择上方项目列表中的项目。';
     }
 
     function setWorkspace(workspace) {
@@ -2446,6 +2452,12 @@
       try {
         projects = await getPayload('/api/projects');
         clear($('project'));
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = '请选择项目';
+        placeholder.disabled = true;
+        placeholder.selected = !projectId;
+        $('project').append(placeholder);
         projects.forEach((project, index) => {
           const option = document.createElement('option');
           option.value = project.project_id;
@@ -2453,8 +2465,13 @@
           $('project').append(option);
         });
         if (!projects.length) {
+          if (projectId || projectLoadBusy) {
+            projectId = '';
+            projectLoadGeneration += 1;
+            setProjectLoadBusy(false);
+          }
           setEmptyProjectWorkspace(true);
-          $('project-waiting-message').textContent = '正在等待新项目…';
+          $('project-waiting-message').textContent = '尚无可用项目，请先在 QoderWork CN 中创建任务。';
           $('workbench-message').textContent = '';
           return 'empty';
         }
@@ -2464,11 +2481,14 @@
           setWorkspace(activeWorkspace);
           return 'unchanged';
         }
-        projectId = projects[0].project_id;
-        $('project').value = projectId;
-        const loadResult = await loadProject();
-        if (loadResult === 'stale') return 'stale';
-        return loadResult;
+        if (projectId) {
+          projectId = '';
+          projectLoadGeneration += 1;
+          setProjectLoadBusy(false);
+        }
+        $('project').value = '';
+        setProjectSelectionWorkspace();
+        return 'selection_required';
       } catch (error) {
         if (!projectId) setEmptyProjectWorkspace(true);
         $('project-waiting-message').textContent = '暂时无法检查新项目，工作台将继续等待。';
@@ -2483,6 +2503,57 @@
       projectsRefreshTimer = setInterval(refreshProjects, 3000);
     }
 
+    async function selectProject(event) {
+      const nextProjectId = event.target.value;
+      if (!nextProjectId || !projects.some(project => project.project_id === nextProjectId)) {
+        event.target.value = projectId;
+        return 'invalid';
+      }
+      if (nextProjectId === projectId) return 'unchanged';
+      if (!confirmDiscardDraftChanges()) {
+        event.target.value = projectId;
+        return 'cancelled';
+      }
+      if (!confirmDiscardRiskDecisions()) {
+        event.target.value = projectId;
+        return 'cancelled';
+      }
+      if (!confirmDiscardParseQualityDecisions()) {
+        event.target.value = projectId;
+        return 'cancelled';
+      }
+      activeParseStudyId = '';
+      projectId = nextProjectId;
+      try {
+        const loadResult = await loadProject();
+        if (loadResult === 'stale') return 'stale';
+        return loadResult;
+      } catch (error) {
+        if (projectId === nextProjectId) {
+          projectId = '';
+          projectLoadGeneration += 1;
+          progressCapabilityProjectId = '';
+          progressCapabilityGeneration = -1;
+          setProjectLoadBusy(false);
+          event.target.value = '';
+          dualParseModel = ReviewDualParseUI.projectionModel({
+            schema_version:'dual-parse-projection.v1',
+            status:'unavailable',
+            next_action:{label:'请重新选择项目',description:'项目读取失败；明确选择后将重新读取。'},
+          });
+          progressPayload = {active_stage:'sources',stages:[],studies:[],blocker:'',recommended_next:'',release_capabilities:{internal_draft_export_ready:false,verified_release_ready:false}};
+          finalPayload = {final_draft_docx_exists:false,final_draft_docx_path:''};
+          reviewFigurePayload = {source_figures:[],placeholders:[]};
+          renderDualParse();
+          renderReleaseControls();
+          setProjectSelectionWorkspace();
+          $('project-waiting-message').textContent = '项目暂时无法读取，请重新选择项目。';
+        }
+        $('workbench-message').textContent = '项目暂时无法读取。';
+        return 'error';
+      }
+    }
+
     document.querySelectorAll('[data-workspace]').forEach(button => {
       button.addEventListener('click', () => {
         const nextWorkspace = button.dataset.workspace === 'manuscript' ? 'manuscript' : 'cockpit';
@@ -2491,30 +2562,7 @@
         setWorkspace(nextWorkspace);
       });
     });
-    $('project').addEventListener('change', async event => {
-      const nextProjectId = event.target.value;
-      if (nextProjectId === projectId) return;
-      if (!confirmDiscardDraftChanges()) {
-        event.target.value = projectId;
-        return;
-      }
-      if (!confirmDiscardRiskDecisions()) {
-        event.target.value = projectId;
-        return;
-      }
-      if (!confirmDiscardParseQualityDecisions()) {
-        event.target.value = projectId;
-        return;
-      }
-      activeParseStudyId = '';
-      projectId = nextProjectId;
-      try {
-        const loadResult = await loadProject();
-        if (loadResult === 'stale') return;
-      } catch (error) {
-        $('workbench-message').textContent = '项目暂时无法读取。';
-      }
-    });
+    $('project').addEventListener('change', selectProject);
     $('confirm-brief').addEventListener('click', confirmBrief);
     $('confirm-brief-primary').addEventListener('click', confirmBrief);
     $('source-supplement-form').addEventListener('submit', submitSourceSupplement);
