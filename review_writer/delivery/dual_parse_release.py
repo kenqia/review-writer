@@ -644,6 +644,46 @@ def _researcher_next_action(value: object) -> dict[str, str]:
     }
 
 
+def _chemical_import_contract(
+    source: dict[str, Any],
+    chemistry: dict[str, Any],
+    completion: dict[str, Any],
+    reconciliation: dict[str, Any],
+) -> tuple[str, bool]:
+    """Separate a current PDF-bound import from Evidence-lane currentness.
+
+    ``needs_review`` is intentionally a positive import/binding state: the
+    current verified PDF has a safe Chemical Paper projection, but researcher
+    completion or reconciliation is still required.  ``current`` is reserved
+    for a lane that has cleared both gates and can enter Paper Evidence.
+    """
+
+    nested = source.get("chemical")
+    reported_status = source.get(
+        "chemical_status",
+        nested.get("status") if isinstance(nested, dict) else chemistry.get("status"),
+    )
+    if reported_status == "missing" or chemistry.get("status") == "missing":
+        return "missing", False
+    source_current = (
+        source.get("pdf_status") == "verified"
+        and source.get("generic_parse_status") == "current"
+    )
+    bound = (
+        source_current
+        and chemistry.get("pdf_binding_status") == "bound"
+        and chemistry.get("status") in {"needs_review", "ready"}
+    )
+    if not bound:
+        return "stale", False
+    evidence_lane_current = (
+        chemistry.get("status") == "ready"
+        and completion.get("status") == "current"
+        and reconciliation.get("status") == "current"
+    )
+    return ("current" if evidence_lane_current else "needs_review"), True
+
+
 def dual_parse_dashboard_projection(project: Path) -> dict[str, Any]:
     """Return an explicit researcher-safe whitelist for the dashboard API."""
 
@@ -665,6 +705,9 @@ def dual_parse_dashboard_projection(project: Path) -> dict[str, Any]:
         complete = completion_by_id.get(study_id, {})
         registry = reconciliation_by_id.get(study_id, {})
         chemistry = chemical_by_id.get(study_id, {})
+        chemical_import_status, chemical_bound = _chemical_import_contract(
+            source, chemistry, complete, registry
+        )
         row: dict[str, Any] = {
             "study_id": study_id,
             "source_tier": source.get("source_tier"),
@@ -679,12 +722,8 @@ def dual_parse_dashboard_projection(project: Path) -> dict[str, Any]:
                     else "unknown",
                 ),
             ),
-            "chemical_import_status": source.get(
-                "chemical_status",
-                source.get("chemical", {}).get("status")
-                if isinstance(source.get("chemical"), dict)
-                else chemistry.get("status"),
-            ),
+            "chemical_import_status": chemical_import_status,
+            "chemical_binding_status": "bound" if chemical_bound else chemical_import_status,
             "completion_status": complete.get("status"),
             "reconciliation_status": registry.get("status"),
             "page_count": source.get("page_count", chemistry.get("page_count")),
@@ -843,6 +882,9 @@ def dual_parse_dashboard_projection(project: Path) -> dict[str, Any]:
             ),
             "chemical_current": sum(
                 row.get("chemical_import_status") == "current" for row in core
+            ),
+            "chemical_bound": sum(
+                row.get("chemical_binding_status") == "bound" for row in core
             ),
             "reaction_data_status": (
                 "available"
