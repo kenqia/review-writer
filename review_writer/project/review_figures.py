@@ -27,6 +27,12 @@ from review_writer.project.source_truth import (
     declared_study_ids,
     load_source_truth_bundle,
 )
+from review_writer.project.chemical_paper import (
+    STATE_NAME as CHEMICAL_PAPER_STATE_NAME,
+    STATE_ROOT as CHEMICAL_PAPER_STATE_ROOT,
+    ChemicalPaperError,
+    load_chemical_paper_state,
+)
 
 
 SOURCE_FIGURE_SCHEMA = REPO_ROOT / "schemas/figures/source_figure.v1.schema.json"
@@ -423,6 +429,30 @@ def _source_truth_digest(root: Path) -> str:
     return canonical_digest(bindings)
 
 
+def _chemical_paper_bindings(root: Path) -> tuple[str | None, dict[str, str]]:
+    state_root = root / CHEMICAL_PAPER_STATE_ROOT
+    if not state_root.exists():
+        return None, {}
+    try:
+        studies = declared_study_ids(root)
+    except SourceTruthError as exc:
+        raise ReviewFigureError(exc.code) from exc
+    rows: list[dict[str, str]] = []
+    by_study: dict[str, str] = {}
+    for study_id in studies:
+        path = state_root / study_id / CHEMICAL_PAPER_STATE_NAME
+        if not path.exists():
+            continue
+        try:
+            state = load_chemical_paper_state(root, study_id)
+        except ChemicalPaperError as exc:
+            raise ReviewFigureError(exc.code) from exc
+        digest = state["current_import_digest"]
+        rows.append({"study_id": study_id, "chemical_paper_import_digest": digest})
+        by_study[study_id] = digest
+    return canonical_digest(rows), by_study
+
+
 def load_source_figure_registry(project: Path) -> dict[str, Any]:
     """Load a registry only when it is bound to the current Source Truth."""
     root = _safe_project(project)
@@ -438,18 +468,21 @@ def load_source_figure_registry(project: Path) -> dict[str, Any]:
         content_list_v2_digest = _content_list_v2_digest(root)
     except ReviewFigureError as exc:
         raise ReviewFigureError("FIGURE_REGISTRY_STALE") from exc
+    chemical_digest, _ = _chemical_paper_bindings(root)
     if (
         not isinstance(figures, list)
         or not all(isinstance(row, dict) for row in figures)
         or not isinstance(locator_gaps, list)
         or payload.get("source_truth_digest") != _source_truth_digest(root)
         or payload.get("content_list_v2_digest") != content_list_v2_digest
+        or payload.get("chemical_paper_project_binding_digest") != chemical_digest
     ):
         _fail("FIGURE_REGISTRY_STALE")
     expected = canonical_digest(
         {
             "source_truth_digest": payload["source_truth_digest"],
             "content_list_v2_digest": content_list_v2_digest,
+            "chemical_paper_project_binding_digest": chemical_digest,
             "figures": figures,
             "locator_gaps": locator_gaps,
         }
@@ -499,6 +532,7 @@ def build_source_figure_registry(project: Path) -> dict[str, Any]:
     locator_gaps: list[dict[str, Any]] = []
     source_truth_digest = _source_truth_digest(root)
     content_list_v2_digest = _content_list_v2_digest(root)
+    chemical_paper_project_binding_digest, chemical_imports = _chemical_paper_bindings(root)
     for study_id in studies:
         try:
             bundle = load_source_truth_bundle(root, study_id)
@@ -517,6 +551,19 @@ def build_source_figure_registry(project: Path) -> dict[str, Any]:
             pdf_path = _safe_asset(root, pdf_descriptor["path"])
             if _sha256(pdf_path) != pdf_descriptor.get("sha256"):
                 _fail("SOURCE_PDF_HASH_MISMATCH")
+            if study_id in chemical_imports:
+                locator_gaps.append(
+                    {
+                        "study_id": study_id,
+                        "source_id": source_id,
+                        "page": 1,
+                        "reason": (
+                            "MinerU Chemical Paper 导出包未提供独立图片文件；"
+                            "页面区域仅作为原始 PDF 定位，不创建或沿用通用 MinerU 图片。"
+                        ),
+                    }
+                )
+                continue
             _verify_source_images(root, source)
             extracted = root / "01_evidence/parses/extracted" / slug
             # v1 remains part of Source Truth byte integrity, but is never used
@@ -714,6 +761,7 @@ def build_source_figure_registry(project: Path) -> dict[str, Any]:
         "target_figure_slots": {"minimum": minimum_slots, "maximum": maximum_slots},
         "source_truth_digest": source_truth_digest,
         "content_list_v2_digest": content_list_v2_digest,
+        "chemical_paper_project_binding_digest": chemical_paper_project_binding_digest,
         "locator_gaps": locator_gaps,
         "figure_budget": {
             "status": budget_status,
@@ -726,6 +774,7 @@ def build_source_figure_registry(project: Path) -> dict[str, Any]:
             {
                 "source_truth_digest": source_truth_digest,
                 "content_list_v2_digest": content_list_v2_digest,
+                "chemical_paper_project_binding_digest": chemical_paper_project_binding_digest,
                 "figures": figures,
                 "locator_gaps": locator_gaps,
             }

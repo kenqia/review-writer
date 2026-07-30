@@ -114,6 +114,12 @@ from review_writer.project.source_truth import (  # noqa: E402
     load_source_truth_bundle,
     source_truth_asset,
 )
+from review_writer.project.chemical_paper import (  # noqa: E402
+    ChemicalPaperError,
+    chemical_paper_projection,
+    correct_chemical_paper_field,
+    review_chemical_paper_elements,
+)
 
 
 _RESEARCHER_SHA256_RE = re.compile(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{64}(?![0-9A-Fa-f])")
@@ -318,6 +324,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
                 return
             self.handle_project_workspace_get(project_id, "review-figures")
+        elif parsed.path.startswith("/api/project/") and parsed.path.endswith("/chemical-paper"):
+            project_id = project_id_from_route(parsed.path, "chemical-paper")
+            if project_id is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                return
+            self.handle_project_chemical_paper_get(project_id)
         elif parsed.path.startswith("/api/project/") and parsed.path.endswith("/draft"):
             project_id = project_id_from_route(parsed.path, "draft")
             if project_id is None:
@@ -421,6 +433,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             self.handle_discovery_put(project_id, confirm=bool(query.get("confirm")))
             return
+        self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+
+    def do_PATCH(self) -> None:
+        parsed = urlparse(self.path)
+        for action in ("field", "elements"):
+            suffix = f"/chemical-paper/{action}"
+            if parsed.path.startswith("/api/project/") and parsed.path.endswith(suffix):
+                project_path = parsed.path[: -len(suffix)] + "/chemical-paper"
+                project_id = project_id_from_route(project_path, "chemical-paper")
+                if project_id is None:
+                    self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                    return
+                self.handle_project_chemical_paper_patch(project_id, action)
+                return
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
     def do_POST(self) -> None:
@@ -925,6 +951,101 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND, "project not found")
             return
         self.send_json(project_review_state_payload(self.review_root, project_id))
+
+    def _chemical_paper_error(self, code: str) -> None:
+        if code == "STALE_CHEMICAL_PAPER_STATE":
+            status = HTTPStatus.CONFLICT
+            message = "化学论文状态已更新，请刷新后重新审查。"
+        elif code in {"CHEMICAL_PAPER_NOT_IMPORTED", "MOLECULE_NOT_FOUND"}:
+            status = HTTPStatus.NOT_FOUND
+            message = "未找到可审查的化学论文对象。"
+        else:
+            status = HTTPStatus.UNPROCESSABLE_ENTITY
+            message = "化学论文审查内容无效，未保存任何更改。"
+        self.send_json(
+            {"ok": False, "error_code": code, "message": message},
+            status=status,
+        )
+
+    def _chemical_paper_request_json(self) -> dict[str, Any]:
+        if (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().casefold() != "application/json":
+            raise ChemicalPaperError("CHEMICAL_PAPER_REQUEST_INVALID")
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError as exc:
+            raise ChemicalPaperError("CHEMICAL_PAPER_REQUEST_INVALID") from exc
+        if length <= 0 or length > 64 * 1024:
+            raise ChemicalPaperError("CHEMICAL_PAPER_REQUEST_INVALID")
+        try:
+            value = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise ChemicalPaperError("CHEMICAL_PAPER_REQUEST_INVALID") from exc
+        if not isinstance(value, dict):
+            raise ChemicalPaperError("CHEMICAL_PAPER_REQUEST_INVALID")
+        return value
+
+    def handle_project_chemical_paper_get(self, project_id: str) -> None:
+        try:
+            project = project_dir(self.review_root, project_id)
+            if not project.is_dir():
+                raise ChemicalPaperError("CHEMICAL_PAPER_NOT_IMPORTED")
+            payload = chemical_paper_projection(project)
+        except (ValueError, ChemicalPaperError) as exc:
+            code = exc.code if isinstance(exc, ChemicalPaperError) else "CHEMICAL_PAPER_NOT_IMPORTED"
+            self._chemical_paper_error(code)
+            return
+        self.send_json(payload)
+
+    def handle_project_chemical_paper_patch(self, project_id: str, action: str) -> None:
+        try:
+            project = project_dir(self.review_root, project_id)
+            if not project.is_dir():
+                raise ChemicalPaperError("CHEMICAL_PAPER_NOT_IMPORTED")
+            value = self._chemical_paper_request_json()
+            common = {
+                "study_id", "molecule_index", "reason", "actor_type",
+                "actor_label", "version_token",
+            }
+            actor = {
+                "actor_type": value.get("actor_type"),
+                "actor_label": value.get("actor_label"),
+            }
+            if action == "field":
+                if set(value) != common | {"field", "value"}:
+                    raise ChemicalPaperError("CHEMICAL_PAPER_REQUEST_INVALID")
+                result = correct_chemical_paper_field(
+                    project,
+                    study_id=value.get("study_id"),
+                    molecule_index=value.get("molecule_index"),
+                    field=value.get("field"),
+                    value=value.get("value"),
+                    actor=actor,
+                    reason=value.get("reason"),
+                    version_token=value.get("version_token"),
+                )
+            else:
+                permitted = common | {"action"}
+                if set(value) not in (permitted, permitted | {"corrected_elements"}):
+                    raise ChemicalPaperError("CHEMICAL_PAPER_REQUEST_INVALID")
+                review_action = value.get("action")
+                corrected = value.get("corrected_elements")
+                if (review_action == "corrected") != ("corrected_elements" in value):
+                    raise ChemicalPaperError("CHEMICAL_PAPER_REQUEST_INVALID")
+                result = review_chemical_paper_elements(
+                    project,
+                    study_id=value.get("study_id"),
+                    molecule_index=value.get("molecule_index"),
+                    review_state=review_action,
+                    actor=actor,
+                    reason=value.get("reason"),
+                    version_token=value.get("version_token"),
+                    corrected_elements=corrected,
+                )
+        except (ValueError, ChemicalPaperError) as exc:
+            code = exc.code if isinstance(exc, ChemicalPaperError) else "CHEMICAL_PAPER_REQUEST_INVALID"
+            self._chemical_paper_error(code)
+            return
+        self.send_json({"ok": True, **result})
 
     def handle_project_review_state_put(self, project_id: str) -> None:
         try:

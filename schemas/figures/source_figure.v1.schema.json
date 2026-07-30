@@ -15,6 +15,7 @@
     "asset_path": {"type": "string", "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"},
     "asset_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "source_pdf_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "chemical_paper_import_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "evidence_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
     "selection_status": {"enum": ["selected", "available", "rejected"]},
     "fragments": {

@@ -25,6 +25,9 @@ from .paper_evidence import (
     register_paper_evidence_candidates,
     register_manual_pdf_evidence,
 )
+from .chemical_paper import STATE_NAME as CHEMICAL_PAPER_STATE_NAME
+from .chemical_paper import STATE_ROOT as CHEMICAL_PAPER_STATE_ROOT
+from .chemical_paper import ChemicalPaperError, load_chemical_paper_state
 from .paper_evidence_store import PaperEvidenceStoreError, project_write_lock
 from .section_contract import SectionContractError, register_section_contracts
 from .source_truth import (
@@ -39,7 +42,7 @@ from .synthesis import SynthesisError, register_comparison_protocol, register_co
 
 REQUEST_SCHEMA = REPO_ROOT / "schemas/agents/content_agent_request.v1.schema.json"
 RESULT_SCHEMA = REPO_ROOT / "schemas/agents/content_agent_result.v1.schema.json"
-ALLOWED_INPUTS = frozenset({"source_truth", "parse_quality", "paper_evidence", "comparison_protocol", "section_contract"})
+ALLOWED_INPUTS = frozenset({"source_truth", "parse_quality", "paper_evidence", "chemical_paper", "comparison_protocol", "section_contract"})
 REQUEST_KINDS = frozenset({"paper_evidence", "synthesis_claims", "section_draft"})
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _ID = re.compile(r"^(?!\.\.?$)(?!.*[/\\\x00\r\n])\S{1,240}$")
@@ -204,6 +207,10 @@ def _collect_inputs(project: Path, request: dict[str, Any]) -> dict[str, list[di
     inputs: dict[str, list[dict[str, Any]]] = {}
     studies = request["target_ids"] if request["request_kind"] == "paper_evidence" else declared_study_ids(project)
     _source_artifacts(project, studies, inputs)
+    for study_id in studies:
+        relative = (CHEMICAL_PAPER_STATE_ROOT / study_id / CHEMICAL_PAPER_STATE_NAME).as_posix()
+        if _existing(project, relative):
+            _add_artifact(project, inputs, "chemical_paper", relative, "chemical_paper_state")
     evidence_projection = "01_evidence/paper_evidence_projection.jsonl"
     if _existing(project, evidence_projection):
         _add_artifact(project, inputs, "paper_evidence", evidence_projection, "paper_evidence_projection")
@@ -229,8 +236,31 @@ def _collect_inputs(project: Path, request: dict[str, Any]) -> dict[str, list[di
 
 
 def _package_digest(package: dict[str, Any]) -> str:
-    value = {key: package[key] for key in ("schema_version", "project_id", "request_kind", "target_ids", "inputs")}
+    keys = ("schema_version", "project_id", "request_kind", "target_ids", "inputs", "chemical_paper_import_bindings")
+    value = {key: package[key] for key in keys if key in package}
     return canonical_digest(value)
+
+
+def _chemical_paper_bindings(project: Path, studies: Iterable[str]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for study_id in studies:
+        relative = project / CHEMICAL_PAPER_STATE_ROOT / study_id / CHEMICAL_PAPER_STATE_NAME
+        if not relative.exists():
+            continue
+        try:
+            state = load_chemical_paper_state(project, study_id)
+        except ChemicalPaperError as exc:
+            raise ContentAgentError(exc.code) from exc
+        rows.append(
+            {
+                "study_id": study_id,
+                "source_id": state["source_id"],
+                "source_truth_bundle_digest": state["source_truth_bundle_digest"],
+                "source_pdf_sha256": state["source_pdf_sha256"],
+                "chemical_paper_import_digest": state["current_import_digest"],
+            }
+        )
+    return sorted(rows, key=lambda row: row["study_id"])
 
 
 def _forbidden_in_package(value: object) -> bool:
@@ -264,6 +294,10 @@ def build_content_task_package(project: Path, request: object, output_dir: Path 
         "target_ids": list(normalized["target_ids"]),
         "inputs": inputs,
     }
+    studies = normalized["target_ids"] if normalized["request_kind"] == "paper_evidence" else declared_study_ids(root)
+    bindings = _chemical_paper_bindings(root, studies)
+    if bindings:
+        package["chemical_paper_import_bindings"] = bindings
     package["task_package_digest"] = _package_digest(package)
     if _forbidden_in_package(package):
         raise ContentAgentError("PACKAGE_FORBIDDEN_INPUT")
