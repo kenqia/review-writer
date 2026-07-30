@@ -195,6 +195,54 @@ def test_import_binds_pdf_and_preserves_explicit_unknowns_with_safe_projection(t
         assert forbidden not in encoded
 
 
+def test_import_preserves_exported_molecule_order_for_stable_review_indexes(
+    tmp_path: Path,
+) -> None:
+    from review_writer.project.chemical_paper import (
+        chemical_paper_projection,
+        import_chemical_paper,
+        load_chemical_paper_state,
+    )
+
+    project = source_truth_project(tmp_path)
+    molecules = [
+        {
+            "mol_id": "mol-later-page",
+            "page_idx": 1,
+            "bbox_normalized": [0.2, 0.3, 0.5, 0.6],
+            "smiles_expanded": "",
+            "smiles_unexpanded": "",
+            "mol_idt": "",
+            "mol_block": v2000(("N",)),
+        },
+        {
+            "mol_id": "mol-earlier-page",
+            "page_idx": 0,
+            "bbox_normalized": [0.1, 0.2, 0.3, 0.4],
+            "smiles_expanded": "CO",
+            "smiles_unexpanded": "CO",
+            "mol_idt": "methanol-candidate",
+            "mol_block": v2000(),
+        },
+    ]
+    archive = write_chemical_zip(tmp_path / "chemical.zip", molecules=molecules)
+
+    import_chemical_paper(project, "study-1", PDF_SHA, archive, ACTOR)
+
+    state = load_chemical_paper_state(project, "study-1")
+    assert [row["molecule_id"] for row in state["molecules"]] == [
+        "mol-later-page",
+        "mol-earlier-page",
+    ]
+    projected = chemical_paper_projection(project)["studies"][0]["molecules"]
+    assert projected[0]["molecule_index"] == 0
+    assert projected[0]["missing_fields"] == [
+        "mol_idt",
+        "smiles_expanded",
+        "smiles_unexpanded",
+    ]
+
+
 @pytest.mark.parametrize(
     "unsafe_name,error_code",
     [
