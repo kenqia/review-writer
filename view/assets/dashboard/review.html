@@ -485,6 +485,8 @@
 
     let projects = [];
     let projectId = '';
+    let projectOptionIds = new Map();
+    let projectOptionKeys = new Map();
     let projectState = {};
     let cockpitPayload = {metrics:{}, mode_coverage:[]};
     let draftPayload = {available:false, sections:[], claim_lineage:[], revision_status:{pending_scientific_edits:[]}};
@@ -2452,6 +2454,8 @@
       projectsRefreshBusy = true;
       try {
         projects = await getPayload('/api/projects');
+        projectOptionIds = new Map();
+        projectOptionKeys = new Map();
         clear($('project'));
         const placeholder = document.createElement('option');
         placeholder.value = '';
@@ -2460,9 +2464,12 @@
         placeholder.selected = !projectId;
         $('project').append(placeholder);
         projects.forEach((project, index) => {
+          const optionKey = `project-option-${index + 1}`;
+          projectOptionIds.set(optionKey, project.project_id);
+          projectOptionKeys.set(project.project_id, optionKey);
           const option = document.createElement('option');
-          option.value = project.project_id;
-          option.textContent = project.topic || `综述项目 ${index + 1}`;
+          option.value = optionKey;
+          option.textContent = project.visible_label || `未命名综述项目（项目 ${index + 1}/${projects.length}）`;
           $('project').append(option);
         });
         if (!projects.length) {
@@ -2477,7 +2484,7 @@
           return 'empty';
         }
         if (projectId && projects.some(project => project.project_id === projectId)) {
-          $('project').value = projectId;
+          $('project').value = projectOptionKeys.get(projectId) || '';
           setEmptyProjectWorkspace(false);
           setWorkspace(activeWorkspace);
           return 'unchanged';
@@ -2509,26 +2516,26 @@
         emptyDelay:3000,
         selectedDelay:30000,
       });
-      projectsRefreshController.start();
+      projectsRefreshController.start({immediate:true});
     }
 
     async function selectProject(event) {
-      const nextProjectId = event.target.value;
+      const nextProjectId = projectOptionIds.get(event.target.value) || '';
       if (!nextProjectId || !projects.some(project => project.project_id === nextProjectId)) {
-        event.target.value = projectId;
+        event.target.value = projectOptionKeys.get(projectId) || '';
         return 'invalid';
       }
       if (nextProjectId === projectId) return 'unchanged';
       if (!confirmDiscardDraftChanges()) {
-        event.target.value = projectId;
+        event.target.value = projectOptionKeys.get(projectId) || '';
         return 'cancelled';
       }
       if (!confirmDiscardRiskDecisions()) {
-        event.target.value = projectId;
+        event.target.value = projectOptionKeys.get(projectId) || '';
         return 'cancelled';
       }
       if (!confirmDiscardParseQualityDecisions()) {
-        event.target.value = projectId;
+        event.target.value = projectOptionKeys.get(projectId) || '';
         return 'cancelled';
       }
       activeParseStudyId = '';
@@ -2624,9 +2631,6 @@
       if (!editorDirty && !riskDecisionDirty && !parseQualityDirty.size) return;
       event.preventDefault();
       event.returnValue = '';
-    });
-    loadProjects().catch(() => {
-      $('workbench-message').textContent = '项目暂时无法读取。';
     });
     startProjectsRefresh();
     ReviewSessionUI.installProjectRefreshLifecycle(window, () => projectsRefreshController);

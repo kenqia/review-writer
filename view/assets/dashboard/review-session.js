@@ -59,9 +59,10 @@
     }
 
     return {
-      start() {
+      start(settings = {}) {
         if (!stopped) return;
         stopped = false;
+        if (settings.immediate === true) return tick();
         schedule();
       },
       stop() {

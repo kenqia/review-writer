@@ -4679,10 +4679,24 @@ def has_review_product_data(project: Path) -> bool:
     )
 
 
+def with_visible_project_labels(projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    total = len(projects)
+    return [
+        {
+            **project,
+            "visible_label": (
+                f"{visible_text(project.get('topic')) or '未命名综述项目'}"
+                f"（项目 {index}/{total}）"
+            ),
+        }
+        for index, project in enumerate(projects, start=1)
+    ]
+
+
 def list_review_projects(review_root: Path) -> list[dict[str, Any]]:
     if is_direct_output_root(review_root):
         project_id = direct_project_id(review_root)
-        return [
+        return with_visible_project_labels([
             {
                 "project_id": project_id,
                 "topic": infer_project_topic(review_root),
@@ -4699,7 +4713,7 @@ def list_review_projects(review_root: Path) -> list[dict[str, Any]]:
                 ) is not None,
                 "has_final_audit": (review_root / "05_final_audit" / "final_draft.md").exists(),
             }
-        ]
+        ])
     base = review_root / "review-projects"
     projects: list[dict[str, Any]] = []
     if not base.exists():
@@ -4735,7 +4749,7 @@ def list_review_projects(review_root: Path) -> list[dict[str, Any]]:
                 "has_final_audit": (project / "05_final_audit" / "final_draft.md").exists(),
             }
         )
-    return projects
+    return with_visible_project_labels(projects)
 
 
 def project_summary(review_root: Path, project_id: str) -> dict[str, Any] | None:
