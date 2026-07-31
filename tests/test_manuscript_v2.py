@@ -315,6 +315,7 @@ def test_manuscript_lineage_binds_current_dual_versions(
             "reconciliation_digest": SHA_D,
             "reconciliation_status": "current",
             "content_result_status": "current",
+            "missing_name_count": 0,
             "missing_resolved_smiles_count": 0,
             "ai_authored_smiles_count": 0,
             "reaction_data_status": "unavailable_not_provided",

@@ -52,6 +52,18 @@ _BINDING_FIELDS = frozenset(
         "reconciliation_digest",
     }
 )
+_V2_COMPLETION_COUNTERS = (
+    "missing_name_count",
+    "missing_resolved_smiles_count",
+    "ai_authored_smiles_count",
+)
+_LEGACY_COMPLETION_COUNTERS = frozenset(
+    {
+        "unresolved_field_count",
+        "missing_smiles_expanded_count",
+        "missing_smiles_unexpanded_count",
+    }
+)
 
 
 class DualParseReleaseError(ValueError):
@@ -734,7 +746,9 @@ def dual_parse_dashboard_projection(project: Path) -> dict[str, Any]:
         study_id = source.get("study_id")
         if not isinstance(study_id, str):
             raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_INVALID")
-        complete = completion_by_id.get(study_id, {})
+        complete = completion_by_id.get(study_id)
+        if not isinstance(complete, dict):
+            raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_INVALID")
         registry = reconciliation_by_id.get(study_id, {})
         chemistry = chemical_by_id.get(study_id, {})
         chemical_import_status, chemical_bound = _chemical_import_contract(
@@ -1048,21 +1062,35 @@ def _first_value(row: dict[str, Any], *keys: str) -> Any:
     return next((row[key] for key in keys if row.get(key) is not None), None)
 
 
-def _resolved_smiles_counters(row: object) -> tuple[int, int]:
+def _v2_completion_counters(row: object) -> dict[str, int]:
     if not isinstance(row, dict):
         raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_INVALID")
-    missing = row.get("missing_resolved_smiles_count")
-    ai_authored = row.get("ai_authored_smiles_count")
-    if (
-        isinstance(missing, bool)
-        or not isinstance(missing, int)
-        or missing < 0
-        or isinstance(ai_authored, bool)
-        or not isinstance(ai_authored, int)
-        or ai_authored < 0
-    ):
+    if _LEGACY_COMPLETION_COUNTERS.intersection(row):
         raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_INVALID")
-    return missing, ai_authored
+    counters: dict[str, int] = {}
+    for key in _V2_COMPLETION_COUNTERS:
+        value = row.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_INVALID")
+        counters[key] = value
+    molecule_count = row.get("molecule_count")
+    if molecule_count is not None:
+        if (
+            isinstance(molecule_count, bool)
+            or not isinstance(molecule_count, int)
+            or molecule_count < 0
+            or any(value > molecule_count for value in counters.values())
+        ):
+            raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_INVALID")
+    return counters
+
+
+def _resolved_smiles_counters(row: object) -> tuple[int, int]:
+    counters = _v2_completion_counters(row)
+    return (
+        counters["missing_resolved_smiles_count"],
+        counters["ai_authored_smiles_count"],
+    )
 
 
 def authority_rows_from_projections(
@@ -1091,7 +1119,7 @@ def authority_rows_from_projections(
         row.get("study_id"): row for row in reconciliation["studies"] if isinstance(row, dict)
     }
     for row in completion["studies"]:
-        _resolved_smiles_counters(row)
+        _v2_completion_counters(row)
     rows: list[dict[str, Any]] = []
     for source in dual["studies"]:
         if not isinstance(source, dict):
@@ -1099,7 +1127,9 @@ def authority_rows_from_projections(
         study_id = source.get("study_id")
         if not isinstance(study_id, str):
             raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_INVALID")
-        chemical = completion_by_id.get(study_id, {})
+        chemical = completion_by_id.get(study_id)
+        if not isinstance(chemical, dict):
+            raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_INVALID")
         registry = reconciliation_by_id.get(study_id, {})
         generic_lane = source.get("generic")
         chemical_lane = source.get("chemical")
@@ -1158,6 +1188,7 @@ def authority_rows_from_projections(
                 "content_result_status": source.get(
                     "content_result_status", "current"
                 ),
+                "missing_name_count": chemical.get("missing_name_count"),
                 "missing_resolved_smiles_count": chemical.get(
                     "missing_resolved_smiles_count"
                 ),
@@ -1228,6 +1259,15 @@ def _hard_fails_for_row(
         if core:
             hard_fails.add("CORE_GENERIC_PARSE_MISSING_OR_STALE")
         hard_fails.add("DUAL_PARSE_STALE")
+    try:
+        counters = _v2_completion_counters(current)
+    except DualParseReleaseError:
+        hard_fails.add("CHEMICAL_COMPLETION_INCOMPLETE")
+    else:
+        if counters["missing_name_count"] or counters["missing_resolved_smiles_count"]:
+            hard_fails.add("CHEMICAL_COMPLETION_INCOMPLETE")
+        if counters["ai_authored_smiles_count"]:
+            hard_fails.add("AI_AUTHORED_SMILES")
     if frozen["requires_chemical"]:
         if current.get("chemical_status") != "current" or current.get("chemical_version") != frozen["chemical_version"]:
             if core:
@@ -1244,18 +1284,6 @@ def _hard_fails_for_row(
             or current.get("reconciliation_digest") != frozen["reconciliation_digest"]
         ):
             hard_fails.update({"PARSE_RECONCILIATION_UNRESOLVED", "DUAL_PARSE_STALE"})
-        missing_count = current.get("missing_resolved_smiles_count")
-        if (
-            isinstance(missing_count, bool)
-            or not isinstance(missing_count, int)
-            or missing_count != 0
-        ):
-            hard_fails.add("CHEMICAL_COMPLETION_INCOMPLETE")
-        ai_count = current.get("ai_authored_smiles_count")
-        if isinstance(ai_count, bool) or not isinstance(ai_count, int) or ai_count < 0:
-            hard_fails.add("CHEMICAL_COMPLETION_INCOMPLETE")
-        elif ai_count:
-            hard_fails.add("AI_AUTHORED_SMILES")
     if current.get("content_result_status", "current") != "current":
         hard_fails.add("STALE_DUAL_PARSE_CONTENT_RESULT")
     reaction_status = current.get("reaction_data_status", REACTION_UNAVAILABLE)
