@@ -8,6 +8,7 @@ import stat
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -248,7 +249,8 @@ def test_import_binds_pdf_and_preserves_explicit_unknowns_with_safe_projection(t
     molecule_projection = projection["studies"][0]["molecules"][1]
     assert molecule_projection["molecule_index"] == 1
     assert molecule_projection["pdf_page_url"].startswith(
-        "/api/project/project/source/source-main/pdf-page?page=2&binding=cpb1."
+        "/api/project/project/chemical-paper/source/"
+        "source-main/pdf-page?page=2&binding=cpb1."
     )
     assert molecule_projection["missing_fields"] == [
         "mol_idt",
@@ -319,7 +321,7 @@ def test_safe_projection_routes_three_studies_to_their_quoted_bound_sources(
             ACTOR,
         )
         expected[study_id] = (
-            f"/api/project/project%23quoted%3F/source/"
+            f"/api/project/project%23quoted%3F/chemical-paper/source/"
             f"source%23{index}%3Fmain/pdf-page?page=2"
         )
 
@@ -451,6 +453,99 @@ def test_safe_projection_never_combines_indexed_binding_a_with_asset_b(
     with pytest.raises(ChemicalPaperError, match="SOURCE_ASSET_DRIFT"):
         chemical_paper.chemical_paper_projection(project)
     assert switched is True
+
+
+def test_locator_binding_is_stable_per_project_instance_and_unique_across_roots(
+    tmp_path: Path,
+) -> None:
+    import review_writer.project.chemical_paper as chemical_paper
+    from review_writer.project.chemical_paper import ChemicalPaperError
+
+    project_a = source_truth_project(tmp_path / "root-a")
+    project_b = source_truth_project(tmp_path / "root-b")
+    for root, project in ((tmp_path / "root-a", project_a), (tmp_path / "root-b", project_b)):
+        chemical_paper.import_chemical_paper(
+            project,
+            "study-1",
+            PDF_SHA,
+            write_chemical_zip(root / "chemical.zip"),
+            ACTOR,
+        )
+
+    locator_a = chemical_paper.chemical_paper_projection(project_a)["studies"][0][
+        "molecules"
+    ][0]["pdf_page_url"]
+    locator_a_after_restart = chemical_paper.chemical_paper_projection(project_a)[
+        "studies"
+    ][0]["molecules"][0]["pdf_page_url"]
+    locator_b = chemical_paper.chemical_paper_projection(project_b)["studies"][0][
+        "molecules"
+    ][0]["pdf_page_url"]
+    token_a = parse_qs(urlsplit(locator_a).query)["binding"][0]
+    token_b = parse_qs(urlsplit(locator_b).query)["binding"][0]
+
+    assert locator_a_after_restart == locator_a
+    assert token_a != token_b
+    assert str(project_a.resolve()) not in locator_a
+    assert str(project_b.resolve()) not in locator_b
+    assert PDF_SHA not in locator_a + locator_b
+    with pytest.raises(ChemicalPaperError, match="STALE_CHEMICAL_PAPER_LOCATOR"):
+        chemical_paper.chemical_paper_pdf_locator(
+            project_b,
+            "source-main",
+            token_a,
+        )
+
+
+def test_public_locator_descriptor_revalidates_with_a_fresh_orphan_aware_index(
+    tmp_path: Path,
+) -> None:
+    import review_writer.project.chemical_paper as chemical_paper
+    from review_writer.project.chemical_paper import ChemicalPaperError
+
+    resolver = getattr(chemical_paper, "resolve_chemical_paper_pdf_locator", None)
+    verifier = getattr(chemical_paper, "verify_chemical_paper_pdf_locator", None)
+    assert callable(resolver)
+    assert callable(verifier)
+
+    project = source_truth_project(tmp_path)
+    chemical_paper.import_chemical_paper(
+        project,
+        "study-1",
+        PDF_SHA,
+        write_chemical_zip(tmp_path / "chemical.zip"),
+        ACTOR,
+    )
+    locator = chemical_paper.chemical_paper_projection(project)["studies"][0][
+        "molecules"
+    ][0]["pdf_page_url"]
+    binding = parse_qs(urlsplit(locator).query)["binding"][0]
+    descriptor = resolver(project, "source-main", binding)
+    verifier(descriptor)
+
+    source_path = project / "01_evidence/source_truth/study-1/bundle.json"
+    source_bundle = json.loads(source_path.read_text(encoding="utf-8"))
+    orphan_body = {
+        key: copy.deepcopy(value)
+        for key, value in source_bundle.items()
+        if key != "bundle_digest"
+    }
+    orphan_body["study_id"] = "orphan-study"
+    orphan_body["study_identity"] = {
+        "doi": "10.1000/fresh-index-orphan",
+        "title": "Fresh-index orphan collision",
+    }
+    orphan_path = project / "01_evidence/source_truth/orphan-study/bundle.json"
+    orphan_path.parent.mkdir(parents=True)
+    orphan_path.write_text(
+        json.dumps(
+            {**orphan_body, "bundle_digest": canonical_digest(orphan_body)}
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ChemicalPaperError, match="STALE_CHEMICAL_PAPER_LOCATOR"):
+        verifier(descriptor)
 
 
 @pytest.mark.parametrize(

@@ -117,9 +117,9 @@ from review_writer.project.source_truth import (  # noqa: E402
 )
 from review_writer.project.chemical_paper import (  # noqa: E402
     ChemicalPaperError,
-    chemical_paper_pdf_locator,
     chemical_paper_projection,
     correct_chemical_paper_field,
+    resolve_chemical_paper_pdf_locator,
     review_chemical_paper_elements,
 )
 from review_writer.delivery.dual_parse_release import (  # noqa: E402
@@ -356,38 +356,51 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.handle_project_draft_get(project_id)
         elif parsed.path.startswith("/api/project/"):
             parts = parsed.path.strip("/").split("/")
-            if len(parts) == 6 and parts[3] == "source" and parts[5] in {"pdf", "pdf-page", "parsed-markdown"}:
+            if (
+                len(parts) == 7
+                and parts[3:5] == ["chemical-paper", "source"]
+                and parts[6] == "pdf-page"
+            ):
+                query = parse_qs(parsed.query, keep_blank_values=True)
+                page_values = query.get("page", [])
+                binding_values = query.get("binding", [])
+                if (
+                    set(query) != {"page", "binding"}
+                    or len(page_values) != 1
+                    or not re.fullmatch(r"[1-9][0-9]*", page_values[0])
+                    or len(binding_values) != 1
+                    or not re.fullmatch(
+                        r"cpb1\.[A-Za-z0-9_-]{43}",
+                        binding_values[0],
+                    )
+                ):
+                    self.send_error(HTTPStatus.BAD_REQUEST, "PDF page is invalid")
+                    return
+                self.handle_project_parse_asset_get(
+                    unquote(parts[2]),
+                    unquote(parts[5]),
+                    "pdf-page",
+                    page=page_values[0],
+                    binding=binding_values[0],
+                )
+            elif len(parts) == 6 and parts[3] == "source" and parts[5] in {"pdf", "pdf-page", "parsed-markdown"}:
                 query = parse_qs(parsed.query, keep_blank_values=True)
                 page: str | None = None
-                binding: str | None = None
                 if parts[5] == "pdf-page":
                     values = query.get("page", [])
-                    binding_values = query.get("binding", [])
                     if (
-                        set(query) not in ({"page"}, {"page", "binding"})
+                        set(query) != {"page"}
                         or len(values) != 1
                         or not re.fullmatch(r"[1-9][0-9]*", values[0])
-                        or (
-                            "binding" in query
-                            and (
-                                len(binding_values) != 1
-                                or not re.fullmatch(
-                                    r"cpb1\.[A-Za-z0-9_-]{43}",
-                                    binding_values[0],
-                                )
-                            )
-                        )
                     ):
                         self.send_error(HTTPStatus.BAD_REQUEST, "PDF page is invalid")
                         return
                     page = values[0]
-                    binding = binding_values[0] if binding_values else None
                 self.handle_project_parse_asset_get(
                     unquote(parts[2]),
                     unquote(parts[4]),
                     unquote(parts[5]),
                     page=page,
-                    binding=binding,
                 )
             elif len(parts) == 4:
                 project_id = unquote(parts[2])
@@ -1143,11 +1156,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             project = project_dir(self.review_root, project_id)
             bound_page_count: int | None = None
             if kind == "pdf-page" and binding is not None:
-                path, bound_page_count = chemical_paper_pdf_locator(
+                descriptor = resolve_chemical_paper_pdf_locator(
                     project,
                     source_id,
                     binding,
                 )
+                path = descriptor.asset_path
+                bound_page_count = descriptor.page_count
             else:
                 path = project_parse_source_asset(
                     project,

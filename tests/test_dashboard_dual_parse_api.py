@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -286,7 +287,8 @@ def test_first_smiles_completion_locator_serves_the_bound_original_pdf_page(
     )
     locator = item["pdf_page_url"]
     assert locator.startswith(
-        f"/api/project/{project.name}/source/stud-a/pdf-page?page=1&binding=cpb1."
+        f"/api/project/{project.name}/chemical-paper/source/"
+        "stud-a/pdf-page?page=1&binding=cpb1."
     )
     assert all(
         row["pdf_page_url"] == locator for row in projection["completion_queue"]
@@ -357,6 +359,69 @@ def test_chemical_locator_from_binding_a_never_serves_rebound_pdf_b(
     )
 
     assert status == 404
+    assert rendered == []
+
+
+@pytest.mark.parametrize("binding_case", ("missing", "empty", "repeated"))
+def test_chemical_locator_never_downgrades_to_generic_route_without_one_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    binding_case: str,
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    review_root = tmp_path / "review-root"
+    project = source_truth_project(review_root / "review-projects")
+    import_chemical_paper(
+        project,
+        "study-1",
+        PDF_SHA,
+        write_chemical_zip(tmp_path / "chemical.zip"),
+        ACTOR,
+    )
+    status, _, body = _http_request(
+        review_root,
+        (
+            f"GET /api/project/{project.name}/chemical-paper HTTP/1.1\r\n"
+            "Host: localhost\r\n\r\n"
+        ).encode("ascii"),
+    )
+    assert status == 200
+    locator = json.loads(body)["studies"][0]["molecules"][0]["pdf_page_url"]
+    parsed = urlsplit(locator)
+    assert "/chemical-paper/source/" in parsed.path
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    assert set(query) == {"page", "binding"}
+    assert len(query["binding"]) == 1
+    if binding_case == "missing":
+        raced_locator = f"{parsed.path}?page={query['page'][0]}"
+    elif binding_case == "empty":
+        raced_locator = f"{parsed.path}?page={query['page'][0]}&binding="
+    else:
+        token = query["binding"][0]
+        raced_locator = (
+            f"{parsed.path}?page={query['page'][0]}"
+            f"&binding={token}&binding={token}"
+        )
+
+    replace_source_pdf_binding(
+        project,
+        "study-1",
+        b"%PDF-1.4\nbinding-b\n%%EOF\n",
+    )
+    rendered: list[tuple[Path, int]] = []
+
+    def render(path: Path, page: int) -> bytes:
+        rendered.append((path, page))
+        return b"unexpected generic fallback"
+
+    monkeypatch.setattr(dashboard, "render_pdf_page", render)
+    status, _, _ = _http_request(
+        review_root,
+        f"GET {raced_locator} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode("ascii"),
+    )
+
+    assert status in {400, 404}
     assert rendered == []
 
 

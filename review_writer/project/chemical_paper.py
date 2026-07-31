@@ -19,6 +19,7 @@ import tempfile
 import unicodedata
 import zipfile
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -71,6 +72,18 @@ class ChemicalPaperError(ValueError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+@dataclass(frozen=True)
+class ChemicalPaperPdfLocatorDescriptor:
+    """Exact current Chemical PDF binding for snapshot-and-reverify consumers."""
+
+    project_root: Path
+    study_id: str
+    source_id: str
+    binding: str
+    asset_path: Path
+    page_count: int
 
 
 def _now() -> str:
@@ -734,6 +747,7 @@ def _current_element_review(state: dict[str, Any], molecule: dict[str, Any]) -> 
 
 
 def _source_locator_binding(
+    project_root: Path,
     project_id: str,
     study_id: str,
     source_id: str,
@@ -742,6 +756,7 @@ def _source_locator_binding(
 ) -> str:
     digest = canonical_digest(
         {
+            "project_instance_root": os.fspath(project_root),
             "project_id": project_id,
             "study_id": study_id,
             "source_id": source_id,
@@ -753,12 +768,12 @@ def _source_locator_binding(
     return f"cpb1.{encoded}"
 
 
-def chemical_paper_pdf_locator(
+def resolve_chemical_paper_pdf_locator(
     project: Path,
     source_id: str,
     binding: str,
-) -> tuple[Path, int]:
-    """Resolve a Chemical PDF locator only for its exact current source binding."""
+) -> ChemicalPaperPdfLocatorDescriptor:
+    """Resolve one exact Chemical PDF binding with a fresh whole-project index."""
 
     root = _project(project)
     source_id = _identifier(source_id, "SOURCE_ID_INVALID")
@@ -782,6 +797,7 @@ def chemical_paper_pdf_locator(
     ):
         raise ChemicalPaperError("STALE_CHEMICAL_PAPER_LOCATOR")
     expected = _source_locator_binding(
+        root,
         root.name,
         study_id,
         source_id,
@@ -803,7 +819,41 @@ def chemical_paper_pdf_locator(
         )
     except SourceTruthError as exc:
         raise ChemicalPaperError(exc.code) from exc
-    return asset, page_count
+    return ChemicalPaperPdfLocatorDescriptor(
+        project_root=root,
+        study_id=study_id,
+        source_id=source_id,
+        binding=binding,
+        asset_path=asset,
+        page_count=page_count,
+    )
+
+
+def verify_chemical_paper_pdf_locator(
+    descriptor: ChemicalPaperPdfLocatorDescriptor,
+) -> None:
+    """Rebuild current authority after snapshotting and reject any binding drift."""
+
+    if not isinstance(descriptor, ChemicalPaperPdfLocatorDescriptor):
+        raise ChemicalPaperError("CHEMICAL_PAPER_LOCATOR_INVALID")
+    current = resolve_chemical_paper_pdf_locator(
+        descriptor.project_root,
+        descriptor.source_id,
+        descriptor.binding,
+    )
+    if current != descriptor:
+        raise ChemicalPaperError("STALE_CHEMICAL_PAPER_LOCATOR")
+
+
+def chemical_paper_pdf_locator(
+    project: Path,
+    source_id: str,
+    binding: str,
+) -> tuple[Path, int]:
+    """Backward-compatible tuple view of the verified Chemical locator."""
+
+    descriptor = resolve_chemical_paper_pdf_locator(project, source_id, binding)
+    return descriptor.asset_path, descriptor.page_count
 
 
 def _require_mutation_binding(
@@ -998,12 +1048,13 @@ def review_chemical_paper_elements(
     }
 
 
-def _study_summary(state: dict[str, Any]) -> dict[str, Any]:
+def _study_summary(project: Path, state: dict[str, Any]) -> dict[str, Any]:
     unresolved = {field: 0 for field in FIELD_NAMES}
     unreviewed = 0
     molecules: list[dict[str, Any]] = []
     version_token = _version_token(state)
     locator_binding = _source_locator_binding(
+        project,
         state["project_id"],
         state["study_id"],
         state["source_id"],
@@ -1046,7 +1097,8 @@ def _study_summary(state: dict[str, Any]) -> dict[str, Any]:
             ],
             "element_review_state": review_state,
             "pdf_page_url": (
-                f"/api/project/{quote(state['project_id'], safe='')}/source/"
+                f"/api/project/{quote(state['project_id'], safe='')}"
+                f"/chemical-paper/source/"
                 f"{quote(state['source_id'], safe='')}"
                 f"/pdf-page?page={molecule['page_index'] + 1}"
                 f"&binding={quote(locator_binding, safe='')}"
@@ -1090,6 +1142,7 @@ def chemical_paper_safe_project_state(project: Path) -> dict[str, Any]:
         if path.exists():
             summaries.append(
                 _study_summary(
+                    root,
                     load_chemical_paper_state(
                         root,
                         study_id,
