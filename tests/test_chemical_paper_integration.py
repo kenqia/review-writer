@@ -324,13 +324,11 @@ def test_manuscript_lineage_rejects_legacy_v1_chemical_summary_explicitly(
     expected = {
         "chemical_paper_import_digests": [],
         "chemical_paper_safe_summary": {
-            "schema_version": "chemical-paper-safe-summary.v2",
+            "schema_version": "chemical-paper-safe-summary.v1",
             "route": "chemical-paper-zip-only",
             "study_count": 0,
             "molecule_count": 0,
-            "missing_name_count": 0,
-            "missing_resolved_smiles_count": 0,
-            "ai_authored_smiles_count": 0,
+            "unresolved_field_count": 0,
             "element_review_counts": {
                 "not_reviewed": 0,
                 "confirmed": 0,

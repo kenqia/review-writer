@@ -221,7 +221,7 @@ def test_backend_projection_is_consumable_by_dashboard_ui(tmp_path: Path) -> Non
     project = _ready_project(tmp_path)
     projection = dual_parse_dashboard_projection(project)
 
-    assert projection["schema_version"] == "dual-parse-projection.v1"
+    assert projection["schema_version"] == "dual-parse-projection.v2"
     assert projection["status"] == "ready"
     assert set(projection["next_action"]) == {"label", "description"}
     assert len(projection["studies"]) == 1

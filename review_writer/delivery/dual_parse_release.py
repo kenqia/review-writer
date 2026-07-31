@@ -615,6 +615,7 @@ def _dashboard_authority_payloads(
         }:
             raise
         chemical = {
+            "schema_version": "chemical-paper-projection.v2",
             "studies": [
                 {
                     "study_id": row.get("study_id"),
@@ -911,7 +912,7 @@ def dual_parse_dashboard_projection(project: Path) -> dict[str, Any]:
         for row in studies
     )
     return {
-        "schema_version": "dual-parse-projection.v1",
+        "schema_version": "dual-parse-projection.v2",
         "status": "ready",
         "next_action": _researcher_next_action(next_action),
         "project_status": "current" if project_current else "needs_review",
