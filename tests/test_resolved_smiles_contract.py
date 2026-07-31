@@ -26,8 +26,7 @@ from review_writer.project.content_agent_handoff import build_content_task_packa
 from review_writer.project.parse_quality import write_parse_quality_gate
 from review_writer.project.parse_reconciliation import write_parse_reconciliation
 from review_writer.project.dual_source import write_dual_source_binding
-from review_writer.project.source_truth import load_source_truth_bundle
-from review_writer.project.source_truth import canonical_digest
+from review_writer.project.source_truth import canonical_digest, load_source_truth_bundle
 from test_chemical_paper_import import ACTOR, snapshot, v2000, write_chemical_zip
 from test_dual_parse_content_package import paper_request
 from test_parse_quality import _decide_all, _parse_project
@@ -245,6 +244,194 @@ def test_direct_resolved_smiles_correction_requires_locator_and_valid_value(
     history = chemical_completion_state(project, "scholarly-a")["history"]
     assert history[-1]["field"] == "resolved_smiles"
     assert history[-1]["pdf_locator"]["page"] == 1
+
+
+@pytest.mark.parametrize("value", ["C(", "C1CC", "C..C"])
+def test_direct_resolved_smiles_rejects_incomplete_or_empty_structures(
+    tmp_path: Path, value: str
+) -> None:
+    project = _project_with_molecules(
+        tmp_path, [_molecule("mol-a", expanded="CO")]
+    )
+    version_token = chemical_paper_projection(project)["studies"][0]["version_token"]
+    before = snapshot(project)
+
+    with pytest.raises(ChemicalPaperError, match="SMILES_INVALID"):
+        correct_chemical_paper_field(
+            project,
+            study_id="scholarly-a",
+            molecule_index=0,
+            field="resolved_smiles",
+            value=value,
+            actor=ACTOR,
+            reason="Checked against Scheme 2.",
+            pdf_locator={"page": 1, "figure_label": "Scheme 2"},
+            version_token=version_token,
+        )
+
+    assert snapshot(project) == before
+
+
+@pytest.mark.parametrize("value", ["C(", "C1CC", "C..C"])
+def test_batch_resolved_smiles_rejects_incomplete_or_empty_structures(
+    tmp_path: Path, value: str
+) -> None:
+    project = _project_with_molecules(tmp_path, [_molecule("mol-a")])
+    gate = chemical_completion_state(project, "scholarly-a")
+    before = snapshot(project)
+
+    with pytest.raises(ChemicalCompletionError, match="SMILES_INVALID"):
+        apply_chemical_completion_batch(
+            project,
+            "scholarly-a",
+            {
+                "version_token": gate["version_token"],
+                "actor_type": "simulated_researcher_agent",
+                "actor_label": "simulated_researcher",
+                "corrections": [
+                    {
+                        "molecule_index": 0,
+                        "field": "resolved_smiles",
+                        "value": value,
+                        "reason": "Structure visible in Scheme 2.",
+                        "pdf_locator": {"page": 1, "figure_label": "Scheme 2"},
+                    }
+                ],
+            },
+        )
+
+    assert snapshot(project) == before
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "C",
+        "CCO",
+        "c1ccccc1",
+        "C1CCCCC1",
+        "C/C=C\\C",
+        "[NH4+]",
+        "C.C",
+    ],
+)
+def test_direct_resolved_smiles_accepts_common_complete_structures(
+    tmp_path: Path, value: str
+) -> None:
+    project = _project_with_molecules(
+        tmp_path, [_molecule("mol-a", expanded="CO")]
+    )
+    version_token = chemical_paper_projection(project)["studies"][0]["version_token"]
+
+    correct_chemical_paper_field(
+        project,
+        study_id="scholarly-a",
+        molecule_index=0,
+        field="resolved_smiles",
+        value=value,
+        actor=ACTOR,
+        reason="Checked against Scheme 2.",
+        pdf_locator={"page": 1, "figure_label": "Scheme 2"},
+        version_token=version_token,
+    )
+
+    assert load_chemical_paper_state(project, "scholarly-a")["field_corrections"][-1][
+        "value"
+    ] == value
+
+
+@pytest.mark.parametrize("tamper", ["value", "locator"])
+def test_load_revalidates_correction_value_and_bound_import_page(
+    tmp_path: Path, tamper: str
+) -> None:
+    project = _project_with_molecules(
+        tmp_path, [_molecule("mol-a", expanded="CO")]
+    )
+    version_token = chemical_paper_projection(project)["studies"][0]["version_token"]
+    correct_chemical_paper_field(
+        project,
+        study_id="scholarly-a",
+        molecule_index=0,
+        field="resolved_smiles",
+        value="CN",
+        actor=ACTOR,
+        reason="Checked against Scheme 2.",
+        pdf_locator={"page": 1, "figure_label": "Scheme 2"},
+        version_token=version_token,
+    )
+
+    path = project / "01_evidence/chemical_paper/scholarly-a/state.json"
+    state = json.loads(path.read_text(encoding="utf-8"))
+    correction = state["field_corrections"][-1]
+    if tamper == "value":
+        correction["value"] = "C("
+    else:
+        correction["pdf_locator"]["page"] = 2
+    correction["event_digest"] = canonical_digest(
+        {key: value for key, value in correction.items() if key != "event_digest"}
+    )
+    state["field_correction_head_digest"] = correction["event_digest"]
+    state["state_digest"] = canonical_digest(
+        {key: value for key, value in state.items() if key != "state_digest"}
+    )
+    path.write_text(json.dumps(state, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ChemicalPaperError, match="CHEMICAL_PAPER_STATE_INVALID"):
+        load_chemical_paper_state(project, "scholarly-a")
+
+
+def test_import_history_uses_prior_chain_not_sorted_mapping_order(tmp_path: Path) -> None:
+    project = _project_with_molecules(
+        tmp_path, [_molecule("mol-a", expanded="CO")]
+    )
+    source_sha = load_source_truth_bundle(project, "scholarly-a")["sources"][0][
+        "pdf"
+    ]["sha256"]
+    import_chemical_paper(
+        project,
+        "scholarly-a",
+        source_sha,
+        write_chemical_zip(
+            tmp_path / "chemical-second.zip",
+            pages=1,
+            molecules=[_molecule("mol-b", expanded="CC")],
+        ),
+        ACTOR,
+    )
+
+    path = project / "01_evidence/chemical_paper/scholarly-a/state.json"
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state["imports"] = dict(reversed(list(state["imports"].items())))
+    path.write_text(json.dumps(state, sort_keys=False) + "\n", encoding="utf-8")
+
+    loaded = load_chemical_paper_state(project, "scholarly-a")
+    assert loaded["molecules"][0]["molecule_id"] == "mol-b"
+
+
+def test_manuscript_binding_uses_resolved_completion_counters_only(
+    tmp_path: Path,
+) -> None:
+    project = _project_with_molecules(
+        tmp_path, [_molecule("mol-a", expanded="", name="")]
+    )
+
+    summary = chemical_paper_manuscript_bindings(project)["chemical_paper_safe_summary"]
+
+    assert set(summary) == {
+        "schema_version",
+        "route",
+        "study_count",
+        "molecule_count",
+        "missing_name_count",
+        "missing_resolved_smiles_count",
+        "ai_authored_smiles_count",
+        "element_review_counts",
+        "reaction_data_status",
+    }
+    assert summary["missing_name_count"] == 1
+    assert summary["missing_resolved_smiles_count"] == 1
+    assert summary["ai_authored_smiles_count"] == 0
+    assert "unresolved_field_count" not in summary
 
 
 def test_import_rejects_invalid_resolved_smiles_syntax(tmp_path: Path) -> None:

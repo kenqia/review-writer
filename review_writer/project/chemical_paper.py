@@ -57,7 +57,6 @@ MAX_COMPRESSION_RATIO = 200.0
 NESTED_ARCHIVE_SUFFIXES = frozenset({".zip", ".7z", ".rar", ".tar", ".gz", ".bz2", ".xz"})
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _ID = re.compile(r"^(?!\.\.?$)(?!.*[/\\\x00\r\n])\S{1,240}$")
-_SMILES = re.compile(r"^[A-Za-z0-9@+\-\[\]()=#$\\/%.*:]+$")
 _SMILES_ORGANIC_ATOMS = frozenset({"B", "C", "N", "O", "P", "S", "F", "Cl", "Br", "I", "*"})
 _SMILES_AROMATIC_ATOMS = frozenset({"b", "c", "n", "o", "p", "s", "se", "as"})
 _SMILES_BONDS = frozenset("-=#:~/\\")
@@ -214,7 +213,7 @@ def _smiles_atom_end(value: str, index: int) -> int | None:
 
 
 def _valid_resolved_smiles(value: str) -> bool:
-    if not _SMILES.fullmatch(value) or not re.search(r"[A-Za-z]", value):
+    if not isinstance(value, str) or not value or value != value.strip():
         return False
     cursor = 0
     atom_count = 0
@@ -1692,7 +1691,7 @@ def chemical_paper_projection(project: Path) -> dict[str, Any]:
 
 
 def chemical_paper_manuscript_bindings(project: Path) -> dict[str, Any]:
-    """Return the exact frozen v1 manuscript provenance fields."""
+    """Return the exact frozen v2 manuscript provenance fields."""
     root = _project(project)
     try:
         study_ids = declared_study_ids(root)
@@ -1700,7 +1699,8 @@ def chemical_paper_manuscript_bindings(project: Path) -> dict[str, Any]:
         raise ChemicalPaperError(exc.code) from exc
     import_rows: list[dict[str, str]] = []
     molecule_count = 0
-    unresolved_field_count = 0
+    missing_name_count = 0
+    missing_resolved_smiles_count = 0
     review_counts = {state: 0 for state in ("not_reviewed", "confirmed", "corrected", "not_applicable")}
     for study_id in study_ids:
         if not _state_path(root, study_id).is_file():
@@ -1715,8 +1715,9 @@ def chemical_paper_manuscript_bindings(project: Path) -> dict[str, Any]:
         )
         molecule_count += len(state["molecules"])
         for molecule in state["molecules"]:
-            unresolved_field_count += sum(
-                _current_value(state, molecule, field) is None for field in FIELD_NAMES
+            missing_name_count += _current_value(state, molecule, "mol_idt") is None
+            missing_resolved_smiles_count += (
+                _current_value(state, molecule, "resolved_smiles") is None
             )
             review_state, _, _ = _current_element_review(state, molecule)
             review_counts[review_state] += 1
@@ -1728,7 +1729,9 @@ def chemical_paper_manuscript_bindings(project: Path) -> dict[str, Any]:
             "route": "chemical-paper-zip-only",
             "study_count": len(import_rows),
             "molecule_count": molecule_count,
-            "unresolved_field_count": unresolved_field_count,
+            "missing_name_count": missing_name_count,
+            "missing_resolved_smiles_count": missing_resolved_smiles_count,
+            "ai_authored_smiles_count": 0,
             "element_review_counts": review_counts,
             "reaction_data_status": "unavailable_not_provided",
         },

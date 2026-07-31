@@ -1867,7 +1867,7 @@ def test_source_truth_change_makes_chemical_state_stale(tmp_path: Path) -> None:
         load_chemical_paper_state(project, "study-1")
 
 
-def test_manuscript_bindings_use_exact_frozen_v1_shapes(tmp_path: Path) -> None:
+def test_manuscript_bindings_use_exact_frozen_v2_shapes(tmp_path: Path) -> None:
     from review_writer.project.chemical_paper import (
         chemical_paper_manuscript_bindings,
         import_chemical_paper,
@@ -1897,7 +1897,9 @@ def test_manuscript_bindings_use_exact_frozen_v1_shapes(tmp_path: Path) -> None:
         "route": "chemical-paper-zip-only",
         "study_count": 1,
         "molecule_count": 2,
-        "unresolved_field_count": 2,
+        "missing_name_count": 1,
+        "missing_resolved_smiles_count": 1,
+        "ai_authored_smiles_count": 0,
         "element_review_counts": {
             "not_reviewed": 2,
             "confirmed": 0,
