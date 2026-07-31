@@ -7,6 +7,7 @@ import json
 import os
 import re
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,15 @@ class SourceTruthError(ValueError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+@dataclass(frozen=True)
+class ProjectSourceIndex:
+    """One request's validated, whole-directory source lookup."""
+
+    project: Path
+    bundles_by_study: dict[str, dict[str, Any]]
+    bindings_by_source_id: dict[str, list[tuple[str, dict[str, Any]]]]
 
 
 def canonical_digest(value: object) -> str:
@@ -477,6 +487,21 @@ def declared_study_ids(project: Path) -> list[str]:
     return _declared_study_ids(project)
 
 
+def acquisition_receipt_digest(project: Path) -> str:
+    """Hash the exact safe acquisition receipt bytes for a commit boundary."""
+
+    project = project.resolve(strict=True)
+    path = _safe_file(
+        project,
+        "00_sources/acquisition_final_receipt.json",
+        "ACQUISITION_FINAL_RECEIPT_INVALID",
+    )
+    try:
+        return _sha256_file(path)
+    except OSError as exc:
+        raise SourceTruthError("ACQUISITION_FINAL_RECEIPT_INVALID") from exc
+
+
 def study_source_tier(project: Path, study_id: str) -> str:
     """Return the explicit core/background routing tier for one declared study."""
     project = project.resolve(strict=True)
@@ -495,14 +520,72 @@ def build_all_source_truth(project: Path) -> list[dict[str, object]]:
     return [build_source_truth_bundle(project, study_id) for study_id in _declared_study_ids(project)]
 
 
+def build_project_source_index(project: Path) -> ProjectSourceIndex:
+    """Build a fresh validated source index without retaining cross-request state."""
+
+    project = project.resolve(strict=True)
+    bundles_by_study: dict[str, dict[str, Any]] = {}
+    bindings_by_source_id: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+    root = project / SOURCE_TRUTH_ROOT
+    if root.is_dir() and not root.is_symlink():
+        for study_dir in sorted(root.iterdir()):
+            if not study_dir.is_dir() or study_dir.is_symlink():
+                continue
+            bundle = load_source_truth_bundle(project, study_dir.name)
+            if (
+                bundle.get("project_id") != project.name
+                or bundle.get("study_id") != study_dir.name
+            ):
+                raise SourceTruthError("SOURCE_TRUTH_IDENTITY_MISMATCH")
+            bundles_by_study[study_dir.name] = bundle
+            for row in bundle.get("sources", []):
+                if isinstance(row, dict) and isinstance(row.get("source_id"), str):
+                    bindings_by_source_id.setdefault(row["source_id"], []).append(
+                        (study_dir.name, row)
+                    )
+    return ProjectSourceIndex(
+        project=project,
+        bundles_by_study=bundles_by_study,
+        bindings_by_source_id=bindings_by_source_id,
+    )
+
+
+def project_source_binding(
+    project: Path,
+    source_id: str,
+    *,
+    source_index: ProjectSourceIndex | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """Resolve one globally unique source using the Dashboard route boundary."""
+    project = project.resolve(strict=True)
+    if not isinstance(source_id, str) or not source_id:
+        raise SourceTruthError("SOURCE_ID_NOT_FOUND")
+    index = source_index or build_project_source_index(project)
+    if index.project != project:
+        raise SourceTruthError("SOURCE_TRUTH_IDENTITY_MISMATCH")
+    matches = index.bindings_by_source_id.get(source_id, [])
+    if len(matches) != 1:
+        raise SourceTruthError("SOURCE_ID_NOT_FOUND")
+    return matches[0]
+
+
 def source_truth_asset(
     project: Path,
     study_id: str,
     source_id: str,
     kind: str,
+    *,
+    source_index: ProjectSourceIndex | None = None,
 ) -> Path:
     project = project.resolve(strict=True)
-    bundle = load_source_truth_bundle(project, study_id)
+    if source_index is None:
+        bundle = load_source_truth_bundle(project, study_id)
+    else:
+        if source_index.project != project:
+            raise SourceTruthError("SOURCE_TRUTH_IDENTITY_MISMATCH")
+        bundle = source_index.bundles_by_study.get(study_id)
+        if bundle is None:
+            raise SourceTruthError("SOURCE_TRUTH_MISSING")
     sources = [source for source in bundle["sources"] if source.get("source_id") == source_id]
     if len(sources) != 1:
         raise SourceTruthError("SOURCE_ID_NOT_FOUND")

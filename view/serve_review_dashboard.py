@@ -112,12 +112,14 @@ from review_writer.project.source_truth import (  # noqa: E402
     SourceTruthError,
     canonical_digest,
     load_source_truth_bundle,
+    project_source_binding,
     source_truth_asset,
 )
 from review_writer.project.chemical_paper import (  # noqa: E402
     ChemicalPaperError,
     chemical_paper_projection,
     correct_chemical_paper_field,
+    resolve_chemical_paper_pdf_locator,
     review_chemical_paper_elements,
 )
 from review_writer.delivery.dual_parse_release import (  # noqa: E402
@@ -354,7 +356,34 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.handle_project_draft_get(project_id)
         elif parsed.path.startswith("/api/project/"):
             parts = parsed.path.strip("/").split("/")
-            if len(parts) == 6 and parts[3] == "source" and parts[5] in {"pdf", "pdf-page", "parsed-markdown"}:
+            if (
+                len(parts) == 7
+                and parts[3:5] == ["chemical-paper", "source"]
+                and parts[6] == "pdf-page"
+            ):
+                query = parse_qs(parsed.query, keep_blank_values=True)
+                page_values = query.get("page", [])
+                binding_values = query.get("binding", [])
+                if (
+                    set(query) != {"page", "binding"}
+                    or len(page_values) != 1
+                    or not re.fullmatch(r"[1-9][0-9]*", page_values[0])
+                    or len(binding_values) != 1
+                    or not re.fullmatch(
+                        r"cpb1\.[A-Za-z0-9_-]{43}",
+                        binding_values[0],
+                    )
+                ):
+                    self.send_error(HTTPStatus.BAD_REQUEST, "PDF page is invalid")
+                    return
+                self.handle_project_parse_asset_get(
+                    unquote(parts[2]),
+                    unquote(parts[5]),
+                    "pdf-page",
+                    page=page_values[0],
+                    binding=binding_values[0],
+                )
+            elif len(parts) == 6 and parts[3] == "source" and parts[5] in {"pdf", "pdf-page", "parsed-markdown"}:
                 query = parse_qs(parsed.query, keep_blank_values=True)
                 page: str | None = None
                 if parts[5] == "pdf-page":
@@ -1121,23 +1150,37 @@ class DashboardHandler(BaseHTTPRequestHandler):
         kind: str,
         *,
         page: str | None = None,
+        binding: str | None = None,
     ) -> None:
         try:
             project = project_dir(self.review_root, project_id)
-            path = project_parse_source_asset(
-                project,
-                source_id,
-                "pdf" if kind == "pdf-page" else kind,
-            )
-        except (OSError, ParseQualityError, SourceTruthError, ValueError):
+            bound_page_count: int | None = None
+            if kind == "pdf-page" and binding is not None:
+                descriptor = resolve_chemical_paper_pdf_locator(
+                    project,
+                    source_id,
+                    binding,
+                )
+                path = descriptor.asset_path
+                bound_page_count = descriptor.page_count
+            else:
+                path = project_parse_source_asset(
+                    project,
+                    source_id,
+                    "pdf" if kind == "pdf-page" else kind,
+                )
+        except (ChemicalPaperError, OSError, ParseQualityError, SourceTruthError, ValueError):
             self.send_error(HTTPStatus.NOT_FOUND, "source asset is unavailable")
             return
         if kind == "pdf-page":
-            try:
-                page_count = project_parse_source_page_count(project, source_id)
-            except SourceTruthError:
-                self.send_error(HTTPStatus.NOT_FOUND, "source asset is unavailable")
-                return
+            if bound_page_count is None:
+                try:
+                    page_count = project_parse_source_page_count(project, source_id)
+                except SourceTruthError:
+                    self.send_error(HTTPStatus.NOT_FOUND, "source asset is unavailable")
+                    return
+            else:
+                page_count = bound_page_count
             page_limit = str(page_count)
             if page is None or len(page) > len(page_limit) or (
                 len(page) == len(page_limit) and page > page_limit
@@ -3402,40 +3445,16 @@ def write_project_parse_quality_decision(
 def project_parse_source_asset(project: Path, source_id: str, kind: str) -> Path:
     if not source_id or kind not in {"pdf", "parsed-markdown"}:
         raise SourceTruthError("SOURCE_ASSET_KIND_INVALID")
-    root = project / SOURCE_TRUTH_ROOT
-    matches: list[str] = []
-    if root.is_dir() and not root.is_symlink():
-        for study_dir in sorted(root.iterdir()):
-            if not study_dir.is_dir() or study_dir.is_symlink():
-                continue
-            bundle = load_source_truth_bundle(project, study_dir.name)
-            if any(
-                isinstance(row, dict) and row.get("source_id") == source_id
-                for row in bundle.get("sources", [])
-            ):
-                matches.append(study_dir.name)
-    if len(matches) != 1:
-        raise SourceTruthError("SOURCE_ID_NOT_FOUND")
-    return source_truth_asset(project, matches[0], source_id, kind)
+    study_id, _ = project_source_binding(project, source_id)
+    return source_truth_asset(project, study_id, source_id, kind)
 
 
 def project_parse_source_page_count(project: Path, source_id: str) -> int:
-    root = project / SOURCE_TRUTH_ROOT
-    matches: list[int] = []
-    if root.is_dir() and not root.is_symlink():
-        for study_dir in sorted(root.iterdir()):
-            if not study_dir.is_dir() or study_dir.is_symlink():
-                continue
-            bundle = load_source_truth_bundle(project, study_dir.name)
-            for row in bundle.get("sources", []):
-                if isinstance(row, dict) and row.get("source_id") == source_id:
-                    page_count = row.get("page_count")
-                    if not isinstance(page_count, int) or isinstance(page_count, bool) or page_count < 1:
-                        raise SourceTruthError("SOURCE_PAGE_COUNT_INVALID")
-                    matches.append(page_count)
-    if len(matches) != 1:
-        raise SourceTruthError("SOURCE_ID_NOT_FOUND")
-    return matches[0]
+    _, source = project_source_binding(project, source_id)
+    page_count = source.get("page_count")
+    if not isinstance(page_count, int) or isinstance(page_count, bool) or page_count < 1:
+        raise SourceTruthError("SOURCE_PAGE_COUNT_INVALID")
+    return page_count
 
 
 def render_pdf_page(path: Path, page: int) -> bytes:

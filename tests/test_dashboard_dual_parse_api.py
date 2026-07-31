@@ -3,11 +3,16 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
+from review_writer.project.chemical_paper import import_chemical_paper
+from review_writer.project.source_truth import canonical_digest
 from test_chemical_paper_import import (
+    ACTOR,
     PDF_SHA,
+    replace_source_pdf_binding,
     source_truth_project,
     v2000,
     write_chemical_zip,
@@ -221,6 +226,333 @@ def test_post_confirm_http_projects_bound_import_as_researcher_review_not_curren
         str(project),
     ):
         assert forbidden not in encoded
+
+
+def test_first_smiles_completion_locator_serves_the_bound_original_pdf_page(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    review_root = tmp_path / "review-root"
+    project = dual_project(review_root, chemical=False)
+    archive = write_chemical_zip(
+        tmp_path / "chemical.zip",
+        pages=1,
+        molecules=[
+            {
+                "mol_id": "mol-a",
+                "page_idx": 0,
+                "bbox_normalized": [0.1, 0.2, 0.3, 0.4],
+                "smiles_expanded": "",
+                "smiles_unexpanded": "",
+                "mol_idt": "",
+                "mol_block": v2000(),
+            }
+        ],
+    )
+    status, preflight = _post_zip(
+        review_root,
+        archive,
+        project_id=project.name,
+        study_id="scholarly-a",
+    )
+    assert status == 200
+    status, _ = _post_json(
+        review_root,
+        "chemical-paper/confirm",
+        {
+            "study_id": "scholarly-a",
+            "preflight_token": preflight["preflight_token"],
+            "actor_type": "simulated_researcher_agent",
+            "actor_label": "simulated_researcher",
+        },
+        project_id=project.name,
+    )
+    assert status == 200
+
+    status, _, body = _http_request(
+        review_root,
+        (
+            f"GET /api/project/{project.name}/dual-parse HTTP/1.1\r\n"
+            "Host: localhost\r\n\r\n"
+        ).encode("ascii"),
+    )
+    assert status == 200
+    projection = json.loads(body)
+    item = next(
+        row
+        for row in projection["completion_queue"]
+        if row["field"] == "smiles_expanded"
+    )
+    locator = item["pdf_page_url"]
+    assert locator.startswith(
+        f"/api/project/{project.name}/chemical-paper/source/"
+        "stud-a/pdf-page?page=1&binding=cpb1."
+    )
+    assert all(
+        row["pdf_page_url"] == locator for row in projection["completion_queue"]
+    )
+    assert "/parse-quality/" not in json.dumps(projection, sort_keys=True)
+
+    bound_pdf = project / "00_sources/papers/paper-a.pdf"
+    rendered = b"\x89PNG\r\n\x1a\nbound-original-pdf-page"
+    seen: list[tuple[Path, int]] = []
+
+    def render(path: Path, page: int) -> bytes:
+        seen.append((path, page))
+        return rendered
+
+    monkeypatch.setattr(dashboard, "render_pdf_page", render)
+    status, headers, body = _http_request(
+        review_root,
+        f"GET {locator} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode("ascii"),
+    )
+
+    assert status == 200
+    assert headers["Content-Type"] == "image/png"
+    assert body == rendered
+    assert seen == [(bound_pdf, 1)]
+
+
+def test_chemical_locator_from_binding_a_never_serves_rebound_pdf_b(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    review_root = tmp_path / "review-root"
+    project = source_truth_project(review_root / "review-projects")
+    import_chemical_paper(
+        project,
+        "study-1",
+        PDF_SHA,
+        write_chemical_zip(tmp_path / "chemical.zip"),
+        ACTOR,
+    )
+    status, _, body = _http_request(
+        review_root,
+        (
+            f"GET /api/project/{project.name}/chemical-paper HTTP/1.1\r\n"
+            "Host: localhost\r\n\r\n"
+        ).encode("ascii"),
+    )
+    assert status == 200
+    projection = json.loads(body)
+    locator = projection["studies"][0]["molecules"][0]["pdf_page_url"]
+
+    replace_source_pdf_binding(
+        project,
+        "study-1",
+        b"%PDF-1.4\nbinding-b\n%%EOF\n",
+    )
+    rendered: list[tuple[Path, int]] = []
+
+    def render(path: Path, page: int) -> bytes:
+        rendered.append((path, page))
+        return b"unexpected binding B"
+
+    monkeypatch.setattr(dashboard, "render_pdf_page", render)
+    status, _, _ = _http_request(
+        review_root,
+        f"GET {locator} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode("ascii"),
+    )
+
+    assert status == 404
+    assert rendered == []
+
+
+@pytest.mark.parametrize("binding_case", ("missing", "empty", "repeated"))
+def test_chemical_locator_never_downgrades_to_generic_route_without_one_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    binding_case: str,
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    review_root = tmp_path / "review-root"
+    project = source_truth_project(review_root / "review-projects")
+    import_chemical_paper(
+        project,
+        "study-1",
+        PDF_SHA,
+        write_chemical_zip(tmp_path / "chemical.zip"),
+        ACTOR,
+    )
+    status, _, body = _http_request(
+        review_root,
+        (
+            f"GET /api/project/{project.name}/chemical-paper HTTP/1.1\r\n"
+            "Host: localhost\r\n\r\n"
+        ).encode("ascii"),
+    )
+    assert status == 200
+    locator = json.loads(body)["studies"][0]["molecules"][0]["pdf_page_url"]
+    parsed = urlsplit(locator)
+    assert "/chemical-paper/source/" in parsed.path
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    assert set(query) == {"page", "binding"}
+    assert len(query["binding"]) == 1
+    if binding_case == "missing":
+        raced_locator = f"{parsed.path}?page={query['page'][0]}"
+    elif binding_case == "empty":
+        raced_locator = f"{parsed.path}?page={query['page'][0]}&binding="
+    else:
+        token = query["binding"][0]
+        raced_locator = (
+            f"{parsed.path}?page={query['page'][0]}"
+            f"&binding={token}&binding={token}"
+        )
+
+    replace_source_pdf_binding(
+        project,
+        "study-1",
+        b"%PDF-1.4\nbinding-b\n%%EOF\n",
+    )
+    rendered: list[tuple[Path, int]] = []
+
+    def render(path: Path, page: int) -> bytes:
+        rendered.append((path, page))
+        return b"unexpected generic fallback"
+
+    monkeypatch.setattr(dashboard, "render_pdf_page", render)
+    status, _, _ = _http_request(
+        review_root,
+        f"GET {raced_locator} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode("ascii"),
+    )
+
+    assert status in {400, 404}
+    assert rendered == []
+
+
+def test_dual_parse_route_returns_zero_locators_for_cross_study_source_collision(
+    tmp_path: Path,
+) -> None:
+    review_root = tmp_path / "review-root"
+    project = dual_project(review_root, chemical=False)
+    bundle_path = project / "01_evidence/source_truth/scholarly-a/bundle.json"
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    source = bundle["sources"][0]
+    import_chemical_paper(
+        project,
+        "scholarly-a",
+        source["pdf"]["sha256"],
+        write_chemical_zip(
+            tmp_path / "chemical.zip",
+            pages=1,
+            molecules=[
+                {
+                    "mol_id": "mol-a",
+                    "page_idx": 0,
+                    "bbox_normalized": [0.1, 0.2, 0.3, 0.4],
+                    "smiles_expanded": "",
+                    "smiles_unexpanded": "",
+                    "mol_idt": "",
+                    "mol_block": v2000(),
+                }
+            ],
+        ),
+        ACTOR,
+    )
+    second_body = {
+        key: value for key, value in bundle.items() if key != "bundle_digest"
+    }
+    second_body["study_id"] = "scholarly-b"
+    second_body["study_identity"] = {
+        "doi": "10.1000/example-b",
+        "title": "Example B",
+    }
+    second_path = project / "01_evidence/source_truth/scholarly-b/bundle.json"
+    second_path.parent.mkdir(parents=True)
+    second_path.write_text(
+        json.dumps(
+            {**second_body, "bundle_digest": canonical_digest(second_body)}
+        ),
+        encoding="utf-8",
+    )
+    receipt_path = project / "00_sources/acquisition_final_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["studies"].append({"study_id": "scholarly-b"})
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    status, _, body = _http_request(
+        review_root,
+        (
+            f"GET /api/project/{project.name}/dual-parse HTTP/1.1\r\n"
+            "Host: localhost\r\n\r\n"
+        ).encode("ascii"),
+    )
+
+    payload = json.loads(body)
+    assert status == 404
+    assert payload["error_code"] == "PROJECT_INVALID"
+    assert "pdf_page_url" not in json.dumps(payload, sort_keys=True)
+
+
+def test_dual_parse_route_returns_zero_locators_for_orphan_source_collision(
+    tmp_path: Path,
+) -> None:
+    review_root = tmp_path / "review-root"
+    project = dual_project(review_root, chemical=False)
+    bundle_path = project / "01_evidence/source_truth/scholarly-a/bundle.json"
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    source = bundle["sources"][0]
+    import_chemical_paper(
+        project,
+        "scholarly-a",
+        source["pdf"]["sha256"],
+        write_chemical_zip(
+            tmp_path / "chemical.zip",
+            pages=1,
+            molecules=[
+                {
+                    "mol_id": "mol-a",
+                    "page_idx": 0,
+                    "bbox_normalized": [0.1, 0.2, 0.3, 0.4],
+                    "smiles_expanded": "",
+                    "smiles_unexpanded": "",
+                    "mol_idt": "",
+                    "mol_block": v2000(),
+                }
+            ],
+        ),
+        ACTOR,
+    )
+    orphan_body = {
+        key: value for key, value in bundle.items() if key != "bundle_digest"
+    }
+    orphan_body["study_id"] = "orphan-study"
+    orphan_body["study_identity"] = {
+        "doi": "10.1000/orphan",
+        "title": "Undeclared orphan fixture",
+    }
+    orphan_path = project / "01_evidence/source_truth/orphan-study/bundle.json"
+    orphan_path.parent.mkdir(parents=True)
+    orphan_path.write_text(
+        json.dumps(
+            {**orphan_body, "bundle_digest": canonical_digest(orphan_body)}
+        ),
+        encoding="utf-8",
+    )
+
+    receipt = json.loads(
+        (project / "00_sources/acquisition_final_receipt.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert [row["study_id"] for row in receipt["studies"]] == ["scholarly-a"]
+    status, _, body = _http_request(
+        review_root,
+        (
+            f"GET /api/project/{project.name}/dual-parse HTTP/1.1\r\n"
+            "Host: localhost\r\n\r\n"
+        ).encode("ascii"),
+    )
+
+    payload = json.loads(body)
+    assert status == 404
+    assert payload["error_code"] == "PROJECT_INVALID"
+    assert "pdf_page_url" not in json.dumps(payload, sort_keys=True)
 
 
 def test_confirm_revalidates_records_actor_and_rejects_second_confirm(
