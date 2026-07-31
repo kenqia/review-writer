@@ -71,10 +71,12 @@ def test_checkpoints_cover_completion_reconciliation_and_scientific_decisions() 
         blocks[4],
         "Chemical Completion",
         "name or paper-local label",
-        "expanded and unexpanded SMILES",
+        "one authoritative `resolved_smiles`",
+        "must not become two separate Completion inputs",
         "PDF locator",
         "must not guess",
     )
+    assert "both expanded and unexpanded SMILES" not in blocks[4]
     assert_contains(
         blocks[5],
         "Reconciliation",

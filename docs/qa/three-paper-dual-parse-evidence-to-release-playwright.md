@@ -159,7 +159,8 @@ visible evidence and screenshots exist.
    or molecule internals.
 4. Open the Chemical Completion queue. For every missing field, use visible
    original-PDF or structure evidence to supply a non-empty name or paper-local label
-   and both expanded and unexpanded SMILES, with reason and PDF locator.
+   and one authoritative `resolved_smiles`, with reason and PDF locator. Expanded
+   and unexpanded Chemical values remain visible candidates/provenance; they must not become two separate Completion inputs or two separate release gates.
    Save through visible controls and verify actor, time, history, zero missing
    counts, and current gate. The Researcher must not guess; an unresolved
    value remains blocked and becomes a finding instead of fabricated input.
@@ -328,8 +329,8 @@ Record fresh bootstrap isolation and prove no regression-v1 decisions,
 semantic results, manuscript, release, or browser state entered the project.
 Audit 3 Generic bindings and 3 Chemical bindings against the three current
 PDF/study identities, plus pages `6/11/11`. Verify 309 molecules in stable
-source order; all have a name/local label and both SMILES forms; researcher
-completion events have reason, locator, actor, time, and current version;
+source order; all have a name/local label and one `resolved_smiles`; researcher
+completion events for missing resolved values have reason, locator, actor, time, and current version;
 reaction absence remains `unavailable_not_provided`.
 
 Verify current Completion and Reconciliation, object-level decisions, and

@@ -187,7 +187,7 @@ Chemical Paper ZIP 负责：
 - molecule array 的稳定源顺序；
 - MolBlock；
 - 来源名称或论文局部标签；
-- expanded/unexpanded SMILES；
+- expanded/unexpanded SMILES 候选；
 - page/bbox 与化学版面候选；
 - backend/version、文件 inventory、缺失字段和 immutable import history。
 
@@ -225,15 +225,17 @@ Chemical Paper 输出是候选化学数据，不是科学真源，也不自动�
 Core study 进入 Paper Evidence 前必须满足：
 
 - 每个 molecule 有非空的来源名称或论文局部标签；
-- 每个 molecule 有流程可用的 SMILES；
-- 缺失 SMILES 已由研究者依据原始 PDF/结构图补录；
+- 每个 molecule 有且只有一个流程权威字段 `resolved_smiles`；
+- Chemical Paper 的 `smiles_expanded` 与 `smiles_unexpanded` 只保留为候选和来源记录，不再分别成为两个必填门禁；
+- `smiles_expanded` 非空时作为默认 resolved 候选，只有它缺失时才回退到 `smiles_unexpanded`；两者差异必须显示为候选差异/限制，但不制造双字段补录任务；
+- 两个候选都缺失时，研究者依据原始 PDF/结构定位只补录一次 `resolved_smiles`；
 - 补录包含 actor、时间、理由、PDF 页码/图号和 bound version；
 - 无 stale correction；
-- 无名称/SMILES 的静默推断。
+- 无名称/`resolved_smiles` 的静默推断。
 
 论文局部标签如 `3a`、`compound 7`、`intermediate A` 可作为名称，不要求系统生成 IUPAC 名称。
 
-已有 SMILES 不需要逐个人工确认。只有下列情况升级人工复核：
+已有 resolved 候选不需要逐个人工确认。只有下列情况升级人工复核：
 
 - 被 Paper Evidence、Synthesis Claim 或正文实际使用；
 - Generic 与 Chemical 层冲突；
@@ -288,9 +290,9 @@ PDF 验证通过后：
 
 ### 8.4 Chemical Completion
 
-工作台集中列出缺失名称/局部标签和 SMILES。研究者必须在看到原始 PDF/结构定位后补录所有缺失 SMILES。AI 可以定位、提示缺口和检查格式，但不得填写或批准具体值。
+工作台集中列出缺失名称/局部标签和单一 `resolved_smiles`。研究者必须在看到原始 PDF/结构定位后只补录一个流程 SMILES；不得要求分别填写 expanded/unexpanded。AI 可以定位、提示缺口和检查格式，但不得填写或批准具体值。
 
-Core study 只有在全部分子具备名称/标签和 SMILES 后才能进入 Paper Evidence。
+Core study 只有在全部分子具备名称/标签和 `resolved_smiles` 后才能进入 Paper Evidence。
 
 ### 8.5 Parse 与 Reconciliation Review
 
@@ -434,8 +436,8 @@ Core study 停在 Chemical import；background study 不受全局阻塞。Generi
 
 ### 12.3 SMILES 缺失
 
-Core study 停在 Chemical Completion，直到研究者补录所有缺失 SMILES。不得由 AI 或规则自动填充。
-若原始 PDF、结构图和其他已验证来源仍不足以确定 SMILES，则保持 blocked 并报告来源缺口；不得为完成门禁而推断或编造。
+Core study 停在 Chemical Completion，直到每个 molecule 都有单一 `resolved_smiles`。已有 expanded 候选优先、unexpanded 仅作缺失回退；两种原始候选不再分别计缺失。两个候选都缺失时必须由研究者补录一次，不得由 AI 或规则自动生成。
+若原始 PDF、结构图和其他已验证来源仍不足以确定 `resolved_smiles`，则保持 blocked 并报告来源缺口；不得为完成门禁而推断或编造。
 
 ### 12.4 双层冲突
 
@@ -500,8 +502,8 @@ Fresh bootstrap 至少证明：
 - pages：6/11/11；
 - molecules：125/109/75，共 309；
 - 每个 molecule 都有来源名称或论文局部标签；
-- 所有 molecule 都有 SMILES；
-- 缺失 SMILES 全部由 Simulated Researcher Agent 通过 UI 补录并留有 PDF locator/history；
+- 所有 molecule 都有单一 `resolved_smiles`；
+- 两个 Chemical SMILES 候选都缺失时，由 Simulated Researcher Agent 通过 UI 只补录一次并留有 PDF locator/history；
 - reaction status 全部如实显示；
 - Paper Evidence、科学批准和下游对象初始为零；
 - Source Figure 只来自真实 caption binding；
@@ -573,8 +575,8 @@ Researcher Agent 在 checkpoint 10 和 15 分别返回：
 除既有 Hard Fail 外，新增或明确以下拒绝条件：
 
 1. Core study 缺 Generic current parse 或 Chemical current import却生成 Evidence；
-2. Core molecule 缺名称/局部标签或 SMILES 却通过 Chemical Completion；
-3. AI 自动填写或批准缺失 SMILES；
+2. Core molecule 缺名称/局部标签或 `resolved_smiles` 却通过 Chemical Completion；
+3. AI 自动填写或批准缺失 `resolved_smiles`；
 4. Generic/Chemical 冲突未经 PDF 仲裁却被下游消费；
 5. 两条 lane 绑定到不同 PDF 或 study；
 6. stale parse、stale Chemical state、旧 result 或跨 study Evidence 进入 package；
@@ -675,7 +677,7 @@ Researcher Agent 在 checkpoint 10 和 15 分别返回：
 
 1. Generic MinerU 与 Chemical Paper 双层路线在真实项目中可用；
 2. Core/background 强制范围符合本设计；
-3. 所有 core molecules 有名称/局部标签和 SMILES，缺失 SMILES 由研究者补录；
+3. 所有 core molecules 有名称/局部标签和单一 `resolved_smiles`，缺失值由研究者一次补录；
 4. 双层冲突由 PDF 仲裁并局部失效；
 5. 独立 Agent 完成全部产品内人工操作；
 6. 三篇全流程从 fresh project 完整跑通；
