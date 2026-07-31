@@ -152,6 +152,32 @@ def snapshot(project: Path) -> dict[str, bytes]:
     }
 
 
+def replace_source_pdf_binding(
+    project: Path,
+    study_id: str,
+    payload: bytes,
+) -> None:
+    bundle_path = project / f"01_evidence/source_truth/{study_id}/bundle.json"
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    body = {
+        key: copy.deepcopy(value)
+        for key, value in bundle.items()
+        if key != "bundle_digest"
+    }
+    source = next(
+        row for row in body["sources"] if row.get("document_role") == "MAIN"
+    )
+    pdf_path = project / source["pdf"]["path"]
+    pdf_path.write_bytes(payload)
+    source["pdf"]["sha256"] = hashlib.sha256(payload).hexdigest()
+    source["pdf"]["size_bytes"] = len(payload)
+    body["warnings"] = ["source binding changed for race fixture"]
+    bundle_path.write_text(
+        json.dumps({**body, "bundle_digest": canonical_digest(body)}),
+        encoding="utf-8",
+    )
+
+
 def expand_source_truth_studies(project: Path, study_count: int) -> list[str]:
     study_ids = [f"study-{index}" for index in range(1, study_count + 1)]
     base_path = project / "01_evidence/source_truth/study-1/bundle.json"
@@ -221,7 +247,9 @@ def test_import_binds_pdf_and_preserves_explicit_unknowns_with_safe_projection(t
     assert projection["studies"][0]["reaction_data_status"] == "unavailable_not_provided"
     molecule_projection = projection["studies"][0]["molecules"][1]
     assert molecule_projection["molecule_index"] == 1
-    assert molecule_projection["pdf_page_url"].endswith("/pdf-page?page=2")
+    assert molecule_projection["pdf_page_url"].startswith(
+        "/api/project/project/source/source-main/pdf-page?page=2&binding=cpb1."
+    )
     assert molecule_projection["missing_fields"] == [
         "mol_idt",
         "smiles_expanded",
@@ -301,7 +329,10 @@ def test_safe_projection_routes_three_studies_to_their_quoted_bound_sources(
         for study in projection["studies"]
     }
 
-    assert observed == expected
+    assert all(
+        observed[study_id].startswith(f"{expected_url}&binding=cpb1.")
+        for study_id, expected_url in expected.items()
+    )
     encoded = json.dumps(projection, ensure_ascii=False, sort_keys=True)
     assert "/parse-quality/" not in encoded
     for forbidden in (
@@ -379,6 +410,47 @@ def test_safe_projection_builds_a_fresh_linear_source_index_per_request(
     ):
         chemical_paper_projection(project)
     assert first_request_loads < load_count <= first_request_loads + study_count + 2
+
+
+def test_safe_projection_never_combines_indexed_binding_a_with_asset_b(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import review_writer.project.chemical_paper as chemical_paper
+    from review_writer.project.chemical_paper import ChemicalPaperError
+
+    project = source_truth_project(tmp_path)
+    chemical_paper.import_chemical_paper(
+        project,
+        "study-1",
+        PDF_SHA,
+        write_chemical_zip(tmp_path / "chemical.zip"),
+        ACTOR,
+    )
+    real_binding = chemical_paper.project_source_binding
+    switched = False
+
+    def switch_after_indexed_binding(root: Path, source_id: str, **kwargs):
+        nonlocal switched
+        resolved = real_binding(root, source_id, **kwargs)
+        if kwargs.get("source_index") is not None and not switched:
+            replace_source_pdf_binding(
+                project,
+                "study-1",
+                b"%PDF-1.4\nbinding-b\n%%EOF\n",
+            )
+            switched = True
+        return resolved
+
+    monkeypatch.setattr(
+        chemical_paper,
+        "project_source_binding",
+        switch_after_indexed_binding,
+    )
+
+    with pytest.raises(ChemicalPaperError, match="SOURCE_ASSET_DRIFT"):
+        chemical_paper.chemical_paper_projection(project)
+    assert switched is True
 
 
 @pytest.mark.parametrize(
@@ -956,6 +1028,35 @@ def test_first_import_rejects_zip_path_replacement_without_mixed_lineage(
         )
 
     assert hashlib.sha256(original.read_bytes()).hexdigest() == replacement_sha256
+    assert not (
+        project / "01_evidence/chemical_paper/study-1/state.json"
+    ).exists()
+
+
+def test_first_import_rejects_symlink_zip_without_o_nofollow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import review_writer.project.chemical_paper as chemical_paper
+    from review_writer.project.chemical_paper import ChemicalPaperError
+
+    project = source_truth_project(tmp_path)
+    archive = write_chemical_zip(tmp_path / "outside.zip")
+    linked = tmp_path / "linked.zip"
+    linked.symlink_to(archive)
+    monkeypatch.delattr(chemical_paper.os, "O_NOFOLLOW", raising=False)
+    before = snapshot(project)
+
+    with pytest.raises(ChemicalPaperError, match="ZIP_INVALID"):
+        chemical_paper.import_chemical_paper(
+            project,
+            "study-1",
+            PDF_SHA,
+            linked,
+            ACTOR,
+        )
+
+    assert snapshot(project) == before
     assert not (
         project / "01_evidence/chemical_paper/study-1/state.json"
     ).exists()

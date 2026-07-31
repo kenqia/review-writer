@@ -117,6 +117,7 @@ from review_writer.project.source_truth import (  # noqa: E402
 )
 from review_writer.project.chemical_paper import (  # noqa: E402
     ChemicalPaperError,
+    chemical_paper_pdf_locator,
     chemical_paper_projection,
     correct_chemical_paper_field,
     review_chemical_paper_elements,
@@ -358,21 +359,35 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if len(parts) == 6 and parts[3] == "source" and parts[5] in {"pdf", "pdf-page", "parsed-markdown"}:
                 query = parse_qs(parsed.query, keep_blank_values=True)
                 page: str | None = None
+                binding: str | None = None
                 if parts[5] == "pdf-page":
                     values = query.get("page", [])
+                    binding_values = query.get("binding", [])
                     if (
-                        set(query) != {"page"}
+                        set(query) not in ({"page"}, {"page", "binding"})
                         or len(values) != 1
                         or not re.fullmatch(r"[1-9][0-9]*", values[0])
+                        or (
+                            "binding" in query
+                            and (
+                                len(binding_values) != 1
+                                or not re.fullmatch(
+                                    r"cpb1\.[A-Za-z0-9_-]{43}",
+                                    binding_values[0],
+                                )
+                            )
+                        )
                     ):
                         self.send_error(HTTPStatus.BAD_REQUEST, "PDF page is invalid")
                         return
                     page = values[0]
+                    binding = binding_values[0] if binding_values else None
                 self.handle_project_parse_asset_get(
                     unquote(parts[2]),
                     unquote(parts[4]),
                     unquote(parts[5]),
                     page=page,
+                    binding=binding,
                 )
             elif len(parts) == 4:
                 project_id = unquote(parts[2])
@@ -1122,23 +1137,35 @@ class DashboardHandler(BaseHTTPRequestHandler):
         kind: str,
         *,
         page: str | None = None,
+        binding: str | None = None,
     ) -> None:
         try:
             project = project_dir(self.review_root, project_id)
-            path = project_parse_source_asset(
-                project,
-                source_id,
-                "pdf" if kind == "pdf-page" else kind,
-            )
-        except (OSError, ParseQualityError, SourceTruthError, ValueError):
+            bound_page_count: int | None = None
+            if kind == "pdf-page" and binding is not None:
+                path, bound_page_count = chemical_paper_pdf_locator(
+                    project,
+                    source_id,
+                    binding,
+                )
+            else:
+                path = project_parse_source_asset(
+                    project,
+                    source_id,
+                    "pdf" if kind == "pdf-page" else kind,
+                )
+        except (ChemicalPaperError, OSError, ParseQualityError, SourceTruthError, ValueError):
             self.send_error(HTTPStatus.NOT_FOUND, "source asset is unavailable")
             return
         if kind == "pdf-page":
-            try:
-                page_count = project_parse_source_page_count(project, source_id)
-            except SourceTruthError:
-                self.send_error(HTTPStatus.NOT_FOUND, "source asset is unavailable")
-                return
+            if bound_page_count is None:
+                try:
+                    page_count = project_parse_source_page_count(project, source_id)
+                except SourceTruthError:
+                    self.send_error(HTTPStatus.NOT_FOUND, "source asset is unavailable")
+                    return
+            else:
+                page_count = bound_page_count
             page_limit = str(page_count)
             if page is None or len(page) > len(page_limit) or (
                 len(page) == len(page_limit) and page > page_limit

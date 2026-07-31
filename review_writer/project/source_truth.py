@@ -574,9 +574,18 @@ def source_truth_asset(
     study_id: str,
     source_id: str,
     kind: str,
+    *,
+    source_index: ProjectSourceIndex | None = None,
 ) -> Path:
     project = project.resolve(strict=True)
-    bundle = load_source_truth_bundle(project, study_id)
+    if source_index is None:
+        bundle = load_source_truth_bundle(project, study_id)
+    else:
+        if source_index.project != project:
+            raise SourceTruthError("SOURCE_TRUTH_IDENTITY_MISMATCH")
+        bundle = source_index.bundles_by_study.get(study_id)
+        if bundle is None:
+            raise SourceTruthError("SOURCE_TRUTH_MISSING")
     sources = [source for source in bundle["sources"] if source.get("source_id") == source_id]
     if len(sources) != 1:
         raise SourceTruthError("SOURCE_ID_NOT_FOUND")

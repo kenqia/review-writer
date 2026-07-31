@@ -11,6 +11,7 @@ from review_writer.project.source_truth import canonical_digest
 from test_chemical_paper_import import (
     ACTOR,
     PDF_SHA,
+    replace_source_pdf_binding,
     source_truth_project,
     v2000,
     write_chemical_zip,
@@ -284,7 +285,9 @@ def test_first_smiles_completion_locator_serves_the_bound_original_pdf_page(
         if row["field"] == "smiles_expanded"
     )
     locator = item["pdf_page_url"]
-    assert locator == f"/api/project/{project.name}/source/stud-a/pdf-page?page=1"
+    assert locator.startswith(
+        f"/api/project/{project.name}/source/stud-a/pdf-page?page=1&binding=cpb1."
+    )
     assert all(
         row["pdf_page_url"] == locator for row in projection["completion_queue"]
     )
@@ -308,6 +311,53 @@ def test_first_smiles_completion_locator_serves_the_bound_original_pdf_page(
     assert headers["Content-Type"] == "image/png"
     assert body == rendered
     assert seen == [(bound_pdf, 1)]
+
+
+def test_chemical_locator_from_binding_a_never_serves_rebound_pdf_b(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    review_root = tmp_path / "review-root"
+    project = source_truth_project(review_root / "review-projects")
+    import_chemical_paper(
+        project,
+        "study-1",
+        PDF_SHA,
+        write_chemical_zip(tmp_path / "chemical.zip"),
+        ACTOR,
+    )
+    status, _, body = _http_request(
+        review_root,
+        (
+            f"GET /api/project/{project.name}/chemical-paper HTTP/1.1\r\n"
+            "Host: localhost\r\n\r\n"
+        ).encode("ascii"),
+    )
+    assert status == 200
+    projection = json.loads(body)
+    locator = projection["studies"][0]["molecules"][0]["pdf_page_url"]
+
+    replace_source_pdf_binding(
+        project,
+        "study-1",
+        b"%PDF-1.4\nbinding-b\n%%EOF\n",
+    )
+    rendered: list[tuple[Path, int]] = []
+
+    def render(path: Path, page: int) -> bytes:
+        rendered.append((path, page))
+        return b"unexpected binding B"
+
+    monkeypatch.setattr(dashboard, "render_pdf_page", render)
+    status, _, _ = _http_request(
+        review_root,
+        f"GET {locator} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode("ascii"),
+    )
+
+    assert status == 404
+    assert rendered == []
 
 
 def test_dual_parse_route_returns_zero_locators_for_cross_study_source_collision(

@@ -13,6 +13,7 @@ import io
 import json
 import os
 import re
+import secrets
 import stat
 import tempfile
 import unicodedata
@@ -273,7 +274,13 @@ def load_chemical_paper_state(
     ):
         raise ChemicalPaperError("CHEMICAL_PAPER_SOURCE_TRUTH_STALE")
     try:
-        source_truth_asset(root, study_id, state["source_id"], "pdf")
+        source_truth_asset(
+            root,
+            study_id,
+            state["source_id"],
+            "pdf",
+            source_index=index,
+        )
     except SourceTruthError as exc:
         raise ChemicalPaperError(exc.code) from exc
     return state
@@ -308,6 +315,8 @@ def _safe_member_name(name: str) -> str:
 
 def _read_archive_snapshot(path: Path) -> bytes:
     path = Path(path)
+    if path.is_symlink():
+        raise ChemicalPaperError("ZIP_INVALID")
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptor: int | None = None
     try:
@@ -719,6 +728,79 @@ def _current_element_review(state: dict[str, Any], molecule: dict[str, Any]) -> 
     return review_state, counts, digest
 
 
+def _source_locator_binding(
+    project_id: str,
+    study_id: str,
+    source_id: str,
+    bundle_digest: str,
+    pdf_sha256: str,
+) -> str:
+    digest = canonical_digest(
+        {
+            "project_id": project_id,
+            "study_id": study_id,
+            "source_id": source_id,
+            "source_truth_bundle_digest": bundle_digest,
+            "source_pdf_sha256": pdf_sha256,
+        }
+    )
+    encoded = base64.urlsafe_b64encode(bytes.fromhex(digest)).decode("ascii").rstrip("=")
+    return f"cpb1.{encoded}"
+
+
+def chemical_paper_pdf_locator(
+    project: Path,
+    source_id: str,
+    binding: str,
+) -> tuple[Path, int]:
+    """Resolve a Chemical PDF locator only for its exact current source binding."""
+
+    root = _project(project)
+    source_id = _identifier(source_id, "SOURCE_ID_INVALID")
+    if not isinstance(binding, str) or not re.fullmatch(r"cpb1\.[A-Za-z0-9_-]{43}", binding):
+        raise ChemicalPaperError("CHEMICAL_PAPER_LOCATOR_INVALID")
+    try:
+        index = build_project_source_index(root)
+        study_id, source = project_source_binding(
+            root,
+            source_id,
+            source_index=index,
+        )
+        bundle = index.bundles_by_study[study_id]
+    except (KeyError, SourceTruthError) as exc:
+        raise ChemicalPaperError("STALE_CHEMICAL_PAPER_LOCATOR") from exc
+    pdf = source.get("pdf")
+    if (
+        source.get("document_role") != "MAIN"
+        or not isinstance(pdf, dict)
+        or not isinstance(pdf.get("sha256"), str)
+    ):
+        raise ChemicalPaperError("STALE_CHEMICAL_PAPER_LOCATOR")
+    expected = _source_locator_binding(
+        root.name,
+        study_id,
+        source_id,
+        str(bundle.get("bundle_digest")),
+        pdf["sha256"],
+    )
+    if not secrets.compare_digest(binding, expected):
+        raise ChemicalPaperError("STALE_CHEMICAL_PAPER_LOCATOR")
+    page_count = source.get("page_count")
+    if not isinstance(page_count, int) or isinstance(page_count, bool) or page_count < 1:
+        raise ChemicalPaperError("STALE_CHEMICAL_PAPER_LOCATOR")
+    try:
+        asset = source_truth_asset(
+            root,
+            study_id,
+            source_id,
+            "pdf",
+            source_index=index,
+        )
+    except SourceTruthError as exc:
+        raise ChemicalPaperError(exc.code) from exc
+    return asset, page_count
+
+
 def _require_mutation_binding(
     state: dict[str, Any], expected_version_token: str, bound_import_digest: str,
     molecule: dict[str, Any], bound_molecule_digest: str,
@@ -916,6 +998,13 @@ def _study_summary(state: dict[str, Any]) -> dict[str, Any]:
     unreviewed = 0
     molecules: list[dict[str, Any]] = []
     version_token = _version_token(state)
+    locator_binding = _source_locator_binding(
+        state["project_id"],
+        state["study_id"],
+        state["source_id"],
+        state["source_truth_bundle_digest"],
+        state["source_pdf_sha256"],
+    )
     for molecule_index, molecule in enumerate(state["molecules"]):
         values: dict[str, str | None] = {}
         for field in FIELD_NAMES:
@@ -955,6 +1044,7 @@ def _study_summary(state: dict[str, Any]) -> dict[str, Any]:
                 f"/api/project/{quote(state['project_id'], safe='')}/source/"
                 f"{quote(state['source_id'], safe='')}"
                 f"/pdf-page?page={molecule['page_index'] + 1}"
+                f"&binding={quote(locator_binding, safe='')}"
             ),
             "version_token": version_token,
             "history": safe_history,
