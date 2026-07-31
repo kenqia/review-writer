@@ -19,3 +19,12 @@ WSL test environment:
 - Prefer `TMPDIR=/tmp PYTHONDONTWRITEBYTECODE=1 python3 -m pytest ...` so pytest and `TemporaryDirectory` use native ext4 semantics instead of Windows DrvFS.
 - Add `-s` only when capture/tempdir fails, not as a default product workaround.
 - The `RequestsDependencyWarning` from the user shell is separate from pytest tempdir behavior; resolve it later in an isolated Python environment, not inside an active acceptance repair.
+
+Parallel session policy for future complete-loop work:
+
+- Use new Codex app sessions with one bounded role per session (Owner, independent spec/quality reviewer, QA Coordinator, or Integration Owner), each on an isolated worktree or an explicitly named existing worktree.
+- When the app route is available, select `gpt-5.6-luna` with `max` reasoning for these bounded sessions. The collaboration subagent API may expose a different model list; never claim Luna availability from that API alone.
+- Grant full local filesystem access only within the user-authorized WSL/project scope. Do not grant or infer remote write, push, deploy, token access, or destructive reset authority.
+- Fan out to the highest number of independent slots the host exposes, but do not parallelize two writers over the same worktree or the same mutable project. Reviewers remain read-only; only the named Owner writes its worktree.
+- Use `codex_app__wait_threads`/thread status for new sessions and collect each session's commit, parent, clean status, test counts, and READY/BLOCKED handoff before integration.
+- Model choice and parallelism never change the mainline stop rule: stabilize the contract, integrate once, run the prescribed gates once, then create a fresh project and fresh browser run.
