@@ -6,15 +6,22 @@ import hashlib
 import json
 import os
 import re
+import stat
 import tempfile
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from jsonschema import Draft202012Validator
 
 from review_writer.acquisition.manifest_identity import normalize_doi
-from review_writer.project.path_safety import PathSafetyError, validate_source_file
+from review_writer.project.path_safety import (
+    PathSafetyError,
+    validate_relative_path,
+    validate_source_file,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -22,6 +29,9 @@ SOURCE_TRUTH_ROOT = Path("01_evidence/source_truth")
 SOURCE_TRUTH_SCHEMA = REPO_ROOT / "schemas/evidence/source_truth_bundle.v1.schema.json"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SLUG_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+MAX_SOURCE_ASSET_BYTES = 256 * 1024 * 1024
+SOURCE_ASSET_SNAPSHOT_SEMAPHORE = threading.BoundedSemaphore(2)
+SOURCE_ASSET_SNAPSHOT_ACQUIRE_TIMEOUT = 5.0
 
 
 class SourceTruthError(ValueError):
@@ -39,6 +49,25 @@ class ProjectSourceIndex:
     project: Path
     bundles_by_study: dict[str, dict[str, Any]]
     bindings_by_source_id: dict[str, list[tuple[str, dict[str, Any]]]]
+
+
+@dataclass(frozen=True)
+class SourceTruthAssetSnapshot:
+    """Private immutable copy of one asset bound to its verified bundle identity."""
+
+    path: Path
+    filename: str
+    project_id: str
+    study_id: str
+    source_id: str
+    kind: str
+    bundle_digest: str
+    sha256: str
+    size_bytes: int
+    page_count: int
+    project_instance_root: Path
+    project_device: int
+    project_inode: int
 
 
 def canonical_digest(value: object) -> str:
@@ -80,6 +109,98 @@ def _safe_file(project: Path, relative: str, code: str = "SOURCE_ASSET_INVALID")
         return validate_source_file(project, relative)
     except (OSError, PathSafetyError) as exc:
         raise SourceTruthError(code) from exc
+
+
+def _secure_source_fd(
+    project: Path,
+    relative: str,
+    project_identity: tuple[int, int],
+) -> int:
+    """Open every relative component beneath a stable project directory handle."""
+
+    if (
+        not hasattr(os, "O_NOFOLLOW")
+        or not hasattr(os, "O_DIRECTORY")
+        or not hasattr(os, "supports_dir_fd")
+        or os.open not in os.supports_dir_fd
+    ):
+        raise SourceTruthError("SOURCE_ASSET_SECURITY_UNAVAILABLE")
+    try:
+        canonical = validate_relative_path(relative)
+    except PathSafetyError as exc:
+        raise SourceTruthError("SOURCE_ASSET_INVALID") from exc
+    directory_flags = (
+        os.O_RDONLY
+        | os.O_DIRECTORY
+        | os.O_NOFOLLOW
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    directory_fds: list[int] = []
+    source_fd: int | None = None
+    try:
+        root_fd = os.open(project, directory_flags)
+        directory_fds.append(root_fd)
+        root_stat = os.fstat(root_fd)
+        if (
+            not stat.S_ISDIR(root_stat.st_mode)
+            or (root_stat.st_dev, root_stat.st_ino) != project_identity
+        ):
+            raise SourceTruthError("SOURCE_ASSET_INVALID")
+        current_fd = root_fd
+        parts = canonical.split("/")
+        for part in parts[:-1]:
+            next_fd = os.open(part, directory_flags, dir_fd=current_fd)
+            directory_fds.append(next_fd)
+            if not stat.S_ISDIR(os.fstat(next_fd).st_mode):
+                raise SourceTruthError("SOURCE_ASSET_INVALID")
+            current_fd = next_fd
+        source_fd = os.open(parts[-1], file_flags, dir_fd=current_fd)
+        if not stat.S_ISREG(os.fstat(source_fd).st_mode):
+            raise SourceTruthError("SOURCE_ASSET_INVALID")
+        result = source_fd
+        source_fd = None
+        return result
+    except SourceTruthError:
+        raise
+    except OSError as exc:
+        raise SourceTruthError("SOURCE_ASSET_INVALID") from exc
+    finally:
+        if source_fd is not None:
+            os.close(source_fd)
+        for directory_fd in reversed(directory_fds):
+            os.close(directory_fd)
+
+
+def _private_snapshot_root() -> Path:
+    candidate = Path("/tmp") if os.name == "posix" else Path(tempfile.gettempdir())
+    try:
+        root = candidate.resolve(strict=True)
+        root_stat = root.stat()
+    except OSError as exc:
+        raise SourceTruthError("SOURCE_ASSET_SECURITY_UNAVAILABLE") from exc
+    root_mode = stat.S_IMODE(root_stat.st_mode)
+    if (
+        not stat.S_ISDIR(root_stat.st_mode)
+        or (root_mode & 0o022 and not (root_stat.st_mode & stat.S_ISVTX))
+    ):
+        raise SourceTruthError("SOURCE_ASSET_SECURITY_UNAVAILABLE")
+    return root
+
+
+def _require_private_snapshot_path(path: Path, mode: int, *, directory: bool) -> None:
+    try:
+        observed = path.lstat()
+    except OSError as exc:
+        raise SourceTruthError("SOURCE_ASSET_SECURITY_UNAVAILABLE") from exc
+    expected_type = stat.S_ISDIR if directory else stat.S_ISREG
+    owner_matches = not hasattr(os, "geteuid") or observed.st_uid == os.geteuid()
+    if (
+        not expected_type(observed.st_mode)
+        or stat.S_IMODE(observed.st_mode) != mode
+        or not owner_matches
+    ):
+        raise SourceTruthError("SOURCE_ASSET_SECURITY_UNAVAILABLE")
 
 
 def _file_descriptor(project: Path, relative: str) -> dict[str, Any]:
@@ -597,3 +718,147 @@ def source_truth_asset(
     if path.stat().st_size != descriptor["size_bytes"] or _sha256_file(path) != descriptor["sha256"]:
         raise SourceTruthError("SOURCE_ASSET_DRIFT")
     return path
+
+
+@contextmanager
+def _source_truth_asset_snapshot_locked(
+    project: Path,
+    study_id: str,
+    source_id: str,
+    kind: str,
+    descriptor: dict[str, Any],
+    bundle_digest: str,
+    expected_sha256: str,
+    expected_size: int,
+    page_count: int,
+    project_identity: tuple[int, int],
+) -> Iterator[SourceTruthAssetSnapshot]:
+    relative = descriptor.get("path")
+    if not isinstance(relative, str):
+        raise SourceTruthError("SOURCE_TRUTH_SCHEMA_INVALID")
+    path = _safe_file(project, relative)
+    if not path.is_relative_to(project):
+        raise SourceTruthError("SOURCE_ASSET_INVALID")
+    file_descriptor = _secure_source_fd(project, relative, project_identity)
+
+    try:
+        opened_stat = os.fstat(file_descriptor)
+        if not stat.S_ISREG(opened_stat.st_mode) or opened_stat.st_size != expected_size:
+            raise SourceTruthError("SOURCE_ASSET_DRIFT")
+        with tempfile.TemporaryDirectory(
+            prefix="review-writer-source-asset-",
+            dir=_private_snapshot_root(),
+        ) as temp_dir:
+            os.chmod(temp_dir, 0o700)
+            _require_private_snapshot_path(Path(temp_dir), 0o700, directory=True)
+            snapshot_path = Path(temp_dir) / Path(relative).name
+            digest = hashlib.sha256()
+            observed_size = 0
+            with os.fdopen(file_descriptor, "rb", closefd=False) as source_handle:
+                snapshot_fd: int | None = None
+                try:
+                    snapshot_fd = os.open(
+                        snapshot_path,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
+                        0o600,
+                    )
+                    snapshot_handle = os.fdopen(snapshot_fd, "wb")
+                    snapshot_fd = None
+                    with snapshot_handle:
+                        os.fchmod(snapshot_handle.fileno(), 0o600)
+                        _require_private_snapshot_path(snapshot_path, 0o600, directory=False)
+                        for chunk in iter(lambda: source_handle.read(1024 * 1024), b""):
+                            observed_size += len(chunk)
+                            if observed_size > expected_size:
+                                raise SourceTruthError("SOURCE_ASSET_DRIFT")
+                            digest.update(chunk)
+                            snapshot_handle.write(chunk)
+                        snapshot_handle.flush()
+                        os.fsync(snapshot_handle.fileno())
+                finally:
+                    if snapshot_fd is not None:
+                        os.close(snapshot_fd)
+            if observed_size != expected_size or digest.hexdigest() != expected_sha256:
+                raise SourceTruthError("SOURCE_ASSET_DRIFT")
+            yield SourceTruthAssetSnapshot(
+                path=snapshot_path,
+                filename=Path(relative).name,
+                project_id=project.name,
+                study_id=study_id,
+                source_id=source_id,
+                kind=kind,
+                bundle_digest=bundle_digest,
+                sha256=expected_sha256,
+                size_bytes=expected_size,
+                page_count=page_count,
+                project_instance_root=project,
+                project_device=project_identity[0],
+                project_inode=project_identity[1],
+            )
+    finally:
+        os.close(file_descriptor)
+
+
+@contextmanager
+def source_truth_asset_snapshot(
+    project: Path,
+    study_id: str,
+    source_id: str,
+    kind: str,
+) -> Iterator[SourceTruthAssetSnapshot]:
+    """Yield verified bytes while holding the bounded snapshot-use boundary."""
+
+    project = project.resolve(strict=True)
+    project_stat = project.stat()
+    project_identity = (project_stat.st_dev, project_stat.st_ino)
+    bundle = load_source_truth_bundle(project, study_id)
+    if bundle.get("project_id") != project.name or bundle.get("study_id") != study_id:
+        raise SourceTruthError("SOURCE_ASSET_DRIFT")
+    sources = [source for source in bundle["sources"] if source.get("source_id") == source_id]
+    if len(sources) != 1:
+        raise SourceTruthError("SOURCE_ID_NOT_FOUND")
+    field = {"pdf": "pdf", "parsed-markdown": "canonical_markdown"}.get(kind)
+    if field is None:
+        raise SourceTruthError("SOURCE_ASSET_KIND_INVALID")
+    source = sources[0]
+    descriptor = source[field]
+    expected_size = descriptor.get("size_bytes")
+    expected_sha256 = descriptor.get("sha256")
+    page_count = source.get("page_count")
+    bundle_digest = bundle.get("bundle_digest")
+    if (
+        not isinstance(expected_size, int)
+        or isinstance(expected_size, bool)
+        or expected_size < 0
+        or not isinstance(expected_sha256, str)
+        or not SHA256_RE.fullmatch(expected_sha256)
+        or not isinstance(page_count, int)
+        or isinstance(page_count, bool)
+        or page_count < 1
+        or not isinstance(bundle_digest, str)
+        or not SHA256_RE.fullmatch(bundle_digest)
+    ):
+        raise SourceTruthError("SOURCE_TRUTH_SCHEMA_INVALID")
+    if expected_size > MAX_SOURCE_ASSET_BYTES:
+        raise SourceTruthError("SOURCE_ASSET_SIZE_INVALID")
+    acquired = SOURCE_ASSET_SNAPSHOT_SEMAPHORE.acquire(
+        timeout=SOURCE_ASSET_SNAPSHOT_ACQUIRE_TIMEOUT
+    )
+    if not acquired:
+        raise SourceTruthError("SOURCE_ASSET_BUSY")
+    try:
+        with _source_truth_asset_snapshot_locked(
+            project,
+            study_id,
+            source_id,
+            kind,
+            descriptor,
+            bundle_digest,
+            expected_sha256,
+            expected_size,
+            page_count,
+            project_identity,
+        ) as snapshot:
+            yield snapshot
+    finally:
+        SOURCE_ASSET_SNAPSHOT_SEMAPHORE.release()

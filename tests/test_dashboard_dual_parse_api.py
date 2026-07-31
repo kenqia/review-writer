@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 import pytest
 
@@ -106,6 +106,313 @@ def _authoritative_snapshot(project: Path) -> dict[str, bytes]:
         if path.is_file()
         and ".dual-parse-staging" not in path.relative_to(project).parts
     }
+
+
+@pytest.mark.parametrize(
+    ("kind", "relative_asset"),
+    [
+        ("pdf", "00_sources/papers/paper-a.pdf"),
+        ("parsed-markdown", "01_evidence/mineru/markdown/10_1000_example.md"),
+    ],
+)
+def test_parse_asset_send_fails_closed_when_validated_path_is_replaced_by_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    relative_asset: str,
+) -> None:
+    from test_source_truth import _source_truth_project
+    from review_writer.project.source_truth import write_source_truth_bundle
+    from view import serve_review_dashboard as dashboard
+
+    review_root = tmp_path / "review-root"
+    project = _source_truth_project(review_root)
+    write_source_truth_bundle(project, "scholarly-a")
+    outside = tmp_path / f"outside-{kind}.bin"
+    outside.write_bytes(b"outside-unverified-content")
+    source_path = project / relative_asset
+    real_lookup = dashboard.project_parse_source_asset
+
+    def lookup_then_swap(project_path: Path, source_id: str, requested_kind: str):
+        validated = real_lookup(project_path, source_id, requested_kind)
+        source_path.unlink()
+        source_path.symlink_to(outside)
+        return validated
+
+    monkeypatch.setattr(dashboard, "project_parse_source_asset", lookup_then_swap)
+
+    status, _, body = _http_request(
+        review_root,
+        (
+            f"GET /api/project/{project.name}/source/stud-a/{kind} HTTP/1.1\r\n"
+            "Host: localhost\r\n\r\n"
+        ).encode("ascii"),
+    )
+
+    assert status == 404
+    assert outside.read_bytes() not in body
+
+
+def test_pdf_page_renderer_fails_closed_when_validated_bytes_are_replaced(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from test_source_truth import _source_truth_project
+    from review_writer.project.source_truth import write_source_truth_bundle
+    from view import serve_review_dashboard as dashboard
+
+    review_root = tmp_path / "review-root"
+    project = _source_truth_project(review_root)
+    write_source_truth_bundle(project, "scholarly-a")
+    source_path = project / "00_sources/papers/paper-a.pdf"
+    replacement = b"%PDF-evil!!"
+    assert len(replacement) == source_path.stat().st_size
+    real_lookup = dashboard.project_parse_source_asset
+
+    def lookup_then_swap(project_path: Path, source_id: str, requested_kind: str):
+        validated = real_lookup(project_path, source_id, requested_kind)
+        source_path.write_bytes(replacement)
+        return validated
+
+    def render_opened_path(path: Path, page: int) -> bytes:
+        assert page == 1
+        return b"\x89PNG\r\n\x1a\n" + path.read_bytes()
+
+    monkeypatch.setattr(dashboard, "project_parse_source_asset", lookup_then_swap)
+    monkeypatch.setattr(dashboard, "render_pdf_page", render_opened_path)
+
+    status, _, body = _http_request(
+        review_root,
+        (
+            f"GET /api/project/{project.name}/source/stud-a/pdf-page?page=1 HTTP/1.1\r\n"
+            "Host: localhost\r\n\r\n"
+        ).encode("ascii"),
+    )
+
+    assert status == 404
+    assert replacement not in body
+
+
+def test_parse_asset_route_maps_oversized_snapshot_to_413(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from test_source_truth import _source_truth_project
+    from review_writer.project import source_truth
+    from review_writer.project.source_truth import write_source_truth_bundle
+
+    review_root = tmp_path / "review-root"
+    project = _source_truth_project(review_root)
+    write_source_truth_bundle(project, "scholarly-a")
+    monkeypatch.setattr(source_truth, "MAX_SOURCE_ASSET_BYTES", 10, raising=False)
+
+    status, _, _ = _http_request(
+        review_root,
+        b"GET /api/project/case/source/stud-a/pdf HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    )
+
+    assert status == 413
+
+
+def test_parse_asset_route_maps_busy_snapshot_boundary_to_503(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from test_source_truth import _source_truth_project
+    from review_writer.project import source_truth
+    from review_writer.project.source_truth import write_source_truth_bundle
+
+    class BusySemaphore:
+        def acquire(self, *, timeout: float) -> bool:
+            return False
+
+        def release(self) -> None:
+            raise AssertionError("unacquired semaphore was released")
+
+    review_root = tmp_path / "review-root"
+    project = _source_truth_project(review_root)
+    write_source_truth_bundle(project, "scholarly-a")
+    monkeypatch.setattr(
+        source_truth,
+        "SOURCE_ASSET_SNAPSHOT_SEMAPHORE",
+        BusySemaphore(),
+        raising=False,
+    )
+
+    status, _, _ = _http_request(
+        review_root,
+        b"GET /api/project/case/source/stud-a/pdf HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    )
+
+    assert status == 503
+
+
+def test_project_route_decodes_literal_percent_slash_exactly_once(tmp_path: Path) -> None:
+    from test_source_truth import _source_truth_project
+    from review_writer.project.source_truth import write_source_truth_bundle
+
+    review_root = tmp_path / "review-root"
+    project = _source_truth_project(review_root)
+    literal_id = "project%2Fversion"
+    literal_project = project.with_name(literal_id)
+    project.rename(literal_project)
+    write_source_truth_bundle(literal_project, "scholarly-a")
+
+    status, headers, body = _http_request(
+        review_root,
+        (
+            f"GET /api/project/{quote(literal_id, safe='')}/source/stud-a/pdf HTTP/1.1\r\n"
+            "Host: localhost\r\n\r\n"
+        ).encode("ascii"),
+    )
+
+    assert status == 200
+    assert headers["Content-Type"] == "application/pdf"
+    assert body == b"%PDF-main-a"
+
+    traversal_status, _, _ = _http_request(
+        review_root,
+        b"GET /api/project/project%2Fversion/source/stud-a/pdf HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    )
+    malicious_id = "%2e%2e%2Fescape"
+    malicious_project = literal_project.with_name(malicious_id)
+    literal_project.rename(malicious_project)
+    write_source_truth_bundle(malicious_project, "scholarly-a")
+    encoded_traversal_status, _, _ = _http_request(
+        review_root,
+        (
+            f"GET /api/project/{quote(malicious_id, safe='')}/source/stud-a/pdf HTTP/1.1\r\n"
+            "Host: localhost\r\n\r\n"
+        ).encode("ascii"),
+    )
+    assert traversal_status == 404
+    assert encoded_traversal_status == 404
+
+
+def test_project_route_keeps_unicode_project_id_behavior(tmp_path: Path) -> None:
+    from test_source_truth import _source_truth_project
+    from review_writer.project.source_truth import write_source_truth_bundle
+
+    review_root = tmp_path / "review-root"
+    project = _source_truth_project(review_root)
+    unicode_id = "项目 α"
+    unicode_project = project.with_name(unicode_id)
+    project.rename(unicode_project)
+    write_source_truth_bundle(unicode_project, "scholarly-a")
+
+    status, _, body = _http_request(
+        review_root,
+        (
+            f"GET /api/project/{quote(unicode_id, safe='')}/source/stud-a/pdf HTTP/1.1\r\n"
+            "Host: localhost\r\n\r\n"
+        ).encode("ascii"),
+    )
+
+    assert status == 200
+    assert body == b"%PDF-main-a"
+
+
+@pytest.mark.parametrize("confusable", ["\u2215", "\u2044", "\uff0f"])
+def test_project_route_rejects_existing_unicode_slash_confusable_project(
+    tmp_path: Path,
+    confusable: str,
+) -> None:
+    from test_source_truth import _source_truth_project
+    from review_writer.project.source_truth import write_source_truth_bundle
+
+    review_root = tmp_path / "review-root"
+    project = _source_truth_project(review_root)
+    confusable_id = f"project{confusable}escape"
+    confusable_project = project.with_name(confusable_id)
+    project.rename(confusable_project)
+    write_source_truth_bundle(confusable_project, "scholarly-a")
+
+    status, _, _ = _http_request(
+        review_root,
+        (
+            f"GET /api/project/{quote(confusable_id, safe='')}/source/stud-a/pdf HTTP/1.1\r\n"
+            "Host: localhost\r\n\r\n"
+        ).encode("ascii"),
+    )
+
+    assert status == 404
+
+
+@pytest.mark.parametrize(
+    "dangerous_id",
+    [
+        "%2Fescape",
+        "%5Cescape",
+        "C%3A%5Cescape",
+        "project%5Cversion",
+        "C%3Arelative",
+    ],
+)
+def test_project_route_rejects_existing_rooted_or_windows_shadow_project(
+    tmp_path: Path,
+    dangerous_id: str,
+) -> None:
+    from test_source_truth import _source_truth_project
+    from review_writer.project.source_truth import write_source_truth_bundle
+
+    review_root = tmp_path / "review-root"
+    project = _source_truth_project(review_root)
+    dangerous_project = project.with_name(dangerous_id)
+    project.rename(dangerous_project)
+    write_source_truth_bundle(dangerous_project, "scholarly-a")
+
+    status, _, _ = _http_request(
+        review_root,
+        (
+            f"GET /api/project/{quote(dangerous_id, safe='')}/source/stud-a/pdf HTTP/1.1\r\n"
+            "Host: localhost\r\n\r\n"
+        ).encode("ascii"),
+    )
+
+    assert status == 404
+
+
+@pytest.mark.parametrize(
+    ("raw_segment", "filesystem_id"),
+    [("%GG", "%GG"), ("%FF", "\ufffd")],
+)
+def test_project_route_rejects_invalid_percent_or_utf8_without_aliasing_existing_project(
+    tmp_path: Path,
+    raw_segment: str,
+    filesystem_id: str,
+) -> None:
+    from test_source_truth import _source_truth_project
+    from review_writer.project.source_truth import write_source_truth_bundle
+
+    review_root = tmp_path / "review-root"
+    project = _source_truth_project(review_root)
+    alias_project = project.with_name(filesystem_id)
+    project.rename(alias_project)
+    write_source_truth_bundle(alias_project, "scholarly-a")
+
+    status, _, _ = _http_request(
+        review_root,
+        (
+            f"GET /api/project/{raw_segment}/source/stud-a/pdf HTTP/1.1\r\n"
+            "Host: localhost\r\n\r\n"
+        ).encode("ascii"),
+    )
+
+    assert status == 400
+
+
+def test_project_route_rejects_overlong_raw_id_before_filesystem_lookup(tmp_path: Path) -> None:
+    review_root = tmp_path / "review-root"
+
+    status, _, _ = _http_request(
+        review_root,
+        (
+            f"GET /api/project/{'a' * 4096}/review-state HTTP/1.1\r\n"
+            "Host: localhost\r\n\r\n"
+        ).encode("ascii"),
+    )
+
+    assert status == 400
 
 
 def test_preflight_writes_no_authoritative_state_and_returns_safe_projection(
@@ -297,10 +604,10 @@ def test_first_smiles_completion_locator_serves_the_bound_original_pdf_page(
 
     bound_pdf = project / "00_sources/papers/paper-a.pdf"
     rendered = b"\x89PNG\r\n\x1a\nbound-original-pdf-page"
-    seen: list[tuple[Path, int]] = []
+    seen: list[tuple[Path, bytes, int]] = []
 
     def render(path: Path, page: int) -> bytes:
-        seen.append((path, page))
+        seen.append((path, path.read_bytes(), page))
         return rendered
 
     monkeypatch.setattr(dashboard, "render_pdf_page", render)
@@ -312,7 +619,12 @@ def test_first_smiles_completion_locator_serves_the_bound_original_pdf_page(
     assert status == 200
     assert headers["Content-Type"] == "image/png"
     assert body == rendered
-    assert seen == [(bound_pdf, 1)]
+    assert len(seen) == 1
+    snapshot_path, snapshot_bytes, page = seen[0]
+    assert snapshot_path != bound_pdf
+    assert snapshot_bytes == bound_pdf.read_bytes()
+    assert page == 1
+    assert not snapshot_path.exists()
 
 
 def test_chemical_locator_from_binding_a_never_serves_rebound_pdf_b(

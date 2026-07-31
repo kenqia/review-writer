@@ -1069,7 +1069,12 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             self.assertEqual("image/png", page_headers["Content-Type"])
             self.assertEqual(b"\x89PNG\r\n\x1a\npage", page)
             self.assertEqual(400, invalid_page_status)
-            render.assert_called_once_with(project / "00_sources/papers/paper-a.pdf", 1)
+            render.assert_called_once()
+            rendered_path, rendered_page = render.call_args.args
+            self.assertEqual("paper-a.pdf", rendered_path.name)
+            self.assertEqual(1, rendered_page)
+            self.assertNotEqual(project / "00_sources/papers/paper-a.pdf", rendered_path)
+            self.assertFalse(rendered_path.exists())
             escape_status, _, _ = self._request(
                 dashboard,
                 review_root,
@@ -1285,23 +1290,32 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
             review_root = Path(temp_dir)
             project = _source_truth_project(review_root)
             write_source_truth_bundle(project, "scholarly-a")
+            bundle_path = project / "01_evidence/source_truth/scholarly-a/bundle.json"
+            bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+            bundle["sources"][0]["page_count"] = 1000
+            body = {key: value for key, value in bundle.items() if key != "bundle_digest"}
+            bundle["bundle_digest"] = dashboard.canonical_digest(body)
+            bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
             request = (
                 b"GET /api/project/case/source/stud-a/pdf-page?page=1000 HTTP/1.1\r\n"
                 b"Host: localhost\r\n\r\n"
             )
-            with (
-                patch.object(dashboard, "project_parse_source_page_count", return_value=1000),
-                patch.object(dashboard, "render_pdf_page", return_value=b"\x89PNG\r\n\x1a\npage-1000") as render,
-            ):
+            with patch.object(
+                dashboard,
+                "render_pdf_page",
+                return_value=b"\x89PNG\r\n\x1a\npage-1000",
+            ) as render:
                 status, headers, body = self._request(dashboard, review_root, request)
 
             self.assertEqual(200, status)
             self.assertEqual("image/png", headers["Content-Type"])
             self.assertEqual(b"\x89PNG\r\n\x1a\npage-1000", body)
-            render.assert_called_once_with(
-                project / "00_sources/papers/paper-a.pdf",
-                1000,
-            )
+            render.assert_called_once()
+            rendered_path, rendered_page = render.call_args.args
+            self.assertEqual("paper-a.pdf", rendered_path.name)
+            self.assertEqual(1000, rendered_page)
+            self.assertNotEqual(project / "00_sources/papers/paper-a.pdf", rendered_path)
+            self.assertFalse(rendered_path.exists())
 
     def test_progress_uses_parse_gate_when_source_truth_exists(self) -> None:
         sys.path.insert(0, str(ROOT))

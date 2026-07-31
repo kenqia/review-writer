@@ -17,11 +17,12 @@ import tempfile
 import threading
 import unicodedata
 import zipfile
+from contextlib import contextmanager
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
-from typing import Any
-from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Any, Iterator
+from urllib.parse import parse_qs, quote, unquote, unquote_to_bytes, urlencode, urlparse
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +30,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 PDF_RENDER_SEMAPHORE = threading.BoundedSemaphore(2)
+MAX_PROJECT_ID_BYTES = 255
+MAX_PROJECT_ROUTE_SEGMENT_BYTES = MAX_PROJECT_ID_BYTES * 3
 
 from review_writer.project.vertical_review import (  # noqa: E402
     AWAITING_BRIEF_CONFIRMATION,
@@ -109,11 +112,12 @@ from review_writer.project.manuscript_v2 import (  # noqa: E402
 )
 from review_writer.project.source_truth import (  # noqa: E402
     SOURCE_TRUTH_ROOT,
+    SourceTruthAssetSnapshot,
     SourceTruthError,
     canonical_digest,
     load_source_truth_bundle,
     project_source_binding,
-    source_truth_asset,
+    source_truth_asset_snapshot,
 )
 from review_writer.project.chemical_paper import (  # noqa: E402
     ChemicalPaperError,
@@ -121,6 +125,7 @@ from review_writer.project.chemical_paper import (  # noqa: E402
     correct_chemical_paper_field,
     resolve_chemical_paper_pdf_locator,
     review_chemical_paper_elements,
+    verify_chemical_paper_pdf_snapshot,
 )
 from review_writer.delivery.dual_parse_release import (  # noqa: E402
     MAX_ARCHIVE_BYTES as DUAL_PARSE_MAX_ARCHIVE_BYTES,
@@ -396,20 +401,33 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         self.send_error(HTTPStatus.BAD_REQUEST, "PDF page is invalid")
                         return
                     page = values[0]
+                try:
+                    project_id = decode_project_route_segment(parts[2])
+                except ValueError as exc:
+                    self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
+                    return
                 self.handle_project_parse_asset_get(
-                    unquote(parts[2]),
+                    project_id,
                     unquote(parts[4]),
                     unquote(parts[5]),
                     page=page,
                 )
             elif len(parts) == 4:
-                project_id = unquote(parts[2])
+                try:
+                    project_id = decode_project_route_segment(parts[2])
+                except ValueError as exc:
+                    self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
+                    return
                 stage = unquote(parts[3])
                 self.handle_project_stage_get(project_id, stage)
             else:
                 self.send_error(HTTPStatus.NOT_FOUND, "project stage not found")
         elif parsed.path.startswith("/api/discovery/"):
-            project_id = unquote(parsed.path.rsplit("/", 1)[-1])
+            try:
+                project_id = decode_project_route_segment(parsed.path.rsplit("/", 1)[-1])
+            except ValueError as exc:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
             self.handle_discovery_get(project_id)
         elif parsed.path.startswith("/api/metadata/"):
             paper_id = unquote(parsed.path.rsplit("/", 1)[-1])
@@ -484,7 +502,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.handle_project_workspace_put(project_id, action)
                 return
         if parsed.path.startswith("/api/discovery/"):
-            project_id = unquote(parsed.path.rsplit("/", 1)[-1])
+            try:
+                project_id = decode_project_route_segment(parsed.path.rsplit("/", 1)[-1])
+            except ValueError as exc:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
             query = parse_qs(parsed.query)
             self.handle_discovery_put(project_id, confirm=bool(query.get("confirm")))
             return
@@ -1154,60 +1176,73 @@ class DashboardHandler(BaseHTTPRequestHandler):
     ) -> None:
         try:
             project = project_dir(self.review_root, project_id)
-            bound_page_count: int | None = None
+            chemical_descriptor = None
             if kind == "pdf-page" and binding is not None:
-                descriptor = resolve_chemical_paper_pdf_locator(
+                chemical_descriptor = resolve_chemical_paper_pdf_locator(
                     project,
                     source_id,
                     binding,
                 )
-                path = descriptor.asset_path
-                bound_page_count = descriptor.page_count
+                asset_context = source_truth_asset_snapshot(
+                    project,
+                    chemical_descriptor.study_id,
+                    source_id,
+                    "pdf",
+                )
             else:
-                path = project_parse_source_asset(
+                asset_context = project_parse_source_asset(
                     project,
                     source_id,
                     "pdf" if kind == "pdf-page" else kind,
                 )
-        except (ChemicalPaperError, OSError, ParseQualityError, SourceTruthError, ValueError):
-            self.send_error(HTTPStatus.NOT_FOUND, "source asset is unavailable")
-            return
-        if kind == "pdf-page":
-            if bound_page_count is None:
-                try:
-                    page_count = project_parse_source_page_count(project, source_id)
-                except SourceTruthError:
-                    self.send_error(HTTPStatus.NOT_FOUND, "source asset is unavailable")
+            with asset_context as asset:
+                if chemical_descriptor is not None:
+                    verify_chemical_paper_pdf_snapshot(
+                        chemical_descriptor,
+                        asset,
+                    )
+                if kind == "pdf-page":
+                    page_count = (
+                        chemical_descriptor.page_count
+                        if chemical_descriptor is not None
+                        else asset.page_count
+                    )
+                    page_limit = str(page_count)
+                    if page is None or len(page) > len(page_limit) or (
+                        len(page) == len(page_limit) and page > page_limit
+                    ):
+                        self.send_error(HTTPStatus.BAD_REQUEST, "PDF page is invalid")
+                        return
+                    page_number = int(page)
+                    try:
+                        payload = render_pdf_page(asset.path, page_number)
+                    except (OSError, RuntimeError, subprocess.SubprocessError, ValueError):
+                        self.send_error(HTTPStatus.UNPROCESSABLE_ENTITY, "PDF page preview is unavailable")
+                        return
+                    self.send_bytes(
+                        payload,
+                        "image/png",
+                        extra_headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+                    )
                     return
+                content_type = "application/pdf" if kind == "pdf" else "text/markdown; charset=utf-8"
+                self.send_file(
+                    asset.path,
+                    content_type,
+                    extra_headers={
+                        "Content-Disposition": f"inline; filename*=UTF-8''{quote(asset.filename, safe='')}",
+                        "X-Content-Type-Options": "nosniff",
+                    },
+                )
+        except SourceTruthError as exc:
+            if exc.code == "SOURCE_ASSET_SIZE_INVALID":
+                self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "source asset exceeds the size limit")
+            elif exc.code == "SOURCE_ASSET_BUSY":
+                self.send_error(HTTPStatus.SERVICE_UNAVAILABLE, "source asset service is busy")
             else:
-                page_count = bound_page_count
-            page_limit = str(page_count)
-            if page is None or len(page) > len(page_limit) or (
-                len(page) == len(page_limit) and page > page_limit
-            ):
-                self.send_error(HTTPStatus.BAD_REQUEST, "PDF page is invalid")
-                return
-            page_number = int(page)
-            try:
-                payload = render_pdf_page(path, page_number)
-            except (OSError, RuntimeError, subprocess.SubprocessError, ValueError):
-                self.send_error(HTTPStatus.UNPROCESSABLE_ENTITY, "PDF page preview is unavailable")
-                return
-            self.send_bytes(
-                payload,
-                "image/png",
-                extra_headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
-            )
-            return
-        content_type = "application/pdf" if kind == "pdf" else "text/markdown; charset=utf-8"
-        self.send_file(
-            path,
-            content_type,
-            extra_headers={
-                "Content-Disposition": f"inline; filename*=UTF-8''{quote(path.name, safe='')}",
-                "X-Content-Type-Options": "nosniff",
-            },
-        )
+                self.send_error(HTTPStatus.NOT_FOUND, "source asset is unavailable")
+        except (ChemicalPaperError, OSError, ParseQualityError, ValueError):
+            self.send_error(HTTPStatus.NOT_FOUND, "source asset is unavailable")
 
     def handle_project_review_state_get(self, project_id: str) -> None:
         try:
@@ -1764,7 +1799,33 @@ def project_id_from_route(path: str, action: str) -> str | None:
     parts = path.strip("/").split("/")
     if len(parts) != 4 or parts[:2] != ["api", "project"] or parts[3] != action:
         return None
-    return unquote(parts[2])
+    try:
+        return decode_project_route_segment(parts[2])
+    except ValueError:
+        return ""
+
+
+def decode_project_route_segment(raw_segment: str) -> str:
+    if not isinstance(raw_segment, str):
+        raise ValueError("invalid project_id")
+    try:
+        raw_bytes = raw_segment.encode("utf-8", errors="strict")
+    except UnicodeError as exc:
+        raise ValueError("invalid project_id") from exc
+    if (
+        not raw_segment
+        or len(raw_bytes) > MAX_PROJECT_ROUTE_SEGMENT_BYTES
+        or re.search(r"%(?![0-9A-Fa-f]{2})", raw_segment)
+    ):
+        raise ValueError("invalid project_id")
+    decoded_bytes = unquote_to_bytes(raw_segment)
+    if not decoded_bytes or len(decoded_bytes) > MAX_PROJECT_ID_BYTES:
+        raise ValueError("invalid project_id")
+    try:
+        decoded = decoded_bytes.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise ValueError("invalid project_id") from exc
+    return decoded
 
 
 def is_relative_to(path: Path, root: Path) -> bool:
@@ -3442,11 +3503,17 @@ def write_project_parse_quality_decision(
     return project_parse_quality_payload(review_root, project_id)
 
 
-def project_parse_source_asset(project: Path, source_id: str, kind: str) -> Path:
+@contextmanager
+def project_parse_source_asset(
+    project: Path,
+    source_id: str,
+    kind: str,
+) -> Iterator[SourceTruthAssetSnapshot]:
     if not source_id or kind not in {"pdf", "parsed-markdown"}:
         raise SourceTruthError("SOURCE_ASSET_KIND_INVALID")
     study_id, _ = project_source_binding(project, source_id)
-    return source_truth_asset(project, study_id, source_id, kind)
+    with source_truth_asset_snapshot(project, study_id, source_id, kind) as snapshot:
+        yield snapshot
 
 
 def project_parse_source_page_count(project: Path, source_id: str) -> int:
@@ -4656,13 +4723,40 @@ def direct_project_id(review_root: Path) -> str:
     return review_root.name
 
 
+def _unsafe_project_id_shadow(project_id: str) -> bool:
+    shadow = project_id
+    for depth in range(16):
+        windows_path = PureWindowsPath(shadow)
+        posix_path = PurePosixPath(shadow)
+        if (
+            not shadow
+            or "\x00" in shadow
+            or any(character in shadow for character in "\u2044\u2215\uff0f")
+            or "\\" in shadow
+            or (depth == 0 and "/" in shadow)
+            or posix_path.is_absolute()
+            or windows_path.is_absolute()
+            or bool(windows_path.drive)
+            or bool(windows_path.root)
+            or any(
+                part in {".", ".."}
+                for part in shadow.replace("\\", "/").split("/")
+            )
+        ):
+            return True
+        next_shadow = unquote(shadow)
+        if next_shadow == shadow:
+            return False
+        shadow = next_shadow
+    return True
+
+
 def normalized_project_id(project_id: str) -> str:
-    if not isinstance(project_id, str):
+    if not isinstance(project_id, str) or _unsafe_project_id_shadow(project_id):
         raise ValueError("invalid project_id")
-    decoded = unquote(project_id)
-    if not decoded or decoded in {".", ".."} or "\x00" in decoded or "/" in decoded or "\\" in decoded:
-        raise ValueError("invalid project_id")
-    return decoded
+    # Route parsing owns the single percent-decoding boundary. Validation may
+    # inspect deeper shadows, but lookup always preserves this literal value.
+    return project_id
 
 
 def project_dir(review_root: Path, project_id: str) -> Path:

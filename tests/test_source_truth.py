@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,7 @@ from review_writer.project.source_truth import (
     declared_study_ids,
     load_source_truth_bundle,
     source_truth_asset,
+    source_truth_asset_snapshot,
     write_source_truth_bundle,
 )
 
@@ -322,6 +325,210 @@ def test_write_load_and_asset_access_revalidate_current_bytes(tmp_path: Path) ->
     (project / "00_sources/papers/paper-a.pdf").write_bytes(b"changed")
     with pytest.raises(SourceTruthError, match="SOURCE_ASSET_DRIFT"):
         source_truth_asset(project, "scholarly-a", "stud-a", "pdf")
+
+
+def test_snapshot_fails_closed_when_secure_open_capabilities_are_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from review_writer.project import source_truth
+
+    project = _source_truth_project(tmp_path)
+    write_source_truth_bundle(project, "scholarly-a")
+    source_path = project / "00_sources/papers/paper-a.pdf"
+    outside = tmp_path / "outside.pdf"
+    outside.write_bytes(source_path.read_bytes())
+    real_safe_file = source_truth._safe_file
+    swapped = False
+
+    def safe_file_then_swap(root: Path, relative: str, code: str = "SOURCE_ASSET_INVALID") -> Path:
+        nonlocal swapped
+        path = real_safe_file(root, relative, code)
+        if relative == "00_sources/papers/paper-a.pdf" and not swapped:
+            swapped = True
+            source_path.unlink()
+            source_path.symlink_to(outside)
+        return path
+
+    real_is_dir = Path.is_dir
+    monkeypatch.setattr(source_truth, "_safe_file", safe_file_then_swap)
+    monkeypatch.delattr(source_truth.os, "O_NOFOLLOW")
+    monkeypatch.setattr(
+        Path,
+        "is_dir",
+        lambda path: False if path == Path("/proc/self/fd") else real_is_dir(path),
+    )
+
+    with pytest.raises(SourceTruthError, match="SOURCE_ASSET_SECURITY_UNAVAILABLE"):
+        with source_truth_asset_snapshot(
+            project,
+            "scholarly-a",
+            "stud-a",
+            "pdf",
+        ):
+            pass
+
+
+def test_snapshot_uses_effective_private_permissions_and_cleans_up(tmp_path: Path) -> None:
+    project = _source_truth_project(tmp_path)
+    write_source_truth_bundle(project, "scholarly-a")
+
+    with source_truth_asset_snapshot(
+        project,
+        "scholarly-a",
+        "stud-a",
+        "pdf",
+    ) as snapshot:
+        snapshot_path = snapshot.path
+        snapshot_dir = snapshot_path.parent
+        assert stat.S_IMODE(snapshot_dir.stat().st_mode) == 0o700
+        assert stat.S_IMODE(snapshot_path.stat().st_mode) == 0o600
+        if hasattr(os, "geteuid"):
+            assert snapshot_dir.stat().st_uid == os.geteuid()
+            assert snapshot_path.stat().st_uid == os.geteuid()
+        assert snapshot_path.read_bytes() == b"%PDF-main-a"
+        project_stat = project.resolve().stat()
+        assert snapshot.project_instance_root == project.resolve()
+        assert snapshot.project_device == project_stat.st_dev
+        assert snapshot.project_inode == project_stat.st_ino
+
+    assert not snapshot_dir.exists()
+
+
+def test_snapshot_rejects_asset_above_server_size_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from review_writer.project import source_truth
+
+    project = _source_truth_project(tmp_path)
+    write_source_truth_bundle(project, "scholarly-a")
+    monkeypatch.setattr(source_truth, "MAX_SOURCE_ASSET_BYTES", 10, raising=False)
+
+    with pytest.raises(SourceTruthError, match="SOURCE_ASSET_SIZE_INVALID"):
+        with source_truth_asset_snapshot(project, "scholarly-a", "stud-a", "pdf"):
+            pass
+
+
+def test_snapshot_semaphore_covers_snapshot_use_and_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from review_writer.project import source_truth
+
+    class RecordingSemaphore:
+        held = False
+        released = False
+
+        def acquire(self, *, timeout: float) -> bool:
+            assert timeout > 0
+            self.held = True
+            return True
+
+        def release(self) -> None:
+            assert self.held is True
+            self.held = False
+            self.released = True
+
+    project = _source_truth_project(tmp_path)
+    write_source_truth_bundle(project, "scholarly-a")
+    semaphore = RecordingSemaphore()
+    monkeypatch.setattr(
+        source_truth,
+        "SOURCE_ASSET_SNAPSHOT_SEMAPHORE",
+        semaphore,
+        raising=False,
+    )
+
+    with source_truth_asset_snapshot(project, "scholarly-a", "stud-a", "pdf") as snapshot:
+        snapshot_dir = snapshot.path.parent
+        assert semaphore.held is True
+        assert snapshot.path.exists()
+
+    assert semaphore.released is True
+    assert not snapshot_dir.exists()
+
+
+def test_snapshot_rejects_busy_server_before_opening_asset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from review_writer.project import source_truth
+
+    class BusySemaphore:
+        def acquire(self, *, timeout: float) -> bool:
+            return False
+
+        def release(self) -> None:
+            raise AssertionError("unacquired semaphore was released")
+
+    project = _source_truth_project(tmp_path)
+    write_source_truth_bundle(project, "scholarly-a")
+    monkeypatch.setattr(
+        source_truth,
+        "SOURCE_ASSET_SNAPSHOT_SEMAPHORE",
+        BusySemaphore(),
+        raising=False,
+    )
+
+    with pytest.raises(SourceTruthError, match="SOURCE_ASSET_BUSY"):
+        with source_truth_asset_snapshot(project, "scholarly-a", "stud-a", "pdf"):
+            pass
+
+
+@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="fd audit requires procfs")
+def test_secure_source_open_closes_fd_when_fstat_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from review_writer.project import source_truth
+
+    project = _source_truth_project(tmp_path).resolve()
+    before = set(os.listdir("/proc/self/fd"))
+    real_fstat = source_truth.os.fstat
+
+    def fail_for_regular_file(file_descriptor: int):
+        observed = real_fstat(file_descriptor)
+        if stat.S_ISREG(observed.st_mode):
+            raise OSError("injected fstat failure")
+        return observed
+
+    monkeypatch.setattr(source_truth.os, "fstat", fail_for_regular_file)
+
+    with pytest.raises(SourceTruthError, match="SOURCE_ASSET_INVALID"):
+        source_truth._secure_source_fd(
+            project,
+            "00_sources/papers/paper-a.pdf",
+            (project.stat().st_dev, project.stat().st_ino),
+        )
+
+    assert set(os.listdir("/proc/self/fd")) == before
+
+
+@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="fd audit requires procfs")
+def test_snapshot_closes_created_fd_when_fdopen_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from review_writer.project import source_truth
+
+    project = _source_truth_project(tmp_path)
+    write_source_truth_bundle(project, "scholarly-a")
+    before = set(os.listdir("/proc/self/fd"))
+    real_fdopen = source_truth.os.fdopen
+
+    def fail_snapshot_fdopen(file_descriptor: int, mode: str, *args, **kwargs):
+        if mode == "wb":
+            raise OSError("injected fdopen failure")
+        return real_fdopen(file_descriptor, mode, *args, **kwargs)
+
+    monkeypatch.setattr(source_truth.os, "fdopen", fail_snapshot_fdopen)
+
+    with pytest.raises(OSError, match="injected fdopen failure"):
+        with source_truth_asset_snapshot(project, "scholarly-a", "stud-a", "pdf"):
+            pass
+
+    assert set(os.listdir("/proc/self/fd")) == before
 
 
 def test_real_three_paper_case_is_read_only_compatible() -> None:

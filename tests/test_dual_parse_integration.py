@@ -4,6 +4,7 @@ import copy
 import json
 import shutil
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,10 @@ from review_writer.project.chemical_completion import (
     apply_chemical_completion_batch,
     chemical_completion_state,
 )
+from review_writer.project.chemical_paper import (
+    chemical_paper_projection,
+    import_chemical_paper,
+)
 from review_writer.project.content_agent_handoff import (
     ContentAgentError,
     build_content_task_package,
@@ -37,6 +42,7 @@ from review_writer.project.paper_evidence import paper_evidence_state
 from review_writer.project.parse_quality import write_parse_quality_gate
 from review_writer.project.parse_reconciliation import write_parse_reconciliation
 from review_writer.project.source_truth import (
+    canonical_digest,
     load_source_truth_bundle,
     write_source_truth_bundle,
 )
@@ -44,7 +50,14 @@ from review_writer.project.workflow_projection import workflow_state
 from test_parse_quality import _decide_all
 from test_dual_parse_content_package import paper_request
 from test_chemical_completion import completion_project
-from test_chemical_paper_import import v2000, write_chemical_zip
+from test_chemical_paper_import import (
+    ACTOR,
+    PDF_SHA,
+    source_truth_project,
+    v2000,
+    write_chemical_zip,
+)
+from test_dashboard_dual_parse_api import _http_request
 from test_dual_source import dual_project
 from test_parse_reconciliation import reconciliation_project
 from test_dual_parse_bootstrap import generic_output, source_request
@@ -135,6 +148,71 @@ def test_pdf_drift_blocks_saved_dual_binding_and_release(tmp_path: Path) -> None
     assert dashboard["summary"]["chemical_current"] == 0
     assert dashboard["studies"][0]["chemical_import_status"] == "stale"
     assert dashboard["studies"][0]["chemical_binding_status"] == "stale"
+
+
+def test_chemical_locator_reverifies_authority_after_immutable_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    review_root = tmp_path / "review-root"
+    project = source_truth_project(review_root / "review-projects")
+    import_chemical_paper(
+        project,
+        "study-1",
+        PDF_SHA,
+        write_chemical_zip(tmp_path / "chemical.zip"),
+        ACTOR,
+    )
+    locator = chemical_paper_projection(project)["studies"][0]["molecules"][0][
+        "pdf_page_url"
+    ]
+    real_snapshot = dashboard.source_truth_asset_snapshot
+
+    @contextmanager
+    def snapshot_then_add_orphan(*args, **kwargs):
+        with real_snapshot(*args, **kwargs) as snapshot:
+            bundle_path = project / "01_evidence/source_truth/study-1/bundle.json"
+            bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+            orphan = {key: value for key, value in bundle.items() if key != "bundle_digest"}
+            orphan["study_id"] = "orphan-study"
+            orphan["study_identity"] = {
+                "doi": "10.1000/orphan",
+                "title": "Orphan collision",
+            }
+            orphan_path = project / "01_evidence/source_truth/orphan-study/bundle.json"
+            orphan_path.parent.mkdir(parents=True)
+            orphan_path.write_text(
+                json.dumps(
+                    {
+                        **orphan,
+                        "bundle_digest": canonical_digest(orphan),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            yield snapshot
+
+    rendered: list[tuple[Path, int]] = []
+    monkeypatch.setattr(
+        dashboard,
+        "source_truth_asset_snapshot",
+        snapshot_then_add_orphan,
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "render_pdf_page",
+        lambda path, page: rendered.append((path, page)) or b"unexpected",
+    )
+
+    status, _, _ = _http_request(
+        review_root,
+        f"GET {locator} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode("ascii"),
+    )
+
+    assert status == 404
+    assert rendered == []
 
 
 def test_backend_projection_is_consumable_by_dashboard_ui(tmp_path: Path) -> None:
