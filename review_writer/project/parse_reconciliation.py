@@ -82,15 +82,19 @@ def _atomic(path: Path, value: object) -> None:
 
 
 def _candidate(row: dict[str, Any]) -> dict[str, str | None]:
+    if not isinstance(row, dict) or {
+        "smiles_expanded",
+        "smiles_unexpanded",
+        "unresolved_field_count",
+    } & set(row):
+        raise ParseReconciliationError("PARSE_RECONCILIATION_CONTRACT_INVALID")
     resolved = row.get("resolved_smiles")
-    if not isinstance(resolved, str) or not resolved:
-        expanded = row.get("smiles_expanded")
-        unexpanded = row.get("smiles_unexpanded")
-        resolved = (
-            expanded
-            if isinstance(expanded, str) and expanded
-            else unexpanded if isinstance(unexpanded, str) and unexpanded else None
-        )
+    if resolved == "":
+        resolved = None
+    elif resolved is not None and (
+        not isinstance(resolved, str) or resolved != resolved.strip()
+    ):
+        raise ParseReconciliationError("PARSE_RECONCILIATION_CONTRACT_INVALID")
     name = row.get("mol_idt")
     return {
         "mol_idt": name if isinstance(name, str) and name else None,

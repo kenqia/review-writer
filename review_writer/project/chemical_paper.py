@@ -186,7 +186,8 @@ def _smiles_bracket_atom_end(value: str, index: int) -> int | None:
             charge_start = cursor
             while cursor < len(value) and value[cursor].isdigit():
                 cursor += 1
-            if cursor == charge_start and cursor < len(value) and value[cursor] == "0":
+            charge_digits = value[charge_start:cursor]
+            if charge_digits and set(charge_digits) == {"0"}:
                 return None
     if cursor < len(value) and value[cursor] == ":":
         cursor += 1
@@ -220,27 +221,38 @@ def _valid_resolved_smiles(value: str) -> bool:
     component_has_atom = False
     previous_atom = False
     pending_bond: str | None = None
-    branch_stack: list[int] = []
-    ring_bonds: dict[str, str | None] = {}
+    branch_stack: list[tuple[int, bool]] = []
+    ring_bonds: dict[str, tuple[int, str | None]] = {}
     while cursor < len(value):
         token = value[cursor]
         if token == ".":
-            if not component_has_atom or not previous_atom or pending_bond is not None or branch_stack:
+            if (
+                not component_has_atom
+                or not previous_atom
+                or pending_bond is not None
+                or branch_stack
+                or ring_bonds
+            ):
                 return False
             component_has_atom = False
             previous_atom = False
             cursor += 1
             continue
         if token == "(":
-            if not previous_atom or pending_bond is not None:
+            if (
+                not previous_atom
+                or pending_bond is not None
+                or (branch_stack and not branch_stack[-1][1])
+            ):
                 return False
-            branch_stack.append(atom_count)
+            branch_stack.append((atom_count, False))
             cursor += 1
             continue
         if token == ")":
             if not branch_stack or not previous_atom or pending_bond is not None:
                 return False
-            if atom_count <= branch_stack[-1]:
+            start_atom_count, has_atom = branch_stack[-1]
+            if not has_atom or atom_count <= start_atom_count:
                 return False
             branch_stack.pop()
             previous_atom = True
@@ -264,11 +276,13 @@ def _valid_resolved_smiles(value: str) -> bool:
                 ring_label = token
                 cursor += 1
             if ring_label in ring_bonds:
-                prior_bond = ring_bonds.pop(ring_label)
+                opening_atom, prior_bond = ring_bonds.pop(ring_label)
+                if opening_atom == atom_count:
+                    return False
                 if prior_bond is not None and pending_bond is not None and prior_bond != pending_bond:
                     return False
             else:
-                ring_bonds[ring_label] = pending_bond
+                ring_bonds[ring_label] = (atom_count, pending_bond)
             pending_bond = None
             continue
         atom_end = _smiles_atom_end(value, cursor)
@@ -278,6 +292,8 @@ def _valid_resolved_smiles(value: str) -> bool:
         component_has_atom = True
         previous_atom = True
         pending_bond = None
+        if branch_stack:
+            branch_stack[-1] = (branch_stack[-1][0], True)
         cursor = atom_end
     return bool(atom_count and component_has_atom and previous_atom and pending_bond is None and not branch_stack and not ring_bonds)
 
@@ -448,22 +464,49 @@ def _validate_state(state: object) -> dict[str, Any]:
     )
     if state["field_correction_head_digest"] != correction_head or state["element_review_head_digest"] != review_head:
         raise ChemicalPaperError("CHEMICAL_PAPER_HISTORY_INVALID")
-    page_counts = {
-        row["import_digest"]: row["page_count"] for row in imports
-    }
+    page_counts = {row["import_digest"]: row["page_count"] for row in imports}
+    molecules_by_id: dict[str, dict[str, Any]] = {}
     for molecule in state["molecules"]:
+        molecule_id = molecule["molecule_id"]
+        if molecule_id in molecules_by_id:
+            raise ChemicalPaperError("CHEMICAL_PAPER_STATE_INVALID")
+        molecules_by_id[molecule_id] = molecule
         for field in ("resolved_smiles", "smiles_expanded", "smiles_unexpanded"):
             candidate = molecule["fields"][field]["value"]
             if candidate is not None and not _valid_resolved_smiles(candidate):
                 raise ChemicalPaperError("CHEMICAL_PAPER_STATE_INVALID")
-    for event in state["field_corrections"]:
+
+    correction_values: dict[tuple[str, str, str], str | None] = {}
+    current_import_digest = state["current_import_digest"]
+    current_molecule_pages = {
+        molecule["page_index"] + 1 for molecule in state["molecules"]
+    }
+    for event in ordered_corrections:
         field = event["field"]
         try:
             _correction_value(field, event["value"])
             if event["prior_value"] is not None:
                 _correction_value(field, event["prior_value"])
-            page_count = page_counts[event["bound_import_digest"]]
+            bound_import_digest = event["bound_import_digest"]
+            page_count = page_counts[bound_import_digest]
             _correction_locator(event["pdf_locator"], page_count)
+            key = (bound_import_digest, event["molecule_id"], field)
+            if bound_import_digest == current_import_digest:
+                molecule = molecules_by_id.get(event["molecule_id"])
+                if molecule is None:
+                    raise ChemicalPaperError("CHEMICAL_PAPER_STATE_INVALID")
+                if event["bound_molecule_digest"] != molecule["molecule_digest"]:
+                    raise ChemicalPaperError("CHEMICAL_PAPER_STATE_INVALID")
+                if event["pdf_locator"]["page"] not in current_molecule_pages:
+                    raise ChemicalPaperError("CHEMICAL_PAPER_STATE_INVALID")
+                expected_prior = correction_values.get(
+                    key, molecule["fields"][field]["value"]
+                )
+                if event["prior_value"] != expected_prior:
+                    raise ChemicalPaperError("CHEMICAL_PAPER_STATE_INVALID")
+            elif key in correction_values and event["prior_value"] != correction_values[key]:
+                raise ChemicalPaperError("CHEMICAL_PAPER_STATE_INVALID")
+            correction_values[key] = event["value"]
         except (KeyError, ChemicalPaperError) as exc:
             raise ChemicalPaperError("CHEMICAL_PAPER_STATE_INVALID") from exc
     if state.get("state_digest") != _canonical_state_digest(state):

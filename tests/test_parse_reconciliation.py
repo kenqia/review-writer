@@ -9,6 +9,8 @@ from review_writer.project.chemical_paper import import_chemical_paper
 from review_writer.project.dual_source import write_dual_source_binding
 from review_writer.project.parse_quality import write_parse_quality_gate
 from review_writer.project.parse_reconciliation import (
+    ParseReconciliationError,
+    _candidate,
     apply_reconciliation_decision,
     require_reconciliation_ready,
     write_parse_reconciliation,
@@ -28,8 +30,7 @@ def reconciliation_project(tmp_path: Path, *, conflict: bool = True) -> Path:
     content.append({
         "type": "molecule", "page_idx": 0, "bbox": [10, 20, 30, 40],
         "mol_idt": "compound 1",
-        "smiles_expanded": "CN" if conflict else "CO",
-        "smiles_unexpanded": "CN" if conflict else "CO",
+        "resolved_smiles": "CN" if conflict else "CO",
     })
     content_path.write_text(json.dumps(content), encoding="utf-8")
     write_source_truth_bundle(project, "scholarly-a")
@@ -49,6 +50,32 @@ def reconciliation_project(tmp_path: Path, *, conflict: bool = True) -> Path:
     import_chemical_paper(project, "scholarly-a", source_sha, archive, ACTOR)
     write_dual_source_binding(project, "scholarly-a")
     return project
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {
+            "mol_idt": "compound 1",
+            "smiles_expanded": "CO",
+            "smiles_unexpanded": "CO",
+        },
+        {
+            "mol_idt": "compound 1",
+            "resolved_smiles": "CO",
+            "smiles_expanded": "CO",
+            "smiles_unexpanded": "CO",
+        },
+    ],
+)
+def test_reconciliation_candidate_rejects_legacy_or_dual_smiles_contract(
+    row: dict[str, object],
+) -> None:
+    with pytest.raises(
+        ParseReconciliationError,
+        match="PARSE_RECONCILIATION_CONTRACT_INVALID",
+    ):
+        _candidate(row)
 
 
 def test_conflict_requires_pdf_resolution(tmp_path: Path) -> None:

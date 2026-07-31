@@ -27,7 +27,13 @@ from review_writer.project.parse_quality import write_parse_quality_gate
 from review_writer.project.parse_reconciliation import write_parse_reconciliation
 from review_writer.project.dual_source import write_dual_source_binding
 from review_writer.project.source_truth import canonical_digest, load_source_truth_bundle
-from test_chemical_paper_import import ACTOR, snapshot, v2000, write_chemical_zip
+from test_chemical_paper_import import (
+    ACTOR,
+    snapshot,
+    source_truth_project,
+    v2000,
+    write_chemical_zip,
+)
 from test_dual_parse_content_package import paper_request
 from test_parse_quality import _decide_all, _parse_project
 from test_parse_reconciliation import reconciliation_project
@@ -246,7 +252,10 @@ def test_direct_resolved_smiles_correction_requires_locator_and_valid_value(
     assert history[-1]["pdf_locator"]["page"] == 1
 
 
-@pytest.mark.parametrize("value", ["C(", "C1CC", "C..C"])
+@pytest.mark.parametrize(
+    "value",
+    ["C(", "C1CC", "C..C", "C1.C1", "C11", "C((C))", "[C+0]"],
+)
 def test_direct_resolved_smiles_rejects_incomplete_or_empty_structures(
     tmp_path: Path, value: str
 ) -> None:
@@ -378,6 +387,133 @@ def test_load_revalidates_correction_value_and_bound_import_page(
 
     with pytest.raises(ChemicalPaperError, match="CHEMICAL_PAPER_STATE_INVALID"):
         load_chemical_paper_state(project, "scholarly-a")
+
+
+@pytest.mark.parametrize("tamper", ["bound_digest", "orphan_molecule"])
+def test_load_rebinds_correction_event_to_current_molecule(
+    tmp_path: Path, tamper: str
+) -> None:
+    project = _project_with_molecules(
+        tmp_path, [_molecule("mol-a", expanded="CO")]
+    )
+    correct_chemical_paper_field(
+        project,
+        study_id="scholarly-a",
+        molecule_index=0,
+        field="resolved_smiles",
+        value="CN",
+        actor=ACTOR,
+        reason="Checked against Scheme 2.",
+        pdf_locator={"page": 1, "figure_label": "Scheme 2"},
+        version_token=chemical_paper_projection(project)["studies"][0][
+            "version_token"
+        ],
+    )
+
+    state_path = project / "01_evidence/chemical_paper/scholarly-a/state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    correction = state["field_corrections"][0]
+    if tamper == "bound_digest":
+        correction["bound_molecule_digest"] = "f" * 64
+    else:
+        correction["molecule_id"] = "orphan-molecule"
+    correction["event_digest"] = canonical_digest(
+        {key: value for key, value in correction.items() if key != "event_digest"}
+    )
+    state["field_correction_head_digest"] = correction["event_digest"]
+    _reseal_state(state_path, state)
+
+    with pytest.raises(ChemicalPaperError, match="CHEMICAL_PAPER_STATE_INVALID"):
+        load_chemical_paper_state(project, "scholarly-a")
+
+
+def test_load_rejects_forged_correction_prior_value_history(tmp_path: Path) -> None:
+    project = _project_with_molecules(
+        tmp_path, [_molecule("mol-a", expanded="CO")]
+    )
+    first = correct_chemical_paper_field(
+        project,
+        study_id="scholarly-a",
+        molecule_index=0,
+        field="resolved_smiles",
+        value="CN",
+        actor=ACTOR,
+        reason="First PDF check.",
+        pdf_locator={"page": 1},
+        version_token=chemical_paper_projection(project)["studies"][0][
+            "version_token"
+        ],
+    )
+    correct_chemical_paper_field(
+        project,
+        study_id="scholarly-a",
+        molecule_index=0,
+        field="resolved_smiles",
+        value="CCN",
+        actor=ACTOR,
+        reason="Second PDF check.",
+        pdf_locator={"page": 1},
+        version_token=first["version_token"],
+    )
+
+    state_path = project / "01_evidence/chemical_paper/scholarly-a/state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    correction = state["field_corrections"][1]
+    correction["prior_value"] = "CO"
+    correction["event_digest"] = canonical_digest(
+        {key: value for key, value in correction.items() if key != "event_digest"}
+    )
+    state["field_correction_head_digest"] = correction["event_digest"]
+    _reseal_state(state_path, state)
+
+    with pytest.raises(ChemicalPaperError, match="CHEMICAL_PAPER_STATE_INVALID"):
+        load_chemical_paper_state(project, "scholarly-a")
+
+
+def test_load_rejects_locator_page_that_does_not_locate_current_molecule(
+    tmp_path: Path,
+) -> None:
+    project = source_truth_project(tmp_path, pages=2)
+    source_sha = load_source_truth_bundle(project, "study-1")["sources"][0][
+        "pdf"
+    ]["sha256"]
+    import_chemical_paper(
+        project,
+        "study-1",
+        source_sha,
+        write_chemical_zip(
+            tmp_path / "chemical-pages-2.zip",
+            pages=2,
+            molecules=[_molecule("mol-a", expanded="CO")],
+        ),
+        ACTOR,
+    )
+    correct_chemical_paper_field(
+        project,
+        study_id="study-1",
+        molecule_index=0,
+        field="resolved_smiles",
+        value="CN",
+        actor=ACTOR,
+        reason="Checked against page 1.",
+        pdf_locator={"page": 1},
+        version_token=chemical_paper_projection(project)["studies"][0][
+            "version_token"
+        ],
+    )
+
+    state_path = project / "01_evidence/chemical_paper/study-1/state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    correction = state["field_corrections"][0]
+    correction["pdf_locator"]["page"] = 2
+    correction["event_digest"] = canonical_digest(
+        {key: value for key, value in correction.items() if key != "event_digest"}
+    )
+    state["field_correction_head_digest"] = correction["event_digest"]
+    _reseal_state(state_path, state)
+
+    with pytest.raises(ChemicalPaperError, match="CHEMICAL_PAPER_STATE_INVALID"):
+        load_chemical_paper_state(project, "study-1")
 
 
 def test_import_history_uses_prior_chain_not_sorted_mapping_order(tmp_path: Path) -> None:
