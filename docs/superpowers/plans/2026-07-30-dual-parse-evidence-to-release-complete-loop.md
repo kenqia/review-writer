@@ -274,11 +274,10 @@ git commit -m "feat: bind generic and chemical parse lanes"
 - [ ] **Step 1: 写完整性与 batch 原子性 RED 测试**
 
 ```python
-def test_core_requires_name_and_both_smiles_for_every_molecule(project: Path) -> None:
+def test_core_requires_name_and_one_resolved_smiles_for_every_molecule(project: Path) -> None:
     gate = chemical_completion_state(project, "study-a")
     assert gate["missing_name_count"] == 1
-    assert gate["missing_smiles_expanded_count"] == 1
-    assert gate["missing_smiles_unexpanded_count"] == 1
+    assert gate["missing_resolved_smiles_count"] == 1
     assert gate["workflow_can_continue"] is False
 
 
@@ -314,7 +313,7 @@ def apply_chemical_completion_batch(project: Path, study_id: str, payload: objec
 def require_chemical_completion_ready(project: Path, study_id: str) -> str: ...
 ```
 
-Core 的每个 molecule 必须有当前 `mol_idt`、`smiles_expanded`、`smiles_unexpanded`。论文局部标签合法；不生成 IUPAC 名称。Batch 在同一 lock 内先验证全部 rows，再形成逐字段 immutable events，最后一次原子写。无法由 PDF 支持的值保持 blocked。
+Core 的每个 molecule 必须有当前 `mol_idt`（允许论文局部标签）和且仅有一个流程权威字段 `resolved_smiles`。`smiles_expanded` / `smiles_unexpanded` 只作为候选与 provenance：expanded 非空时优先，否则回退 unexpanded；两者都缺失时由研究者依据 PDF/结构定位补录一次 `resolved_smiles`，不制造双字段任务。Batch 在同一 lock 内先验证全部 rows，再形成逐字段 immutable events，最后一次原子写；每个研究者补录事件必须有 PDF locator。无法由 PDF 支持的值保持 blocked。
 
 - [ ] **Step 4: 增加 CLI**
 
@@ -992,7 +991,7 @@ UNIQUE_NEXT_ACTION=<confirm first Chemical Paper import>
 
 - [ ] **Step 3: 完成 Chemical Completion**
 
-Agent 依据可见 PDF/结构 locator，为缺失 `mol_idt` 填论文局部标签，为缺失 expanded/unexpanded SMILES 填来源支持值；batch save 后确认 actor/time/history/refresh persistence。无法确定则 finding，禁止猜值。
+Agent 依据可见 PDF/结构 locator，为缺失 `mol_idt` 填论文局部标签，为缺失的单一 `resolved_smiles` 填来源支持值；batch save 后确认 actor/time/history/refresh persistence。无法确定则 finding，禁止猜值。最终计数必须核对 `missing_resolved_smiles_count` 和 `ai_authored_smiles_count`，不得从旧双字段计数推断完成。
 
 - [ ] **Step 4: 完成 Parse/Reconciliation**
 
