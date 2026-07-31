@@ -481,6 +481,23 @@ def test_honest_authority_requires_exact_three_paper_contract(
     assert summary["gap_registry"] is None
 
 
+def test_honest_authority_keeps_low_coverage_rows_available_when_study_blocked() -> None:
+    from view import serve_review_dashboard as dashboard
+
+    completion = _honest_completion_state()
+    chemical = _honest_chemical_projection()
+    for row in completion["studies"]:
+        row["status"] = "blocked"
+
+    summary, state_available, _ = dashboard._honest_progressive_summary(
+        completion, chemical
+    )
+
+    assert state_available is True
+    assert summary["status"] == "needs_more_traceable_candidates"
+    assert summary["coverage_ratio"] == pytest.approx(240 / 309)
+
+
 def test_dual_parse_api_fails_closed_when_honest_state_is_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

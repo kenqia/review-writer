@@ -695,7 +695,11 @@ def _honest_authoritative_molecules(
         chemical_molecules = chemical_row.get("molecules") if isinstance(chemical_row, dict) else None
         if (
             not isinstance(chemical_row, dict)
-            or completion_row.get("status") != "current"
+            # A study row may be ``blocked`` while coverage is below 0.80;
+            # that is the Honest Progressive continuation state, not stale
+            # authority.  Currentness is established by the bound Chemical
+            # row and the exact three-paper contract below.
+            or completion_row.get("status") not in {"current", "blocked", "needs_review"}
             or chemical_row.get("status") not in HONEST_CHEMICAL_READY_STATUSES
             or chemical_row.get("pdf_binding_status") != "bound"
             or chemical_row.get("page_count") != expected_pages
