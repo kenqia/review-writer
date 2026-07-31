@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import json
-import re
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +18,7 @@ from review_writer.project.chemical_paper import (
     _molecule_by_index,
     _now,
     _state_path,
+    _valid_resolved_smiles,
     _validate_state,
     _version_token,
     load_chemical_paper_state,
@@ -29,7 +29,6 @@ from review_writer.project.source_truth import SourceTruthError, canonical_diges
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA = REPO_ROOT / "schemas/evidence/chemical_completion_gate.v2.schema.json"
-SMILES_RE = re.compile(r"^[A-Za-z0-9@+\-\[\]()=#$\\/%.*:]+$")
 ACTOR_TYPES = frozenset({"human_researcher", "simulated_researcher_agent"})
 
 
@@ -74,11 +73,11 @@ def chemical_completion_state(project: Path, study_id: str) -> dict[str, object]
             "molecule_index": next(index for index, molecule in enumerate(state["molecules"]) if molecule["molecule_id"] == event["molecule_id"]),
             "field": event["field"], "value": event["value"],
             "actor_type": event["actor"]["actor_type"], "actor_label": event["actor"]["actor_label"],
-            "reason": event["reason"], "pdf_locator": event.get("pdf_locator"),
+            "reason": event["reason"], "pdf_locator": event["pdf_locator"],
             "recorded_at": event["recorded_at"],
         }
         for event in state["field_corrections"]
-        if event["bound_import_digest"] == state["current_import_digest"] and event.get("pdf_locator") is not None
+        if event["bound_import_digest"] == state["current_import_digest"]
     ]
     body: dict[str, Any] = {
         "schema_version": "chemical-completion-gate.v2", "project_id": root.name,
@@ -118,7 +117,7 @@ def _locator(value: object, page_count: int) -> dict[str, Any]:
 def _value(field: str, value: object) -> str:
     if not isinstance(value, str) or not value.strip() or value != value.strip() or len(value) > 20000:
         raise ChemicalCompletionError("CHEMICAL_FIELD_VALUE_INVALID")
-    if field == "resolved_smiles" and (not SMILES_RE.fullmatch(value) or not re.search(r"[A-Za-z]", value)):
+    if field == "resolved_smiles" and not _valid_resolved_smiles(value):
         raise ChemicalCompletionError("SMILES_INVALID")
     return value
 

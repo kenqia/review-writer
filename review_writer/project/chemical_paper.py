@@ -57,6 +57,7 @@ MAX_COMPRESSION_RATIO = 200.0
 NESTED_ARCHIVE_SUFFIXES = frozenset({".zip", ".7z", ".rar", ".tar", ".gz", ".bz2", ".xz"})
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _ID = re.compile(r"^(?!\.\.?$)(?!.*[/\\\x00\r\n])\S{1,240}$")
+_SMILES = re.compile(r"^[A-Za-z0-9@+\-\[\]()=#$\\/%.*:]+$")
 _ELEMENT = re.compile(r"^[A-Z][a-z]?$|^\*$")
 _ELEMENTS = frozenset(
     "H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn "
@@ -124,6 +125,42 @@ def _reason(value: object) -> str:
     if not isinstance(value, str) or value != value.strip() or not value or len(value) > 2000:
         raise ChemicalPaperError("REASON_INVALID")
     return value
+
+
+def _valid_resolved_smiles(value: str) -> bool:
+    return bool(_SMILES.fullmatch(value) and re.search(r"[A-Za-z]", value))
+
+
+def _correction_value(field: str, value: object) -> str:
+    if not isinstance(value, str) or value != value.strip() or not value or len(value) > 20000:
+        raise ChemicalPaperError("CHEMICAL_FIELD_VALUE_INVALID")
+    if field == "resolved_smiles" and not _valid_resolved_smiles(value):
+        raise ChemicalPaperError("SMILES_INVALID")
+    return value
+
+
+def _correction_locator(value: object, page_count: int) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) - {"page", "figure_label", "bbox"}:
+        raise ChemicalPaperError("PDF_LOCATOR_INVALID")
+    page = value.get("page")
+    if not isinstance(page, int) or isinstance(page, bool) or not 1 <= page <= page_count:
+        raise ChemicalPaperError("PDF_LOCATOR_INVALID")
+    label = value.get("figure_label")
+    if label is not None and (
+        not isinstance(label, str) or not label.strip() or label != label.strip()
+    ):
+        raise ChemicalPaperError("PDF_LOCATOR_INVALID")
+    bbox = value.get("bbox")
+    if bbox is not None and (
+        not isinstance(bbox, list)
+        or len(bbox) != 4
+        or not all(
+            isinstance(item, (int, float)) and not isinstance(item, bool)
+            for item in bbox
+        )
+    ):
+        raise ChemicalPaperError("PDF_LOCATOR_INVALID")
+    return copy.deepcopy(value)
 
 
 def _project(project: Path) -> Path:
@@ -1109,6 +1146,7 @@ def append_chemical_field_correction(
     actor: object,
     *,
     reason: str,
+    pdf_locator: object,
     expected_version_token: str,
     bound_import_digest: str,
     bound_molecule_digest: str,
@@ -1116,18 +1154,22 @@ def append_chemical_field_correction(
     root = _project(project)
     if field not in FIELD_NAMES:
         raise ChemicalPaperError("CHEMICAL_FIELD_INVALID")
-    if not isinstance(value, str) or value != value.strip() or not value or len(value) > 20000:
-        raise ChemicalPaperError("CHEMICAL_FIELD_VALUE_INVALID")
+    normalized_value = _correction_value(field, value)
     who, why = _actor(actor), _reason(reason)
     try:
         with project_write_lock(root):
             state = load_chemical_paper_state(root, study_id)
             molecule = _molecule(state, molecule_id)
             _require_mutation_binding(state, expected_version_token, bound_import_digest, molecule, bound_molecule_digest)
+            locator = _correction_locator(
+                pdf_locator,
+                state["imports"][state["current_import_digest"]]["page_count"],
+            )
             prior = _current_value(state, molecule, field)
             event = {
-                "molecule_id": molecule["molecule_id"], "field": field, "prior_value": prior, "value": value,
+                "molecule_id": molecule["molecule_id"], "field": field, "prior_value": prior, "value": normalized_value,
                 "actor": who, "reason": why, "recorded_at": _now(),
+                "pdf_locator": locator,
                 "bound_import_digest": state["current_import_digest"], "bound_molecule_digest": molecule["molecule_digest"],
                 "prior_event_digest": state["field_correction_head_digest"],
             }
@@ -1151,6 +1193,7 @@ def correct_chemical_paper_field(
     value: str,
     actor: object,
     reason: str,
+    pdf_locator: object,
     version_token: str,
 ) -> dict[str, Any]:
     """Apply one safe index-addressed, optimistic-concurrency field correction."""
@@ -1164,6 +1207,7 @@ def correct_chemical_paper_field(
         value,
         actor,
         reason=reason,
+        pdf_locator=pdf_locator,
         expected_version_token=version_token,
         bound_import_digest=state["current_import_digest"],
         bound_molecule_digest=molecule["molecule_digest"],

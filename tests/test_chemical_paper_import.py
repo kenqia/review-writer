@@ -1213,6 +1213,7 @@ def test_import_preserves_exported_molecule_order_for_stable_review_indexes(
         value="CC",
         actor=ACTOR,
         reason="Checked exported index against the original PDF.",
+        pdf_locator={"page": 2},
         version_token=first["version_token"],
     )
     state = load_chemical_paper_state(project, "study-1")
@@ -1618,6 +1619,7 @@ def test_corrections_are_append_only_bound_and_stale_safe(tmp_path: Path) -> Non
         "N",
         ACTOR,
         reason="Checked against the original PDF.",
+        pdf_locator={"page": 1},
         expected_version_token=imported["version_token"],
         bound_import_digest=state["current_import_digest"],
         bound_molecule_digest=molecule["molecule_digest"],
@@ -1635,6 +1637,7 @@ def test_corrections_are_append_only_bound_and_stale_safe(tmp_path: Path) -> Non
         append_chemical_field_correction(
             project, "study-1", "mol-2", "mol_idt", "amine", ACTOR,
             reason="Original PDF review.", expected_version_token=imported["version_token"],
+            pdf_locator={"page": 1},
             bound_import_digest=state["current_import_digest"],
             bound_molecule_digest=molecule["molecule_digest"],
         )
@@ -1802,6 +1805,7 @@ def test_safe_index_mutations_require_current_opaque_version_and_are_zero_write_
         value="N",
         actor=ACTOR,
         reason="Checked against the original PDF.",
+        pdf_locator={"page": 1},
         version_token=version,
     )
     assert corrected["molecule_index"] == 1

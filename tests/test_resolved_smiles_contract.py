@@ -17,6 +17,7 @@ from review_writer.project.chemical_paper import (
     chemical_paper_dependency_currentness,
     chemical_paper_manuscript_bindings,
     chemical_paper_projection,
+    correct_chemical_paper_field,
     import_chemical_paper,
     load_chemical_paper_state,
 )
@@ -191,6 +192,56 @@ def test_completion_gate_and_batch_use_one_researcher_owned_smiles_field(
     assert smiles_history[0]["reason"] == "Structure visible in Scheme 2."
     assert smiles_history[0]["actor_type"] == "simulated_researcher_agent"
     assert smiles_history[0]["recorded_at"].endswith("Z")
+
+
+def test_direct_resolved_smiles_correction_requires_locator_and_valid_value(
+    tmp_path: Path,
+) -> None:
+    project = _project_with_molecules(
+        tmp_path, [_molecule("mol-a", expanded="CO")]
+    )
+    version_token = chemical_paper_projection(project)["studies"][0]["version_token"]
+
+    for value, locator, error in (
+        ("CN", None, "PDF_LOCATOR_INVALID"),
+        ("not a smiles!", {"page": 1, "figure_label": "Scheme 2"}, "SMILES_INVALID"),
+    ):
+        before = snapshot(project)
+        with pytest.raises(ChemicalPaperError, match=error):
+            correct_chemical_paper_field(
+                project,
+                study_id="scholarly-a",
+                molecule_index=0,
+                field="resolved_smiles",
+                value=value,
+                actor=ACTOR,
+                reason="Checked against Scheme 2.",
+                pdf_locator=locator,
+                version_token=version_token,
+            )
+        assert snapshot(project) == before
+
+    corrected = correct_chemical_paper_field(
+        project,
+        study_id="scholarly-a",
+        molecule_index=0,
+        field="resolved_smiles",
+        value="CN",
+        actor=ACTOR,
+        reason="Checked against Scheme 2.",
+        pdf_locator={"page": 1, "figure_label": "Scheme 2"},
+        version_token=version_token,
+    )
+
+    assert corrected["version_token"] != version_token
+    current = load_chemical_paper_state(project, "scholarly-a")
+    assert current["field_corrections"][-1]["pdf_locator"] == {
+        "page": 1,
+        "figure_label": "Scheme 2",
+    }
+    history = chemical_completion_state(project, "scholarly-a")["history"]
+    assert history[-1]["field"] == "resolved_smiles"
+    assert history[-1]["pdf_locator"]["page"] == 1
 
 
 def test_currentness_and_impact_bind_only_resolved_smiles(tmp_path: Path) -> None:

@@ -1314,7 +1314,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "actor_label": value.get("actor_label"),
             }
             if action == "field":
-                if set(value) != common | {"field", "value"}:
+                if set(value) != common | {"field", "value", "pdf_locator"}:
                     raise ChemicalPaperError("CHEMICAL_PAPER_REQUEST_INVALID")
                 result = correct_chemical_paper_field(
                     project,
@@ -1324,6 +1324,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     value=value.get("value"),
                     actor=actor,
                     reason=value.get("reason"),
+                    pdf_locator=value.get("pdf_locator"),
                     version_token=value.get("version_token"),
                 )
             else:

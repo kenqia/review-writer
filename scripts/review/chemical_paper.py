@@ -75,6 +75,9 @@ def add_subcommands(commands: argparse._SubParsersAction) -> None:
     correct.add_argument("--field", required=True, choices=("mol_idt", "resolved_smiles"))
     correct.add_argument("--value", required=True)
     correct.add_argument("--reason", required=True)
+    correct.add_argument("--pdf-page", type=int, required=True)
+    correct.add_argument("--pdf-figure-label")
+    correct.add_argument("--pdf-bbox", type=float, nargs=4)
     correct.add_argument("--version-token", required=True)
     _actor(correct)
 
@@ -146,6 +149,11 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         return apply_chemical_completion_batch(args.project, args.study_id, payload)
     actor = {"actor_type": args.actor_type, "actor_label": args.actor_label}
     if args.command == "correct-chemical-paper-field":
+        pdf_locator = {"page": args.pdf_page}
+        if args.pdf_figure_label is not None:
+            pdf_locator["figure_label"] = args.pdf_figure_label
+        if args.pdf_bbox is not None:
+            pdf_locator["bbox"] = args.pdf_bbox
         return correct_chemical_paper_field(
             args.project,
             study_id=args.study_id,
@@ -154,6 +162,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             value=args.value,
             actor=actor,
             reason=args.reason,
+            pdf_locator=pdf_locator,
             version_token=args.version_token,
         )
     return review_chemical_paper_elements(

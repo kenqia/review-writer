@@ -176,6 +176,7 @@ def test_content_agent_result_is_stale_after_chemical_state_change_and_zero_writ
         value="CC",
         actor=ACTOR,
         reason="Checked against the original PDF.",
+        pdf_locator={"page": 1},
         version_token=imported["version_token"],
     )
 
@@ -426,6 +427,7 @@ def test_primary_vertical_cli_exposes_all_frozen_chemical_commands() -> None:
             "--field",
             "--value",
             "--reason",
+            "--pdf-page",
             "--version-token",
             "--actor-type",
             "--actor-label",
@@ -517,6 +519,8 @@ def test_primary_vertical_cli_executes_safe_chemical_workflow(tmp_path: Path) ->
         "CC",
         "--reason",
         "Checked against the original PDF.",
+        "--pdf-page",
+        "1",
         "--version-token",
         version,
         "--actor-type",
@@ -625,6 +629,7 @@ def test_http_get_and_patch_follow_safe_v2_contract(tmp_path: Path) -> None:
         "field": "resolved_smiles",
         "value": "N",
         "reason": "Checked against the original PDF.",
+        "pdf_locator": {"page": 1},
         "actor_type": "simulated_researcher_agent",
         "actor_label": "fixture-researcher",
         "version_token": version,
