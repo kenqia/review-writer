@@ -430,6 +430,42 @@ def test_completion_crop_is_keyboard_triggered_lazy_and_bounded_for_94_rows() ->
     )
 
 
+def test_completion_crop_failed_image_finishes_without_infinite_loading_and_can_retry() -> None:
+    module_path = json.dumps(str(DUAL_SCRIPT))
+    _run_node(
+        "\n".join(
+            [
+                f"const ui=require({module_path});",
+                "class Node {",
+                " constructor(tag,id=''){",
+                "  this.tag=tag;this.id=id;this.children=[];this.attributes={};this.className='';this.textContent='';this.style={};this.listeners={};this.open=false;",
+                "  if(tag==='img'){this.naturalWidth=0;this.naturalHeight=0;this.complete=true;}",
+                "  if(tag==='canvas'){this.width=300;this.height=150;this.context={draws:[],drawImage(...args){this.draws.push(args);}};}",
+                " }",
+                " append(...nodes){this.children.push(...nodes);}",
+                " replaceChildren(...nodes){this.children=[...nodes];}",
+                " setAttribute(name,value){this.attributes[name]=String(value);if(name==='id')this.id=String(value);}",
+                " addEventListener(name,handler){if(!this.listeners[name])this.listeners[name]=[];this.listeners[name].push(handler);}",
+                " dispatch(name){for(const handler of this.listeners[name]||[])handler({currentTarget:this});}",
+                " getContext(kind){return this.tag==='canvas'&&kind==='2d'?this.context:null;}",
+                " querySelector(selector){const id=selector.startsWith('#')?selector.slice(1):'';if(id&&this.id===id)return this;for(const child of this.children){if(child&&typeof child.querySelector==='function'){const found=child.querySelector(selector);if(found)return found;}}return null;}",
+                "}",
+                "const document={createElement:tag=>new Node(tag),createTextNode:value=>{const node=new Node('#text');node.textContent=String(value);return node;},body:new Node('body')};",
+                "const mount=new Node('main');for(const id of ['dual-study-status','chemical-import-preflight','chemical-completion-queue','reconciliation-list'])mount.append(new Node('section',id));",
+                "const model=ui.projectionModel({schema_version:'dual-parse-projection.v1',status:'ready',studies:[],completion_queue:[{study_id:'study',molecule_index:0,version_token:'version',field:'mol_idt',page:4,bbox_normalized:[0.1,0.2,0.3,0.4],pdf_page_url:'/api/project/case/pdf/study?page=4'}]});",
+                "ui.render(document,mount,model,{});",
+                "const all=[];const visit=node=>{all.push(node);for(const child of node.children||[])if(child&&typeof child==='object')visit(child);};visit(mount);",
+                "const image=all.find(node=>node.className==='dual-completion-page-image');const crop=all.find(node=>node.className==='dual-completion-crop');const canvas=all.find(node=>node.className==='dual-completion-crop-canvas');const status=all.find(node=>node.className==='dual-completion-crop-status');",
+                "crop.open=true;crop.dispatch('toggle');",
+                "if(status.textContent!=='局部放大暂不可用；请核对原始整页，或收起后重试。' || canvas.context.draws.length!==0) throw new Error(JSON.stringify({status:status.textContent,draws:canvas.context.draws.length}));",
+                "if((image.listeners.load||[]).length || (image.listeners.error||[]).length) throw new Error('registered already-ended image events');",
+                "image.naturalWidth=1000;image.naturalHeight=2000;crop.open=false;crop.dispatch('toggle');crop.open=true;crop.dispatch('toggle');",
+                "if(canvas.context.draws.length!==1 || !status.textContent.includes('局部放大已由红框区域生成')) throw new Error(JSON.stringify({status:status.textContent,draws:canvas.context.draws.length}));",
+            ]
+        )
+    )
+
+
 def test_completion_rejects_zero_area_bbox_without_claiming_or_drawing_location() -> None:
     module_path = json.dumps(str(DUAL_SCRIPT))
     _run_node(

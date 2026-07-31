@@ -787,26 +787,27 @@
     status.className = "dual-completion-crop-status";
     status.textContent = "展开后按需生成局部放大。";
     let requested = false;
+    const markCropUnavailable = () => {
+      requested = false;
+      status.textContent = "局部放大暂不可用；请核对原始整页，或收起后重试。";
+    };
     const renderCrop = () => {
       if (drawCompletionCrop(image, canvas, row.normalizedBbox)) {
         status.textContent = "局部放大已由红框区域生成；请结合原始整页核对。";
       } else {
-        requested = false;
-        status.textContent = "局部放大暂不可用；请核对原始整页。";
+        markCropUnavailable();
       }
     };
     crop.addEventListener("toggle", () => {
       if (!crop.open || requested) return;
       requested = true;
       status.textContent = "正在生成局部放大…";
-      if (image.complete && image.naturalWidth) {
-        renderCrop();
+      if (image.complete) {
+        if (image.naturalWidth) renderCrop();
+        else markCropUnavailable();
       } else {
         image.addEventListener("load", renderCrop, {once: true});
-        image.addEventListener("error", () => {
-          requested = false;
-          status.textContent = "局部放大暂不可用；请核对原始整页。";
-        }, {once: true});
+        image.addEventListener("error", markCropUnavailable, {once: true});
       }
     });
     crop.append(summary, canvas, status);
