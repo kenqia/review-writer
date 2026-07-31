@@ -11,6 +11,7 @@ import copy
 import hashlib
 import io
 import json
+from math import isfinite
 import os
 import re
 import secrets
@@ -48,6 +49,10 @@ STATE_SCHEMA = REPO_ROOT / "schemas/evidence/chemical_paper_state.v2.schema.json
 PROVENANCE_SMILES_FIELDS = ("smiles_expanded", "smiles_unexpanded")
 FIELD_NAMES = ("mol_idt", "resolved_smiles")
 REQUIRED_FIELD_NAMES = frozenset((*FIELD_NAMES, "elements"))
+RESOLVED_SMILES_STATUSES = frozenset({"CONFIRMED", "AI_PROVISIONAL", "BLOCKED"})
+RESEARCHER_SAFE_PROVENANCE_KEYS = frozenset({"kind", "source", "source_field"})
+CORE_MOLECULE_COUNT = 309
+CORE_COVERAGE_THRESHOLD = 0.8
 ELEMENT_REVIEW_STATES = frozenset({"not_reviewed", "confirmed", "corrected", "not_applicable"})
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 MAX_ENTRY_COUNT = 16
@@ -311,7 +316,19 @@ def _first_valid_smiles_candidate(
     return None, None
 
 
-def _correction_value(field: str, value: object) -> str:
+def _correction_value(
+    field: str, value: object, resolution_status: object = None, gap_reason: object = None
+) -> str | None:
+    if resolution_status == "BLOCKED":
+        if field != "resolved_smiles" or value is not None:
+            raise ChemicalPaperError("BLOCKED_VALUE_MUST_BE_NULL")
+        if (
+            not isinstance(gap_reason, str)
+            or not gap_reason.strip()
+            or gap_reason != gap_reason.strip()
+        ):
+            raise ChemicalPaperError("GAP_REASON_REQUIRED")
+        return None
     if not isinstance(value, str) or value != value.strip() or not value or len(value) > 20000:
         raise ChemicalPaperError("CHEMICAL_FIELD_VALUE_INVALID")
     if field == "resolved_smiles" and not _valid_resolved_smiles(value):
@@ -341,6 +358,112 @@ def _correction_locator(value: object, page_count: int) -> dict[str, Any]:
     ):
         raise ChemicalPaperError("PDF_LOCATOR_INVALID")
     return copy.deepcopy(value)
+
+
+def _resolution_provenance(value: object) -> object:
+    """Validate the small, safe provenance payload carried by new resolutions."""
+
+    if isinstance(value, str):
+        if not value.strip() or value != value.strip() or len(value) > 2000:
+            raise ChemicalPaperError("RESOLUTION_PROVENANCE_INVALID")
+        return value
+    if not isinstance(value, dict) or not value:
+        raise ChemicalPaperError("RESOLUTION_PROVENANCE_INVALID")
+    for key, item in value.items():
+        if (
+            not isinstance(key, str)
+            or not key.strip()
+            or key != key.strip()
+            or len(key) > 100
+            or not isinstance(item, (str, int, float, bool, type(None)))
+            or isinstance(item, float) and not isfinite(item)
+        ):
+            raise ChemicalPaperError("RESOLUTION_PROVENANCE_INVALID")
+        if isinstance(item, str) and len(item) > 2000:
+            raise ChemicalPaperError("RESOLUTION_PROVENANCE_INVALID")
+    return copy.deepcopy(value)
+
+
+def _researcher_safe_provenance(value: object) -> dict[str, str]:
+    """Keep only non-sensitive provenance labels in researcher-facing views."""
+
+    safe: dict[str, str] = {}
+    if isinstance(value, dict):
+        for key in RESEARCHER_SAFE_PROVENANCE_KEYS:
+            item = value.get(key)
+            if not isinstance(item, str) or item != item.strip() or not item or len(item) > 200:
+                continue
+            lowered = item.casefold()
+            if (
+                "/" in item
+                or "\\" in item
+                or _SHA256.fullmatch(lowered)
+                or any(marker in lowered for marker in ("token", "sha256", "digest", "secret", "cookie", "auth"))
+            ):
+                continue
+            safe[key] = item
+    return safe or {"kind": "provenance_redacted"}
+
+
+def _resolution_metadata(
+    status: object,
+    confidence: object,
+    provenance: object,
+    actor: dict[str, str],
+    gap_reason: object = None,
+) -> dict[str, Any]:
+    if status is None:
+        if confidence is not None or provenance is not None or gap_reason is not None:
+            raise ChemicalPaperError("RESOLUTION_STATUS_REQUIRED")
+        return {}
+    if status not in {"CONFIRMED", "AI_PROVISIONAL", "BLOCKED"}:
+        raise ChemicalPaperError("RESOLUTION_STATUS_INVALID")
+    if status == "BLOCKED":
+        if (
+            not isinstance(gap_reason, str)
+            or not gap_reason.strip()
+            or gap_reason != gap_reason.strip()
+            or len(gap_reason) > 2000
+            or confidence is not None
+            or provenance is not None
+        ):
+            raise ChemicalPaperError("GAP_REASON_REQUIRED")
+        return {"resolution_status": "BLOCKED", "gap_reason": gap_reason}
+    if status == "CONFIRMED":
+        if actor["actor_type"] != "human_researcher":
+            raise ChemicalPaperError("RESEARCHER_CONFIRMATION_REQUIRED")
+        if confidence is not None or provenance is not None or gap_reason is not None:
+            raise ChemicalPaperError("RESOLUTION_METADATA_NOT_ALLOWED")
+        return {"resolution_status": "CONFIRMED"}
+    if (
+        isinstance(confidence, bool)
+        or not isinstance(confidence, (int, float))
+        or not isfinite(float(confidence))
+        or not 0 <= float(confidence) <= 1
+    ):
+        raise ChemicalPaperError("RESOLUTION_METADATA_REQUIRED")
+    return {
+        "resolution_status": "AI_PROVISIONAL",
+        "confidence": float(confidence),
+        "provenance": _resolution_provenance(provenance),
+    }
+
+
+def _actor_provenance_mismatch(actor: object) -> bool:
+    if not isinstance(actor, dict):
+        return False
+    actor_type = actor.get("actor_type")
+    actor_label = actor.get("actor_label")
+    if not isinstance(actor_type, str) or not isinstance(actor_label, str):
+        return False
+    label = actor_label.casefold()
+    return (
+        actor_type == "human_researcher"
+        and ("simulated" in label or "agent" in label)
+    ) or (
+        actor_type == "simulated_researcher_agent"
+        and ("human" in label or "researcher" == label)
+    )
 
 
 def _project(project: Path) -> Path:
@@ -443,6 +566,27 @@ def _validate_event_chain(
     return prior, ordered
 
 
+def _validate_resolution_event(event: dict[str, Any]) -> None:
+    metadata_keys = {"resolution_status", "confidence", "provenance", "gap_reason"}
+    present = metadata_keys.intersection(event)
+    if not present:
+        return
+    if event.get("field") != "resolved_smiles":
+        raise ChemicalPaperError("CHEMICAL_PAPER_STATE_INVALID")
+    try:
+        normalized = _resolution_metadata(
+            event.get("resolution_status"),
+            event.get("confidence"),
+            event.get("provenance"),
+            event["actor"],
+            event.get("gap_reason"),
+        )
+    except (KeyError, ChemicalPaperError) as exc:
+        raise ChemicalPaperError("CHEMICAL_PAPER_STATE_INVALID") from exc
+    if any(event.get(key) != value for key, value in normalized.items()):
+        raise ChemicalPaperError("CHEMICAL_PAPER_STATE_INVALID")
+
+
 def _validate_state(state: object) -> dict[str, Any]:
     if not isinstance(state, dict):
         raise ChemicalPaperError("CHEMICAL_PAPER_STATE_INVALID")
@@ -501,12 +645,18 @@ def _validate_state(state: object) -> dict[str, Any]:
     for event in ordered_corrections:
         field = event["field"]
         try:
-            _correction_value(field, event["value"])
+            _correction_value(
+                field,
+                event["value"],
+                event.get("resolution_status"),
+                event.get("gap_reason"),
+            )
             if event["prior_value"] is not None:
                 _correction_value(field, event["prior_value"])
             bound_import_digest = event["bound_import_digest"]
             page_count = page_counts[bound_import_digest]
             _correction_locator(event["pdf_locator"], page_count)
+            _validate_resolution_event(event)
             key = (bound_import_digest, event["molecule_id"], field)
             if bound_import_digest == current_import_digest:
                 molecule = molecules_by_id.get(event["molecule_id"])
@@ -1061,6 +1211,115 @@ def _current_value(state: dict[str, Any], molecule: dict[str, Any], field: str) 
     return value
 
 
+def _current_resolved_smiles_event(
+    state: dict[str, Any], molecule: dict[str, Any]
+) -> dict[str, Any] | None:
+    current: dict[str, Any] | None = None
+    for event in state["field_corrections"]:
+        if (
+            event["bound_import_digest"] == state["current_import_digest"]
+            and event["molecule_id"] == molecule["molecule_id"]
+            and event["field"] == "resolved_smiles"
+        ):
+            current = event
+    return current
+
+
+def _resolved_smiles_resolution(
+    state: dict[str, Any], molecule: dict[str, Any]
+) -> dict[str, Any]:
+    """Return the honest, read-only resolution classification for one molecule.
+
+    Imported candidate values are classified only in this projection.  The
+    authoritative state and append-only correction history are not rewritten.
+    """
+
+    value = _current_value(state, molecule, "resolved_smiles")
+    event = _current_resolved_smiles_event(state, molecule)
+    if event is not None and event.get("resolution_status") == "AI_PROVISIONAL":
+        return {
+            "resolved_smiles_status": "AI_PROVISIONAL",
+            "resolved_smiles": value,
+            "confidence": event["confidence"],
+            "provenance": _researcher_safe_provenance(event["provenance"]),
+            "pdf_locator": copy.deepcopy(event["pdf_locator"]),
+            "gap_reason": None,
+            "legacy_unclassified": False,
+        }
+    if event is not None and event.get("resolution_status") == "BLOCKED":
+        return {
+            "resolved_smiles_status": "BLOCKED",
+            "resolved_smiles": None,
+            "confidence": None,
+            "provenance": None,
+            "pdf_locator": copy.deepcopy(event["pdf_locator"]),
+            "gap_reason": event["gap_reason"],
+            "legacy_unclassified": False,
+        }
+    if event is not None and event.get("resolution_status") == "CONFIRMED":
+        return {
+            "resolved_smiles_status": "CONFIRMED",
+            "resolved_smiles": value,
+            "confidence": None,
+            "provenance": {"kind": "researcher_confirmation"},
+            "pdf_locator": copy.deepcopy(event["pdf_locator"]),
+            "gap_reason": None,
+            "legacy_unclassified": False,
+        }
+    if value is None:
+        return {
+            "resolved_smiles_status": "BLOCKED",
+            "resolved_smiles": None,
+            "confidence": None,
+            "provenance": None,
+            "pdf_locator": {
+                "page": molecule["page_index"] + 1,
+                "bbox": copy.deepcopy(molecule["normalized_bbox"]),
+            },
+            "gap_reason": "resolved_smiles_not_available",
+            "legacy_unclassified": False,
+        }
+    expanded = molecule["fields"]["smiles_expanded"]["value"]
+    unexpanded = molecule["fields"]["smiles_unexpanded"]["value"]
+    candidate, selected_source = _first_valid_smiles_candidate(expanded, unexpanded)
+    if candidate == value and selected_source is not None and event is None:
+        return {
+            "resolved_smiles_status": "AI_PROVISIONAL",
+            "resolved_smiles": value,
+            # Existing imports do not carry a confidence score.  Zero is an
+            # explicit conservative value, not a claim of researcher review.
+            "confidence": 0.0,
+            "provenance": {
+                "kind": "legacy_candidate_projection",
+                "source": "chemical_paper_import",
+                "source_field": selected_source,
+            },
+            "pdf_locator": {
+                "page": molecule["page_index"] + 1,
+                "bbox": copy.deepcopy(molecule["normalized_bbox"]),
+            },
+            "gap_reason": None,
+            "legacy_unclassified": False,
+        }
+    return {
+        "resolved_smiles_status": "BLOCKED",
+        "resolved_smiles": None,
+        "confidence": None,
+        "provenance": None,
+        "pdf_locator": (
+            copy.deepcopy(event["pdf_locator"])
+            if event is not None
+            else {
+                "page": molecule["page_index"] + 1,
+                "bbox": copy.deepcopy(molecule["normalized_bbox"]),
+            }
+        ),
+        "gap_reason": "legacy_resolution_status_missing",
+        "legacy_unclassified": True,
+        "legacy_value_present": True,
+    }
+
+
 def _resolved_smiles_details(
     state: dict[str, Any], molecule: dict[str, Any]
 ) -> tuple[str | None, dict[str, str | bool | None]]:
@@ -1409,11 +1668,15 @@ def append_chemical_field_correction(
     expected_version_token: str,
     bound_import_digest: str,
     bound_molecule_digest: str,
+    resolution_status: object = None,
+    confidence: object = None,
+    provenance: object = None,
+    gap_reason: object = None,
 ) -> dict[str, Any]:
     root = _project(project)
     if field not in FIELD_NAMES:
         raise ChemicalPaperError("CHEMICAL_FIELD_INVALID")
-    normalized_value = _correction_value(field, value)
+    normalized_value = _correction_value(field, value, resolution_status, gap_reason)
     who, why = _actor(actor), _reason(reason)
     try:
         with project_write_lock(root):
@@ -1424,6 +1687,9 @@ def append_chemical_field_correction(
                 pdf_locator,
                 state["imports"][state["current_import_digest"]]["page_count"],
             )
+            resolution_metadata = _resolution_metadata(
+                resolution_status, confidence, provenance, who, gap_reason
+            )
             prior = _current_value(state, molecule, field)
             event = {
                 "molecule_id": molecule["molecule_id"], "field": field, "prior_value": prior, "value": normalized_value,
@@ -1431,6 +1697,7 @@ def append_chemical_field_correction(
                 "pdf_locator": locator,
                 "bound_import_digest": state["current_import_digest"], "bound_molecule_digest": molecule["molecule_digest"],
                 "prior_event_digest": state["field_correction_head_digest"],
+                **resolution_metadata,
             }
             event["event_digest"] = canonical_digest(event)
             state["field_corrections"].append(event)
@@ -1454,6 +1721,10 @@ def correct_chemical_paper_field(
     reason: str,
     pdf_locator: object,
     version_token: str,
+    resolution_status: object = None,
+    confidence: object = None,
+    provenance: object = None,
+    gap_reason: object = None,
 ) -> dict[str, Any]:
     """Apply one safe index-addressed, optimistic-concurrency field correction."""
     state = load_chemical_paper_state(project, study_id)
@@ -1470,6 +1741,10 @@ def correct_chemical_paper_field(
         expected_version_token=version_token,
         bound_import_digest=state["current_import_digest"],
         bound_molecule_digest=molecule["molecule_digest"],
+        resolution_status=resolution_status,
+        confidence=confidence,
+        provenance=provenance,
+        gap_reason=gap_reason,
     )
     return {
         "status": result["status"],
@@ -1606,7 +1881,9 @@ def _study_summary(
         state["source_pdf_sha256"],
     )
     for molecule_index, molecule in enumerate(state["molecules"]):
-        resolved_smiles, smiles_candidates = _resolved_smiles_details(state, molecule)
+        resolution = _resolved_smiles_resolution(state, molecule)
+        resolved_smiles = resolution["resolved_smiles"]
+        smiles_candidates = _resolved_smiles_details(state, molecule)[1]
         values: dict[str, str | None] = {
             "mol_idt": _current_value(state, molecule, "mol_idt"),
             "resolved_smiles": resolved_smiles,
@@ -1641,6 +1918,12 @@ def _study_summary(
             "bbox_normalized": molecule["normalized_bbox"],
             "molblock_available": bool(molecule["element_candidate_counts"]),
             **values,
+            "resolved_smiles_status": resolution["resolved_smiles_status"],
+            "confidence": resolution["confidence"],
+            "provenance": resolution["provenance"],
+            "pdf_locator": resolution["pdf_locator"],
+            "gap_reason": resolution["gap_reason"],
+            "legacy_unclassified": resolution["legacy_unclassified"],
             "smiles_candidates": smiles_candidates,
             "missing_fields": missing_fields,
             "candidate_elements": [
@@ -1660,16 +1943,39 @@ def _study_summary(
         })
     active = state["imports"][state["current_import_digest"]]
     gaps = [f"{count} molecule(s) have unresolved {field}." for field, count in unresolved.items() if count]
+    gap_registry = [
+        {
+            "molecule_index": index,
+            "status": "BLOCKED",
+            "value": None,
+            "gap_reason": row["gap_reason"],
+            "pdf_locator": row["pdf_locator"],
+        }
+        for index, row in enumerate(molecules)
+        if row["resolved_smiles_status"] == "BLOCKED"
+    ]
+    uncertainty_registry = [
+        {
+            "molecule_index": row["molecule_index"],
+            "status": row["resolved_smiles_status"],
+            "value": row["resolved_smiles"],
+            "confidence": row["confidence"],
+            "provenance": row["provenance"],
+            "pdf_locator": row["pdf_locator"],
+        }
+        for row in molecules
+        if row["resolved_smiles_status"] in {"CONFIRMED", "AI_PROVISIONAL"}
+    ]
     status = "needs_review" if gaps else "ready"
     limitations = [
         "Reaction data was not provided in this export.",
         "No exported image assets were provided; molecule boxes are original-PDF locators only.",
-        "Expanded/unexpanded SMILES values are provenance candidates only; selected_source reports only a valid candidate or researcher correction.",
+        "Expanded/unexpanded SMILES values are candidate provenance only; the safe projection labels them AI_PROVISIONAL and requires explicit researcher confirmation for CONFIRMED.",
     ]
     if candidate_difference_count:
         limitations.append(
             f"{candidate_difference_count} molecule(s) have an expanded/unexpanded SMILES candidate difference; "
-            "resolved_smiles selects the first valid candidate (expanded, then unexpanded) and remains missing if neither passes validation until a researcher correction is recorded."
+            "resolved_smiles selects the first valid candidate (expanded, then unexpanded) as AI_PROVISIONAL; ambiguous or missing values remain BLOCKED until an explicit resolution is recorded."
         )
     if invalid_candidate_count:
         limitations.append(
@@ -1681,6 +1987,16 @@ def _study_summary(
         "imported_at": active["imported_at"], "page_count": active["page_count"],
         "file_kinds": ["layout", "markdown", "molecule_info"], "molecule_count": len(molecules),
         "reaction_data_status": "unavailable_not_provided", "missing_field_counts": unresolved,
+        "resolved_smiles_status_counts": {
+            status: sum(row["resolved_smiles_status"] == status for row in molecules)
+            for status in ("CONFIRMED", "AI_PROVISIONAL", "BLOCKED")
+        },
+        "gap_registry": gap_registry,
+        "uncertainty_registry": uncertainty_registry,
+        "uncertainty_disclosure": (
+            "uncertainty_registry discloses classified molecules; "
+            "gap_registry contains BLOCKED molecules only."
+        ),
         "unreviewed_element_molecule_count": unreviewed, "gaps": gaps,
         "limitations": limitations,
         "version_token": version_token, "molecules": molecules,

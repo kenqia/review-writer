@@ -579,6 +579,15 @@ def test_browser_mutations_can_advance_only_deterministic_dual_gates(
                     "molecule_index": 0,
                     "field": field,
                     "value": "compound 3a" if field == "mol_idt" else "CO",
+                    **(
+                        {
+                            "resolution_status": "AI_PROVISIONAL",
+                            "confidence": 0.8,
+                            "provenance": {"kind": "ai_candidate", "source": "pdf"},
+                        }
+                        if field == "resolved_smiles"
+                        else {}
+                    ),
                     "reason": "Original PDF Scheme 2 supports this value.",
                     "pdf_locator": {"page": 1, "figure_label": "Scheme 2"},
                 }
@@ -646,6 +655,15 @@ def test_confirm_and_completion_http_advance_derived_gates(tmp_path: Path) -> No
                     "molecule_index": 0,
                     "field": field,
                     "value": "compound 3a" if field == "mol_idt" else "CO",
+                    **(
+                        {
+                            "resolution_status": "AI_PROVISIONAL",
+                            "confidence": 0.8,
+                            "provenance": {"kind": "ai_candidate", "source": "pdf"},
+                        }
+                        if field == "resolved_smiles"
+                        else {}
+                    ),
                     "reason": "Original PDF Scheme 2 supports this value.",
                     "pdf_locator": {"page": 1, "figure_label": "Scheme 2"},
                 }

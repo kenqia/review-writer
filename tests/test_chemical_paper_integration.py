@@ -554,7 +554,9 @@ def test_primary_vertical_cli_executes_safe_chemical_workflow(tmp_path: Path) ->
     final_state_process = invoke("chemical-paper-state", "--project", str(project))
     final_state = json.loads(final_state_process.stdout)["result"]
     molecule = final_state["studies"][0]["molecules"][0]
-    assert molecule["resolved_smiles"] == "CC"
+    assert molecule["resolved_smiles"] is None
+    assert molecule["resolved_smiles_status"] == "BLOCKED"
+    assert molecule["gap_reason"] == "legacy_resolution_status_missing"
     assert molecule["smiles_candidates"]["expanded"] == "C"
     assert molecule["element_review_state"] == "confirmed"
 

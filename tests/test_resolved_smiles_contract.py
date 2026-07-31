@@ -330,6 +330,9 @@ def test_completion_gate_and_batch_use_one_researcher_owned_smiles_field(
                     "molecule_index": 0,
                     "field": "resolved_smiles",
                     "value": "CO",
+                    "resolution_status": "AI_PROVISIONAL",
+                    "confidence": 0.8,
+                    "provenance": {"kind": "ai_candidate", "source": "pdf"},
                     "reason": "Structure visible in Scheme 2.",
                     "pdf_locator": {"page": 1, "figure_label": "Scheme 2"},
                 },
@@ -451,6 +454,9 @@ def test_batch_resolved_smiles_rejects_incomplete_or_empty_structures(
                         "molecule_index": 0,
                         "field": "resolved_smiles",
                         "value": value,
+                        "resolution_status": "AI_PROVISIONAL",
+                        "confidence": 0.8,
+                        "provenance": {"kind": "ai_candidate", "source": "pdf"},
                         "reason": "Structure visible in Scheme 2.",
                         "pdf_locator": {"page": 1, "figure_label": "Scheme 2"},
                     }
@@ -838,9 +844,10 @@ def test_history_chain_order_not_dict_or_list_order(tmp_path: Path) -> None:
     _reseal_state(state_path, state)
     loaded = load_chemical_paper_state(project, "scholarly-a")
     assert [row["value"] for row in loaded["field_corrections"]] == ["CN", "CCN"]
-    assert chemical_paper_projection(project)["studies"][0]["molecules"][0][
-        "resolved_smiles"
-    ] == "CCN"
+    projected = chemical_paper_projection(project)["studies"][0]["molecules"][0]
+    assert projected["resolved_smiles"] is None
+    assert projected["resolved_smiles_status"] == "BLOCKED"
+    assert projected["gap_reason"] == "legacy_resolution_status_missing"
 
 
 def test_currentness_and_impact_bind_only_resolved_smiles(tmp_path: Path) -> None:

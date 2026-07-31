@@ -1218,9 +1218,9 @@ def test_import_preserves_exported_molecule_order_for_stable_review_indexes(
     )
     state = load_chemical_paper_state(project, "study-1")
     assert state["field_corrections"][-1]["molecule_id"] == "export-first"
-    assert chemical_paper_projection(project)["studies"][0]["molecules"][0][
-        "resolved_smiles"
-    ] == "CC"
+    projected = chemical_paper_projection(project)["studies"][0]["molecules"][0]
+    assert projected["resolved_smiles"] is None
+    assert projected["resolved_smiles_status"] == "BLOCKED"
     state_path = project / "01_evidence/chemical_paper/study-1/state.json"
     before = state_path.read_bytes()
     second = import_chemical_paper(project, "study-1", PDF_SHA, archive, ACTOR)
@@ -1630,7 +1630,8 @@ def test_corrections_are_append_only_bound_and_stale_safe(tmp_path: Path) -> Non
     assert after["field_corrections"][0]["value"] == "N"
     assert correction["version_token"] != imported["version_token"]
     projection = chemical_paper_projection(project)
-    assert projection["studies"][0]["molecules"][1]["resolved_smiles"] == "N"
+    assert projection["studies"][0]["molecules"][1]["resolved_smiles"] is None
+    assert projection["studies"][0]["molecules"][1]["resolved_smiles_status"] == "BLOCKED"
 
     before = snapshot(project)
     with pytest.raises(ChemicalPaperError, match="STALE_CHEMICAL_PAPER_STATE"):
@@ -1836,7 +1837,8 @@ def test_safe_index_mutations_require_current_opaque_version_and_are_zero_write_
     assert reviewed["status"] == "confirmed"
     molecule = chemical_paper_projection(project)["studies"][0]["molecules"][1]
     assert molecule["element_review_state"] == "confirmed"
-    assert molecule["resolved_smiles"] == "N"
+    assert molecule["resolved_smiles"] is None
+    assert molecule["resolved_smiles_status"] == "BLOCKED"
     assert molecule["smiles_candidates"]["unexpanded"] is None
 
 
