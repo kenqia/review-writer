@@ -1,5 +1,18 @@
 # Project Agent Memory
 
+## 2026-07-31 — Honest Progressive Route is the single chemistry gate
+
+Do not recreate a strict/exploratory pair for Chemical Completion. The only
+route is `honest_progressive`: preserve incomplete values and disclose their
+uncertainty. A molecule is `CONFIRMED`, `AI_PROVISIONAL`, or `BLOCKED`; the
+last one has `value=null` and a visible gap reason. AI candidates require a
+PDF/structure-figure locator, confidence, and provenance, and may not be used
+as confirmed facts. Continue at the project level when
+`(CONFIRMED + AI_PROVISIONAL) / 309 >= 0.80`; always expose the three counts,
+per-study coverage, traceability, and gap registry. Append-only actor
+mismatches become `actor_provenance_residual` disclosures rather than history
+rewrites or project resets.
+
 ## 2026-07-31 — Keep Evidence-to-Release execution on the mainline
 
 The dual-parse complete-loop run showed that valid P1 repairs can drift into an open-ended security review when each reviewer adds a new threat-model dimension and long gates are started before contracts stabilize.
