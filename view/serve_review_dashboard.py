@@ -22,7 +22,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Iterator
-from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
+from urllib.parse import parse_qs, quote, unquote, unquote_to_bytes, urlencode, urlparse
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -30,6 +30,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 PDF_RENDER_SEMAPHORE = threading.BoundedSemaphore(2)
+MAX_PROJECT_ID_BYTES = 255
+MAX_PROJECT_ROUTE_SEGMENT_BYTES = MAX_PROJECT_ID_BYTES * 3
 
 from review_writer.project.vertical_review import (  # noqa: E402
     AWAITING_BRIEF_CONFIRMATION,
@@ -369,20 +371,33 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         self.send_error(HTTPStatus.BAD_REQUEST, "PDF page is invalid")
                         return
                     page = values[0]
+                try:
+                    project_id = decode_project_route_segment(parts[2])
+                except ValueError as exc:
+                    self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
+                    return
                 self.handle_project_parse_asset_get(
-                    unquote(parts[2]),
+                    project_id,
                     unquote(parts[4]),
                     unquote(parts[5]),
                     page=page,
                 )
             elif len(parts) == 4:
-                project_id = unquote(parts[2])
+                try:
+                    project_id = decode_project_route_segment(parts[2])
+                except ValueError as exc:
+                    self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
+                    return
                 stage = unquote(parts[3])
                 self.handle_project_stage_get(project_id, stage)
             else:
                 self.send_error(HTTPStatus.NOT_FOUND, "project stage not found")
         elif parsed.path.startswith("/api/discovery/"):
-            project_id = unquote(parsed.path.rsplit("/", 1)[-1])
+            try:
+                project_id = decode_project_route_segment(parsed.path.rsplit("/", 1)[-1])
+            except ValueError as exc:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
             self.handle_discovery_get(project_id)
         elif parsed.path.startswith("/api/metadata/"):
             paper_id = unquote(parsed.path.rsplit("/", 1)[-1])
@@ -457,7 +472,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.handle_project_workspace_put(project_id, action)
                 return
         if parsed.path.startswith("/api/discovery/"):
-            project_id = unquote(parsed.path.rsplit("/", 1)[-1])
+            try:
+                project_id = decode_project_route_segment(parsed.path.rsplit("/", 1)[-1])
+            except ValueError as exc:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
             query = parse_qs(parsed.query)
             self.handle_discovery_put(project_id, confirm=bool(query.get("confirm")))
             return
@@ -1160,7 +1179,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         "X-Content-Type-Options": "nosniff",
                     },
                 )
-        except (OSError, ParseQualityError, SourceTruthError, ValueError):
+        except SourceTruthError as exc:
+            if exc.code == "SOURCE_ASSET_SIZE_INVALID":
+                self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "source asset exceeds the size limit")
+            elif exc.code == "SOURCE_ASSET_BUSY":
+                self.send_error(HTTPStatus.SERVICE_UNAVAILABLE, "source asset service is busy")
+            else:
+                self.send_error(HTTPStatus.NOT_FOUND, "source asset is unavailable")
+        except (OSError, ParseQualityError, ValueError):
             self.send_error(HTTPStatus.NOT_FOUND, "source asset is unavailable")
 
     def handle_project_review_state_get(self, project_id: str) -> None:
@@ -1718,7 +1744,33 @@ def project_id_from_route(path: str, action: str) -> str | None:
     parts = path.strip("/").split("/")
     if len(parts) != 4 or parts[:2] != ["api", "project"] or parts[3] != action:
         return None
-    return unquote(parts[2])
+    try:
+        return decode_project_route_segment(parts[2])
+    except ValueError:
+        return ""
+
+
+def decode_project_route_segment(raw_segment: str) -> str:
+    if not isinstance(raw_segment, str):
+        raise ValueError("invalid project_id")
+    try:
+        raw_bytes = raw_segment.encode("utf-8", errors="strict")
+    except UnicodeError as exc:
+        raise ValueError("invalid project_id") from exc
+    if (
+        not raw_segment
+        or len(raw_bytes) > MAX_PROJECT_ROUTE_SEGMENT_BYTES
+        or re.search(r"%(?![0-9A-Fa-f]{2})", raw_segment)
+    ):
+        raise ValueError("invalid project_id")
+    decoded_bytes = unquote_to_bytes(raw_segment)
+    if not decoded_bytes or len(decoded_bytes) > MAX_PROJECT_ID_BYTES:
+        raise ValueError("invalid project_id")
+    try:
+        decoded = decoded_bytes.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise ValueError("invalid project_id") from exc
+    return decoded
 
 
 def is_relative_to(path: Path, root: Path) -> bool:

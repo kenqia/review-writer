@@ -189,6 +189,60 @@ def test_pdf_page_renderer_fails_closed_when_validated_bytes_are_replaced(
     assert replacement not in body
 
 
+def test_parse_asset_route_maps_oversized_snapshot_to_413(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from test_source_truth import _source_truth_project
+    from review_writer.project import source_truth
+    from review_writer.project.source_truth import write_source_truth_bundle
+
+    review_root = tmp_path / "review-root"
+    project = _source_truth_project(review_root)
+    write_source_truth_bundle(project, "scholarly-a")
+    monkeypatch.setattr(source_truth, "MAX_SOURCE_ASSET_BYTES", 10, raising=False)
+
+    status, _, _ = _http_request(
+        review_root,
+        b"GET /api/project/case/source/stud-a/pdf HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    )
+
+    assert status == 413
+
+
+def test_parse_asset_route_maps_busy_snapshot_boundary_to_503(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from test_source_truth import _source_truth_project
+    from review_writer.project import source_truth
+    from review_writer.project.source_truth import write_source_truth_bundle
+
+    class BusySemaphore:
+        def acquire(self, *, timeout: float) -> bool:
+            return False
+
+        def release(self) -> None:
+            raise AssertionError("unacquired semaphore was released")
+
+    review_root = tmp_path / "review-root"
+    project = _source_truth_project(review_root)
+    write_source_truth_bundle(project, "scholarly-a")
+    monkeypatch.setattr(
+        source_truth,
+        "SOURCE_ASSET_SNAPSHOT_SEMAPHORE",
+        BusySemaphore(),
+        raising=False,
+    )
+
+    status, _, _ = _http_request(
+        review_root,
+        b"GET /api/project/case/source/stud-a/pdf HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    )
+
+    assert status == 503
+
+
 def test_project_route_decodes_literal_percent_slash_exactly_once(tmp_path: Path) -> None:
     from test_source_truth import _source_truth_project
     from review_writer.project.source_truth import write_source_truth_bundle
@@ -312,6 +366,49 @@ def test_project_route_rejects_existing_rooted_or_windows_shadow_project(
     )
 
     assert status == 404
+
+
+@pytest.mark.parametrize(
+    ("raw_segment", "filesystem_id"),
+    [("%GG", "%GG"), ("%FF", "\ufffd")],
+)
+def test_project_route_rejects_invalid_percent_or_utf8_without_aliasing_existing_project(
+    tmp_path: Path,
+    raw_segment: str,
+    filesystem_id: str,
+) -> None:
+    from test_source_truth import _source_truth_project
+    from review_writer.project.source_truth import write_source_truth_bundle
+
+    review_root = tmp_path / "review-root"
+    project = _source_truth_project(review_root)
+    alias_project = project.with_name(filesystem_id)
+    project.rename(alias_project)
+    write_source_truth_bundle(alias_project, "scholarly-a")
+
+    status, _, _ = _http_request(
+        review_root,
+        (
+            f"GET /api/project/{raw_segment}/source/stud-a/pdf HTTP/1.1\r\n"
+            "Host: localhost\r\n\r\n"
+        ).encode("ascii"),
+    )
+
+    assert status == 400
+
+
+def test_project_route_rejects_overlong_raw_id_before_filesystem_lookup(tmp_path: Path) -> None:
+    review_root = tmp_path / "review-root"
+
+    status, _, _ = _http_request(
+        review_root,
+        (
+            f"GET /api/project/{'a' * 4096}/review-state HTTP/1.1\r\n"
+            "Host: localhost\r\n\r\n"
+        ).encode("ascii"),
+    )
+
+    assert status == 400
 
 
 def test_preflight_writes_no_authoritative_state_and_returns_safe_projection(
