@@ -215,19 +215,21 @@ def test_legacy_chemical_panel_projects_one_resolved_smiles_value_and_editor() -
     assert 'appendCorrectionForm(document, card, molecule, "smiles_unexpanded"' not in script
 
 
-def test_long_carbon_smiles_is_preserved_as_candidate_and_resolved_workflow_value() -> None:
+def test_long_carbon_smiles_is_preserved_while_hex_digests_are_hidden() -> None:
     module_path = json.dumps(str(DASHBOARD / "review-chemical-paper.js"))
     _run_node(
         "\n".join(
             [
                 f"const ui=require({module_path});",
-                "const longSmiles='C'.repeat(64);const digest='a'.repeat(64);",
+                "const longSmiles='C'.repeat(64);const digest='a'.repeat(64);const numericDigest='0'.repeat(64);",
                 "const model=ui.buildChemicalPaperModel({schema_version:'chemical-paper-projection.v2',route:'chemical-paper-zip-only',project_status:'ready',summary:{},studies:[{study_id:'study',status:'ready',molecules:[",
                 " {molecule_index:0,version_token:'v',resolved_smiles:longSmiles,smiles_candidates:{expanded:longSmiles,unexpanded:digest}},",
-                " {molecule_index:1,version_token:'v',resolved_smiles:digest,smiles_candidates:{}}]}]});",
-                "const [valid,unsafe]=model.studies[0].molecules;",
+                " {molecule_index:1,version_token:'v',resolved_smiles:digest,smiles_candidates:{}},",
+                " {molecule_index:2,version_token:'v',resolved_smiles:numericDigest,smiles_candidates:{expanded:numericDigest}}]}]});",
+                "const [valid,unsafe,numericUnsafe]=model.studies[0].molecules;",
                 "if(valid.fields.resolvedSmiles.label!==longSmiles || valid.smilesCandidates.expanded!==longSmiles || valid.smilesCandidates.unexpanded!==null) throw new Error(JSON.stringify(valid));",
                 "if(unsafe.fields.resolvedSmiles.label!=='状态未提供') throw new Error(JSON.stringify(unsafe));",
+                "if(numericUnsafe.fields.resolvedSmiles.label!=='状态未提供' || numericUnsafe.smilesCandidates.expanded!==null) throw new Error(JSON.stringify(numericUnsafe));",
             ]
         )
     )

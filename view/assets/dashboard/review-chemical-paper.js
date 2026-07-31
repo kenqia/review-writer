@@ -125,6 +125,7 @@
   function hasPlausibleSmilesSyntax(value) {
     const withoutBrackets = value.replace(/\[[^\]\r\n]{1,200}\]/g, "");
     if (/[\[\]]/.test(withoutBrackets)) return false;
+    if (!/(?:Cl|Br|[BCNOPSFIbcnops]|\[[^\]\r\n]{1,200}\])/.test(value)) return false;
     return /^(?:(?:Cl|Br)|[BCNOPSFIbcnops]|[0-9@+\-()=#$%.:\/\\*])+$/.test(withoutBrackets);
   }
 

@@ -633,14 +633,14 @@ def test_resolved_smiles_projection_uses_one_workflow_field_and_safe_candidate_c
     )
 
 
-def test_long_carbon_smiles_is_not_mistaken_for_a_digest_candidate() -> None:
+def test_long_carbon_smiles_is_preserved_while_hex_digest_candidates_are_hidden() -> None:
     module_path = json.dumps(str(DUAL_SCRIPT))
     _run_node(
         "\n".join(
             [
                 f"const ui=require({module_path});",
-                "const longSmiles='C'.repeat(64);const digest='a'.repeat(64);",
-                "const model=ui.projectionModel({schema_version:'dual-parse-projection.v2',status:'ready',studies:[{citation:digest}],completion_queue:[{study_id:'study',molecule_index:0,version_token:'version',field:'resolved_smiles',smiles_candidates:{expanded:longSmiles,unexpanded:digest,selected_source:'smiles_expanded',candidate_difference:true}}]});",
+                "const longSmiles='C'.repeat(64);const digest='a'.repeat(64);const numericDigest='0'.repeat(64);",
+                "const model=ui.projectionModel({schema_version:'dual-parse-projection.v2',status:'ready',studies:[{citation:digest}],completion_queue:[{study_id:'study',molecule_index:0,version_token:'version',field:'resolved_smiles',smiles_candidates:{expanded:longSmiles,unexpanded:numericDigest,selected_source:'smiles_expanded',candidate_difference:true}}]});",
                 "const candidates=model.completionQueue[0].smilesCandidates;",
                 "if(candidates.expanded!==longSmiles || candidates.unexpanded!==null) throw new Error(JSON.stringify(candidates));",
                 "if(model.studies[0].citation!=='Core study 1') throw new Error(JSON.stringify(model.studies[0]));",
