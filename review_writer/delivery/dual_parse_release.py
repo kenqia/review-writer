@@ -751,11 +751,8 @@ def dual_parse_dashboard_projection(project: Path) -> dict[str, Any]:
             "page_count": source.get("page_count", chemistry.get("page_count")),
             "molecule_count": chemistry.get("molecule_count"),
             "missing_name_count": complete.get("missing_name_count"),
-            "missing_smiles_expanded_count": complete.get(
-                "missing_smiles_expanded_count"
-            ),
-            "missing_smiles_unexpanded_count": complete.get(
-                "missing_smiles_unexpanded_count"
+            "missing_resolved_smiles_count": complete.get(
+                "missing_resolved_smiles_count"
             ),
             "unresolved_reconciliation_count": registry.get(
                 "unresolved_count", registry.get("needs_review_count")
@@ -1126,6 +1123,9 @@ def authority_rows_from_projections(
                 "reconciliation_status": registry.get("status"),
                 "content_result_status": source.get(
                     "content_result_status", "current"
+                ),
+                "missing_resolved_smiles_count": chemical.get(
+                    "missing_resolved_smiles_count"
                 ),
                 "ai_authored_smiles_count": chemical.get("ai_authored_smiles_count", 0),
                 "reaction_data_status": _first_value(

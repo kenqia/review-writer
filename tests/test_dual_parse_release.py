@@ -207,8 +207,7 @@ def test_dashboard_projection_whitelists_researcher_safe_fields(
                         "study_id": "study-a",
                         "status": "blocked",
                         "missing_name_count": 1,
-                        "missing_smiles_expanded_count": 2,
-                        "missing_smiles_unexpanded_count": 2,
+                        "missing_resolved_smiles_count": 2,
                         "version_token": "completion-v1.opaque",
                     }
                 ]
@@ -255,8 +254,7 @@ def test_dashboard_projection_whitelists_researcher_safe_fields(
             "page_count": 6,
             "molecule_count": 125,
             "missing_name_count": 1,
-            "missing_smiles_expanded_count": 2,
-            "missing_smiles_unexpanded_count": 2,
+            "missing_resolved_smiles_count": 2,
             "unresolved_reconciliation_count": 1,
             "backend": "pipeline",
             "version": "1.0",
@@ -300,6 +298,7 @@ def test_scientific_projection_adapter_accepts_nested_public_contracts() -> None
                     "study_id": "study-a",
                     "status": "current",
                     "gate_digest": SHA_D,
+                    "missing_resolved_smiles_count": 2,
                     "ai_authored_smiles_count": 0,
                 }
             ]
@@ -330,6 +329,7 @@ def test_scientific_projection_adapter_accepts_nested_public_contracts() -> None
             "reconciliation_status": "current",
             "reconciliation_digest": "e" * 64,
             "content_result_status": "current",
+            "missing_resolved_smiles_count": 2,
             "ai_authored_smiles_count": 0,
             "reaction_data_status": "unavailable_not_provided",
             "reaction_count": None,

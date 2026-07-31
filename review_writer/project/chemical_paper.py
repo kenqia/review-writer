@@ -58,6 +58,9 @@ NESTED_ARCHIVE_SUFFIXES = frozenset({".zip", ".7z", ".rar", ".tar", ".gz", ".bz2
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _ID = re.compile(r"^(?!\.\.?$)(?!.*[/\\\x00\r\n])\S{1,240}$")
 _SMILES = re.compile(r"^[A-Za-z0-9@+\-\[\]()=#$\\/%.*:]+$")
+_SMILES_ORGANIC_ATOMS = frozenset({"B", "C", "N", "O", "P", "S", "F", "Cl", "Br", "I", "*"})
+_SMILES_AROMATIC_ATOMS = frozenset({"b", "c", "n", "o", "p", "s", "se", "as"})
+_SMILES_BONDS = frozenset("-=#:~/\\")
 _ELEMENT = re.compile(r"^[A-Z][a-z]?$|^\*$")
 _ELEMENTS = frozenset(
     "H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn "
@@ -127,8 +130,157 @@ def _reason(value: object) -> str:
     return value
 
 
+def _smiles_bracket_atom_end(value: str, index: int) -> int | None:
+    cursor = index + 1
+    if cursor >= len(value):
+        return None
+    isotope_start = cursor
+    while cursor < len(value) and value[cursor].isdigit():
+        cursor += 1
+    if cursor == isotope_start and value[cursor] == "*":
+        cursor += 1
+    else:
+        if cursor >= len(value):
+            return None
+        if value[cursor].islower():
+            element = value[cursor : cursor + 2]
+            if element not in _SMILES_AROMATIC_ATOMS:
+                element = value[cursor]
+            if element not in _SMILES_AROMATIC_ATOMS:
+                return None
+            cursor += len(element)
+        else:
+            if not value[cursor].isupper():
+                return None
+            element = value[cursor]
+            cursor += 1
+            if cursor < len(value) and value[cursor].islower():
+                element += value[cursor]
+                cursor += 1
+            if element not in _ELEMENTS:
+                return None
+    if cursor < len(value) and value[cursor] == "@":
+        cursor += 1
+        if cursor < len(value) and value[cursor] == "@":
+            cursor += 1
+        # Extended tetrahedral/stereo descriptors are @TH1, @AL1, @SP1,
+        # @TB1 and @OH1.  Consume only a complete descriptor when present.
+        for descriptor in ("TH", "AL", "SP", "TB", "OH"):
+            if value.startswith(descriptor, cursor):
+                cursor += len(descriptor)
+                if cursor >= len(value) or not value[cursor].isdigit():
+                    return None
+                while cursor < len(value) and value[cursor].isdigit():
+                    cursor += 1
+                break
+    if cursor < len(value) and value[cursor] == "H":
+        cursor += 1
+        while cursor < len(value) and value[cursor].isdigit():
+            cursor += 1
+    if cursor < len(value) and value[cursor] in "+-":
+        sign = value[cursor]
+        cursor += 1
+        if cursor < len(value) and value[cursor] == sign:
+            while cursor < len(value) and value[cursor] == sign:
+                cursor += 1
+        else:
+            charge_start = cursor
+            while cursor < len(value) and value[cursor].isdigit():
+                cursor += 1
+            if cursor == charge_start and cursor < len(value) and value[cursor] == "0":
+                return None
+    if cursor < len(value) and value[cursor] == ":":
+        cursor += 1
+        map_start = cursor
+        while cursor < len(value) and value[cursor].isdigit():
+            cursor += 1
+        if cursor == map_start:
+            return None
+    if cursor >= len(value) or value[cursor] != "]":
+        return None
+    return cursor + 1
+
+
+def _smiles_atom_end(value: str, index: int) -> int | None:
+    if value[index] == "[":
+        return _smiles_bracket_atom_end(value, index)
+    if value.startswith("Cl", index) or value.startswith("Br", index):
+        return index + 2
+    if value.startswith("se", index) or value.startswith("as", index):
+        return index + 2
+    if value[index] in _SMILES_ORGANIC_ATOMS or value[index] in {"b", "c", "n", "o", "p", "s"}:
+        return index + 1
+    return None
+
+
 def _valid_resolved_smiles(value: str) -> bool:
-    return bool(_SMILES.fullmatch(value) and re.search(r"[A-Za-z]", value))
+    if not _SMILES.fullmatch(value) or not re.search(r"[A-Za-z]", value):
+        return False
+    cursor = 0
+    atom_count = 0
+    component_has_atom = False
+    previous_atom = False
+    pending_bond: str | None = None
+    branch_stack: list[int] = []
+    ring_bonds: dict[str, str | None] = {}
+    while cursor < len(value):
+        token = value[cursor]
+        if token == ".":
+            if not component_has_atom or not previous_atom or pending_bond is not None or branch_stack:
+                return False
+            component_has_atom = False
+            previous_atom = False
+            cursor += 1
+            continue
+        if token == "(":
+            if not previous_atom or pending_bond is not None:
+                return False
+            branch_stack.append(atom_count)
+            cursor += 1
+            continue
+        if token == ")":
+            if not branch_stack or not previous_atom or pending_bond is not None:
+                return False
+            if atom_count <= branch_stack[-1]:
+                return False
+            branch_stack.pop()
+            previous_atom = True
+            cursor += 1
+            continue
+        if token in _SMILES_BONDS:
+            if not previous_atom or pending_bond is not None:
+                return False
+            pending_bond = token
+            cursor += 1
+            continue
+        if token.isdigit() or token == "%":
+            if not previous_atom:
+                return False
+            if token == "%":
+                if cursor + 2 >= len(value) or not value[cursor + 1 : cursor + 3].isdigit():
+                    return False
+                ring_label = value[cursor + 1 : cursor + 3]
+                cursor += 3
+            else:
+                ring_label = token
+                cursor += 1
+            if ring_label in ring_bonds:
+                prior_bond = ring_bonds.pop(ring_label)
+                if prior_bond is not None and pending_bond is not None and prior_bond != pending_bond:
+                    return False
+            else:
+                ring_bonds[ring_label] = pending_bond
+            pending_bond = None
+            continue
+        atom_end = _smiles_atom_end(value, cursor)
+        if atom_end is None:
+            return False
+        atom_count += 1
+        component_has_atom = True
+        previous_atom = True
+        pending_bond = None
+        cursor = atom_end
+    return bool(atom_count and component_has_atom and previous_atom and pending_bond is None and not branch_stack and not ring_bonds)
 
 
 def _correction_value(field: str, value: object) -> str:
@@ -228,16 +380,39 @@ def _version_token(state: dict[str, Any]) -> str:
     return f"cpv2.{encoded}"
 
 
-def _validate_event_chain(rows: list[dict[str, Any]], *, event_key: str, prior_key: str) -> str | None:
-    head: str | None = None
+def _validate_event_chain(
+    rows: list[dict[str, Any]], *, event_key: str, prior_key: str
+) -> tuple[str | None, list[dict[str, Any]]]:
+    by_event: dict[str, dict[str, Any]] = {}
+    by_prior: dict[str | None, dict[str, Any]] = {}
     for row in rows:
-        if row.get(prior_key) != head:
+        expected = canonical_digest(
+            {key: value for key, value in row.items() if key != event_key}
+        )
+        event_digest = row.get(event_key)
+        prior_digest = row.get(prior_key)
+        if (
+            event_digest != expected
+            or not isinstance(event_digest, str)
+            or event_digest in by_event
+            or prior_digest in by_prior
+        ):
             raise ChemicalPaperError("CHEMICAL_PAPER_HISTORY_INVALID")
-        expected = canonical_digest({key: value for key, value in row.items() if key != event_key})
-        if row.get(event_key) != expected:
+        by_event[event_digest] = row
+        by_prior[prior_digest] = row
+    if rows and None not in by_prior:
+        raise ChemicalPaperError("CHEMICAL_PAPER_HISTORY_INVALID")
+    ordered: list[dict[str, Any]] = []
+    prior: str | None = None
+    while prior in by_prior:
+        row = by_prior[prior]
+        ordered.append(row)
+        prior = row[event_key]
+        if len(ordered) > len(rows):
             raise ChemicalPaperError("CHEMICAL_PAPER_HISTORY_INVALID")
-        head = expected
-    return head
+    if len(ordered) != len(rows):
+        raise ChemicalPaperError("CHEMICAL_PAPER_HISTORY_INVALID")
+    return prior, ordered
 
 
 def _validate_state(state: object) -> dict[str, Any]:
@@ -250,28 +425,54 @@ def _validate_state(state: object) -> dict[str, Any]:
     if list(Draft202012Validator(schema).iter_errors(state)):
         raise ChemicalPaperError("CHEMICAL_PAPER_STATE_INVALID")
     imports = list(state["imports"].values())
-    for index, row in enumerate(imports):
-        expected_prior = imports[index - 1]["import_event_digest"] if index else None
-        if row["prior_import_event_digest"] != expected_prior:
+    for key, row in state["imports"].items():
+        if row["import_digest"] != key:
             raise ChemicalPaperError("CHEMICAL_PAPER_HISTORY_INVALID")
         if state["imports"].get(row["import_digest"]) != row:
             raise ChemicalPaperError("CHEMICAL_PAPER_HISTORY_INVALID")
-        event = canonical_digest({key: value for key, value in row.items() if key != "import_event_digest"})
+        event = canonical_digest(
+            {key: value for key, value in row.items() if key != "import_event_digest"}
+        )
         if row["import_event_digest"] != event:
             raise ChemicalPaperError("CHEMICAL_PAPER_HISTORY_INVALID")
-    if imports[-1]["import_digest"] != state["current_import_digest"]:
+    import_head, _ = _validate_event_chain(
+        imports, event_key="import_event_digest", prior_key="prior_import_event_digest"
+    )
+    current_import = state["imports"].get(state["current_import_digest"])
+    if not isinstance(current_import, dict) or current_import["import_event_digest"] != import_head:
         raise ChemicalPaperError("CHEMICAL_PAPER_STATE_INVALID")
-    correction_head = _validate_event_chain(
+    correction_head, ordered_corrections = _validate_event_chain(
         state["field_corrections"], event_key="event_digest", prior_key="prior_event_digest"
     )
-    review_head = _validate_event_chain(
+    review_head, ordered_reviews = _validate_event_chain(
         state["element_reviews"], event_key="event_digest", prior_key="prior_event_digest"
     )
     if state["field_correction_head_digest"] != correction_head or state["element_review_head_digest"] != review_head:
         raise ChemicalPaperError("CHEMICAL_PAPER_HISTORY_INVALID")
+    page_counts = {
+        row["import_digest"]: row["page_count"] for row in imports
+    }
+    for molecule in state["molecules"]:
+        for field in ("resolved_smiles", "smiles_expanded", "smiles_unexpanded"):
+            candidate = molecule["fields"][field]["value"]
+            if candidate is not None and not _valid_resolved_smiles(candidate):
+                raise ChemicalPaperError("CHEMICAL_PAPER_STATE_INVALID")
+    for event in state["field_corrections"]:
+        field = event["field"]
+        try:
+            _correction_value(field, event["value"])
+            if event["prior_value"] is not None:
+                _correction_value(field, event["prior_value"])
+            page_count = page_counts[event["bound_import_digest"]]
+            _correction_locator(event["pdf_locator"], page_count)
+        except (KeyError, ChemicalPaperError) as exc:
+            raise ChemicalPaperError("CHEMICAL_PAPER_STATE_INVALID") from exc
     if state.get("state_digest") != _canonical_state_digest(state):
         raise ChemicalPaperError("CHEMICAL_PAPER_STATE_INVALID")
-    return copy.deepcopy(state)
+    normalized = copy.deepcopy(state)
+    normalized["field_corrections"] = copy.deepcopy(ordered_corrections)
+    normalized["element_reviews"] = copy.deepcopy(ordered_reviews)
+    return normalized
 
 
 def load_chemical_paper_state(
@@ -559,6 +760,9 @@ def _normalize_molecules(value: object, page_count: int, import_digest_seed: str
         block_version, elements = _molblock_elements(raw.get("mol_block"))
         expanded = _field(raw.get("smiles_expanded"))
         unexpanded = _field(raw.get("smiles_unexpanded"))
+        for candidate in (expanded["value"], unexpanded["value"]):
+            if candidate is not None and not _valid_resolved_smiles(candidate):
+                raise ChemicalPaperError("SMILES_INVALID")
         resolved = expanded["value"] if expanded["value"] is not None else unexpanded["value"]
         body = {
             "molecule_id": molecule_id,

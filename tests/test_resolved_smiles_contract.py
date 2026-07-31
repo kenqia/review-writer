@@ -13,6 +13,7 @@ from review_writer.project.chemical_completion import (
 )
 from review_writer.project.chemical_paper import (
     ChemicalPaperError,
+    _canonical_state_digest,
     chemical_dependency_state,
     chemical_paper_dependency_currentness,
     chemical_paper_manuscript_bindings,
@@ -26,6 +27,7 @@ from review_writer.project.parse_quality import write_parse_quality_gate
 from review_writer.project.parse_reconciliation import write_parse_reconciliation
 from review_writer.project.dual_source import write_dual_source_binding
 from review_writer.project.source_truth import load_source_truth_bundle
+from review_writer.project.source_truth import canonical_digest
 from test_chemical_paper_import import ACTOR, snapshot, v2000, write_chemical_zip
 from test_dual_parse_content_package import paper_request
 from test_parse_quality import _decide_all, _parse_project
@@ -205,6 +207,7 @@ def test_direct_resolved_smiles_correction_requires_locator_and_valid_value(
     for value, locator, error in (
         ("CN", None, "PDF_LOCATOR_INVALID"),
         ("not a smiles!", {"page": 1, "figure_label": "Scheme 2"}, "SMILES_INVALID"),
+        ("C1CC", {"page": 1, "figure_label": "Scheme 2"}, "SMILES_INVALID"),
     ):
         before = snapshot(project)
         with pytest.raises(ChemicalPaperError, match=error):
@@ -242,6 +245,124 @@ def test_direct_resolved_smiles_correction_requires_locator_and_valid_value(
     history = chemical_completion_state(project, "scholarly-a")["history"]
     assert history[-1]["field"] == "resolved_smiles"
     assert history[-1]["pdf_locator"]["page"] == 1
+
+
+def test_import_rejects_invalid_resolved_smiles_syntax(tmp_path: Path) -> None:
+    with pytest.raises(ChemicalPaperError, match="SMILES_INVALID"):
+        _project_with_molecules(
+            tmp_path, [_molecule("mol-invalid", expanded="C1CC")]
+        )
+
+
+def _reseal_state(path: Path, state: dict[str, object]) -> None:
+    state["state_digest"] = _canonical_state_digest(state)
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+
+def test_load_revalidates_serialized_correction_value_and_locator_page(
+    tmp_path: Path,
+) -> None:
+    project = _project_with_molecules(
+        tmp_path, [_molecule("mol-a", expanded="CO")]
+    )
+    state_path = project / "01_evidence/chemical_paper/scholarly-a/state.json"
+    imported = load_chemical_paper_state(project, "scholarly-a")
+    corrected = correct_chemical_paper_field(
+        project,
+        study_id="scholarly-a",
+        molecule_index=0,
+        field="resolved_smiles",
+        value="CN",
+        actor=ACTOR,
+        reason="Checked against Scheme 2.",
+        pdf_locator={"page": 1, "figure_label": "Scheme 2"},
+        version_token=chemical_paper_projection(project)["studies"][0]["version_token"],
+    )
+    assert corrected["status"] == "corrected"
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["field_corrections"][0]["value"] = "C1CC"
+    state["field_corrections"][0]["event_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in state["field_corrections"][0].items()
+            if key != "event_digest"
+        }
+    )
+    state["field_correction_head_digest"] = state["field_corrections"][0]["event_digest"]
+    _reseal_state(state_path, state)
+    with pytest.raises(ChemicalPaperError, match="CHEMICAL_PAPER_STATE_INVALID"):
+        load_chemical_paper_state(project, "scholarly-a")
+
+    state = imported
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    state = load_chemical_paper_state(project, "scholarly-a")
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    # Add a valid correction, then forge only its locator page while preserving digests.
+    corrected = correct_chemical_paper_field(
+        project,
+        study_id="scholarly-a",
+        molecule_index=0,
+        field="resolved_smiles",
+        value="CN",
+        actor=ACTOR,
+        reason="Checked against Scheme 2.",
+        pdf_locator={"page": 1, "figure_label": "Scheme 2"},
+        version_token=chemical_paper_projection(project)["studies"][0]["version_token"],
+    )
+    assert corrected["status"] == "corrected"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["field_corrections"][0]["pdf_locator"]["page"] = 2
+    state["field_corrections"][0]["event_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in state["field_corrections"][0].items()
+            if key != "event_digest"
+        }
+    )
+    state["field_correction_head_digest"] = state["field_corrections"][0]["event_digest"]
+    _reseal_state(state_path, state)
+    with pytest.raises(ChemicalPaperError, match="CHEMICAL_PAPER_STATE_INVALID"):
+        load_chemical_paper_state(project, "scholarly-a")
+
+
+def test_history_chain_order_not_dict_or_list_order(tmp_path: Path) -> None:
+    project = _project_with_molecules(
+        tmp_path, [_molecule("mol-a", expanded="CO")]
+    )
+    state_path = project / "01_evidence/chemical_paper/scholarly-a/state.json"
+    first = chemical_paper_projection(project)["studies"][0]["version_token"]
+    second = correct_chemical_paper_field(
+        project,
+        study_id="scholarly-a",
+        molecule_index=0,
+        field="resolved_smiles",
+        value="CN",
+        actor=ACTOR,
+        reason="First correction.",
+        pdf_locator={"page": 1},
+        version_token=first,
+    )
+    correct_chemical_paper_field(
+        project,
+        study_id="scholarly-a",
+        molecule_index=0,
+        field="resolved_smiles",
+        value="CCN",
+        actor=ACTOR,
+        reason="Second correction.",
+        pdf_locator={"page": 1},
+        version_token=second["version_token"],
+    )
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["field_corrections"].reverse()
+    state["imports"] = dict(reversed(list(state["imports"].items())))
+    _reseal_state(state_path, state)
+    loaded = load_chemical_paper_state(project, "scholarly-a")
+    assert [row["value"] for row in loaded["field_corrections"]] == ["CN", "CCN"]
+    assert chemical_paper_projection(project)["studies"][0]["molecules"][0][
+        "resolved_smiles"
+    ] == "CCN"
 
 
 def test_currentness_and_impact_bind_only_resolved_smiles(tmp_path: Path) -> None:
