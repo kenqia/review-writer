@@ -79,6 +79,8 @@ class ChemicalPaperPdfLocatorDescriptor:
     """Exact current Chemical PDF binding for snapshot-and-reverify consumers."""
 
     project_root: Path
+    project_device: int
+    project_inode: int
     study_id: str
     source_id: str
     binding: str
@@ -135,6 +137,16 @@ def _project(project: Path) -> Path:
     if os.path.lexists(path) and (path.is_symlink() or not path.is_dir()):
         raise ChemicalPaperError("CHEMICAL_PAPER_PATH_INVALID")
     return root
+
+
+def _project_instance_identity(project_root: Path) -> tuple[int, int]:
+    try:
+        metadata = os.stat(project_root, follow_symlinks=False)
+    except OSError as exc:
+        raise ChemicalPaperError("PROJECT_INVALID") from exc
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise ChemicalPaperError("PROJECT_INVALID")
+    return metadata.st_dev, metadata.st_ino
 
 
 def _state_path(project: Path, study_id: str) -> Path:
@@ -751,6 +763,8 @@ def _current_element_review(state: dict[str, Any], molecule: dict[str, Any]) -> 
 
 def _source_locator_binding(
     project_root: Path,
+    project_device: int,
+    project_inode: int,
     project_id: str,
     study_id: str,
     source_id: str,
@@ -760,6 +774,8 @@ def _source_locator_binding(
     digest = canonical_digest(
         {
             "project_instance_root": os.fspath(project_root),
+            "project_instance_device": project_device,
+            "project_instance_inode": project_inode,
             "project_id": project_id,
             "study_id": study_id,
             "source_id": source_id,
@@ -779,6 +795,7 @@ def resolve_chemical_paper_pdf_locator(
     """Resolve one exact Chemical PDF binding with a fresh whole-project index."""
 
     root = _project(project)
+    project_device, project_inode = _project_instance_identity(root)
     source_id = _identifier(source_id, "SOURCE_ID_INVALID")
     if not isinstance(binding, str) or not re.fullmatch(r"cpb1\.[A-Za-z0-9_-]{43}", binding):
         raise ChemicalPaperError("CHEMICAL_PAPER_LOCATOR_INVALID")
@@ -808,6 +825,8 @@ def resolve_chemical_paper_pdf_locator(
         raise ChemicalPaperError("STALE_CHEMICAL_PAPER_LOCATOR")
     expected = _source_locator_binding(
         root,
+        project_device,
+        project_inode,
         root.name,
         study_id,
         source_id,
@@ -829,8 +848,12 @@ def resolve_chemical_paper_pdf_locator(
         )
     except SourceTruthError as exc:
         raise ChemicalPaperError(exc.code) from exc
+    if _project_instance_identity(root) != (project_device, project_inode):
+        raise ChemicalPaperError("STALE_CHEMICAL_PAPER_LOCATOR")
     return ChemicalPaperPdfLocatorDescriptor(
         project_root=root,
+        project_device=project_device,
+        project_inode=project_inode,
         study_id=study_id,
         source_id=source_id,
         binding=binding,
@@ -964,6 +987,8 @@ def verify_chemical_paper_pdf_snapshot(
                 getattr(snapshot, field)
                 for field in (
                     "project_id",
+                    "project_device",
+                    "project_inode",
                     "study_id",
                     "source_id",
                     "kind",
@@ -978,6 +1003,8 @@ def verify_chemical_paper_pdf_snapshot(
             raise ChemicalPaperError("CHEMICAL_PAPER_PDF_SNAPSHOT_INVALID") from exc
         expected_identity = (
             descriptor.project_root.name,
+            descriptor.project_device,
+            descriptor.project_inode,
             descriptor.study_id,
             descriptor.source_id,
             "pdf",
@@ -1209,13 +1236,20 @@ def review_chemical_paper_elements(
     }
 
 
-def _study_summary(project: Path, state: dict[str, Any]) -> dict[str, Any]:
+def _study_summary(
+    project: Path,
+    project_device: int,
+    project_inode: int,
+    state: dict[str, Any],
+) -> dict[str, Any]:
     unresolved = {field: 0 for field in FIELD_NAMES}
     unreviewed = 0
     molecules: list[dict[str, Any]] = []
     version_token = _version_token(state)
     locator_binding = _source_locator_binding(
         project,
+        project_device,
+        project_inode,
         state["project_id"],
         state["study_id"],
         state["source_id"],
@@ -1287,6 +1321,7 @@ def _study_summary(project: Path, state: dict[str, Any]) -> dict[str, Any]:
 
 def chemical_paper_safe_project_state(project: Path) -> dict[str, Any]:
     root = _project(project)
+    project_device, project_inode = _project_instance_identity(root)
     try:
         studies = declared_study_ids(root)
     except SourceTruthError as exc:
@@ -1304,6 +1339,8 @@ def chemical_paper_safe_project_state(project: Path) -> dict[str, Any]:
             summaries.append(
                 _study_summary(
                     root,
+                    project_device,
+                    project_inode,
                     load_chemical_paper_state(
                         root,
                         study_id,

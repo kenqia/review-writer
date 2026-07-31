@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import os
+import shutil
 import stat
 import zipfile
 from contextlib import contextmanager
@@ -191,13 +192,17 @@ def release_pdf_snapshot(
     project_instance_root: Path | None = None,
 ) -> SimpleNamespace:
     source = bundle["sources"][0]
+    instance_root = (project_instance_root or project).resolve()
+    instance_metadata = instance_root.stat()
     snapshot_path.write_bytes(payload)
     snapshot_path.chmod(0o600)
     return SimpleNamespace(
         path=snapshot_path,
         filename="main.pdf",
         project_id=project.name,
-        project_instance_root=(project_instance_root or project).resolve(),
+        project_instance_root=instance_root,
+        project_device=instance_metadata.st_dev,
+        project_inode=instance_metadata.st_ino,
         study_id=bundle["study_id"],
         source_id=source["source_id"],
         kind="pdf",
@@ -655,6 +660,8 @@ def test_locator_descriptor_binds_immutable_snapshot_bytes_across_aba(
     )
     for field, value in (
         ("project_id", "other-project"),
+        ("project_device", snapshot_a.project_device + 1),
+        ("project_inode", snapshot_a.project_inode + 1),
         ("study_id", "other-study"),
         ("source_id", "other-source"),
         ("kind", "parsed-markdown"),
@@ -733,15 +740,47 @@ def test_snapshot_verifier_rejects_cross_root_and_missing_instance_identity(
             descriptor_a,
             snapshot_b,
         )
-    missing_instance = vars(snapshot_b).copy()
-    missing_instance.pop("project_instance_root")
-    with pytest.raises(
-        ChemicalPaperError,
-        match="CHEMICAL_PAPER_PDF_SNAPSHOT_INVALID",
-    ):
+    for field in ("project_instance_root", "project_device", "project_inode"):
+        missing_instance = vars(snapshot_b).copy()
+        missing_instance.pop(field)
+        with pytest.raises(
+            ChemicalPaperError,
+            match="CHEMICAL_PAPER_PDF_SNAPSHOT_INVALID",
+        ):
+            chemical_paper.verify_chemical_paper_pdf_snapshot(
+                descriptor_a,
+                SimpleNamespace(**missing_instance),
+            )
+
+
+def test_snapshot_verifier_rejects_same_path_project_instance_replacement(
+    tmp_path: Path,
+) -> None:
+    import review_writer.project.chemical_paper as chemical_paper
+    from review_writer.project.chemical_paper import ChemicalPaperError
+
+    project = source_truth_project(tmp_path / "live")
+    descriptor = imported_pdf_descriptor(project, tmp_path / "chemical.zip")
+    bundle = json.loads(
+        (
+            project / "01_evidence/source_truth/study-1/bundle.json"
+        ).read_text(encoding="utf-8")
+    )
+    snapshot = release_pdf_snapshot(
+        project,
+        bundle,
+        PDF_BYTES,
+        tmp_path / "snapshot-before-replacement.pdf",
+    )
+    retired = tmp_path / "retired-project"
+    project.rename(retired)
+    shutil.copytree(retired, project)
+    assert retired.stat().st_ino != project.stat().st_ino
+
+    with pytest.raises(ChemicalPaperError, match="STALE_CHEMICAL_PAPER_LOCATOR"):
         chemical_paper.verify_chemical_paper_pdf_snapshot(
-            descriptor_a,
-            SimpleNamespace(**missing_instance),
+            descriptor,
+            snapshot,
         )
 
 
