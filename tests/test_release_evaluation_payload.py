@@ -165,11 +165,13 @@ def test_evaluation_payload_exposes_only_aggregate_chemical_paper_state(
     project = tmp_path / "review-projects/project-a"
     project.mkdir(parents=True)
     chemical_paper: dict[str, object] = {
-        "schema_version": "chemical-paper-safe-summary.v1",
+        "schema_version": "chemical-paper-safe-summary.v2",
         "route": "chemical-paper-zip-only",
         "study_count": 3,
         "molecule_count": 309,
-        "unresolved_field_count": 94,
+        "missing_name_count": 0,
+        "missing_resolved_smiles_count": 94,
+        "ai_authored_smiles_count": 0,
         "element_review_counts": {
             "not_reviewed": 309,
             "confirmed": 0,

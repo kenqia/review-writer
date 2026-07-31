@@ -7,11 +7,13 @@ import pytest
 
 def _safe_summary(**overrides: object) -> dict[str, object]:
     value: dict[str, object] = {
-        "schema_version": "chemical-paper-safe-summary.v1",
+        "schema_version": "chemical-paper-safe-summary.v2",
         "route": "chemical-paper-zip-only",
         "study_count": 3,
         "molecule_count": 309,
-        "unresolved_field_count": 93,
+        "missing_name_count": 0,
+        "missing_resolved_smiles_count": 93,
+        "ai_authored_smiles_count": 0,
         "element_review_counts": {
             "not_reviewed": 309,
             "confirmed": 0,
@@ -49,11 +51,13 @@ def test_safe_summary_is_the_only_release_projection_and_retains_pdf_authority()
     projected = safe_chemical_paper_projection(state)
 
     assert projected == {
-        "schema_version": "chemical-paper-safe-summary.v1",
+        "schema_version": "chemical-paper-safe-summary.v2",
         "route": "chemical-paper-zip-only",
         "study_count": 3,
         "molecule_count": 309,
-        "unresolved_field_count": 93,
+        "missing_name_count": 0,
+        "missing_resolved_smiles_count": 93,
+        "ai_authored_smiles_count": 0,
         "element_review_counts": {
             "not_reviewed": 309,
             "confirmed": 0,
@@ -107,7 +111,9 @@ def test_absent_optional_binding_remains_not_applicable_without_fabricating_zero
         lambda value: value["chemical_paper_safe_summary"].update(study_count=2),
         lambda value: value["chemical_paper_safe_summary"].update(extra="raw"),
         lambda value: value["chemical_paper_safe_summary"].update(molecule_count=-1),
-        lambda value: value["chemical_paper_safe_summary"].update(unresolved_field_count=-1),
+        lambda value: value["chemical_paper_safe_summary"].update(
+            missing_resolved_smiles_count=-1
+        ),
         lambda value: value["chemical_paper_safe_summary"].update(
             element_review_counts={
                 "not_reviewed": 308,
@@ -151,6 +157,41 @@ def test_legacy_full_chemical_lineage_is_rejected_instead_of_projected() -> None
         )
 
 
+def test_legacy_unresolved_field_count_summary_is_rejected() -> None:
+    from review_writer.delivery.chemical_paper_release import (
+        ChemicalPaperReleaseError,
+        analyze_chemical_paper_release,
+    )
+
+    with pytest.raises(ChemicalPaperReleaseError, match="CHEMICAL_PAPER_LINEAGE_INVALID"):
+        analyze_chemical_paper_release(
+            {
+                "chemical_paper_import_digests": [
+                    {
+                        "study_id": "study-a",
+                        "import_digest": "a" * 64,
+                        "state_digest": "b" * 64,
+                    }
+                ],
+                "chemical_paper_safe_summary": {
+                    "schema_version": "chemical-paper-safe-summary.v1",
+                    "route": "chemical-paper-zip-only",
+                    "study_count": 1,
+                    "molecule_count": 1,
+                    "unresolved_field_count": 1,
+                    "element_review_counts": {
+                        "not_reviewed": 1,
+                        "confirmed": 0,
+                        "corrected": 0,
+                        "not_applicable": 0,
+                    },
+                    "reaction_data_status": "unavailable_not_provided",
+                },
+                "chemical_paper_claim_dependencies": [],
+            }
+        )
+
+
 def test_claim_dependencies_are_exact_sorted_internal_bindings_not_safe_projection() -> None:
     from review_writer.delivery.chemical_paper_release import (
         analyze_chemical_paper_release,
@@ -163,7 +204,7 @@ def test_claim_dependencies_are_exact_sorted_internal_bindings_not_safe_projecti
                 "claim_id": "claim-a",
                 "study_id": "study-a",
                 "molecule_index": 7,
-                "required_fields": ["mol_idt", "smiles_expanded"],
+                "required_fields": ["mol_idt", "resolved_smiles"],
                 "requires_element_review": False,
                 "requires_reaction_data": False,
             }
@@ -235,7 +276,7 @@ def _claim_lineage() -> dict[str, object]:
                 "claim_id": "claim-a",
                 "study_id": "study-a",
                 "molecule_index": 7,
-                "required_fields": ["smiles_expanded"],
+                "required_fields": ["resolved_smiles"],
                 "requires_element_review": False,
                 "requires_reaction_data": False,
             }
@@ -266,7 +307,7 @@ def _currentness(
                         "molecule_index": 7,
                         "status": dependency_status,
                         "required_field_statuses": {
-                            "smiles_expanded": field_status,
+                            "resolved_smiles": field_status,
                         },
                         "element_review_state": element_review_state,
                         "reaction_data_status": "unavailable_not_provided",

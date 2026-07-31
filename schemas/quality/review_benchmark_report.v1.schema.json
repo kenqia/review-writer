@@ -185,14 +185,17 @@
       "type": "object", "additionalProperties": false,
       "required": [
         "schema_version", "route", "study_count", "molecule_count",
-        "unresolved_field_count", "element_review_counts", "reaction_data_status"
+        "missing_name_count", "missing_resolved_smiles_count",
+        "ai_authored_smiles_count", "element_review_counts", "reaction_data_status"
       ],
       "properties": {
-        "schema_version": {"const": "chemical-paper-safe-summary.v1"},
+        "schema_version": {"const": "chemical-paper-safe-summary.v2"},
         "route": {"const": "chemical-paper-zip-only"},
         "study_count": {"type": "integer", "minimum": 1},
         "molecule_count": {"type": "integer", "minimum": 0},
-        "unresolved_field_count": {"type": "integer", "minimum": 0},
+        "missing_name_count": {"type": "integer", "minimum": 0},
+        "missing_resolved_smiles_count": {"type": "integer", "minimum": 0},
+        "ai_authored_smiles_count": {"type": "integer", "minimum": 0},
         "element_review_counts": {
           "type": "object", "additionalProperties": false,
           "required": ["not_reviewed", "confirmed", "corrected", "not_applicable"],

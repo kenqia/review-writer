@@ -19,7 +19,9 @@ _SUMMARY_KEYS = frozenset(
         "route",
         "study_count",
         "molecule_count",
-        "unresolved_field_count",
+        "missing_name_count",
+        "missing_resolved_smiles_count",
+        "ai_authored_smiles_count",
         "element_review_counts",
         "reaction_data_status",
     }
@@ -41,7 +43,7 @@ _CLAIM_KEYS = frozenset(
     }
 )
 _CHEMICAL_FIELDS = frozenset(
-    {"mol_idt", "smiles_expanded", "smiles_unexpanded"}
+    {"mol_idt", "resolved_smiles"}
 )
 _LINEAGE_KEYS = (
     "chemical_paper_import_digests",
@@ -118,7 +120,9 @@ def _empty_state() -> dict[str, Any]:
         "chemical_paper_role": "MANUAL_EXPORT_PARSE_AID",
         "study_import_count": 0,
         "molecule_count": None,
-        "unresolved_field_count": None,
+        "missing_name_count": None,
+        "missing_resolved_smiles_count": None,
+        "ai_authored_smiles_count": None,
         "element_review_counts": None,
         "reaction_data_status": "not_applicable",
         "issues": [],
@@ -155,13 +159,17 @@ def _validate_summary(value: object, *, study_count: int) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != _SUMMARY_KEYS:
         raise _invalid()
     if (
-        value.get("schema_version") != "chemical-paper-safe-summary.v1"
+        value.get("schema_version") != "chemical-paper-safe-summary.v2"
         or value.get("route") != "chemical-paper-zip-only"
         or _nonnegative(value.get("study_count")) != study_count
     ):
         raise _invalid()
     molecule_count = _nonnegative(value.get("molecule_count"))
-    unresolved_field_count = _nonnegative(value.get("unresolved_field_count"))
+    missing_name_count = _nonnegative(value.get("missing_name_count"))
+    missing_resolved_smiles_count = _nonnegative(
+        value.get("missing_resolved_smiles_count")
+    )
+    ai_authored_smiles_count = _nonnegative(value.get("ai_authored_smiles_count"))
     counts = value.get("element_review_counts")
     if not isinstance(counts, dict) or set(counts) != set(_ELEMENT_REVIEW_STATES):
         raise _invalid()
@@ -174,11 +182,13 @@ def _validate_summary(value: object, *, study_count: int) -> dict[str, Any]:
     if reaction_data_status not in {"available", "unavailable_not_provided"}:
         raise _invalid()
     return {
-        "schema_version": "chemical-paper-safe-summary.v1",
+        "schema_version": "chemical-paper-safe-summary.v2",
         "route": "chemical-paper-zip-only",
         "study_count": study_count,
         "molecule_count": molecule_count,
-        "unresolved_field_count": unresolved_field_count,
+        "missing_name_count": missing_name_count,
+        "missing_resolved_smiles_count": missing_resolved_smiles_count,
+        "ai_authored_smiles_count": ai_authored_smiles_count,
         "element_review_counts": normalized_counts,
         "reaction_data_status": reaction_data_status,
     }
@@ -244,7 +254,7 @@ def analyze_chemical_paper_release(lineage: object) -> dict[str, Any]:
         lineage[_LINEAGE_KEYS[2]], study_ids=study_ids
     )
     issues: list[str] = []
-    if summary["unresolved_field_count"]:
+    if summary["missing_name_count"] or summary["missing_resolved_smiles_count"]:
         issues.append("CHEMICAL_FIELDS_UNRESOLVED")
     if summary["element_review_counts"]["not_reviewed"]:
         issues.append("CHEMICAL_ELEMENTS_NOT_REVIEWED")
@@ -258,7 +268,9 @@ def analyze_chemical_paper_release(lineage: object) -> dict[str, Any]:
         "chemical_paper_role": "MANUAL_EXPORT_PARSE_AID",
         "study_import_count": len(imports),
         "molecule_count": summary["molecule_count"],
-        "unresolved_field_count": summary["unresolved_field_count"],
+        "missing_name_count": summary["missing_name_count"],
+        "missing_resolved_smiles_count": summary["missing_resolved_smiles_count"],
+        "ai_authored_smiles_count": summary["ai_authored_smiles_count"],
         "element_review_counts": summary["element_review_counts"],
         "reaction_data_status": summary["reaction_data_status"],
         "issues": issues,
@@ -282,11 +294,13 @@ def safe_chemical_paper_projection(
     if state.get("status") != "available":
         return None
     return {
-        "schema_version": "chemical-paper-safe-summary.v1",
+        "schema_version": "chemical-paper-safe-summary.v2",
         "route": "chemical-paper-zip-only",
         "study_count": state["study_import_count"],
         "molecule_count": state["molecule_count"],
-        "unresolved_field_count": state["unresolved_field_count"],
+        "missing_name_count": state["missing_name_count"],
+        "missing_resolved_smiles_count": state["missing_resolved_smiles_count"],
+        "ai_authored_smiles_count": state["ai_authored_smiles_count"],
         "element_review_counts": copy.deepcopy(state["element_review_counts"]),
         "reaction_data_status": state["reaction_data_status"],
     }
@@ -508,7 +522,8 @@ def render_chemical_paper_limitations(state: dict[str, Any]) -> str:
         (
             f"Chemical Paper lineage covers {state['study_import_count']} study import(s) and "
             f"{state['molecule_count']} candidate molecule record(s); "
-            f"{state['unresolved_field_count']} chemical field value(s) remain unresolved, and "
+            f"{state['missing_name_count']} molecule name value(s) and "
+            f"{state['missing_resolved_smiles_count']} resolved SMILES value(s) remain unresolved, and "
             f"{state['element_review_counts']['not_reviewed']} molecule element record(s) remain not reviewed."
         ),
     ]

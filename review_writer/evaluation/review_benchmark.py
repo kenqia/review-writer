@@ -586,7 +586,7 @@ def validate_report(report: object) -> dict[str, Any]:
     summary = report["chemical_paper_safe_summary"]
     expected_chemical_issues: set[str] = set()
     if isinstance(summary, dict):
-        if summary["unresolved_field_count"]:
+        if summary["missing_name_count"] or summary["missing_resolved_smiles_count"]:
             expected_chemical_issues.add("CHEMICAL_FIELDS_UNRESOLVED")
         if summary["element_review_counts"]["not_reviewed"]:
             expected_chemical_issues.add("CHEMICAL_ELEMENTS_NOT_REVIEWED")

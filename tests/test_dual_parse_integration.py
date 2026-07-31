@@ -272,12 +272,10 @@ def test_backend_projection_exposes_safe_researcher_work_queues(
 
     completion_projection = dual_parse_dashboard_projection(completion)
     assert [row["field"] for row in completion_projection["completion_queue"]] == [
-        "mol_idt",
-        "smiles_expanded",
-        "smiles_unexpanded",
+        "resolved_smiles",
     ]
     assert all(
-        row["version_token"].startswith("cpv1.")
+        row["version_token"].startswith("cpv2.")
         for row in completion_projection["completion_queue"]
     )
 
@@ -584,7 +582,7 @@ def test_browser_mutations_can_advance_only_deterministic_dual_gates(
                     "reason": "Original PDF Scheme 2 supports this value.",
                     "pdf_locator": {"page": 1, "figure_label": "Scheme 2"},
                 }
-                for field in ("mol_idt", "smiles_expanded", "smiles_unexpanded")
+                for field in ("mol_idt", "resolved_smiles")
             ],
         },
     )
@@ -651,7 +649,7 @@ def test_confirm_and_completion_http_advance_derived_gates(tmp_path: Path) -> No
                     "reason": "Original PDF Scheme 2 supports this value.",
                     "pdf_locator": {"page": 1, "figure_label": "Scheme 2"},
                 }
-                for field in ("mol_idt", "smiles_expanded", "smiles_unexpanded")
+                for field in ("mol_idt", "resolved_smiles")
             ],
         },
     )

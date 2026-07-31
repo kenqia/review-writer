@@ -46,11 +46,13 @@ def _chemical_lineage(*, with_dependency: bool = False) -> dict[str, object]:
             }
         ],
         "chemical_paper_safe_summary": {
-            "schema_version": "chemical-paper-safe-summary.v1",
+            "schema_version": "chemical-paper-safe-summary.v2",
             "route": "chemical-paper-zip-only",
             "study_count": 1,
             "molecule_count": 125,
-            "unresolved_field_count": 32,
+            "missing_name_count": 0,
+            "missing_resolved_smiles_count": 32,
+            "ai_authored_smiles_count": 0,
             "element_review_counts": {
                 "not_reviewed": 125,
                 "confirmed": 0,
@@ -65,7 +67,7 @@ def _chemical_lineage(*, with_dependency: bool = False) -> dict[str, object]:
                     "claim_id": "claim-a",
                     "study_id": "study-a",
                     "molecule_index": 0,
-                    "required_fields": ["smiles_expanded"],
+                    "required_fields": ["resolved_smiles"],
                     "requires_element_review": False,
                     "requires_reaction_data": False,
                 }
@@ -102,7 +104,7 @@ def _dependency_currentness(*, blocked: bool) -> dict[str, object]:
                         "molecule_index": 0,
                         "status": "needs_review" if blocked else "current",
                         "required_field_statuses": {
-                            "smiles_expanded": "unresolved" if blocked else "resolved"
+                            "resolved_smiles": "unresolved" if blocked else "resolved"
                         },
                         "element_review_state": "not_reviewed",
                         "reaction_data_status": "unavailable_not_provided",
@@ -344,7 +346,7 @@ def test_internal_docx_binds_chemical_lineage_and_adds_explicit_limitations(
         (new_route_project / "05_release/release_snapshot.json").read_text(encoding="utf-8")
     )
     assert snapshot["chemical_paper_binding_digest"] == canonical_digest(chemical)
-    assert snapshot["chemical_paper_safe_summary"]["unresolved_field_count"] == 32
+    assert snapshot["chemical_paper_safe_summary"]["missing_resolved_smiles_count"] == 32
     assert "import_digest" not in json.dumps(snapshot["chemical_paper_safe_summary"])
 
 
@@ -515,7 +517,7 @@ def test_released_docx_becomes_stale_when_chemical_binding_changes(
 
     lineage_path = new_route_project / "04_manuscript/manuscript_lineage.v2.json"
     lineage = json.loads(lineage_path.read_text(encoding="utf-8"))
-    lineage["chemical_paper_safe_summary"]["unresolved_field_count"] = 31
+    lineage["chemical_paper_safe_summary"]["missing_resolved_smiles_count"] = 31
     _write_json(lineage_path, lineage)
 
     assert new_route_release_docx_is_current(Path(result["docx"])) is False

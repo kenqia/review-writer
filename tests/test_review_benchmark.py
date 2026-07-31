@@ -79,11 +79,13 @@ def _chemical_lineage(*, with_dependency: bool) -> dict[str, object]:
             }
         ],
         "chemical_paper_safe_summary": {
-            "schema_version": "chemical-paper-safe-summary.v1",
+            "schema_version": "chemical-paper-safe-summary.v2",
             "route": "chemical-paper-zip-only",
             "study_count": 1,
             "molecule_count": 125,
-            "unresolved_field_count": 32,
+            "missing_name_count": 0,
+            "missing_resolved_smiles_count": 32,
+            "ai_authored_smiles_count": 0,
             "element_review_counts": {
                 "not_reviewed": 125,
                 "confirmed": 0,
@@ -98,7 +100,7 @@ def _chemical_lineage(*, with_dependency: bool) -> dict[str, object]:
                     "claim_id": "claim-a",
                     "study_id": "study-a",
                     "molecule_index": 0,
-                    "required_fields": ["smiles_expanded"],
+                    "required_fields": ["resolved_smiles"],
                     "requires_element_review": False,
                     "requires_reaction_data": False,
                 }
@@ -131,7 +133,7 @@ def _chemical_currentness(*, blocked: bool) -> dict[str, object]:
                         "study_id": "study-a",
                         "molecule_index": 0,
                         "status": "needs_review",
-                        "required_field_statuses": {"smiles_expanded": "unresolved"},
+                        "required_field_statuses": {"resolved_smiles": "unresolved"},
                         "element_review_state": "not_reviewed",
                         "reaction_data_status": "unavailable_not_provided",
                         "blocking_reasons": reasons,

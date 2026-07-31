@@ -796,7 +796,7 @@ def dual_parse_dashboard_projection(project: Path) -> dict[str, Any]:
             if (
                 not isinstance(molecule_index, int)
                 or isinstance(molecule_index, bool)
-                or field not in {"mol_idt", "smiles_expanded", "smiles_unexpanded"}
+                or field != "resolved_smiles"
                 or not isinstance(complete.get("version_token"), str)
             ):
                 continue

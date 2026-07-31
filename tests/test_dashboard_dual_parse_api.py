@@ -518,7 +518,7 @@ def test_post_confirm_http_projects_bound_import_as_researcher_review_not_curren
     assert row["version"] == "3.4.4"
     assert isinstance(row["imported_at"], str) and row["imported_at"]
     assert row["reaction_data_status"] == "unavailable_not_provided"
-    assert len(payload["completion_queue"]) == 3
+    assert len(payload["completion_queue"]) == 1
 
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     for forbidden in (
@@ -590,7 +590,7 @@ def test_first_smiles_completion_locator_serves_the_bound_original_pdf_page(
     item = next(
         row
         for row in projection["completion_queue"]
-        if row["field"] == "smiles_expanded"
+        if row["field"] == "resolved_smiles"
     )
     locator = item["pdf_page_url"]
     assert locator.startswith(
@@ -1068,7 +1068,7 @@ def test_completion_and_reconciliation_put_keep_snake_case_contract(
         "corrections": [
             {
                 "molecule_index": 0,
-                "field": "smiles_expanded",
+                "field": "resolved_smiles",
                 "value": "C",
                 "reason": "Visible in Scheme 1.",
                 "pdf_locator": {"page": 1, "figure_label": "Scheme 1"},

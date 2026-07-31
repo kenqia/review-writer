@@ -209,6 +209,18 @@ def test_dashboard_projection_whitelists_researcher_safe_fields(
                         "missing_name_count": 1,
                         "missing_resolved_smiles_count": 2,
                         "version_token": "completion-v1.opaque",
+                        "missing_fields": [
+                            {
+                                "molecule_index": 0,
+                                "field": "smiles_expanded",
+                                "page": 3,
+                            },
+                            {
+                                "molecule_index": 0,
+                                "field": "resolved_smiles",
+                                "page": 3,
+                            },
+                        ],
                     }
                 ]
             },
@@ -230,7 +242,13 @@ def test_dashboard_projection_whitelists_researcher_safe_fields(
                         "version": "1.0",
                         "molecule_count": 125,
                         "reaction_data_status": "unavailable_not_provided",
-                        "molecules": [{"mol_block": "secret raw block"}],
+                        "molecules": [
+                            {
+                                "molecule_index": 0,
+                                "mol_block": "secret raw block",
+                                "pdf_page_url": "/api/project/case/pdf/study?page=3",
+                            }
+                        ],
                     }
                 ]
             },
@@ -270,6 +288,16 @@ def test_dashboard_projection_whitelists_researcher_safe_fields(
     encoded = json.dumps(projection, sort_keys=True)
     for forbidden in (SHA_A, SHA_B, SHA_C, "/private/", "mol_block", "credits"):
         assert forbidden not in encoded
+    assert projection["completion_queue"] == [
+        {
+            "study_id": "study-a",
+            "molecule_index": 0,
+            "version_token": "completion-v1.opaque",
+            "field": "resolved_smiles",
+            "page": 3,
+            "pdf_page_url": "/api/project/case/pdf/study?page=3",
+        }
+    ]
 
 
 def test_scientific_projection_adapter_accepts_nested_public_contracts() -> None:
