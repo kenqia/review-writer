@@ -25,7 +25,8 @@
   function publicText(value, fallback) {
     const candidate = text(value, "");
     if (!candidate) return fallback;
-    if (/(?:^|\s)(?:\/(?:home|mnt|users|tmp)\/|[a-z]:\\)/i.test(candidate)) return fallback;
+    if (/(?:^|\s)(?:\/(?:home|mnt|users|tmp|private)\/|[a-z]:\\)/i.test(candidate)) return fallback;
+    if (/(?:https?|file):\/\/|^\/\//i.test(candidate)) return fallback;
     if (/\b[a-f0-9]{64}\b/i.test(candidate)) return fallback;
     if (/(?:token|session|cookie)\s*[:=]/i.test(candidate)) return fallback;
     if (/^[\[{]/.test(candidate) || /\bV(?:2000|3000)\b|M\s+END/.test(candidate)) return fallback;
@@ -186,10 +187,28 @@
     const evidenceStatus = text(row.paper_evidence_status, "unknown");
     const missingNameCount = nonNegativeInteger(row.missing_name_count);
     const missingResolvedSmilesCount = nonNegativeInteger(row.missing_resolved_smiles_count);
-    const completionGapLabel = missingNameCount === null || missingResolvedSmilesCount === null
-      ? "补全缺口数未提供"
-      : `缺失名称 ${missingNameCount} · 缺失已解析 SMILES ${missingResolvedSmilesCount}`;
-    if (chemicalStatus === "needs_review") chemicalFacts.push(completionGapLabel);
+    const aiAuthoredSmilesCount = nonNegativeInteger(row.ai_authored_smiles_count);
+    const completionGapLabel = missingNameCount !== null && missingResolvedSmilesCount !== null
+      ? `缺失名称 ${missingNameCount} · 缺失已解析 SMILES ${missingResolvedSmilesCount}`
+      : missingNameCount === null && missingResolvedSmilesCount === null
+        ? "补全缺口数未提供"
+        : [
+            missingNameCount === null ? "缺失名称数未提供" : `缺失名称 ${missingNameCount}`,
+            missingResolvedSmilesCount === null
+              ? "缺失已解析 SMILES 数未提供"
+              : `缺失已解析 SMILES ${missingResolvedSmilesCount}`,
+          ].join(" · ");
+    const aiAuthoredSmilesLabel = aiAuthoredSmilesCount === null
+      ? "AI 生成 SMILES 数未提供"
+      : `AI 生成 SMILES ${aiAuthoredSmilesCount}`;
+    if (chemicalStatus === "needs_review") {
+      chemicalFacts.push(completionGapLabel, aiAuthoredSmilesLabel);
+    } else {
+      if (missingResolvedSmilesCount !== null) {
+        chemicalFacts.push(`缺失已解析 SMILES ${missingResolvedSmilesCount}`);
+      }
+      if (aiAuthoredSmilesCount !== null) chemicalFacts.push(aiAuthoredSmilesLabel);
+    }
     const model = {
       displayLabel: `研究 ${index + 1}`,
       citation: publicText(row.citation, `Core study ${index + 1}`),
@@ -205,6 +224,8 @@
       missingNameCount,
       missingResolvedSmilesCount,
       completionGapLabel,
+      aiAuthoredSmilesCount,
+      aiAuthoredSmilesLabel,
       actorLabel: publicText(row.actor_label, "决定者未提供"),
       updatedLabel: publicText(row.updated_at, "更新时间未提供"),
     };
@@ -281,6 +302,7 @@
       updatedLabel: publicText(row.updated_at, "更新时间未提供"),
     };
     if (field === "resolved_smiles") {
+      model.resolvedSmiles = publicChemicalText(row.resolved_smiles);
       model.smilesCandidates = smilesCandidatesModel(row.smiles_candidates);
     }
     const studyId = text(row.study_id, "");

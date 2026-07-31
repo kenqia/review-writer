@@ -21,6 +21,17 @@
     return typeof value === "string" && value.trim() ? value.trim() : fallback;
   }
 
+  function publicText(value, fallback) {
+    const candidate = text(value, "");
+    if (!candidate) return fallback;
+    if (/(?:^|\s)(?:\/(?:home|mnt|users|tmp|private)\/|[a-z]:\\)/i.test(candidate)) return fallback;
+    if (/(?:https?|file):\/\/|^\/\//i.test(candidate)) return fallback;
+    if (/\b[a-f0-9]{64}\b/i.test(candidate)) return fallback;
+    if (/(?:token|session|cookie)\s*[:=]/i.test(candidate)) return fallback;
+    if (/^[\[{]/.test(candidate) || /\bV(?:2000|3000)\b|M\s+END/.test(candidate)) return fallback;
+    return candidate;
+  }
+
   function nonNegativeInteger(value) {
     return Number.isInteger(value) && value >= 0 ? value : null;
   }
@@ -97,7 +108,7 @@
   function fieldModel(row, missingFields, field) {
     const value = field === "resolved_smiles"
       ? safeSmilesText(row[field]) || ""
-      : text(row[field], "");
+      : publicText(row[field], "");
     if (missingFields.has(field)) return {label: "待补充", editable: true};
     if (value) return {label: value, editable: false};
     return {label: "状态未提供", editable: false};
@@ -156,15 +167,23 @@
   function historyModel(value) {
     const row = object(value);
     const isElements = row.kind === "element_review";
-    const prior = text(row.prior_value, text(row.prior_state, "未提供"));
-    const current = text(row.value, text(row.action, text(row.state, "未提供")));
+    const field = text(row.field, "");
+    const historyValue = item => ["resolved_smiles", "smiles_expanded", "smiles_unexpanded"].includes(field)
+      ? safeSmilesText(item) || "未提供"
+      : publicText(item, "未提供");
+    const prior = isElements
+      ? elementReviewLabel(text(row.prior_value, text(row.prior_state, "未提供")))
+      : historyValue(row.prior_value);
+    const current = isElements
+      ? elementReviewLabel(text(row.value, text(row.action, text(row.state, "未提供"))))
+      : historyValue(row.value);
     return {
       label: isElements ? "元素审查" : fieldLabel(row.field),
-      prior: isElements ? elementReviewLabel(prior) : prior,
-      current: isElements ? elementReviewLabel(current) : current,
-      actor: text(row.actor_label, "决定者未提供"),
-      time: text(row.recorded_at, "决定时间未提供"),
-      reason: text(row.reason, "理由未提供"),
+      prior,
+      current,
+      actor: publicText(row.actor_label, "决定者未提供"),
+      time: publicText(row.recorded_at, "决定时间未提供"),
+      reason: publicText(row.reason, "理由未提供"),
       kind: isElements ? "elements" : "field",
     };
   }
@@ -214,54 +233,76 @@
 
   function studyModel(value, index) {
     const row = object(value);
-    const backend = text(row.backend, "");
-    const version = text(row.version, "");
+    const backend = publicText(row.backend, "");
+    const version = publicText(row.version, "");
+    const status = text(row.status, text(row.chemical_import_status, "unknown"));
+    const missingResolvedSmilesCount = nonNegativeInteger(row.missing_resolved_smiles_count);
+    const aiAuthoredSmilesCount = nonNegativeInteger(row.ai_authored_smiles_count);
     const pageCount = positiveInteger(row.page_count);
     const moleculeCount = nonNegativeInteger(row.molecule_count);
     const studyId = text(row.study_id, "");
     return {
       displayLabel: `研究 ${index + 1}`,
-      statusLabel: studyStatusLabel(row.status),
-      pdfBindingLabel: pdfBindingLabel(row.pdf_binding_status),
+      statusLabel: studyStatusLabel(status),
+      pdfBindingLabel: pdfBindingLabel(text(row.pdf_binding_status, row.chemical_binding_status)),
       backendLabel: backend && version ? `${backend} · ${version}` : backend || version || "解析引擎与版本未提供",
-      importedAtLabel: text(row.imported_at, "导入时间未提供"),
+      importedAtLabel: publicText(row.imported_at, "导入时间未提供"),
       fileKindsLabel: array(row.file_kinds).length
         ? array(row.file_kinds).map(fileKindLabel).join("、") : "文件种类未提供",
       pageCountLabel: pageCount === null ? "页数未提供" : `${pageCount} 页`,
       moleculeCountLabel: moleculeCount === null ? "分子条目数未提供" : `${moleculeCount} 个分子条目`,
       reactionLabel: reactionLabel(row.reaction_data_status),
       missingFieldLabel: missingFieldLabel(row.missing_field_counts),
-      gaps: array(row.gaps).map(value => text(value, "")).filter(Boolean),
+      missingResolvedSmilesCount,
+      missingResolvedSmilesLabel: missingResolvedSmilesCount === null
+        ? "缺失已解析 SMILES 数未提供"
+        : `缺失已解析 SMILES ${missingResolvedSmilesCount}`,
+      aiAuthoredSmilesCount,
+      aiAuthoredSmilesLabel: aiAuthoredSmilesCount === null
+        ? "AI 生成 SMILES 数未提供"
+        : `AI 生成 SMILES ${aiAuthoredSmilesCount}`,
+      gaps: array(row.gaps).map(value => publicText(value, "")).filter(Boolean),
       molecules: array(row.molecules).map((molecule, moleculeIndex) => moleculeModel(molecule, moleculeIndex, studyId)),
     };
   }
 
   function buildChemicalPaperModel(input) {
     const value = object(input);
-    if (
-      value.schema_version !== "chemical-paper-projection.v2"
-      || value.route !== "chemical-paper-zip-only"
-    ) {
+    const chemicalProjection = value.schema_version === "chemical-paper-projection.v2"
+      && value.route === "chemical-paper-zip-only";
+    const dualParseProjection = value.schema_version === "dual-parse-projection.v2"
+      && (value.route === undefined || value.route === "dual-parse");
+    if (!chemicalProjection && !dualParseProjection) {
       return {
         contractValid: false,
         route: "unknown",
         projectStatus: "unknown",
         projectStatusLabel: "Chemical Paper 安全投影合同未通过",
-        summary: {studies: null, imported: null, molecules: null, unresolvedFields: null, reactionLabel: "反应数据状态未提供"},
+        summary: {
+          studies: null,
+          imported: null,
+          molecules: null,
+          unresolvedFields: null,
+          missingResolvedSmilesCount: null,
+          aiAuthoredSmilesCount: null,
+          reactionLabel: "反应数据状态未提供",
+        },
         studies: [],
       };
     }
     const summary = object(value.summary);
     return {
       contractValid: true,
-      route: text(value.route, "unknown"),
-      projectStatus: text(value.project_status, "unknown"),
-      projectStatusLabel: projectStatusLabel(value.project_status),
+      route: chemicalProjection ? text(value.route, "unknown") : "dual-parse",
+      projectStatus: text(value.project_status, text(value.status, "unknown")),
+      projectStatusLabel: projectStatusLabel(text(value.project_status, text(value.status, "unknown"))),
       summary: {
         studies: nonNegativeInteger(summary.studies),
         imported: nonNegativeInteger(summary.imported),
         molecules: nonNegativeInteger(summary.molecules),
         unresolvedFields: nonNegativeInteger(summary.unresolved_fields),
+        missingResolvedSmilesCount: nonNegativeInteger(summary.missing_resolved_smiles_count),
+        aiAuthoredSmilesCount: nonNegativeInteger(summary.ai_authored_smiles_count),
         reactionLabel: reactionLabel(summary.reaction_data_status),
       },
       studies: array(value.studies).map(studyModel),
@@ -547,6 +588,8 @@
       ["分子条目", study.moleculeCountLabel],
       ["反应数据", study.reactionLabel],
       ["字段缺口", study.missingFieldLabel],
+      ["缺失已解析 SMILES", study.missingResolvedSmilesLabel],
+      ["AI 生成 SMILES", study.aiAuthoredSmilesLabel],
     ]);
     const gaps = document.createElement("ul");
     gaps.className = "chemical-paper-gaps";

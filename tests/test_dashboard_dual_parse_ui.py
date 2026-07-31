@@ -727,3 +727,28 @@ def test_resolved_smiles_renderer_shows_candidates_but_only_one_completion_input
             ]
         )
     )
+
+
+def test_v2_consumes_authoritative_resolved_smiles_and_keeps_counts_unknown_safe() -> None:
+    module_path = json.dumps(str(DUAL_SCRIPT))
+    _run_node(
+        "\n".join(
+            [
+                f"const ui=require({module_path});",
+                "const longSmiles='C'.repeat(64);",
+                "const model=ui.projectionModel({schema_version:'dual-parse-projection.v2',status:'ready',studies:[",
+                " {source_tier:'core',chemical_import_status:'needs_review',missing_name_count:2,missing_resolved_smiles_count:3,ai_authored_smiles_count:1},",
+                " {source_tier:'core',chemical_import_status:'needs_review',missing_name_count:2}",
+                "],completion_queue:[{study_id:'study',molecule_index:0,version_token:'version',field:'resolved_smiles',resolved_smiles:longSmiles,",
+                " smiles_candidates:{expanded:'C=C',unexpanded:'CC',selected_source:'smiles_expanded',candidate_difference:true},",
+                " smiles_expanded:'legacy field must not become canonical',smiles_unexpanded:'legacy field must not become canonical'}]});",
+                "const [withCounts,unknownCounts]=model.studies;",
+                "if(withCounts.missingResolvedSmilesCount!==3 || withCounts.aiAuthoredSmilesCount!==1) throw new Error(JSON.stringify(withCounts));",
+                "if(unknownCounts.missingResolvedSmilesCount!==null || unknownCounts.aiAuthoredSmilesCount!==null) throw new Error(JSON.stringify(unknownCounts));",
+                "const row=model.completionQueue[0];",
+                "if(row.field!=='resolved_smiles' || row.resolvedSmiles!==longSmiles) throw new Error(JSON.stringify(row));",
+                "if(row.smilesCandidates.expanded!=='C=C' || row.smilesCandidates.unexpanded!=='CC') throw new Error(JSON.stringify(row));",
+                "if(JSON.stringify(row).includes('legacy field must not become canonical')) throw new Error(JSON.stringify(row));",
+            ]
+        )
+    )

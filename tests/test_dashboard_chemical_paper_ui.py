@@ -262,3 +262,30 @@ def test_resolved_smiles_projection_hides_non_smiles_raw_text() -> None:
             ]
         )
     )
+
+
+def test_v2_allowlist_accepts_chemical_and_dual_projection_without_raw_fields() -> None:
+    module_path = json.dumps(str(DASHBOARD / "review-chemical-paper.js"))
+    _run_node(
+        "\n".join(
+            [
+                f"const ui=require({module_path});",
+                "const longSmiles='C'.repeat(64);",
+                "const molecule={molecule_index:0,version_token:'version',resolved_smiles:longSmiles,",
+                " smiles_candidates:{expanded:'C=C',unexpanded:'CC',selected_source:'smiles_expanded',candidate_difference:true},",
+                " raw_json:{secret:true},local_path:'/private/chemical.json',sha256:'a'.repeat(64),mol_block:'V2000\\nM  END',study_id:'internal-study-42'};",
+                "const chemical=ui.buildChemicalPaperModel({schema_version:'chemical-paper-projection.v2',route:'chemical-paper-zip-only',project_status:'needs_review',",
+                " summary:{studies:1,imported:1,molecules:1,unresolved_fields:1,missing_resolved_smiles_count:2,ai_authored_smiles_count:1},",
+                " studies:[{status:'needs_review',missing_resolved_smiles_count:2,ai_authored_smiles_count:1,molecules:[molecule]}]});",
+                "if(!chemical.contractValid || chemical.studies[0].missingResolvedSmilesCount!==2 || chemical.studies[0].aiAuthoredSmilesCount!==1) throw new Error(JSON.stringify(chemical));",
+                "if(chemical.studies[0].molecules[0].fields.resolvedSmiles.label!==longSmiles) throw new Error(JSON.stringify(chemical));",
+                "const dual=ui.buildChemicalPaperModel({schema_version:'dual-parse-projection.v2',status:'ready',studies:[{status:'needs_review',chemical_import_status:'needs_review',missing_resolved_smiles_count:2,ai_authored_smiles_count:1,molecules:[molecule]}]});",
+                "if(!dual.contractValid || dual.studies[0].missingResolvedSmilesCount!==2 || dual.studies[0].aiAuthoredSmilesCount!==1) throw new Error(JSON.stringify(dual));",
+                "if(dual.studies[0].molecules[0].fields.resolvedSmiles.label!==longSmiles) throw new Error(JSON.stringify(dual));",
+                "const unknown=ui.buildChemicalPaperModel({schema_version:'dual-parse-projection.v2',status:'ready',studies:[{status:'needs_review',molecules:[]}]});",
+                "if(unknown.studies[0].missingResolvedSmilesCount!==null || unknown.studies[0].aiAuthoredSmilesCount!==null) throw new Error(JSON.stringify(unknown));",
+                "const encoded=JSON.stringify({chemical,dual});",
+                "for(const forbidden of ['raw_json','/private/','sha256','V2000','M  END','internal-study-42']) if(encoded.includes(forbidden)) throw new Error(`leaked ${forbidden}`);",
+            ]
+        )
+    )
