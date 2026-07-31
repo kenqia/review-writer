@@ -858,6 +858,72 @@ def verify_chemical_paper_pdf_locator(
         raise ChemicalPaperError("STALE_CHEMICAL_PAPER_LOCATOR")
 
 
+def _verify_private_pdf_snapshot_file(
+    path: object,
+    expected_sha256: str,
+    expected_size_bytes: int,
+) -> None:
+    try:
+        snapshot_path = Path(path)
+    except TypeError as exc:
+        raise ChemicalPaperError("CHEMICAL_PAPER_PDF_SNAPSHOT_INVALID") from exc
+    if not snapshot_path.is_absolute():
+        raise ChemicalPaperError("CHEMICAL_PAPER_PDF_SNAPSHOT_INVALID")
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor: int | None = None
+    try:
+        path_metadata = os.lstat(snapshot_path)
+        if (
+            not stat.S_ISREG(path_metadata.st_mode)
+            or stat.S_IMODE(path_metadata.st_mode) & 0o077
+        ):
+            raise ChemicalPaperError("CHEMICAL_PAPER_PDF_SNAPSHOT_INVALID")
+        descriptor = os.open(snapshot_path, flags)
+        opened_metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened_metadata.st_mode)
+            or stat.S_IMODE(opened_metadata.st_mode) & 0o077
+            or opened_metadata.st_dev != path_metadata.st_dev
+            or opened_metadata.st_ino != path_metadata.st_ino
+        ):
+            raise ChemicalPaperError("CHEMICAL_PAPER_PDF_SNAPSHOT_INVALID")
+        if hasattr(os, "geteuid") and opened_metadata.st_uid != os.geteuid():
+            raise ChemicalPaperError("CHEMICAL_PAPER_PDF_SNAPSHOT_INVALID")
+        if opened_metadata.st_size != expected_size_bytes:
+            raise ChemicalPaperError("STALE_CHEMICAL_PAPER_LOCATOR")
+        digest = hashlib.sha256()
+        observed_size = 0
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            observed_size += len(chunk)
+            if observed_size > expected_size_bytes:
+                raise ChemicalPaperError("STALE_CHEMICAL_PAPER_LOCATOR")
+            digest.update(chunk)
+        final_metadata = os.fstat(descriptor)
+        if (
+            final_metadata.st_dev != opened_metadata.st_dev
+            or final_metadata.st_ino != opened_metadata.st_ino
+            or final_metadata.st_size != opened_metadata.st_size
+            or observed_size != expected_size_bytes
+            or not secrets.compare_digest(digest.hexdigest(), expected_sha256)
+        ):
+            raise ChemicalPaperError("STALE_CHEMICAL_PAPER_LOCATOR")
+    except ChemicalPaperError:
+        raise
+    except OSError as exc:
+        raise ChemicalPaperError("CHEMICAL_PAPER_PDF_SNAPSHOT_INVALID") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
 def verify_chemical_paper_pdf_snapshot(
     descriptor: ChemicalPaperPdfLocatorDescriptor,
     snapshot: object | None = None,
@@ -865,7 +931,13 @@ def verify_chemical_paper_pdf_snapshot(
     sha256: str | None = None,
     size_bytes: int | None = None,
 ) -> None:
-    """Bind immutable snapshot bytes to a locator, then reverify current authority."""
+    """Bind immutable snapshot bytes, then reverify current Chemical authority.
+
+    Object mode verifies private snapshot provenance and bytes for Release render
+    paths.  Explicit ``sha256``/``size_bytes`` mode is an internal composition
+    hook that proves only caller-bound bytes; Dashboard render paths must not use
+    it as snapshot provenance.
+    """
 
     if not isinstance(descriptor, ChemicalPaperPdfLocatorDescriptor):
         raise ChemicalPaperError("CHEMICAL_PAPER_LOCATOR_INVALID")
@@ -880,10 +952,14 @@ def verify_chemical_paper_pdf_snapshot(
             raise ChemicalPaperError("CHEMICAL_PAPER_PDF_SNAPSHOT_INVALID")
         observed_sha256 = sha256
         observed_size_bytes = size_bytes
+        snapshot_path: object | None = None
     else:
         if sha256 is not None or size_bytes is not None:
             raise ChemicalPaperError("CHEMICAL_PAPER_PDF_SNAPSHOT_INVALID")
         try:
+            snapshot_project_root = Path(
+                getattr(snapshot, "project_instance_root")
+            )
             snapshot_identity = tuple(
                 getattr(snapshot, field)
                 for field in (
@@ -892,11 +968,13 @@ def verify_chemical_paper_pdf_snapshot(
                     "source_id",
                     "kind",
                     "bundle_digest",
+                    "page_count",
                 )
             )
             observed_sha256 = getattr(snapshot, "sha256")
             observed_size_bytes = getattr(snapshot, "size_bytes")
-        except AttributeError as exc:
+            snapshot_path = getattr(snapshot, "path")
+        except (AttributeError, TypeError) as exc:
             raise ChemicalPaperError("CHEMICAL_PAPER_PDF_SNAPSHOT_INVALID") from exc
         expected_identity = (
             descriptor.project_root.name,
@@ -904,8 +982,12 @@ def verify_chemical_paper_pdf_snapshot(
             descriptor.source_id,
             "pdf",
             descriptor.source_truth_bundle_digest,
+            descriptor.page_count,
         )
-        if snapshot_identity != expected_identity:
+        if (
+            snapshot_project_root != descriptor.project_root
+            or snapshot_identity != expected_identity
+        ):
             raise ChemicalPaperError("STALE_CHEMICAL_PAPER_LOCATOR")
     if (
         not isinstance(observed_sha256, str)
@@ -915,6 +997,12 @@ def verify_chemical_paper_pdf_snapshot(
         or observed_size_bytes != descriptor.pdf_size_bytes
     ):
         raise ChemicalPaperError("STALE_CHEMICAL_PAPER_LOCATOR")
+    if snapshot_path is not None:
+        _verify_private_pdf_snapshot_file(
+            snapshot_path,
+            descriptor.pdf_sha256,
+            descriptor.pdf_size_bytes,
+        )
     verify_chemical_paper_pdf_locator(descriptor)
 
 

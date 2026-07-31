@@ -182,6 +182,53 @@ def replace_source_pdf_binding(
     )
 
 
+def release_pdf_snapshot(
+    project: Path,
+    bundle: dict[str, Any],
+    payload: bytes,
+    snapshot_path: Path,
+    *,
+    project_instance_root: Path | None = None,
+) -> SimpleNamespace:
+    source = bundle["sources"][0]
+    snapshot_path.write_bytes(payload)
+    snapshot_path.chmod(0o600)
+    return SimpleNamespace(
+        path=snapshot_path,
+        filename="main.pdf",
+        project_id=project.name,
+        project_instance_root=(project_instance_root or project).resolve(),
+        study_id=bundle["study_id"],
+        source_id=source["source_id"],
+        kind="pdf",
+        bundle_digest=bundle["bundle_digest"],
+        sha256=source["pdf"]["sha256"],
+        size_bytes=source["pdf"]["size_bytes"],
+        page_count=source["page_count"],
+    )
+
+
+def imported_pdf_descriptor(project: Path, archive_path: Path):
+    import review_writer.project.chemical_paper as chemical_paper
+
+    chemical_paper.import_chemical_paper(
+        project,
+        "study-1",
+        PDF_SHA,
+        write_chemical_zip(archive_path),
+        ACTOR,
+    )
+    locator = chemical_paper.chemical_paper_projection(project)["studies"][0][
+        "molecules"
+    ][0]["pdf_page_url"]
+    binding = parse_qs(urlsplit(locator).query)["binding"][0]
+    return chemical_paper.resolve_chemical_paper_pdf_locator(
+        project,
+        "source-main",
+        binding,
+    )
+
+
 def expand_source_truth_studies(project: Path, study_count: int) -> list[str]:
     study_ids = [f"study-{index}" for index in range(1, study_count + 1)]
     base_path = project / "01_evidence/source_truth/study-1/bundle.json"
@@ -577,28 +624,22 @@ def test_locator_descriptor_binds_immutable_snapshot_bytes_across_aba(
     bundle_path = project / "01_evidence/source_truth/study-1/bundle.json"
     bundle_a_bytes = bundle_path.read_bytes()
     bundle_a = json.loads(bundle_a_bytes)
-
-    def release_snapshot(bundle: dict[str, Any]) -> SimpleNamespace:
-        source = bundle["sources"][0]
-        return SimpleNamespace(
-            path=project / source["pdf"]["path"],
-            filename="main.pdf",
-            project_id=project.name,
-            study_id="study-1",
-            source_id="source-main",
-            kind="pdf",
-            bundle_digest=bundle["bundle_digest"],
-            sha256=source["pdf"]["sha256"],
-            size_bytes=source["pdf"]["size_bytes"],
-            page_count=source["page_count"],
-        )
-
-    snapshot_a = release_snapshot(bundle_a)
+    snapshot_a = release_pdf_snapshot(
+        project,
+        bundle_a,
+        PDF_BYTES,
+        tmp_path / "snapshot-a.pdf",
+    )
 
     pdf_b = b"%PDF-1.4\nimmutable-snapshot-b\n%%EOF\n"
     replace_source_pdf_binding(project, "study-1", pdf_b)
     bundle_b = json.loads(bundle_path.read_text(encoding="utf-8"))
-    snapshot_b = release_snapshot(bundle_b)
+    snapshot_b = release_pdf_snapshot(
+        project,
+        bundle_b,
+        pdf_b,
+        tmp_path / "snapshot-b.pdf",
+    )
 
     (project / "00_sources/main.pdf").write_bytes(PDF_BYTES)
     bundle_path.write_bytes(bundle_a_bytes)
@@ -661,6 +702,157 @@ def test_locator_descriptor_binds_immutable_snapshot_bytes_across_aba(
             sha256=snapshot_b.sha256,
             size_bytes=snapshot_b.size_bytes,
         )
+
+
+def test_snapshot_verifier_rejects_cross_root_and_missing_instance_identity(
+    tmp_path: Path,
+) -> None:
+    import review_writer.project.chemical_paper as chemical_paper
+    from review_writer.project.chemical_paper import ChemicalPaperError
+
+    project_a = source_truth_project(tmp_path / "root-a")
+    project_b = source_truth_project(tmp_path / "root-b")
+    descriptor_a = imported_pdf_descriptor(
+        project_a,
+        tmp_path / "chemical-a.zip",
+    )
+    bundle_b = json.loads(
+        (
+            project_b / "01_evidence/source_truth/study-1/bundle.json"
+        ).read_text(encoding="utf-8")
+    )
+    snapshot_b = release_pdf_snapshot(
+        project_b,
+        bundle_b,
+        PDF_BYTES,
+        tmp_path / "snapshot-root-b.pdf",
+    )
+
+    with pytest.raises(ChemicalPaperError, match="STALE_CHEMICAL_PAPER_LOCATOR"):
+        chemical_paper.verify_chemical_paper_pdf_snapshot(
+            descriptor_a,
+            snapshot_b,
+        )
+    missing_instance = vars(snapshot_b).copy()
+    missing_instance.pop("project_instance_root")
+    with pytest.raises(
+        ChemicalPaperError,
+        match="CHEMICAL_PAPER_PDF_SNAPSHOT_INVALID",
+    ):
+        chemical_paper.verify_chemical_paper_pdf_snapshot(
+            descriptor_a,
+            SimpleNamespace(**missing_instance),
+        )
+
+
+def test_snapshot_verifier_rejects_forged_bytes_page_count_and_symlink(
+    tmp_path: Path,
+) -> None:
+    import review_writer.project.chemical_paper as chemical_paper
+    from review_writer.project.chemical_paper import ChemicalPaperError
+
+    project = source_truth_project(tmp_path)
+    descriptor = imported_pdf_descriptor(project, tmp_path / "chemical.zip")
+    bundle = json.loads(
+        (
+            project / "01_evidence/source_truth/study-1/bundle.json"
+        ).read_text(encoding="utf-8")
+    )
+    wrong_bytes = b"X" * len(PDF_BYTES)
+    forged_bytes = release_pdf_snapshot(
+        project,
+        bundle,
+        wrong_bytes,
+        tmp_path / "forged-bytes.pdf",
+    )
+    valid_snapshot = release_pdf_snapshot(
+        project,
+        bundle,
+        PDF_BYTES,
+        tmp_path / "valid-snapshot.pdf",
+    )
+    wrong_page_count = SimpleNamespace(
+        **{**vars(valid_snapshot), "page_count": 999},
+    )
+    symlink_target = tmp_path / "symlink-target.pdf"
+    symlink_target.write_bytes(PDF_BYTES)
+    symlink_target.chmod(0o600)
+    symlink_path = tmp_path / "snapshot-link.pdf"
+    symlink_path.symlink_to(symlink_target)
+    symlink_snapshot = SimpleNamespace(
+        **{**vars(valid_snapshot), "path": symlink_path},
+    )
+    public_path = tmp_path / "public-snapshot.pdf"
+    public_path.write_bytes(PDF_BYTES)
+    public_path.chmod(0o644)
+    public_snapshot = SimpleNamespace(
+        **{**vars(valid_snapshot), "path": public_path},
+    )
+
+    for snapshot in (forged_bytes, wrong_page_count):
+        with pytest.raises(
+            ChemicalPaperError,
+            match="STALE_CHEMICAL_PAPER_LOCATOR",
+        ):
+            chemical_paper.verify_chemical_paper_pdf_snapshot(
+                descriptor,
+                snapshot,
+            )
+    for snapshot in (symlink_snapshot, public_snapshot):
+        with pytest.raises(
+            ChemicalPaperError,
+            match="CHEMICAL_PAPER_PDF_SNAPSHOT_INVALID",
+        ):
+            chemical_paper.verify_chemical_paper_pdf_snapshot(
+                descriptor,
+                snapshot,
+            )
+
+
+def test_snapshot_verifier_rejects_path_swap_between_lstat_and_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import review_writer.project.chemical_paper as chemical_paper
+    from review_writer.project.chemical_paper import ChemicalPaperError
+
+    project = source_truth_project(tmp_path)
+    descriptor = imported_pdf_descriptor(project, tmp_path / "chemical.zip")
+    bundle = json.loads(
+        (
+            project / "01_evidence/source_truth/study-1/bundle.json"
+        ).read_text(encoding="utf-8")
+    )
+    snapshot = release_pdf_snapshot(
+        project,
+        bundle,
+        PDF_BYTES,
+        tmp_path / "snapshot.pdf",
+    )
+    attacker = tmp_path / "attacker.pdf"
+    attacker.write_bytes(b"X" * len(PDF_BYTES))
+    attacker.chmod(0o600)
+    real_open = chemical_paper.os.open
+    swapped = False
+
+    def swap_before_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if Path(path) == snapshot.path and not swapped:
+            os.replace(attacker, snapshot.path)
+            swapped = True
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(chemical_paper.os, "open", swap_before_open)
+
+    with pytest.raises(
+        ChemicalPaperError,
+        match="CHEMICAL_PAPER_PDF_SNAPSHOT_INVALID",
+    ):
+        chemical_paper.verify_chemical_paper_pdf_snapshot(
+            descriptor,
+            snapshot,
+        )
+    assert swapped is True
 
 
 @pytest.mark.parametrize(
