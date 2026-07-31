@@ -586,16 +586,38 @@ def _dashboard_authority_payloads(
         from review_writer.project.workflow_projection import (
             _workflow_and_dual_source_state,
         )
-        from review_writer.project.chemical_paper import chemical_paper_projection
+        from review_writer.project.chemical_paper import (
+            ChemicalPaperError,
+            chemical_paper_projection,
+        )
     except ImportError as exc:
         raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_UNAVAILABLE") from exc
     root = _project(project)
     workflow, dual = _workflow_and_dual_source_state(root)
+    try:
+        chemical = chemical_paper_projection(root)
+    except ChemicalPaperError as exc:
+        if exc.code not in {
+            "SOURCE_ASSET_DRIFT",
+            "SOURCE_ASSET_INVALID",
+        }:
+            raise
+        chemical = {
+            "studies": [
+                {
+                    "study_id": row.get("study_id"),
+                    "status": "stale",
+                    "pdf_binding_status": "stale",
+                    "reaction_data_status": REACTION_UNAVAILABLE,
+                }
+                for row in _study_rows(dual)
+            ]
+        }
     values = (
         dual,
         project_chemical_completion_state(root),
         project_reconciliation_state(root),
-        chemical_paper_projection(root),
+        chemical,
         workflow,
     )
     if not all(isinstance(value, dict) for value in values):
