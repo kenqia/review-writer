@@ -2,20 +2,95 @@
 
 ## Decision
 
-Chemical Completion no longer has separate strict and exploratory gates. Every
-project uses one `honest_progressive` route: incomplete work may proceed when
-its uncertainty is explicit, source-bound, and visible.
+Chemical Completion uses one route for every new project: `Honest Progressive
+Route` (internal enum `honest_progressive`). Incomplete work may proceed when
+its uncertainty is explicit, source-bound, and visible. The
+historical v2/Round 2 execution record is retained in the design, plan, and QA
+documents, but it is not a fresh v3 gate.
 
-The route never converts a candidate into a confirmed fact. It carries the
-three-state status on every core molecule:
+## Fresh v3 Honest Progressive Contract
 
-| State | Value | Required provenance | Downstream eligibility |
+<!-- FRESH_V3_CONTRACT_START -->
+
+This is the normative contract for every fresh v3 execution. The route never
+converts a candidate into a confirmed fact and never uses zero as a substitute
+for an unknown or unavailable state.
+
+### Three-state scientific value
+
+Every authoritative molecule row uses exactly one state:
+
+| State | Value | Required evidence | Allowed use |
 |---|---|---|---|
 | `CONFIRMED` | non-null | PDF locator and researcher confirmation | precise scientific claims |
-| `AI_PROVISIONAL` | non-null | PDF/structure-figure locator, confidence, and provenance | internal tables, grouping, trends, candidate discussion only |
-| `BLOCKED` | `null` | gap reason; locator when available | limitation/gap disclosure only |
+| `AI_PROVISIONAL` | non-null | PDF locator, confidence, and provenance | explicitly provisional internal views only |
+| `BLOCKED` | `null` | non-empty `gap_reason`; locator when available | limitation/gap disclosure only |
 
-The researcher-safe projection uses these fields:
+`CONFIRMED` is never inferred from an AI candidate. `AI_PROVISIONAL` must keep
+its PDF locator, confidence, and provenance. `BLOCKED` must keep
+`value=null` plus `gap_reason`. The researcher-safe projection may expose
+status, safe locator, confidence, provenance, and gap reason, but never raw
+paths, hashes, JSON, MolBlocks, tokens, sessions, or internal IDs. Append-only
+history is immutable; actor mismatch is disclosed as provenance residual.
+
+### Fresh v3 initial state
+
+When the fresh project has only verified PDFs and fresh Generic current, with no
+authoritative Chemical cohort yet:
+
+- `availability/status` is `unknown/unavailable`, never `ready/current`;
+- `core_denominator`, `confirmed_count`, `ai_provisional_count`,
+  `blocked_count`, `coverage_ratio`, `coverage_sufficient`, and `gap_registry`
+  remain unknown/null; none is compressed to `0` and no empty `gap_registry`
+  is fabricated;
+- the only next action is `待 Chemical Paper 导入`; after the first approved ZIP
+  has completed safe preflight and awaits confirmation, the only next action is
+  `确认第一份 Chemical Paper 导入`;
+- credits are displayed only as `NOT_APPLICABLE_BY_CURRENT_SCOPE`.
+
+No new next action is allowed to compete with those labels. `gap_registry` is
+created only after authoritative molecule rows exist.
+
+### Formal Chemical import and v3 counting
+
+Only after all three approved Chemical inputs have completed formal
+preflight/confirm/import and are `3/3 current` may the server validate pages
+`6/11/11`, molecule counts `125/109/75` (project total `309`), and
+`reaction_data_status=unavailable_not_provided`. At that point, and only when
+authoritative molecule rows exist:
+
+```text
+project_denominator = 309
+coverage_ratio = (confirmed_count + ai_provisional_count) / 309
+coverage_threshold = 0.8
+coverage_sufficient = server_calculated(coverage_ratio >= coverage_threshold)
+```
+
+The server calculates all counts, denominator, ratio, threshold, and
+`coverage_sufficient`; client-supplied counts are untrusted. Missing reaction
+data remains `unavailable_not_provided`, never zero.
+
+Approved ZIPs enter only through the formal preflight → confirm → importer
+path. Never hand-unzip them, use a v2 Generic ZIP, or reuse old Generic
+outputs. ZIP/PDF binding and path/hash evidence are Coordinator-only and never
+enter Dashboard or Researcher projections.
+
+### Progressive continuation and role sequence
+
+Honest Progressive permits incomplete work but never permits opaque work. Below
+80%, source/evidence preparation may continue with an explicit
+`needs_more_traceable_candidates` state; no scientific approval may be
+fabricated or silently upgraded.
+
+The Researcher makes visible PDF-bound decisions and supplies confirmation for
+`CONFIRMED`; the Coordinator audits binding, path/hash, formal-import, safe-
+projection, and gap evidence read-only; the Integration Owner owns Task 10
+fresh bootstrap, formal preflight/confirm/import, safe projection, runtime
+readiness, and protocol restarts. Only after formal import, safe projection,
+and runtime readiness are complete may Task 11 create a new Playwright
+Researcher. Content Agents remain candidate-only and study-local.
+
+### Researcher-safe fields
 
 ```text
 resolved_smiles_status
@@ -26,25 +101,7 @@ gap_reason
 actor_provenance_residual
 ```
 
-`provenance` must not expose raw paths, hashes, JSON, MolBlocks, tokens, or
-sessions. Existing append-only history is immutable. An actor mismatch is
-represented by `actor_provenance_residual=true`; it is disclosed, not repaired
-by rewriting history.
-
-## Continuation rule
-
-For the 309 core molecules:
-
-```text
-coverage_ratio = (confirmed_count + ai_provisional_count) / core_molecule_count
-workflow_can_continue = coverage_ratio >= 0.80
-```
-
-The projection always includes `confirmed_count`, `ai_provisional_count`,
-`blocked_count`, `core_molecule_count`, `coverage_ratio`,
-`coverage_threshold`, an uncertainty statement, and a visible gap registry.
-Missing data is never silently counted as zero. A project below 80% remains
-usable for source/evidence preparation but is visibly `needs_more_traceable_candidates`.
+<!-- FRESH_V3_CONTRACT_END -->
 
 ## Consumer rules
 
@@ -53,11 +110,13 @@ usable for source/evidence preparation but is visibly `needs_more_traceable_cand
   views and must retain its confidence/provenance label.
 - `BLOCKED` is excluded from exact structure claims and is emitted in the
   limitation/gap registry.
-- Release and benchmark reports show total, confirmed, provisional, blocked,
-  per-study coverage, traceability, and uncertainty disclosure.
+- After formal v3 import, release and benchmark reports show denominator,
+  confirmed, provisional, blocked, per-study coverage, traceability, and
+  uncertainty disclosure. Before that import they preserve unknown/unavailable
+  values rather than rendering zeros.
 - Credits remain `NOT_APPLICABLE_BY_CURRENT_SCOPE` when the route does not
   measure credits; missing ledgers are not interpreted as zero.
 
 All user-facing route labels and reports say `Honest Progressive Route`.
-Technical flags such as `--strict` used by unrelated validators are not route
-names and are unaffected.
+Unrelated validator parameters retain their own technical meaning and are not
+route names.

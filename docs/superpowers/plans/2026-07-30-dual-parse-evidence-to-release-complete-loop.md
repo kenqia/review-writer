@@ -4,7 +4,102 @@
 
 **Goal:** 在全新三篇 core 项目中同时使用 Generic MinerU API 与用户手工导出的 MinerU Chemical Paper ZIP，经独立 Agent 模拟全部产品内研究者操作，完整产出可审计的 `SELF_REVIEWED_DRAFT` DOCX/PDF。
 
-**Architecture:** 原始 PDF 是唯一科学真源；Generic MinerU 是正文/版面/原图基础层，Chemical Paper 是 core study 的必需化学增强层。两层通过同一 PDF 与 study identity 绑定，Chemical Completion 和对象级 Reconciliation 在 Paper Evidence 前 fail-closed；已有 Evidence、Synthesis、Manuscript 和 Release 模块只消费当前双层安全投影。
+**Architecture:** 原始 PDF 是唯一科学真源；Generic MinerU 是正文/版面/原图基础层，Chemical Paper 是经 formal importer 导入后的 core study 化学增强层。两层通过同一 PDF 与 study identity 绑定，Honest Progressive Route 负责三态化学投影与可见缺口；对象级 Reconciliation 仍对其依赖对象 fail-closed。已有 Evidence、Synthesis、Manuscript 和 Release 模块只消费当前双层安全投影，不能把候选静默升级为科学事实。
+
+## Fresh v3 Honest Progressive Contract
+
+<!-- FRESH_V3_CONTRACT_START -->
+
+This is the normative contract for every fresh v3 execution. The route never
+converts a candidate into a confirmed fact and never uses zero as a substitute
+for an unknown or unavailable state.
+
+### Three-state scientific value
+
+Every authoritative molecule row uses exactly one state:
+
+| State | Value | Required evidence | Allowed use |
+|---|---|---|---|
+| `CONFIRMED` | non-null | PDF locator and researcher confirmation | precise scientific claims |
+| `AI_PROVISIONAL` | non-null | PDF locator, confidence, and provenance | explicitly provisional internal views only |
+| `BLOCKED` | `null` | non-empty `gap_reason`; locator when available | limitation/gap disclosure only |
+
+`CONFIRMED` is never inferred from an AI candidate. `AI_PROVISIONAL` must keep
+its PDF locator, confidence, and provenance. `BLOCKED` must keep
+`value=null` plus `gap_reason`. The researcher-safe projection may expose
+status, safe locator, confidence, provenance, and gap reason, but never raw
+paths, hashes, JSON, MolBlocks, tokens, sessions, or internal IDs. Append-only
+history is immutable; actor mismatch is disclosed as provenance residual.
+
+### Fresh v3 initial state
+
+When the fresh project has only verified PDFs and fresh Generic current, with no
+authoritative Chemical cohort yet:
+
+- `availability/status` is `unknown/unavailable`, never `ready/current`;
+- `core_denominator`, `confirmed_count`, `ai_provisional_count`,
+  `blocked_count`, `coverage_ratio`, `coverage_sufficient`, and `gap_registry`
+  remain unknown/null; none is compressed to `0` and no empty `gap_registry`
+  is fabricated;
+- the only next action is `待 Chemical Paper 导入`; after the first approved ZIP
+  has completed safe preflight and awaits confirmation, the only next action is
+  `确认第一份 Chemical Paper 导入`;
+- credits are displayed only as `NOT_APPLICABLE_BY_CURRENT_SCOPE`.
+
+No new next action is allowed to compete with those labels. `gap_registry` is
+created only after authoritative molecule rows exist.
+
+### Formal Chemical import and v3 counting
+
+Only after all three approved Chemical inputs have completed formal
+preflight/confirm/import and are `3/3 current` may the server validate pages
+`6/11/11`, molecule counts `125/109/75` (project total `309`), and
+`reaction_data_status=unavailable_not_provided`. At that point, and only when
+authoritative molecule rows exist:
+
+```text
+project_denominator = 309
+coverage_ratio = (confirmed_count + ai_provisional_count) / 309
+coverage_threshold = 0.8
+coverage_sufficient = server_calculated(coverage_ratio >= coverage_threshold)
+```
+
+The server calculates all counts, denominator, ratio, threshold, and
+`coverage_sufficient`; client-supplied counts are untrusted. Missing reaction
+data remains `unavailable_not_provided`, never zero.
+
+Approved ZIPs enter only through the formal preflight → confirm → importer
+path. Never hand-unzip them, use a v2 Generic ZIP, or reuse old Generic
+outputs. ZIP/PDF binding and path/hash evidence are Coordinator-only and never
+enter Dashboard or Researcher projections.
+
+### Progressive continuation and role sequence
+
+Honest Progressive permits incomplete work but never permits opaque work. Below
+80%, source/evidence preparation may continue with an explicit
+`needs_more_traceable_candidates` state; no scientific approval may be
+fabricated or silently upgraded.
+
+The Researcher makes visible PDF-bound decisions and supplies confirmation for
+`CONFIRMED`; the Coordinator audits binding, path/hash, formal-import, safe-
+projection, and gap evidence read-only; the Integration Owner owns Task 10
+fresh bootstrap, formal preflight/confirm/import, safe projection, runtime
+readiness, and protocol restarts. Only after formal import, safe projection,
+and runtime readiness are complete may Task 11 create a new Playwright
+Researcher. Content Agents remain candidate-only and study-local.
+
+### Researcher-safe fields
+
+```text
+resolved_smiles_status
+resolved_smiles
+confidence
+provenance
+gap_reason
+actor_provenance_residual
+```
+
+<!-- FRESH_V3_CONTRACT_END -->
 
 **Tech Stack:** Python 3.11+、JSON Schema 2020-12、stdlib HTTP server、vanilla JavaScript/CSS、pytest、MinerU precise parsing batch API、Playwright MCP、python-docx、Git worktrees。
 
@@ -61,7 +156,7 @@ git -C /home/kenqia/my_folder/review-writer worktree list
 - 多个 Owner 写同一 worktree；
 - 读取、打印或记录 token/cookie/session；
 - 使用 MinerU 私有 Chemical Paper API；
-- AI 自动填写或批准缺失 SMILES；
+- AI 把候选静默升级为 `CONFIRMED`，或丢弃 `AI_PROVISIONAL` 的 locator/confidence/provenance；
 - 复用 regression-v1 的决定、Evidence、Synthesis、Content Agent result、manuscript、DOCX、release 或 browser/session；
 - 读取 quarantined study2 results 的语义内容；
 - 自动生成、组合或重绘科学综合图；
@@ -73,7 +168,7 @@ Scientific State 新增：
 
 - `review_writer/project/dual_parse_bootstrap.py`：fresh source-only bootstrap 与 Generic output 正式绑定。
 - `review_writer/project/dual_source.py`：Generic/Chemical/PDF currentness。
-- `review_writer/project/chemical_completion.py`：名称/局部标签和双 SMILES 完整性。
+- `review_writer/project/chemical_completion.py`：名称/局部标签、单一 `resolved_smiles` 与 Honest Progressive 三态投影。
 - `review_writer/project/parse_reconciliation.py`：对象级双层仲裁。
 - `tests/test_dual_parse_figures.py`：Generic caption/image authority、Chemical gap 与 registry currentness。
 - 对应四份 schema 与 tests。
@@ -96,6 +191,7 @@ QA 新增：
 
 - `docs/qa/three-paper-dual-parse-evidence-to-release-playwright.md`
 - `tests/test_dual_parse_qa_protocol.py`
+- `tests/test_honest_progressive_docs_contract.py`
 
 现有大文件只做必要接线，不做无关重构：`scripts/run_vertical_review.py`、`review_writer/project/chemical_paper.py`、`review_writer/project/paper_evidence.py`、`review_writer/project/content_agent_handoff.py`、`review_writer/project/workflow_projection.py`、`view/serve_review_dashboard.py`、`view/assets/dashboard/review.html`、release/evaluation schemas。
 
@@ -240,7 +336,7 @@ Binding 固定记录 project/study/source/tier/PDF SHA、Source Truth bundle dig
 
 - [ ] **Step 4: 实现规则**
 
-Core 必须两 lane current 且同 PDF；background 可 Generic-only；background claim 声明 molecule/SMILES/MolBlock dependency 时强制 Chemical。写入前后在 project lock 中重验。Reaction 缺失不能投影为 0。
+Core 必须两 lane current 且同 PDF；background 可 Generic-only；background claim 声明 molecule/SMILES/MolBlock dependency 时强制 Chemical。写入前后在 project lock 中重验。Reaction 缺失不能投影为 0，固定为 `unavailable_not_provided`。
 
 - [ ] **Step 5: 增加 CLI**
 
@@ -260,7 +356,7 @@ git commit -m "feat: bind generic and chemical parse lanes"
 
 ---
 
-### Task 3: Scientific Owner — Chemical Completion Gate 与批量补全
+### Task 3: Scientific Owner — Honest Progressive Chemical Completion 投影与批量补全
 
 **Files:**
 
@@ -274,11 +370,31 @@ git commit -m "feat: bind generic and chemical parse lanes"
 - [ ] **Step 1: 写完整性与 batch 原子性 RED 测试**
 
 ```python
-def test_core_requires_name_and_one_resolved_smiles_for_every_molecule(project: Path) -> None:
+def test_fresh_v3_without_chemical_keeps_counts_unknown(project: Path) -> None:
     gate = chemical_completion_state(project, "study-a")
-    assert gate["missing_name_count"] == 1
-    assert gate["missing_resolved_smiles_count"] == 1
-    assert gate["workflow_can_continue"] is False
+    assert gate["route"] == "honest_progressive"
+    assert gate["availability"] in {"unknown", "unavailable"}
+    for key in (
+        "core_denominator", "confirmed_count", "ai_provisional_count",
+        "blocked_count", "coverage_ratio", "coverage_sufficient", "gap_registry",
+    ):
+        assert gate[key] is None
+    assert gate["next_action"] in {
+        "待 Chemical Paper 导入", "确认第一份 Chemical Paper 导入"
+    }
+
+
+def test_post_import_projects_server_calculated_tri_state_coverage(project: Path) -> None:
+    gate = chemical_completion_state(project, "study-a")
+    assert gate["core_denominator"] == 309
+    assert gate["coverage_threshold"] == 0.80
+    assert gate["coverage_ratio"] == (
+        gate["confirmed_count"] + gate["ai_provisional_count"]
+    ) / 309
+    assert {row["resolved_smiles_status"] for row in gate["molecules"]} <= {
+        "CONFIRMED", "AI_PROVISIONAL", "BLOCKED"
+    }
+    assert all(row["value"] is None for row in gate["gap_registry"])
 
 
 def test_batch_is_atomic_and_researcher_attributed(project: Path) -> None:
@@ -296,7 +412,7 @@ def test_batch_is_atomic_and_researcher_attributed(project: Path) -> None:
     assert result["applied_count"] == 1
 ```
 
-拒绝 AI/system actor、空 reason、无 page、stale token、重复 field/index、明显无效 SMILES、部分 batch 失败；失败时 state bytes 不变。
+拒绝 AI/system actor 直接写入 `CONFIRMED`、空 reason、无 page、stale token、重复 field/index、明显无效 SMILES、部分 batch 失败；失败时 state bytes 不变。`AI_PROVISIONAL` 必须带 PDF locator、confidence、provenance，`BLOCKED` 必须带非空 `gap_reason` 且 value 为 null。
 
 - [ ] **Step 2: 运行 RED**
 
@@ -313,7 +429,13 @@ def apply_chemical_completion_batch(project: Path, study_id: str, payload: objec
 def require_chemical_completion_ready(project: Path, study_id: str) -> str: ...
 ```
 
-Core 的每个 molecule 必须有当前 `mol_idt`（允许论文局部标签）和且仅有一个流程权威字段 `resolved_smiles`。`smiles_expanded` / `smiles_unexpanded` 只作为候选与 provenance：expanded 非空时优先，否则回退 unexpanded；两者都缺失时由研究者依据 PDF/结构定位补录一次 `resolved_smiles`，不制造双字段任务。Batch 在同一 lock 内先验证全部 rows，再形成逐字段 immutable events，最后一次原子写；每个研究者补录事件必须有 PDF locator。无法由 PDF 支持的值保持 blocked。
+正式 Chemical import 后，Core 的每个 authoritative molecule row 必须有当前
+`mol_idt`（允许论文局部标签）和且仅有一个三态投影；`smiles_expanded` /
+`smiles_unexpanded` 只作为候选与 provenance。Batch 在同一 lock 内先验证全部
+rows，再形成逐字段 immutable events，最后一次原子写；每个研究者补录事件必须
+有 PDF locator。无法由 PDF 支持的值保持 `BLOCKED`，进入 gap registry，不阻断
+无关 source/evidence preparation。只有 authoritative rows 存在时项目 coverage
+才以 309 为分母，按 `(CONFIRMED + AI_PROVISIONAL) / 309` 计算，阈值为 0.80。
 
 - [ ] **Step 4: 增加 CLI**
 
@@ -405,6 +527,10 @@ Source Figure registry 以当前 Generic Source Truth/image/content-list digests
 - [ ] **Step 5: 接到 Evidence 写入**
 
 ```python
+def require_honest_progressive_projection(
+    project: Path, study_id: str, *, allow_provisional: bool
+) -> str: ...
+
 def require_dual_evidence_ready(
     project: Path,
     study_id: str,
@@ -418,18 +544,18 @@ def require_dual_evidence_ready(
         ),
     }
     if chemical_required:
-        bindings["chemical_completion_digest"] = require_chemical_completion_ready(
-            project, study_id
+        bindings["honest_progressive_digest"] = require_honest_progressive_projection(
+            project, study_id, allow_provisional=True
         )
         bindings["reconciliation_digest"] = require_reconciliation_ready(project, study_id)
     return bindings
 ```
 
-`register_paper_evidence_candidates` 和 manual registrar 从候选的显式 field dependencies 计算 `requires_chemical`，在 lock 前、lock 内各检查一次；core candidate 绑定三项 current version，Generic-only background 只绑定当前 Generic/PDF，声明 molecule/SMILES/MolBlock dependency 的 background 再绑定 Completion/Reconciliation。
+`register_paper_evidence_candidates` 和 manual registrar 从候选的显式 field dependencies 计算 `requires_chemical`，在 lock 前、lock 内各检查一次；core candidate 绑定三项 current version 和 Honest Progressive projection，Generic-only background 只绑定当前 Generic/PDF，声明 molecule/SMILES/MolBlock dependency 的 background 再绑定 Completion/Reconciliation。`BLOCKED` 行只能进入限制/gap 证据；`AI_PROVISIONAL` 行必须保留 provisional 标识，不得被 exact claim 当作 `CONFIRMED`。
 
 - [ ] **Step 6: 更新唯一 next action**
 
-优先级：PDF/source → Generic parse → core Chemical import → Chemical Completion → Reconciliation → Paper Evidence → Synthesis → Manuscript → Release。一次只显示一个 researcher-readable action。
+优先级：PDF/source → Generic parse → core Chemical import → Honest Progressive Completion projection → Reconciliation → Paper Evidence → Synthesis → Manuscript → Release。正式 import 前一次只显示 `待 Chemical Paper 导入` 或 `确认第一份 Chemical Paper 导入`；import 后若 coverage < 0.80 显示 `needs_more_traceable_candidates`，不得把 unknown/missing 压成零。
 
 - [ ] **Step 7: GREEN 并提交**
 
@@ -563,11 +689,11 @@ Unknown 保持未知。Opaque tokens 只存在 JS closure/request body，不写 
 
 - [ ] **Step 4: 实现 study cards 与两步 import**
 
-每篇显示 PDF verified、Generic Parse、Chemical import/completion、Evidence availability。任意 ZIP 名先 preflight，显示 pages/backend/version/file kinds/molecules/gaps；只有点击“确认导入”才写权威状态。
+每篇显示 PDF verified、Generic Parse、Chemical import/completion、Evidence availability 和 Honest Progressive Route 状态。正式 importer 的 preflight → confirm 只能由 Integration Owner/Coordinator boundary 触发；Dashboard/Researcher 只消费 safe projection，不接收 ZIP/PDF path/hash。正式 import 前 Chemical availability、309 denominator、三态计数、coverage 和 gap registry 必须保持 unknown/unavailable；3/3 current 后显示每篇 `125/109/75`、总计 `309`、`unavailable_not_provided`、`CONFIRMED/AI_PROVISIONAL/BLOCKED` 计数与可见 gap registry。
 
 - [ ] **Step 5: 实现 batch Completion 与 Reconciliation**
 
-只列缺失三个字段；显示 PDF page/bbox/reason。Stale 时保留输入并要求刷新。Reconciliation 并排显示两候选与 PDF；conflict 只允许 `pdf_resolved|pdf_locator_only|reject_both`。
+Completion queue 在 authoritative rows 存在后显示三态 molecule rows、缺失名称/标签、单一 `resolved_smiles`、confidence/provenance、PDF page/bbox/reason 与 gap registry；正式 import 前必须保留 unknown/unavailable，不得把 expanded/unexpanded 变成两套输入。Stale 时保留输入并要求刷新。Reconciliation 并排显示两候选与 PDF；conflict 只允许 `pdf_resolved|pdf_locator_only|reject_both`。
 
 - [ ] **Step 6: 响应式/键盘**
 
@@ -679,14 +805,15 @@ def validate_dual_parse_release_bindings(project: Path, bindings: object) -> dic
 def dual_parse_release_state(project: Path) -> dict[str, object]: ...
 ```
 
-Manuscript lineage 固定记录每篇实际依赖 study 的 Generic、Chemical、Completion、Reconciliation versions；任一依赖对象变更只 stale 受影响 manuscript/section。Internal release 要求 core 的 dual binding、Completion、Reconciliation、manuscript lineage 和 claim dependencies current。Background 仅按显式 Chemical dependency 检查。
+Manuscript lineage 固定记录每篇实际依赖 study 的 Generic、Chemical、Honest Progressive Completion projection、Reconciliation versions；任一依赖对象变更只 stale 受影响 manuscript/section。Internal release 要求 core 的 dual binding、三态 projection、Reconciliation、manuscript lineage 和 claim dependencies current。Coverage < 0.80 可保留 source/evidence preparation，但受影响的 exact-claim/release path 必须显示 `needs_more_traceable_candidates` 与 gap registry；Background 仅按显式 Chemical dependency 检查。
 
 - [ ] **Step 5: 增加 Hard Fails**
 
 ```text
 CORE_GENERIC_PARSE_MISSING_OR_STALE
 CORE_CHEMICAL_IMPORT_MISSING_OR_STALE
-CHEMICAL_COMPLETION_INCOMPLETE
+HONEST_PROGRESSIVE_COVERAGE_BELOW_THRESHOLD
+HONEST_PROGRESSIVE_GAP_UNDISCLOSED
 PARSE_RECONCILIATION_UNRESOLVED
 DUAL_SOURCE_BINDING_MISMATCH
 STALE_DUAL_PARSE_CONTENT_RESULT
@@ -740,7 +867,7 @@ def test_protocol_requires_fresh_simulated_researcher() -> None:
         assert required in text
 
 
-def test_protocol_has_dual_gates_and_two_restarts() -> None:
+def test_protocol_has_dual_lanes_and_two_restarts() -> None:
     text = PROTOCOL.read_text(encoding="utf-8")
     for required in (
         "Generic MinerU", "Chemical Paper", "Chemical Completion", "Reconciliation",
@@ -760,10 +887,10 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider tests/test_du
 
 顺序固定：
 
-1. fresh browser/context；
-2. project/stage/blocker/next action；
-3. 3 PDF、3 Generic、3 Chemical preflight/confirm；
-4. Completion Queue 补全全部缺失名称/标签和 SMILES；
+1. Task 10/Coordinator-only pre-run：fresh v3 只有 3 PDF + 3 fresh Generic current；记录 Chemical availability/status、分母、三态计数、coverage、coverage_sufficient 与 gap registry 均为 unknown/unavailable（不得渲染为 0），唯一 next action 为 `待 Chemical Paper 导入`；
+2. Integration Owner 通过正式 preflight → confirm → importer 完成三份 approved Chemical input，验证 3/3 current、pages `6/11/11`、molecules `125/109/75=309`、`reaction_data_status=unavailable_not_provided`，生成 safe projection 和 runtime readiness；
+3. readiness 完成后才创建 fresh browser/context 与 Playwright Researcher，并在可见 UI 中记录 project/stage/blocker/唯一 next action；Researcher 不接收 ZIP/PDF path/hash、不执行 importer；
+4. Completion Queue 审核 `CONFIRMED`、`AI_PROVISIONAL`、`BLOCKED` 三态；分别保留 researcher confirmation/PDF locator、PDF locator+confidence+provenance、`value=null`+`gap_reason`；不得把缺失值压成零或把 expanded/unexpanded 变成两套输入；
 5. Dual Parse/PDF/Reconciliation；
 6. 三篇 Paper Evidence；
 7. refresh persistence；
@@ -780,7 +907,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider tests/test_du
 18. console/network；
 19. final evidence、close、tri-state。
 
-允许对 Coordinator 明确提供的三个 ZIP 使用 file chooser；Agent 不读取 ZIP 内容或任意文件系统。
+Formal preflight/confirm/import 由 Integration Owner 通过 importer 完成并留
+Coordinator-only receipt；Researcher 只观察安全 projection，不使用 file chooser，
+也不读取 ZIP 内容或任意文件系统。
 
 - [ ] **Step 4: Content request 与 stop gate**
 
@@ -788,13 +917,14 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider tests/test_du
 
 - [ ] **Step 5: Artifact audit contract**
 
-要求 bootstrap isolation、3 Generic/3 Chemical coordinator-only binding、309 molecule completion、study-local packages、DOCX pages/contact sheet、新旧内容差异、benchmark、restart ledger、Git/full regression。
+要求 bootstrap isolation、3 Generic/3 Chemical coordinator-only binding、309 authoritative molecule rows 的三态计数与 gap registry、study-local packages、DOCX pages/contact sheet、新旧内容差异、benchmark、restart ledger、Git/full regression；reaction 必须保持 `unavailable_not_provided`。
 
 - [ ] **Step 6: GREEN 与提交**
 
 ```zsh
 PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider tests/test_dual_parse_qa_protocol.py
-git add -- docs/qa/three-paper-dual-parse-evidence-to-release-playwright.md   tests/test_dual_parse_qa_protocol.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider tests/test_honest_progressive_docs_contract.py
+git add -- docs/qa/three-paper-dual-parse-evidence-to-release-playwright.md   tests/test_dual_parse_qa_protocol.py tests/test_honest_progressive_docs_contract.py
 git diff --cached --check
 git commit -m "docs: define independent dual parse QA protocol"
 git status --short --branch
@@ -889,13 +1019,15 @@ git status --short --branch
 
 ---
 
-### Task 10: Integration Owner — Fresh v2 project 与唯一 runtime
+### Task 10: Integration Owner — Fresh v3 project 与唯一 runtime
 
-**External project:** `<DATA_ROOT>/review-projects/vis-light-olefin-difunctionalization-complete-loop-regression-v2-dual-parse`
+**External project:** `<DATA_ROOT>/review-projects/vis-light-olefin-difunctionalization-complete-loop-regression-v3-dual-parse`
 
 - [ ] **Step 1: 证明 target 不存在**
 
-目标存在时停止并选择新的非覆盖 ID，不删除或覆盖。只在 Coordinator 证据中记录输入 SHA，不向 Dashboard/Reviewer暴露。
+目标存在时停止并选择新的非覆盖 ID，不删除或覆盖。只在 Coordinator-only
+证据中记录输入 path/hash，不向 Dashboard/Researcher 暴露；不得复用 v2
+Generic ZIP 或旧 Generic outputs。
 
 - [ ] **Step 2: 用正式 CLI bootstrap**
 
@@ -943,13 +1075,23 @@ python scripts/run_vertical_review.py bind-generic-parse \
 
 验证 3/3 Source Truth、3/3 Parse 自动 assessment、0 人工决定、0 Evidence。
 
-- [ ] **Step 6: 只 staging 三份 Chemical ZIP**
+- [ ] **Step 6: 正式 preflight/confirm/import 三份 Chemical ZIP**
 
-Integration Owner 验证 ZIP/PDF 对应和安全性，但不 confirm。三个 approved file chooser paths 交给 QA；实际 preflight/confirm 由 Playwright Researcher 完成。
+Integration Owner 在 Coordinator-only boundary 内验证 approved ZIP/PDF 对应和
+安全性，并通过正式 preflight → confirm → importer 完成三份 authoritative
+imports；不手工解压、不使用 v2 Generic ZIP/旧 Generic outputs。Importer receipt、
+3/3 current safe projection、pages `6/11/11`、molecules `125/109/75=309` 和
+`reaction_data_status=unavailable_not_provided` 只进入 Coordinator evidence，
+不向 Dashboard/Researcher 暴露 path/hash。Playwright Researcher 不执行 import。
 
 - [ ] **Step 7: 记录 isolation audit**
 
-证明 3 PDFs、3 fresh Generic、0 Chemical imports、0 decisions/Evidence/Synthesis/Sections/Figures/Manuscript/DOCX/Release/Evaluation/Content results/old browser state。
+先证明 fresh bootstrap 的 3 PDFs、3 fresh Generic、0 Chemical imports，以及
+Chemical availability/status、denominator、三态 counts、coverage、gap registry
+均为 unknown/unavailable（不可压成 0）；正式 importer 后再证明 3/3 Chemical
+current、authoritative rows 与 server-calculated counts。两个阶段都必须证明
+0 decisions/Evidence/Synthesis/Sections/Figures/Manuscript/DOCX/Release/
+Evaluation/Content results/old browser state。
 
 - [ ] **Step 8: 启动唯一 Dashboard**
 
@@ -964,14 +1106,15 @@ python view/serve_review_dashboard.py   --review-root '<DATA_ROOT>' --host 127.0
 ```text
 FRESH_DUAL_PROJECT_READY=OK
 INTEGRATED_REVISION=<sha>
-PROJECT=vis-light-olefin-difunctionalization-complete-loop-regression-v2-dual-parse
+PROJECT=vis-light-olefin-difunctionalization-complete-loop-regression-v3-dual-parse
 URL=http://127.0.0.1:63822/review
 PID=<pid>
 VISIBLE_STAGE=<dual parse review>
-UNIQUE_NEXT_ACTION=<confirm first Chemical Paper import>
+UNIQUE_NEXT_ACTION=<formal import current; Researcher may now be created>
 ```
 
-不创建 Content package、不运行 Playwright。
+只有 formal import、safe projection 和 runtime readiness 全部可核验后，才
+创建新 Playwright Researcher。不创建 Content package、不运行 Playwright。
 
 ---
 
@@ -983,15 +1126,29 @@ UNIQUE_NEXT_ACTION=<confirm first Chemical Paper import>
 
 - [ ] **Step 1: 创建全新 Playwright Researcher Agent**
 
-只提供 URL、visible project、三个 approved ZIP paths、`simulated_researcher_agent` persona 和 protocol。Agent 未参与设计/实现/旧 Round 2。
+仅在 Task 10 formal import、safe projection、runtime readiness 和
+Coordinator-only receipt 全部核验后创建。只提供 URL、visible project、
+`simulated_researcher_agent` persona 和 protocol，不提供 ZIP/PDF paths、hashes
+或 raw data。Agent 未参与设计/实现/旧 Round 2。
 
-- [ ] **Step 2: 完成三份 Chemical import**
+- [ ] **Step 2: 核验三份正式 Chemical import**
 
-通过 file chooser → preflight → confirm；可见验证 pages 6/11/11、molecules 125/109/75、backend/version、reaction unavailable。不得查看 hashes/paths/raw JSON。
+Researcher 只观察并核验已完成的 3/3 current safe projection：pages
+`6/11/11`、molecules `125/109/75`（总计 `309`）、backend/version、reaction
+`unavailable_not_provided` 和唯一 next action。它不得查看 hashes/paths/raw
+JSON，不得通过 file chooser、preflight 或 confirm 改变 authoritative state。
 
-- [ ] **Step 3: 完成 Chemical Completion**
+- [ ] **Step 3: 完成 Honest Progressive Completion**
 
-Agent 依据可见 PDF/结构 locator，为缺失 `mol_idt` 填论文局部标签，为缺失的单一 `resolved_smiles` 填来源支持值；batch save 后确认 actor/time/history/refresh persistence。无法确定则 finding，禁止猜值。最终计数必须核对 `missing_resolved_smiles_count` 和 `ai_authored_smiles_count`，不得从旧双字段计数推断完成。
+Agent 依据可见 PDF/结构 locator 审核每个 molecule 的 `CONFIRMED`,
+`AI_PROVISIONAL` 或 `BLOCKED` 状态；`CONFIRMED` 必须有 researcher
+confirmation，`AI_PROVISIONAL` 必须保留 PDF locator、confidence、provenance，
+`BLOCKED` 必须是 `value=null` + `gap_reason`。无法确定则保留 blocked 并写入
+gap registry，禁止猜值或伪造科学批准。低于 80% 时仍可继续 source/evidence
+preparation，但必须显示 `needs_more_traceable_candidates`。最终由服务端核对
+每论文 `125/109/75`、总计 `309`、`confirmed_count + ai_provisional_count`、
+coverage `/309`、threshold `0.80` 和 `coverage_sufficient`，不得信任客户端或
+旧双字段计数。
 
 - [ ] **Step 4: 完成 Parse/Reconciliation**
 
@@ -1043,7 +1200,7 @@ checkpoint 15 收到 `READY_FOR_RESTART_2` 后执行真实重启与 `sequence=2`
 
 - [ ] **Step 3: 审计双层科学状态**
 
-记录 3 PDF、3 Generic、3 Chemical、309 molecules、全部名称/标签与 SMILES complete、reaction unavailable、reconciliation closed、各层 actor/currentness。
+记录 3 PDF、3 Generic、3 Chemical、每论文 `125/109/75`（总计 309）与 `unavailable_not_provided`；审计每条 molecule 的 `CONFIRMED`/`AI_PROVISIONAL`/`BLOCKED` 状态、coverage=`(confirmed+ai_provisional)/309`、threshold=`0.80`、gap registry、uncertainty/provenance 与 actor/currentness。未知或缺失保持 unknown/null，不得压成 0；reconciliation closed/currentness 仍需核对。
 
 - [ ] **Step 4: 最终完整回归只运行一次**
 
@@ -1131,7 +1288,7 @@ KNOWN_INTEGRATION_NOTES=<exact overlap only>
 
 1. 四 Owner commits 集成且 ancestry 可证；
 2. fresh dual-parse project 隔离成立；
-3. 3 Generic + 3 Chemical + 309 molecule completion 成立；
+3. 3 Generic + 3 Chemical + 每论文 `125/109/75`（总计 309）authoritative rows 成立；每条 row 使用三态之一，coverage 按 `(confirmed+ai_provisional)/309`、threshold `0.80` 计算，gap registry 与 `unavailable_not_provided` 如实可见；
 4. Playwright Researcher Agent 完成全部产品内人工操作；
 5. 新 Content Agents 无跨 study/旧 result reuse；
 6. checkpoints 1–19、两次真实 restart、三视口、console/network 完整；
