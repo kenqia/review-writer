@@ -108,8 +108,8 @@
       bbox.length !== 4
       || !bbox.every(Number.isFinite)
       || bbox.some(coordinate => coordinate < 0 || coordinate > 1)
-      || bbox[0] > bbox[2]
-      || bbox[1] > bbox[3]
+      || bbox[0] >= bbox[2]
+      || bbox[1] >= bbox[3]
     ) return null;
     return bbox.slice();
   }

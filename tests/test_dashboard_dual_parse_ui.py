@@ -382,6 +382,36 @@ def test_completion_renderer_draws_keyboard_reachable_distinct_bbox_overlays() -
     assert ".dual-completion-locator:focus-visible" in css
 
 
+def test_completion_rejects_zero_area_bbox_without_claiming_or_drawing_location() -> None:
+    module_path = json.dumps(str(DUAL_SCRIPT))
+    _run_node(
+        "\n".join(
+            [
+                f"const ui=require({module_path});",
+                "class Node {",
+                " constructor(tag,id=''){this.tag=tag;this.id=id;this.children=[];this.attributes={};this.className='';this.textContent='';this.style={};}",
+                " append(...nodes){this.children.push(...nodes);}",
+                " replaceChildren(...nodes){this.children=[...nodes];}",
+                " setAttribute(name,value){this.attributes[name]=String(value);if(name==='id')this.id=String(value);}",
+                " addEventListener(){}",
+                " querySelector(selector){const id=selector.startsWith('#')?selector.slice(1):'';if(id&&this.id===id)return this;for(const child of this.children){if(child&&typeof child.querySelector==='function'){const found=child.querySelector(selector);if(found)return found;}}return null;}",
+                "}",
+                "const document={createElement:tag=>new Node(tag),createTextNode:value=>{const node=new Node('#text');node.textContent=String(value);return node;},body:new Node('body')};",
+                "const mount=new Node('main');for(const id of ['dual-study-status','chemical-import-preflight','chemical-completion-queue','reconciliation-list'])mount.append(new Node('section',id));",
+                "const model=ui.projectionModel({schema_version:'dual-parse-projection.v1',status:'ready',studies:[],completion_queue:[",
+                " {study_id:'study',molecule_index:1,version_token:'version',field:'mol_idt',page:5,bbox_normalized:[0.2,0.3,0.2,0.6],pdf_page_url:'/api/project/case/pdf/study?page=5'},",
+                " {study_id:'study',molecule_index:2,version_token:'version',field:'smiles_expanded',page:5,bbox_normalized:[0.2,0.3,0.6,0.3],pdf_page_url:'/api/project/case/pdf/study?page=5'}]});",
+                "for(const row of model.completionQueue){if('normalizedBbox' in row || row.locatorLabel!=='第 5 页 · 页面区域未提供') throw new Error(JSON.stringify(row));}",
+                "ui.render(document,mount,model,{});",
+                "const all=[];const visit=node=>{all.push(node);for(const child of node.children||[])if(child&&typeof child==='object')visit(child);};visit(mount);",
+                "if(all.some(node=>node.className==='dual-completion-bbox' || node.className==='dual-completion-locator')) throw new Error('zero-area locator rendered');",
+                "const rendered=all.map(node=>node.textContent).join(' ');",
+                "if(rendered.includes('区域 x') || rendered.includes('带高亮定位')) throw new Error(rendered);",
+            ]
+        )
+    )
+
+
 def test_public_renderer_loader_and_dialog_keyboard_contract_are_present() -> None:
     module_path = json.dumps(str(DUAL_SCRIPT))
     _run_node(
