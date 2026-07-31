@@ -31,6 +31,127 @@
   font-weight: 800;
 }
 
+.honest-progressive-route {
+  grid-column: 1 / -1;
+  padding: 18px;
+  background: #f7f4ec;
+  border: 1px solid var(--review-rule);
+  border-top: 4px solid var(--review-gold, #8f5f28);
+}
+
+.honest-progressive-route > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.honest-progressive-route h4 {
+  margin: 3px 0 0;
+  font: 700 19px/1.35 var(--rw-serif);
+}
+
+.honest-progressive-route > header > p,
+.honest-progressive-lead,
+.honest-progressive-contract-copy {
+  max-width: 420px;
+  margin: 0;
+  color: var(--review-muted);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.honest-progressive-counts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 15px;
+}
+
+.honest-progressive-counts article {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 10px;
+  background: var(--review-paper);
+  border: 1px solid var(--review-rule);
+}
+
+.honest-progressive-counts span {
+  color: var(--review-muted);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .04em;
+}
+
+.honest-progressive-counts strong {
+  color: var(--review-green);
+  font-size: 19px;
+}
+
+.honest-progressive-coverage,
+.honest-progressive-uncertainty,
+.honest-progressive-gaps {
+  margin-top: 12px;
+  padding: 11px 12px;
+  background: var(--review-paper);
+  border-left: 3px solid var(--review-green);
+}
+
+.honest-progressive-coverage strong,
+.honest-progressive-uncertainty > strong,
+.honest-progressive-gaps > strong {
+  font-size: 11px;
+}
+
+.honest-progressive-uncertainty p,
+.honest-progressive-gaps p,
+.honest-progressive-residual,
+.honest-progressive-contract-copy {
+  margin: 6px 0 0;
+  color: var(--review-muted);
+  font-size: 10px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.honest-progressive-gaps article {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--review-rule);
+}
+
+.honest-progressive-gaps article strong {
+  color: var(--review-danger, #9d412b);
+  font-size: 10px;
+}
+
+.honest-progressive-residual {
+  color: var(--review-green);
+  font-weight: 800;
+}
+
+.dual-study-honest-metrics {
+  display: grid;
+  gap: 4px;
+  margin: 12px 0;
+  padding: 10px;
+  background: #f7f4ec;
+  border-left: 3px solid var(--review-gold, #8f5f28);
+}
+
+.dual-study-honest-metrics strong {
+  font-size: 10px;
+}
+
+.dual-study-honest-metrics p {
+  margin: 0;
+  color: var(--review-muted);
+  font-size: 9px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 #dual-study-status {
   grid-column: 1 / -1;
 }
@@ -312,6 +433,72 @@
   line-height: 1.45;
 }
 
+.dual-resolution-summary,
+.dual-ai-candidate-panel {
+  margin-top: 12px;
+  padding: 10px;
+  background: #f7f4ec;
+  border-left: 3px solid var(--review-gold, #8f5f28);
+}
+
+.dual-resolution-summary.blocked {
+  border-left-color: var(--review-danger, #9d412b);
+}
+
+.dual-resolution-summary strong,
+.dual-ai-candidate-panel h4 {
+  font-size: 11px;
+}
+
+.dual-resolution-summary p,
+.dual-ai-candidate-note {
+  margin: 5px 0 0;
+  color: var(--review-muted);
+  font-size: 9px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.dual-ai-candidate-panel {
+  margin-bottom: 12px;
+}
+
+.dual-ai-candidate-panel h4,
+.dual-ai-candidate-panel h5 {
+  margin: 0;
+}
+
+.dual-ai-candidate-panel h5 {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--review-rule);
+  font: 700 14px/1.4 var(--rw-serif);
+}
+
+.dual-ai-candidate-form {
+  display: grid;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.dual-ai-candidate-form fieldset {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--review-rule);
+}
+
+.dual-ai-candidate-form legend {
+  max-width: 100%;
+  padding: 0 5px;
+  overflow-wrap: anywhere;
+  color: var(--review-green);
+  font-size: 10px;
+  font-weight: 900;
+}
+
 .dual-parse-import-form label,
 .dual-completion-form label,
 .dual-reconciliation-form label {
@@ -426,12 +613,14 @@
     padding: 14px;
   }
   .dual-parse-heading,
+  .honest-progressive-route > header,
   .dual-study-card header,
   .dual-reconciliation-card header { flex-direction: column; }
   .dual-parse-heading > p { max-width: none; }
   #chemical-import-preflight,
   #chemical-completion-queue,
   #reconciliation-list { grid-column: 1; padding: 13px; }
+  .honest-progressive-counts,
   .dual-study-grid,
   .dual-candidate-grid { grid-template-columns: 1fr; }
   .dual-parse-next-action { grid-template-columns: 1fr; }

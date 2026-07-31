@@ -114,6 +114,78 @@
     return Number.isInteger(value) && value > 0 ? value : null;
   }
 
+  function ratioValue(value) {
+    return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1
+      ? value : null;
+  }
+
+  function percentageLabel(value, fallback = "未知") {
+    const ratio = ratioValue(value);
+    return ratio === null ? fallback : `${Number((ratio * 100).toFixed(2))}%`;
+  }
+
+  function resolutionStatus(value) {
+    return ["CONFIRMED", "AI_PROVISIONAL", "BLOCKED"].includes(value) ? value : "UNKNOWN";
+  }
+
+  function resolutionStatusLabel(value) {
+    return ({
+      CONFIRMED: "CONFIRMED",
+      AI_PROVISIONAL: "AI_PROVISIONAL",
+      BLOCKED: "BLOCKED",
+      UNKNOWN: "解析状态未知",
+    })[value] || "解析状态未知";
+  }
+
+  function provenanceModel(value) {
+    const row = object(value);
+    const locator = object(row.pdf_locator || row.pdfLocator);
+    const page = positiveInteger(locator.page);
+    const figureLabel = publicText(locator.figure_label || locator.figureLabel, "");
+    const pdfLocator = page === null
+      ? null
+      : {page, ...(figureLabel ? {figureLabel} : {})};
+    return {
+      source: publicText(row.source, "来源未提供"),
+      pdfLocator,
+    };
+  }
+
+  function gapModel(value, index) {
+    const row = object(value);
+    const status = resolutionStatus(text(row.status || row.resolved_smiles_status, "BLOCKED"));
+    const moleculeIndex = nonNegativeInteger(row.molecule_index);
+    return {
+      displayLabel: moleculeIndex === null ? `分子条目 ${index + 1}` : `分子条目 ${moleculeIndex + 1}`,
+      status,
+      statusLabel: resolutionStatusLabel(status),
+      gapReason: publicText(row.gap_reason, "阻塞原因未提供"),
+      value: status === "BLOCKED" ? null : publicChemicalText(row.value),
+      actorProvenanceResidual: publicText(
+        row.actor_provenance_residual,
+        "保留 append-only actor provenance residual。",
+      ),
+    };
+  }
+
+  function honestProgressiveModel(value) {
+    const row = object(value);
+    return {
+      coreMoleculeCount: nonNegativeInteger(row.core_molecule_count),
+      confirmedCount: nonNegativeInteger(row.confirmed_count),
+      aiProvisionalCount: nonNegativeInteger(row.ai_provisional_count),
+      blockedCount: nonNegativeInteger(row.blocked_count),
+      coverageRatio: ratioValue(row.coverage_ratio),
+      coverageThreshold: ratioValue(row.coverage_threshold),
+      uncertaintyStatement: publicText(row.uncertainty_statement, "不确定性说明未提供。"),
+      gapRegistry: array(row.gap_registry).map(gapModel),
+      actorProvenanceResidual: publicText(
+        row.actor_provenance_residual,
+        "保留 append-only actor provenance residual。",
+      ),
+    };
+  }
+
   function safePdfUrl(value) {
     const candidate = text(value, "");
     if (!candidate.startsWith("/api/project/") || candidate.startsWith("//")) return "";
@@ -142,7 +214,8 @@
   }
 
   function locatorModel(row, showRegion) {
-    const page = positiveInteger(row.page);
+    const provenanceLocator = object(object(row).provenance).pdf_locator;
+    const page = positiveInteger(row.page) ?? positiveInteger(object(provenanceLocator).page);
     const bbox = normalizedBbox(row.bbox_normalized);
     const model = {
       locatorLabel: page
@@ -213,6 +286,16 @@
       displayLabel: `研究 ${index + 1}`,
       citation: publicText(row.citation, `Core study ${index + 1}`),
       tierLabel: (row.tier || row.source_tier) === "background" ? "Background" : (row.tier || row.source_tier) === "core" ? "Core" : "分层未知",
+      confirmedCount: nonNegativeInteger(row.confirmed_count),
+      aiProvisionalCount: nonNegativeInteger(row.ai_provisional_count),
+      blockedCount: nonNegativeInteger(row.blocked_count),
+      coverageRatio: ratioValue(row.coverage_ratio),
+      coverageThreshold: ratioValue(row.coverage_threshold),
+      uncertaintyStatement: publicText(row.uncertainty_statement, "不确定性说明未提供。"),
+      actorProvenanceResidual: publicText(
+        row.actor_provenance_residual,
+        "保留 append-only actor provenance residual。",
+      ),
       pdfLabel: stateLabel("pdf", pdfStatus),
       genericStatus,
       genericLabel: stateLabel("generic", genericStatus),
@@ -293,16 +376,30 @@
     if (!fieldLabels[row.field]) return null;
     const field = row.field;
     const moleculeIndex = nonNegativeInteger(row.molecule_index);
+    const status = resolutionStatus(text(row.resolved_smiles_status, "UNKNOWN"));
+    const provenance = provenanceModel(row.provenance);
+    const blocked = status === "BLOCKED";
     const model = {
       displayLabel: moleculeIndex === null ? "分子条目序号未提供" : `分子条目 ${moleculeIndex + 1}`,
       field,
       fieldLabel: fieldLabels[field] || "未知化学字段",
+      resolvedSmilesStatus: status,
+      resolvedSmilesStatusLabel: resolutionStatusLabel(status),
+      confidence: ratioValue(row.confidence),
+      provenance,
+      provenanceSource: provenance.source,
+      provenanceLocator: provenance.pdfLocator,
+      gapReason: blocked ? publicText(row.gap_reason, "阻塞原因未提供") : null,
+      actorProvenanceResidual: publicText(
+        row.actor_provenance_residual,
+        "保留 append-only actor provenance residual。",
+      ),
       ...locatorModel(row, true),
       actorLabel: publicText(row.actor_label, "决定者未提供"),
       updatedLabel: publicText(row.updated_at, "更新时间未提供"),
     };
     if (field === "resolved_smiles") {
-      model.resolvedSmiles = publicChemicalText(row.resolved_smiles);
+      model.resolvedSmiles = blocked ? null : publicChemicalText(row.resolved_smiles);
       model.smilesCandidates = smilesCandidatesModel(row.smiles_candidates);
     }
     const studyId = text(row.study_id, "");
@@ -358,6 +455,7 @@
   function emptyModel() {
     return {
       contractValid: false,
+      route: "unknown",
       status: "unknown",
       statusLabel: "双层解析安全投影尚不可用",
       failureMessage: "",
@@ -370,6 +468,7 @@
       importPreflight: null,
       completionQueue: [],
       reconciliationItems: [],
+      honestProgressive: honestProgressiveModel({}),
       summary: {
         coreStudies: null,
         genericCurrent: null,
@@ -387,6 +486,7 @@
     return {
       ...emptyModel(),
       contractValid: true,
+      route: value.route === "honest_progressive" ? "honest_progressive" : "unknown",
       status,
       statusLabel: ({
         loading: "正在读取双层解析任务",
@@ -405,6 +505,7 @@
       importPreflight: importPreflightModel(value.import_preflight),
       completionQueue: array(value.completion_queue).map(completionModel).filter(Boolean),
       reconciliationItems: array(value.reconciliation_items).map(reconciliationModel),
+      honestProgressive: honestProgressiveModel(value.honest_progressive),
       summary: {
         coreStudies: nonNegativeInteger(summary.core_studies),
         genericCurrent: nonNegativeInteger(summary.generic_current),
@@ -515,31 +616,69 @@
     const locator = object(input);
     if (!Number.isInteger(locator.page) || locator.page < 1) throw new Error("PDF page required");
     const result = {page: locator.page};
-    const figureLabel = text(locator.figureLabel, "");
+    const figureLabel = publicText(locator.figureLabel || locator.figure_label, "");
     if (figureLabel) result.figure_label = figureLabel;
     return result;
   }
 
+  function requiredPublic(value, label) {
+    return required(publicText(value, ""), label);
+  }
+
+  function confidencePayload(value) {
+    const confidence = ratioValue(value);
+    if (confidence === null) throw new Error("confidence required");
+    return confidence;
+  }
+
+  function provenancePayload(input, pdfLocator) {
+    const value = object(input);
+    return {
+      source: requiredPublic(value.source, "provenance source"),
+      pdf_locator: pdfLocatorPayload(value.pdfLocator || value.pdf_locator || pdfLocator),
+    };
+  }
+
   function completionBatchRequest(studyId, versionToken, rows, actor) {
     const allowedFields = new Set(["mol_idt", "resolved_smiles"]);
+    const actorFields = actorPayload(actor);
     const corrections = array(rows).map(rowValue => {
       const row = object(rowValue);
       if (!Number.isInteger(row.moleculeIndex) || row.moleculeIndex < 0) throw new Error("molecule index required");
       const field = required(row.field, "field");
       if (!allowedFields.has(field)) throw new Error("unsupported field");
-      return {
+      const pdfLocator = pdfLocatorPayload(row.pdfLocator);
+      const requestedStatus = text(row.resolutionStatus, "");
+      const status = requestedStatus ? resolutionStatus(requestedStatus) : "";
+      if (requestedStatus && status === "UNKNOWN") throw new Error("unsupported resolution status");
+      if (status === "BLOCKED") throw new Error("blocked candidate cannot be submitted");
+      if (status === "CONFIRMED" && actorFields.actor_type === "simulated_researcher_agent") {
+        throw new Error("AI actor cannot confirm candidate");
+      }
+      const value = field === "resolved_smiles"
+        ? requiredPublic(publicChemicalText(row.value), "value")
+        : requiredPublic(row.value, "value");
+      const correction = {
         molecule_index: row.moleculeIndex,
         field,
-        value: required(row.value, "value"),
-        reason: required(row.reason, "reason"),
-        pdf_locator: pdfLocatorPayload(row.pdfLocator),
+        value,
+        reason: requiredPublic(row.reason, "reason"),
+        pdf_locator: pdfLocator,
       };
+      if (status === "AI_PROVISIONAL") {
+        correction.resolution_status = status;
+        correction.confidence = confidencePayload(row.confidence);
+        correction.provenance = provenancePayload(row.provenance, row.pdfLocator);
+      } else if (status === "CONFIRMED") {
+        correction.resolution_status = status;
+      }
+      return correction;
     });
     if (!corrections.length) throw new Error("corrections required");
     return {
       study_id: required(studyId, "study id"),
       version_token: required(versionToken, "version token"),
-      ...actorPayload(actor),
+      ...actorFields,
       corrections,
     };
   }
@@ -652,6 +791,80 @@
     cancel.focus();
   }
 
+  function countLabel(value) {
+    return value === null ? "未知" : String(value);
+  }
+
+  function renderHonestProgressive(document, parent, model) {
+    parent.replaceChildren();
+    const honest = model.honestProgressive || honestProgressiveModel({});
+    const header = document.createElement("header");
+    appendText(document, header, "p", "Honest Progressive Route", "honest-progressive-kicker");
+    appendText(document, header, "h4", "诚实渐进式结构解析");
+    appendText(
+      document,
+      header,
+      "p",
+      "三态结果保持可见：CONFIRMED、AI_PROVISIONAL 与 BLOCKED 不互相伪装。",
+      "honest-progressive-lead",
+    );
+    parent.append(header);
+
+    const counts = document.createElement("div");
+    counts.className = "honest-progressive-counts";
+    [
+      ["总分子", honest.coreMoleculeCount],
+      ["CONFIRMED", honest.confirmedCount],
+      ["AI_PROVISIONAL", honest.aiProvisionalCount],
+      ["BLOCKED", honest.blockedCount],
+    ].forEach(([label, value]) => {
+      const card = document.createElement("article");
+      appendText(document, card, "span", label);
+      appendText(document, card, "strong", countLabel(value));
+      counts.append(card);
+    });
+    parent.append(counts);
+
+    const coverage = document.createElement("section");
+    coverage.className = "honest-progressive-coverage";
+    appendText(
+      document,
+      coverage,
+      "strong",
+      `覆盖率 ${percentageLabel(honest.coverageRatio)} · 阈值 ${percentageLabel(honest.coverageThreshold)}`,
+    );
+    parent.append(coverage);
+
+    const uncertainty = document.createElement("section");
+    uncertainty.className = "honest-progressive-uncertainty";
+    appendText(document, uncertainty, "strong", "不确定性说明");
+    appendText(document, uncertainty, "p", honest.uncertaintyStatement);
+    parent.append(uncertainty);
+
+    const gaps = document.createElement("section");
+    gaps.className = "honest-progressive-gaps";
+    appendText(document, gaps, "strong", "Gap registry");
+    if (!honest.gapRegistry.length) {
+      appendText(document, gaps, "p", "当前没有已登记的 BLOCKED gap。", "dual-parse-empty");
+    } else {
+      honest.gapRegistry.forEach(gap => {
+        const item = document.createElement("article");
+        appendText(document, item, "strong", `${gap.displayLabel} · ${gap.statusLabel}`);
+        appendText(document, item, "p", gap.gapReason);
+        if (gap.status === "BLOCKED") appendText(document, item, "p", "value=null");
+        gaps.append(item);
+      });
+    }
+    parent.append(gaps);
+    appendText(
+      document,
+      parent,
+      "p",
+      `Actor provenance residual：${honest.actorProvenanceResidual}`,
+      "honest-progressive-residual",
+    );
+  }
+
   function renderStatus(document, parent, model, handlers) {
     parent.replaceChildren();
     const status = document.createElement("section");
@@ -725,6 +938,27 @@
         study.evidenceLabel,
       ].forEach(value => appendText(document, states, "li", value));
       card.append(states);
+      if (model.route === "honest_progressive") {
+        const honestMetrics = document.createElement("section");
+        honestMetrics.className = "dual-study-honest-metrics";
+        appendText(
+          document,
+          honestMetrics,
+          "strong",
+          `论文覆盖率 ${percentageLabel(study.coverageRatio)} · 阈值 ${percentageLabel(study.coverageThreshold)}`,
+        );
+        appendText(
+          document,
+          honestMetrics,
+          "p",
+          `CONFIRMED ${countLabel(study.confirmedCount)} · AI_PROVISIONAL ${countLabel(study.aiProvisionalCount)} · BLOCKED ${countLabel(study.blockedCount)}`,
+        );
+        appendText(document, honestMetrics, "p", `不确定性说明：${study.uncertaintyStatement}`);
+        if (study.actorProvenanceResidual) {
+          appendText(document, honestMetrics, "p", `Actor provenance residual：${study.actorProvenanceResidual}`);
+        }
+        card.append(honestMetrics);
+      }
       if (study.chemicalFacts.length) {
         const facts = document.createElement("ul");
         facts.className = "dual-parse-facts";
@@ -909,7 +1143,153 @@
     fieldset.append(context);
   }
 
-  function renderCompletion(document, parent, rows, handlers) {
+  function appendResolutionSummary(document, fieldset, row) {
+    if (row.resolvedSmilesStatus === "UNKNOWN") return;
+    const summary = document.createElement("section");
+    summary.className = `dual-resolution-summary ${row.resolvedSmilesStatus.toLowerCase()}`;
+    appendText(document, summary, "strong", row.resolvedSmilesStatusLabel);
+    if (row.resolvedSmilesStatus === "BLOCKED") {
+      appendText(document, summary, "p", `gap reason：${row.gapReason}`);
+      appendText(document, summary, "p", "value=null");
+    } else {
+      appendText(document, summary, "p", `value=${row.resolvedSmiles || "未提供"}`);
+      if (row.resolvedSmilesStatus === "AI_PROVISIONAL") {
+        appendText(
+          document,
+          summary,
+          "p",
+          `confidence ${row.confidence === null ? "未知" : row.confidence} · provenance ${row.provenanceSource}`,
+        );
+      }
+    }
+    if (row.actorProvenanceResidual) {
+      appendText(document, summary, "p", `Actor provenance residual：${row.actorProvenanceResidual}`);
+    }
+    fieldset.append(summary);
+  }
+
+  function renderAICandidateForms(document, parent, rows, handlers) {
+    const groups = groupCompletionRows(rows)
+      .map(group => ({...group, rows:group.rows.filter(row => row.field === "resolved_smiles")}))
+      .filter(group => group.rows.length);
+    if (!groups.length) return;
+    const panel = document.createElement("section");
+    panel.className = "dual-ai-candidate-panel";
+    appendText(document, panel, "h4", "AI candidate batch · AI_PROVISIONAL only");
+    appendText(
+      document,
+      panel,
+      "p",
+      "批量 AI candidate 只能提交 AI_PROVISIONAL；不会伪装为 CONFIRMED。每条候选必须记录 confidence、provenance 与 PDF locator。",
+      "dual-ai-candidate-note",
+    );
+    groups.forEach((group, groupIndex) => {
+      const form = document.createElement("form");
+      form.className = "dual-ai-candidate-form";
+      appendText(document, form, "h5", `AI candidate 批次 ${groupIndex + 1}`);
+      const controls = [];
+      group.rows.forEach(row => {
+        const fieldset = document.createElement("fieldset");
+        const legend = document.createElement("legend");
+        legend.textContent = `${row.displayLabel} · AI_PROVISIONAL · ${row.locatorLabel}`;
+        fieldset.append(legend);
+        const value = document.createElement("input");
+        value.className = "dual-ai-candidate-value";
+        value.autocomplete = "off";
+        const confidence = document.createElement("input");
+        confidence.className = "dual-ai-candidate-confidence";
+        confidence.type = "number";
+        confidence.min = "0";
+        confidence.max = "1";
+        confidence.step = "0.01";
+        confidence.value = row.confidence === null ? "" : String(row.confidence);
+        const provenance = document.createElement("input");
+        provenance.className = "dual-ai-candidate-provenance";
+        provenance.autocomplete = "off";
+        provenance.value = row.provenanceSource === "来源未提供" ? "" : row.provenanceSource;
+        const page = document.createElement("input");
+        page.className = "dual-ai-candidate-page";
+        page.type = "number";
+        page.min = "1";
+        page.value = row.page ? String(row.page) : "";
+        const figure = document.createElement("input");
+        figure.className = "dual-ai-candidate-figure";
+        figure.autocomplete = "off";
+        const reason = document.createElement("textarea");
+        reason.className = "dual-ai-candidate-reason";
+        reason.rows = 2;
+        fieldset.append(
+          labelledControl(document, "AI candidate resolved SMILES", value),
+          labelledControl(document, "confidence（0–1）", confidence),
+          labelledControl(document, "provenance source", provenance),
+          labelledControl(document, "PDF 页码", page),
+          labelledControl(document, "图、Scheme 或表号（可选）", figure),
+          labelledControl(document, "候选理由", reason),
+        );
+        form.append(fieldset);
+        controls.push({row, value, confidence, provenance, page, figure, reason});
+      });
+      const actor = safeActor(handlers);
+      const actorInput = document.createElement("input");
+      actorInput.className = "dual-ai-candidate-actor";
+      actorInput.autocomplete = "off";
+      actorInput.value = actor.actorLabel;
+      form.append(labelledControl(document, "本批次候选记录者", actorInput));
+      const submit = document.createElement("button");
+      submit.type = "submit";
+      submit.className = "dual-parse-primary";
+      submit.textContent = "提交 AI_PROVISIONAL 候选";
+      form.append(submit);
+      form.addEventListener("submit", event => {
+        event.preventDefault();
+        try {
+          const completeControls = controls.filter(control => {
+            const value = publicChemicalText(control.value.value);
+            const confidence = ratioValue(Number(control.confidence.value));
+            return value
+              && text(control.provenance.value, "")
+              && text(control.reason.value, "")
+              && Number.isInteger(Number(control.page.value))
+              && Number(control.page.value) >= 1
+              && confidence !== null;
+          });
+          if (!completeControls.length) throw new Error("at least one complete AI candidate required");
+          const corrections = completeControls.map(control => ({
+            moleculeIndex: completionTargetByModel.get(control.row).moleculeIndex,
+            field: control.row.field,
+            value: control.value.value,
+            resolutionStatus: "AI_PROVISIONAL",
+            confidence: Number(control.confidence.value),
+            provenance: {
+              source: control.provenance.value,
+              pdfLocator: {page: Number(control.page.value), figureLabel: control.figure.value},
+            },
+            reason: control.reason.value,
+            pdfLocator: {page: Number(control.page.value), figureLabel: control.figure.value},
+          }));
+          handlers?.onCompletionSave?.(
+            completionBatchRequest(
+              group.target.studyId,
+              group.target.versionToken,
+              corrections,
+              {...actor, actorLabel: actorInput.value},
+            ),
+            form,
+          );
+        } catch (error) {
+          handlers?.onValidationError?.(
+            error?.message === "at least one complete AI candidate required"
+              ? "请至少完整填写一项 AI candidate，并提供 confidence、provenance、PDF 页码与理由。"
+              : "AI candidate 未提交：请检查 SMILES、confidence、provenance 与 PDF locator。",
+          );
+        }
+      });
+      panel.append(form);
+    });
+    parent.append(panel);
+  }
+
+  function renderCompletion(document, parent, rows, handlers, model) {
     parent.replaceChildren();
     appendText(document, parent, "h4", "Chemical Completion Queue");
     const groups = groupCompletionRows(rows);
@@ -930,6 +1310,7 @@
         const legend = document.createElement("legend");
         legend.textContent = `${row.displayLabel} · ${row.fieldLabel} · ${row.locatorLabel}`;
         fieldset.append(legend);
+        appendResolutionSummary(document, fieldset, row);
         if (row.pdfPageUrl) {
           if (row.normalizedBbox) fieldset.append(completionLocator(document, row));
           const link = document.createElement("a");
@@ -1012,6 +1393,7 @@
       });
       parent.append(form);
     });
+    if (model?.route === "honest_progressive") renderAICandidateForms(document, parent, rows, handlers);
     if (!groups.length) appendText(document, parent, "p", "当前没有缺失名称、局部标签或已解析 SMILES。", "dual-parse-empty");
   }
 
@@ -1116,6 +1498,7 @@
   function render(document, mount, input, handlers) {
     if (!document || !mount) return;
     const model = input?.contractValid === true ? input : projectionModel(input);
+    const honestRoot = mount.querySelector("#honest-progressive-summary");
     const studyRoot = mount.querySelector("#dual-study-status");
     const preflightRoot = mount.querySelector("#chemical-import-preflight");
     const completionRoot = mount.querySelector("#chemical-completion-queue");
@@ -1127,10 +1510,11 @@
         renderPreflight(document, preflightRoot, importPreflightModel(payload), wiredHandlers);
       },
     };
+    if (honestRoot) renderHonestProgressive(document, honestRoot, model);
     renderStatus(document, studyRoot, model, wiredHandlers);
     renderStudies(document, studyRoot, model, wiredHandlers);
     renderPreflight(document, preflightRoot, model.importPreflight, wiredHandlers);
-    renderCompletion(document, completionRoot, model.completionQueue, wiredHandlers);
+    renderCompletion(document, completionRoot, model.completionQueue, wiredHandlers, model);
     renderReconciliation(document, reconciliationRoot, model.reconciliationItems, wiredHandlers);
   }
 
