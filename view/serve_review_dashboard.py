@@ -4643,7 +4643,9 @@ def direct_project_id(review_root: Path) -> str:
 def normalized_project_id(project_id: str) -> str:
     if not isinstance(project_id, str):
         raise ValueError("invalid project_id")
-    decoded = unquote(project_id)
+    # Route parsing owns the single percent-decoding boundary. A second decode
+    # here would turn a legal literal "%2F" directory name into a separator.
+    decoded = project_id
     if not decoded or decoded in {".", ".."} or "\x00" in decoded or "/" in decoded or "\\" in decoded:
         raise ValueError("invalid project_id")
     return decoded

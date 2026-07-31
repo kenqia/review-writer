@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 
@@ -186,6 +187,64 @@ def test_pdf_page_renderer_fails_closed_when_validated_bytes_are_replaced(
 
     assert status == 404
     assert replacement not in body
+
+
+def test_project_route_decodes_literal_percent_slash_exactly_once(tmp_path: Path) -> None:
+    from test_source_truth import _source_truth_project
+    from review_writer.project.source_truth import write_source_truth_bundle
+
+    review_root = tmp_path / "review-root"
+    project = _source_truth_project(review_root)
+    literal_id = "project%2Fversion"
+    literal_project = project.with_name(literal_id)
+    project.rename(literal_project)
+    write_source_truth_bundle(literal_project, "scholarly-a")
+
+    status, headers, body = _http_request(
+        review_root,
+        (
+            f"GET /api/project/{quote(literal_id, safe='')}/source/stud-a/pdf HTTP/1.1\r\n"
+            "Host: localhost\r\n\r\n"
+        ).encode("ascii"),
+    )
+
+    assert status == 200
+    assert headers["Content-Type"] == "application/pdf"
+    assert body == b"%PDF-main-a"
+
+    traversal_status, _, _ = _http_request(
+        review_root,
+        b"GET /api/project/project%2Fversion/source/stud-a/pdf HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    )
+    double_encoded_traversal_status, _, _ = _http_request(
+        review_root,
+        b"GET /api/project/%252e%252e%252Fescape/source/stud-a/pdf HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    )
+    assert traversal_status == 404
+    assert double_encoded_traversal_status == 404
+
+
+def test_project_route_keeps_unicode_project_id_behavior(tmp_path: Path) -> None:
+    from test_source_truth import _source_truth_project
+    from review_writer.project.source_truth import write_source_truth_bundle
+
+    review_root = tmp_path / "review-root"
+    project = _source_truth_project(review_root)
+    unicode_id = "项目 α"
+    unicode_project = project.with_name(unicode_id)
+    project.rename(unicode_project)
+    write_source_truth_bundle(unicode_project, "scholarly-a")
+
+    status, _, body = _http_request(
+        review_root,
+        (
+            f"GET /api/project/{quote(unicode_id, safe='')}/source/stud-a/pdf HTTP/1.1\r\n"
+            "Host: localhost\r\n\r\n"
+        ).encode("ascii"),
+    )
+
+    assert status == 200
+    assert body == b"%PDF-main-a"
 
 
 def test_preflight_writes_no_authoritative_state_and_returns_safe_projection(
