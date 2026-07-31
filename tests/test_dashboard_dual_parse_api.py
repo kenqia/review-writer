@@ -103,6 +103,91 @@ def _authoritative_snapshot(project: Path) -> dict[str, bytes]:
     }
 
 
+@pytest.mark.parametrize(
+    ("kind", "relative_asset"),
+    [
+        ("pdf", "00_sources/papers/paper-a.pdf"),
+        ("parsed-markdown", "01_evidence/mineru/markdown/10_1000_example.md"),
+    ],
+)
+def test_parse_asset_send_fails_closed_when_validated_path_is_replaced_by_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    relative_asset: str,
+) -> None:
+    from test_source_truth import _source_truth_project
+    from review_writer.project.source_truth import write_source_truth_bundle
+    from view import serve_review_dashboard as dashboard
+
+    review_root = tmp_path / "review-root"
+    project = _source_truth_project(review_root)
+    write_source_truth_bundle(project, "scholarly-a")
+    outside = tmp_path / f"outside-{kind}.bin"
+    outside.write_bytes(b"outside-unverified-content")
+    source_path = project / relative_asset
+    real_lookup = dashboard.project_parse_source_asset
+
+    def lookup_then_swap(project_path: Path, source_id: str, requested_kind: str):
+        validated = real_lookup(project_path, source_id, requested_kind)
+        source_path.unlink()
+        source_path.symlink_to(outside)
+        return validated
+
+    monkeypatch.setattr(dashboard, "project_parse_source_asset", lookup_then_swap)
+
+    status, _, body = _http_request(
+        review_root,
+        (
+            f"GET /api/project/{project.name}/source/stud-a/{kind} HTTP/1.1\r\n"
+            "Host: localhost\r\n\r\n"
+        ).encode("ascii"),
+    )
+
+    assert status == 404
+    assert outside.read_bytes() not in body
+
+
+def test_pdf_page_renderer_fails_closed_when_validated_bytes_are_replaced(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from test_source_truth import _source_truth_project
+    from review_writer.project.source_truth import write_source_truth_bundle
+    from view import serve_review_dashboard as dashboard
+
+    review_root = tmp_path / "review-root"
+    project = _source_truth_project(review_root)
+    write_source_truth_bundle(project, "scholarly-a")
+    source_path = project / "00_sources/papers/paper-a.pdf"
+    replacement = b"%PDF-evil!!"
+    assert len(replacement) == source_path.stat().st_size
+    real_lookup = dashboard.project_parse_source_asset
+
+    def lookup_then_swap(project_path: Path, source_id: str, requested_kind: str):
+        validated = real_lookup(project_path, source_id, requested_kind)
+        source_path.write_bytes(replacement)
+        return validated
+
+    def render_opened_path(path: Path, page: int) -> bytes:
+        assert page == 1
+        return b"\x89PNG\r\n\x1a\n" + path.read_bytes()
+
+    monkeypatch.setattr(dashboard, "project_parse_source_asset", lookup_then_swap)
+    monkeypatch.setattr(dashboard, "render_pdf_page", render_opened_path)
+
+    status, _, body = _http_request(
+        review_root,
+        (
+            f"GET /api/project/{project.name}/source/stud-a/pdf-page?page=1 HTTP/1.1\r\n"
+            "Host: localhost\r\n\r\n"
+        ).encode("ascii"),
+    )
+
+    assert status == 404
+    assert replacement not in body
+
+
 def test_preflight_writes_no_authoritative_state_and_returns_safe_projection(
     tmp_path: Path,
 ) -> None:

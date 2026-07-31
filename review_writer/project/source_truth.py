@@ -6,9 +6,12 @@ import hashlib
 import json
 import os
 import re
+import stat
 import tempfile
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from jsonschema import Draft202012Validator
 
@@ -29,6 +32,22 @@ class SourceTruthError(ValueError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+@dataclass(frozen=True)
+class SourceTruthAssetSnapshot:
+    """Private immutable copy of one asset bound to its verified bundle identity."""
+
+    path: Path
+    filename: str
+    project_id: str
+    study_id: str
+    source_id: str
+    kind: str
+    bundle_digest: str
+    sha256: str
+    size_bytes: int
+    page_count: int
 
 
 def canonical_digest(value: object) -> str:
@@ -514,3 +533,96 @@ def source_truth_asset(
     if path.stat().st_size != descriptor["size_bytes"] or _sha256_file(path) != descriptor["sha256"]:
         raise SourceTruthError("SOURCE_ASSET_DRIFT")
     return path
+
+
+@contextmanager
+def source_truth_asset_snapshot(
+    project: Path,
+    study_id: str,
+    source_id: str,
+    kind: str,
+) -> Iterator[SourceTruthAssetSnapshot]:
+    """Yield verified bytes from a private path that cannot follow later source swaps."""
+
+    project = project.resolve(strict=True)
+    bundle = load_source_truth_bundle(project, study_id)
+    sources = [source for source in bundle["sources"] if source.get("source_id") == source_id]
+    if len(sources) != 1:
+        raise SourceTruthError("SOURCE_ID_NOT_FOUND")
+    field = {"pdf": "pdf", "parsed-markdown": "canonical_markdown"}.get(kind)
+    if field is None:
+        raise SourceTruthError("SOURCE_ASSET_KIND_INVALID")
+    source = sources[0]
+    descriptor = source[field]
+    expected_size = descriptor.get("size_bytes")
+    expected_sha256 = descriptor.get("sha256")
+    page_count = source.get("page_count")
+    bundle_digest = bundle.get("bundle_digest")
+    if (
+        not isinstance(expected_size, int)
+        or isinstance(expected_size, bool)
+        or expected_size < 0
+        or not isinstance(expected_sha256, str)
+        or not SHA256_RE.fullmatch(expected_sha256)
+        or not isinstance(page_count, int)
+        or isinstance(page_count, bool)
+        or page_count < 1
+        or not isinstance(bundle_digest, str)
+        or not SHA256_RE.fullmatch(bundle_digest)
+    ):
+        raise SourceTruthError("SOURCE_TRUTH_SCHEMA_INVALID")
+
+    relative = descriptor.get("path")
+    if not isinstance(relative, str):
+        raise SourceTruthError("SOURCE_TRUTH_SCHEMA_INVALID")
+    path = _safe_file(project, relative)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        file_descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise SourceTruthError("SOURCE_ASSET_INVALID") from exc
+
+    try:
+        opened_stat = os.fstat(file_descriptor)
+        if not stat.S_ISREG(opened_stat.st_mode) or opened_stat.st_size != expected_size:
+            raise SourceTruthError("SOURCE_ASSET_DRIFT")
+        proc_fd = Path(f"/proc/self/fd/{file_descriptor}")
+        if proc_fd.parent.is_dir():
+            try:
+                opened_path = proc_fd.resolve(strict=True)
+                opened_path.relative_to(project)
+            except (OSError, ValueError) as exc:
+                raise SourceTruthError("SOURCE_ASSET_INVALID") from exc
+
+        with tempfile.TemporaryDirectory(prefix="review-writer-source-asset-") as temp_dir:
+            os.chmod(temp_dir, 0o700)
+            snapshot_path = Path(temp_dir) / Path(relative).name
+            digest = hashlib.sha256()
+            observed_size = 0
+            with os.fdopen(file_descriptor, "rb", closefd=False) as source_handle:
+                with snapshot_path.open("xb") as snapshot_handle:
+                    os.chmod(snapshot_path, 0o600)
+                    for chunk in iter(lambda: source_handle.read(1024 * 1024), b""):
+                        observed_size += len(chunk)
+                        if observed_size > expected_size:
+                            raise SourceTruthError("SOURCE_ASSET_DRIFT")
+                        digest.update(chunk)
+                        snapshot_handle.write(chunk)
+                    snapshot_handle.flush()
+                    os.fsync(snapshot_handle.fileno())
+            if observed_size != expected_size or digest.hexdigest() != expected_sha256:
+                raise SourceTruthError("SOURCE_ASSET_DRIFT")
+            yield SourceTruthAssetSnapshot(
+                path=snapshot_path,
+                filename=Path(relative).name,
+                project_id=project.name,
+                study_id=study_id,
+                source_id=source_id,
+                kind=kind,
+                bundle_digest=bundle_digest,
+                sha256=expected_sha256,
+                size_bytes=expected_size,
+                page_count=page_count,
+            )
+    finally:
+        os.close(file_descriptor)

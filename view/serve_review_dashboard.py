@@ -17,10 +17,11 @@ import tempfile
 import threading
 import unicodedata
 import zipfile
+from contextlib import contextmanager
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
 
@@ -109,10 +110,11 @@ from review_writer.project.manuscript_v2 import (  # noqa: E402
 )
 from review_writer.project.source_truth import (  # noqa: E402
     SOURCE_TRUTH_ROOT,
+    SourceTruthAssetSnapshot,
     SourceTruthError,
     canonical_digest,
     load_source_truth_bundle,
-    source_truth_asset,
+    source_truth_asset_snapshot,
 )
 from review_writer.project.chemical_paper import (  # noqa: E402
     ChemicalPaperError,
@@ -1124,47 +1126,42 @@ class DashboardHandler(BaseHTTPRequestHandler):
     ) -> None:
         try:
             project = project_dir(self.review_root, project_id)
-            path = project_parse_source_asset(
+            asset_context = project_parse_source_asset(
                 project,
                 source_id,
                 "pdf" if kind == "pdf-page" else kind,
             )
+            with asset_context as asset:
+                if kind == "pdf-page":
+                    page_limit = str(asset.page_count)
+                    if page is None or len(page) > len(page_limit) or (
+                        len(page) == len(page_limit) and page > page_limit
+                    ):
+                        self.send_error(HTTPStatus.BAD_REQUEST, "PDF page is invalid")
+                        return
+                    page_number = int(page)
+                    try:
+                        payload = render_pdf_page(asset.path, page_number)
+                    except (OSError, RuntimeError, subprocess.SubprocessError, ValueError):
+                        self.send_error(HTTPStatus.UNPROCESSABLE_ENTITY, "PDF page preview is unavailable")
+                        return
+                    self.send_bytes(
+                        payload,
+                        "image/png",
+                        extra_headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+                    )
+                    return
+                content_type = "application/pdf" if kind == "pdf" else "text/markdown; charset=utf-8"
+                self.send_file(
+                    asset.path,
+                    content_type,
+                    extra_headers={
+                        "Content-Disposition": f"inline; filename*=UTF-8''{quote(asset.filename, safe='')}",
+                        "X-Content-Type-Options": "nosniff",
+                    },
+                )
         except (OSError, ParseQualityError, SourceTruthError, ValueError):
             self.send_error(HTTPStatus.NOT_FOUND, "source asset is unavailable")
-            return
-        if kind == "pdf-page":
-            try:
-                page_count = project_parse_source_page_count(project, source_id)
-            except SourceTruthError:
-                self.send_error(HTTPStatus.NOT_FOUND, "source asset is unavailable")
-                return
-            page_limit = str(page_count)
-            if page is None or len(page) > len(page_limit) or (
-                len(page) == len(page_limit) and page > page_limit
-            ):
-                self.send_error(HTTPStatus.BAD_REQUEST, "PDF page is invalid")
-                return
-            page_number = int(page)
-            try:
-                payload = render_pdf_page(path, page_number)
-            except (OSError, RuntimeError, subprocess.SubprocessError, ValueError):
-                self.send_error(HTTPStatus.UNPROCESSABLE_ENTITY, "PDF page preview is unavailable")
-                return
-            self.send_bytes(
-                payload,
-                "image/png",
-                extra_headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
-            )
-            return
-        content_type = "application/pdf" if kind == "pdf" else "text/markdown; charset=utf-8"
-        self.send_file(
-            path,
-            content_type,
-            extra_headers={
-                "Content-Disposition": f"inline; filename*=UTF-8''{quote(path.name, safe='')}",
-                "X-Content-Type-Options": "nosniff",
-            },
-        )
 
     def handle_project_review_state_get(self, project_id: str) -> None:
         try:
@@ -3399,7 +3396,12 @@ def write_project_parse_quality_decision(
     return project_parse_quality_payload(review_root, project_id)
 
 
-def project_parse_source_asset(project: Path, source_id: str, kind: str) -> Path:
+@contextmanager
+def project_parse_source_asset(
+    project: Path,
+    source_id: str,
+    kind: str,
+) -> Iterator[SourceTruthAssetSnapshot]:
     if not source_id or kind not in {"pdf", "parsed-markdown"}:
         raise SourceTruthError("SOURCE_ASSET_KIND_INVALID")
     root = project / SOURCE_TRUTH_ROOT
@@ -3416,7 +3418,8 @@ def project_parse_source_asset(project: Path, source_id: str, kind: str) -> Path
                 matches.append(study_dir.name)
     if len(matches) != 1:
         raise SourceTruthError("SOURCE_ID_NOT_FOUND")
-    return source_truth_asset(project, matches[0], source_id, kind)
+    with source_truth_asset_snapshot(project, matches[0], source_id, kind) as snapshot:
+        yield snapshot
 
 
 def project_parse_source_page_count(project: Path, source_id: str) -> int:
