@@ -95,7 +95,9 @@
   }
 
   function fieldModel(row, missingFields, field) {
-    const value = text(row[field], "");
+    const value = field === "resolved_smiles"
+      ? safeSmilesText(row[field]) || ""
+      : text(row[field], "");
     if (missingFields.has(field)) return {label: "待补充", editable: true};
     if (value) return {label: value, editable: false};
     return {label: "状态未提供", editable: false};
@@ -120,11 +122,17 @@
     })[value] || "化学字段";
   }
 
-  function safeCandidateText(value) {
+  function hasPlausibleSmilesSyntax(value) {
+    const withoutBrackets = value.replace(/\[[^\]\r\n]{1,200}\]/g, "");
+    if (/[\[\]]/.test(withoutBrackets)) return false;
+    return /^(?:(?:Cl|Br)|[BCNOPSFIbcnops]|[0-9@+\-()=#$%.:\/\\*])+$/.test(withoutBrackets);
+  }
+
+  function safeSmilesText(value) {
     const candidate = text(value, "");
     if (!candidate || candidate.length > 1000) return null;
     if (/(?:^|\s)(?:\/(?:home|mnt|users|tmp)\/|[a-z]:\\)/i.test(candidate)) return null;
-    if (/\b[a-f0-9]{64}\b/i.test(candidate)) return null;
+    if (/\b[a-f0-9]{64}\b/i.test(candidate) && !hasPlausibleSmilesSyntax(candidate)) return null;
     if (/\bV(?:2000|3000)\b|M\s+END/.test(candidate)) return null;
     if (/^\s*\{/.test(candidate)) return null;
     return candidate;
@@ -133,8 +141,8 @@
   function smilesCandidatesModel(value) {
     const row = object(value);
     return {
-      expanded: safeCandidateText(row.expanded),
-      unexpanded: safeCandidateText(row.unexpanded),
+      expanded: safeSmilesText(row.expanded),
+      unexpanded: safeSmilesText(row.unexpanded),
       selectedSource: ({
         smiles_expanded: "展开候选",
         smiles_unexpanded: "未展开候选",

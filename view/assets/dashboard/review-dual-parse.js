@@ -32,11 +32,17 @@
     return candidate;
   }
 
+  function hasPlausibleSmilesSyntax(value) {
+    const withoutBrackets = value.replace(/\[[^\]\r\n]{1,200}\]/g, "");
+    if (/[\[\]]/.test(withoutBrackets)) return false;
+    return /^(?:(?:Cl|Br)|[BCNOPSFIbcnops]|[0-9@+\-()=#$%.:\/\\*])+$/.test(withoutBrackets);
+  }
+
   function publicChemicalText(value) {
     const candidate = text(value, "");
     if (!candidate || candidate.length > 1000) return null;
     if (/(?:^|\s)(?:\/(?:home|mnt|users|tmp)\/|[a-z]:\\)/i.test(candidate)) return null;
-    if (/\b[a-f0-9]{64}\b/i.test(candidate)) return null;
+    if (/\b[a-f0-9]{64}\b/i.test(candidate) && !hasPlausibleSmilesSyntax(candidate)) return null;
     if (/(?:token|session|cookie)\s*[:=]/i.test(candidate)) return null;
     if (/\bV(?:2000|3000)\b|M\s+END/.test(candidate)) return null;
     if (/^\s*\{/.test(candidate)) return null;
