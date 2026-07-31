@@ -430,7 +430,7 @@ def test_completion_crop_is_keyboard_triggered_lazy_and_bounded_for_94_rows() ->
     )
 
 
-def test_completion_crop_failed_image_finishes_without_infinite_loading_and_can_retry() -> None:
+def test_completion_crop_failed_image_finishes_with_truthful_fallback() -> None:
     module_path = json.dumps(str(DUAL_SCRIPT))
     _run_node(
         "\n".join(
@@ -457,10 +457,11 @@ def test_completion_crop_failed_image_finishes_without_infinite_loading_and_can_
                 "const all=[];const visit=node=>{all.push(node);for(const child of node.children||[])if(child&&typeof child==='object')visit(child);};visit(mount);",
                 "const image=all.find(node=>node.className==='dual-completion-page-image');const crop=all.find(node=>node.className==='dual-completion-crop');const canvas=all.find(node=>node.className==='dual-completion-crop-canvas');const status=all.find(node=>node.className==='dual-completion-crop-status');",
                 "crop.open=true;crop.dispatch('toggle');",
-                "if(status.textContent!=='局部放大暂不可用；请核对原始整页，或收起后重试。' || canvas.context.draws.length!==0) throw new Error(JSON.stringify({status:status.textContent,draws:canvas.context.draws.length}));",
+                "const fallback='局部放大不可用；请使用上方红框上下文或另开原始整页核对。';",
+                "if(status.textContent!==fallback || status.textContent.includes('重试') || status.textContent.includes('正在生成') || canvas.context.draws.length!==0) throw new Error(JSON.stringify({status:status.textContent,draws:canvas.context.draws.length}));",
                 "if((image.listeners.load||[]).length || (image.listeners.error||[]).length) throw new Error('registered already-ended image events');",
-                "image.naturalWidth=1000;image.naturalHeight=2000;crop.open=false;crop.dispatch('toggle');crop.open=true;crop.dispatch('toggle');",
-                "if(canvas.context.draws.length!==1 || !status.textContent.includes('局部放大已由红框区域生成')) throw new Error(JSON.stringify({status:status.textContent,draws:canvas.context.draws.length}));",
+                "status.textContent='sentinel';crop.open=false;crop.dispatch('toggle');crop.open=true;crop.dispatch('toggle');",
+                "if(status.textContent!==fallback || canvas.context.draws.length!==0) throw new Error(JSON.stringify({status:status.textContent,draws:canvas.context.draws.length}));",
             ]
         )
     )

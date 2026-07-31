@@ -789,7 +789,7 @@
     let requested = false;
     const markCropUnavailable = () => {
       requested = false;
-      status.textContent = "局部放大暂不可用；请核对原始整页，或收起后重试。";
+      status.textContent = "局部放大不可用；请使用上方红框上下文或另开原始整页核对。";
     };
     const renderCrop = () => {
       if (drawCompletionCrop(image, canvas, row.normalizedBbox)) {
