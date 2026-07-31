@@ -82,6 +82,9 @@ class ChemicalPaperPdfLocatorDescriptor:
     study_id: str
     source_id: str
     binding: str
+    source_truth_bundle_digest: str
+    pdf_sha256: str
+    pdf_size_bytes: int
     asset_path: Path
     page_count: int
 
@@ -794,14 +797,21 @@ def resolve_chemical_paper_pdf_locator(
         source.get("document_role") != "MAIN"
         or not isinstance(pdf, dict)
         or not isinstance(pdf.get("sha256"), str)
+        or not _SHA256.fullmatch(pdf["sha256"])
+        or not isinstance(pdf.get("size_bytes"), int)
+        or isinstance(pdf["size_bytes"], bool)
+        or pdf["size_bytes"] < 1
     ):
+        raise ChemicalPaperError("STALE_CHEMICAL_PAPER_LOCATOR")
+    bundle_digest = bundle.get("bundle_digest")
+    if not isinstance(bundle_digest, str) or not _SHA256.fullmatch(bundle_digest):
         raise ChemicalPaperError("STALE_CHEMICAL_PAPER_LOCATOR")
     expected = _source_locator_binding(
         root,
         root.name,
         study_id,
         source_id,
-        str(bundle.get("bundle_digest")),
+        bundle_digest,
         pdf["sha256"],
     )
     if not secrets.compare_digest(binding, expected):
@@ -824,6 +834,9 @@ def resolve_chemical_paper_pdf_locator(
         study_id=study_id,
         source_id=source_id,
         binding=binding,
+        source_truth_bundle_digest=bundle_digest,
+        pdf_sha256=pdf["sha256"],
+        pdf_size_bytes=pdf["size_bytes"],
         asset_path=asset,
         page_count=page_count,
     )
@@ -843,6 +856,66 @@ def verify_chemical_paper_pdf_locator(
     )
     if current != descriptor:
         raise ChemicalPaperError("STALE_CHEMICAL_PAPER_LOCATOR")
+
+
+def verify_chemical_paper_pdf_snapshot(
+    descriptor: ChemicalPaperPdfLocatorDescriptor,
+    snapshot: object | None = None,
+    *,
+    sha256: str | None = None,
+    size_bytes: int | None = None,
+) -> None:
+    """Bind immutable snapshot bytes to a locator, then reverify current authority."""
+
+    if not isinstance(descriptor, ChemicalPaperPdfLocatorDescriptor):
+        raise ChemicalPaperError("CHEMICAL_PAPER_LOCATOR_INVALID")
+    if snapshot is None:
+        if (
+            not isinstance(sha256, str)
+            or not _SHA256.fullmatch(sha256)
+            or not isinstance(size_bytes, int)
+            or isinstance(size_bytes, bool)
+            or size_bytes < 1
+        ):
+            raise ChemicalPaperError("CHEMICAL_PAPER_PDF_SNAPSHOT_INVALID")
+        observed_sha256 = sha256
+        observed_size_bytes = size_bytes
+    else:
+        if sha256 is not None or size_bytes is not None:
+            raise ChemicalPaperError("CHEMICAL_PAPER_PDF_SNAPSHOT_INVALID")
+        try:
+            snapshot_identity = tuple(
+                getattr(snapshot, field)
+                for field in (
+                    "project_id",
+                    "study_id",
+                    "source_id",
+                    "kind",
+                    "bundle_digest",
+                )
+            )
+            observed_sha256 = getattr(snapshot, "sha256")
+            observed_size_bytes = getattr(snapshot, "size_bytes")
+        except AttributeError as exc:
+            raise ChemicalPaperError("CHEMICAL_PAPER_PDF_SNAPSHOT_INVALID") from exc
+        expected_identity = (
+            descriptor.project_root.name,
+            descriptor.study_id,
+            descriptor.source_id,
+            "pdf",
+            descriptor.source_truth_bundle_digest,
+        )
+        if snapshot_identity != expected_identity:
+            raise ChemicalPaperError("STALE_CHEMICAL_PAPER_LOCATOR")
+    if (
+        not isinstance(observed_sha256, str)
+        or not secrets.compare_digest(observed_sha256, descriptor.pdf_sha256)
+        or not isinstance(observed_size_bytes, int)
+        or isinstance(observed_size_bytes, bool)
+        or observed_size_bytes != descriptor.pdf_size_bytes
+    ):
+        raise ChemicalPaperError("STALE_CHEMICAL_PAPER_LOCATOR")
+    verify_chemical_paper_pdf_locator(descriptor)
 
 
 def chemical_paper_pdf_locator(

@@ -7,7 +7,10 @@ import os
 import stat
 import zipfile
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -546,6 +549,118 @@ def test_public_locator_descriptor_revalidates_with_a_fresh_orphan_aware_index(
 
     with pytest.raises(ChemicalPaperError, match="STALE_CHEMICAL_PAPER_LOCATOR"):
         verifier(descriptor)
+
+
+def test_locator_descriptor_binds_immutable_snapshot_bytes_across_aba(
+    tmp_path: Path,
+) -> None:
+    import review_writer.project.chemical_paper as chemical_paper
+    from review_writer.project.chemical_paper import ChemicalPaperError
+
+    project = source_truth_project(tmp_path)
+    chemical_paper.import_chemical_paper(
+        project,
+        "study-1",
+        PDF_SHA,
+        write_chemical_zip(tmp_path / "chemical.zip"),
+        ACTOR,
+    )
+    locator = chemical_paper.chemical_paper_projection(project)["studies"][0][
+        "molecules"
+    ][0]["pdf_page_url"]
+    binding = parse_qs(urlsplit(locator).query)["binding"][0]
+    descriptor = chemical_paper.resolve_chemical_paper_pdf_locator(
+        project,
+        "source-main",
+        binding,
+    )
+    bundle_path = project / "01_evidence/source_truth/study-1/bundle.json"
+    bundle_a_bytes = bundle_path.read_bytes()
+    bundle_a = json.loads(bundle_a_bytes)
+
+    def release_snapshot(bundle: dict[str, Any]) -> SimpleNamespace:
+        source = bundle["sources"][0]
+        return SimpleNamespace(
+            path=project / source["pdf"]["path"],
+            filename="main.pdf",
+            project_id=project.name,
+            study_id="study-1",
+            source_id="source-main",
+            kind="pdf",
+            bundle_digest=bundle["bundle_digest"],
+            sha256=source["pdf"]["sha256"],
+            size_bytes=source["pdf"]["size_bytes"],
+            page_count=source["page_count"],
+        )
+
+    snapshot_a = release_snapshot(bundle_a)
+
+    pdf_b = b"%PDF-1.4\nimmutable-snapshot-b\n%%EOF\n"
+    replace_source_pdf_binding(project, "study-1", pdf_b)
+    bundle_b = json.loads(bundle_path.read_text(encoding="utf-8"))
+    snapshot_b = release_snapshot(bundle_b)
+
+    (project / "00_sources/main.pdf").write_bytes(PDF_BYTES)
+    bundle_path.write_bytes(bundle_a_bytes)
+    chemical_paper.verify_chemical_paper_pdf_locator(descriptor)
+    assert descriptor.source_truth_bundle_digest == bundle_a["bundle_digest"]
+    assert descriptor.pdf_sha256 == PDF_SHA
+    assert descriptor.pdf_size_bytes == len(PDF_BYTES)
+    chemical_paper.verify_chemical_paper_pdf_snapshot(descriptor, snapshot_a)
+    chemical_paper.verify_chemical_paper_pdf_snapshot(
+        descriptor,
+        sha256=snapshot_a.sha256,
+        size_bytes=snapshot_a.size_bytes,
+    )
+    for field, value in (
+        ("project_id", "other-project"),
+        ("study_id", "other-study"),
+        ("source_id", "other-source"),
+        ("kind", "parsed-markdown"),
+        ("bundle_digest", "f" * 64),
+    ):
+        wrong_identity = SimpleNamespace(
+            **{**vars(snapshot_a), field: value},
+        )
+        with pytest.raises(
+            ChemicalPaperError,
+            match="STALE_CHEMICAL_PAPER_LOCATOR",
+        ):
+            chemical_paper.verify_chemical_paper_pdf_snapshot(
+                descriptor,
+                wrong_identity,
+            )
+    for wrong_descriptor in (
+        replace(
+            descriptor,
+            binding=(
+                descriptor.binding[:-1]
+                + ("A" if descriptor.binding[-1] != "A" else "B")
+            ),
+        ),
+        replace(descriptor, pdf_sha256="e" * 64),
+        replace(descriptor, pdf_size_bytes=descriptor.pdf_size_bytes + 1),
+    ):
+        with pytest.raises(
+            ChemicalPaperError,
+            match="STALE_CHEMICAL_PAPER_LOCATOR",
+        ):
+            chemical_paper.verify_chemical_paper_pdf_snapshot(
+                wrong_descriptor,
+                snapshot_a,
+            )
+
+    with pytest.raises(ChemicalPaperError, match="STALE_CHEMICAL_PAPER_LOCATOR"):
+        chemical_paper.verify_chemical_paper_pdf_snapshot(
+            descriptor,
+            snapshot_b,
+        )
+    with pytest.raises(ChemicalPaperError, match="STALE_CHEMICAL_PAPER_LOCATOR"):
+        chemical_paper.verify_chemical_paper_pdf_snapshot(
+            descriptor,
+            sha256=snapshot_b.sha256,
+            size_bytes=snapshot_b.size_bytes,
+        )
 
 
 @pytest.mark.parametrize(
