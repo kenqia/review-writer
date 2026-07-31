@@ -20,7 +20,7 @@ import zipfile
 from contextlib import contextmanager
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Iterator
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
@@ -4640,35 +4640,40 @@ def direct_project_id(review_root: Path) -> str:
     return review_root.name
 
 
+def _unsafe_project_id_shadow(project_id: str) -> bool:
+    shadow = project_id
+    for depth in range(16):
+        windows_path = PureWindowsPath(shadow)
+        posix_path = PurePosixPath(shadow)
+        if (
+            not shadow
+            or "\x00" in shadow
+            or any(character in shadow for character in "\u2044\u2215\uff0f")
+            or "\\" in shadow
+            or (depth == 0 and "/" in shadow)
+            or posix_path.is_absolute()
+            or windows_path.is_absolute()
+            or bool(windows_path.drive)
+            or bool(windows_path.root)
+            or any(
+                part in {".", ".."}
+                for part in shadow.replace("\\", "/").split("/")
+            )
+        ):
+            return True
+        next_shadow = unquote(shadow)
+        if next_shadow == shadow:
+            return False
+        shadow = next_shadow
+    return True
+
+
 def normalized_project_id(project_id: str) -> str:
-    if not isinstance(project_id, str):
+    if not isinstance(project_id, str) or _unsafe_project_id_shadow(project_id):
         raise ValueError("invalid project_id")
-    # Route parsing owns the single percent-decoding boundary. A second decode
-    # here would turn a legal literal "%2F" directory name into a separator.
-    decoded = project_id
-    if (
-        not decoded
-        or decoded in {".", ".."}
-        or "\x00" in decoded
-        or "/" in decoded
-        or "\\" in decoded
-        or any(character in decoded for character in "\u2044\u2215\uff0f")
-    ):
-        raise ValueError("invalid project_id")
-    validation_shadow = decoded
-    for _ in range(16):
-        shadow_path = validation_shadow.replace("\\", "/")
-        if any(part in {".", ".."} for part in shadow_path.split("/")):
-            raise ValueError("invalid project_id")
-        if any(character in validation_shadow for character in "\u2044\u2215\uff0f"):
-            raise ValueError("invalid project_id")
-        next_shadow = unquote(validation_shadow)
-        if next_shadow == validation_shadow:
-            break
-        validation_shadow = next_shadow
-    else:
-        raise ValueError("invalid project_id")
-    return decoded
+    # Route parsing owns the single percent-decoding boundary. Validation may
+    # inspect deeper shadows, but lookup always preserves this literal value.
+    return project_id
 
 
 def project_dir(review_root: Path, project_id: str) -> Path:

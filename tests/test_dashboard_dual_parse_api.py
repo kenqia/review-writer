@@ -280,6 +280,40 @@ def test_project_route_rejects_existing_unicode_slash_confusable_project(
     assert status == 404
 
 
+@pytest.mark.parametrize(
+    "dangerous_id",
+    [
+        "%2Fescape",
+        "%5Cescape",
+        "C%3A%5Cescape",
+        "project%5Cversion",
+        "C%3Arelative",
+    ],
+)
+def test_project_route_rejects_existing_rooted_or_windows_shadow_project(
+    tmp_path: Path,
+    dangerous_id: str,
+) -> None:
+    from test_source_truth import _source_truth_project
+    from review_writer.project.source_truth import write_source_truth_bundle
+
+    review_root = tmp_path / "review-root"
+    project = _source_truth_project(review_root)
+    dangerous_project = project.with_name(dangerous_id)
+    project.rename(dangerous_project)
+    write_source_truth_bundle(dangerous_project, "scholarly-a")
+
+    status, _, _ = _http_request(
+        review_root,
+        (
+            f"GET /api/project/{quote(dangerous_id, safe='')}/source/stud-a/pdf HTTP/1.1\r\n"
+            "Host: localhost\r\n\r\n"
+        ).encode("ascii"),
+    )
+
+    assert status == 404
+
+
 def test_preflight_writes_no_authoritative_state_and_returns_safe_projection(
     tmp_path: Path,
 ) -> None:
