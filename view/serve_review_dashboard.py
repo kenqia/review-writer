@@ -72,6 +72,9 @@ from review_writer.project.credit_ledger import (  # noqa: E402
     CreditLedgerError,
     credit_ledger_summary,
 )
+from review_writer.project.chemical_completion import (  # noqa: E402
+    project_chemical_completion_state,
+)
 from review_writer.project.parse_quality import (  # noqa: E402
     HUMAN_ACTIONS,
     ParseQualityError,
@@ -198,6 +201,518 @@ SOURCE_ARCHIVE_SUCCESS_STATUSES = frozenset({"DOWNLOADED", "IMPORTED", "VERIFIED
 SOURCE_SUPPLEMENT_MAX_BODY_BYTES = 16 * 1024
 SOURCE_SUPPLEMENT_MAX_DOI_CHARS = 512
 SOURCE_SUPPLEMENT_MAX_TITLE_CHARS = 2_000
+HONEST_PROGRESSIVE_ROUTE = "honest_progressive"
+HONEST_CORE_MOLECULE_COUNT = 309
+HONEST_COVERAGE_THRESHOLD = 0.8
+HONEST_CREDITS_STATUS = "NOT_APPLICABLE_BY_CURRENT_SCOPE"
+
+
+def _honest_count(value: object, *, maximum: int = HONEST_CORE_MOLECULE_COUNT) -> int | None:
+    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= maximum:
+        return None
+    return value
+
+
+def _honest_public_text(value: object, fallback: str | None = None) -> str | None:
+    if not isinstance(value, str):
+        return fallback
+    candidate = value.strip()
+    if not candidate or len(candidate) > 2_000:
+        return fallback
+    if (
+        _RESEARCHER_SHA256_RE.search(candidate)
+        or _RESEARCHER_POSIX_PATH_RE.search(candidate)
+        or _RESEARCHER_WINDOWS_PATH_RE.search(candidate)
+        or re.search(r"(?i)(?:https?|file)://|^//", candidate)
+        or re.search(r"(?i)(?:token|session|cookie|auth)\s*[:=]", candidate)
+        or candidate.lstrip().startswith("{")
+        or "V2000" in candidate
+        or "V3000" in candidate
+        or "M  END" in candidate
+    ):
+        return fallback
+    return candidate
+
+
+def _honest_identifier(value: object) -> str | None:
+    candidate = _honest_public_text(value)
+    if candidate is None or any(char in candidate for char in ("/", "\\", "\x00", "\r", "\n")):
+        return None
+    return candidate
+
+
+def _honest_safe_locator(value: object) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    page = value.get("page")
+    if not isinstance(page, int) or isinstance(page, bool) or page < 1:
+        return None
+    result: dict[str, Any] = {"page": page}
+    figure_label = _honest_public_text(value.get("figure_label", value.get("figureLabel")))
+    if figure_label is not None:
+        result["figure_label"] = figure_label
+    bbox = value.get("bbox")
+    if (
+        isinstance(bbox, list)
+        and len(bbox) == 4
+        and all(
+            isinstance(item, (int, float))
+            and not isinstance(item, bool)
+            and math.isfinite(float(item))
+            and 0 <= float(item) <= 1
+            for item in bbox
+        )
+    ):
+        result["bbox"] = list(bbox)
+    return result
+
+
+def _honest_safe_provenance(
+    value: object, locator: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    source_value: object = None
+    provenance_locator: object = None
+    if isinstance(value, str):
+        source_value = value
+    elif isinstance(value, dict):
+        source_value = value.get("source", value.get("kind"))
+        provenance_locator = value.get("pdf_locator", value.get("pdfLocator"))
+    source = _honest_public_text(source_value)
+    safe_locator = _honest_safe_locator(provenance_locator) or locator
+    if source is None:
+        return None
+    result: dict[str, Any] = {"source": source}
+    if safe_locator is not None:
+        result["pdf_locator"] = safe_locator
+    return result
+
+
+def _honest_safe_smiles(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if not candidate or len(candidate) > 1_000 or "\x00" in candidate or "\r" in candidate or "\n" in candidate:
+        return None
+    if (
+        _RESEARCHER_SHA256_RE.search(candidate)
+        or _RESEARCHER_POSIX_PATH_RE.search(candidate)
+        or _RESEARCHER_WINDOWS_PATH_RE.search(candidate)
+        or re.search(r"(?i)(?:token|session|cookie|auth)\s*[:=]", candidate)
+        or candidate.lstrip().startswith("{")
+        or "V2000" in candidate
+        or "V3000" in candidate
+        or "M  END" in candidate
+    ):
+        return None
+    return candidate
+
+
+def _honest_safe_confidence(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    confidence = float(value)
+    return confidence if math.isfinite(confidence) and 0 <= confidence <= 1 else None
+
+
+def _honest_safe_gap(value: object) -> dict[str, Any] | None:
+    if not isinstance(value, dict) or value.get("status") != "BLOCKED":
+        return None
+    result: dict[str, Any] = {
+        "status": "BLOCKED",
+        "value": None,
+        "gap_reason": _honest_public_text(
+            value.get("gap_reason"), "blocked_resolution_requires_traceable_review"
+        ),
+    }
+    study_id = _honest_identifier(value.get("study_id"))
+    if study_id is not None:
+        result["study_id"] = study_id
+    molecule_index = _honest_count(value.get("molecule_index"), maximum=10_000_000)
+    if molecule_index is not None:
+        result["molecule_index"] = molecule_index
+    locator = _honest_safe_locator(value.get("pdf_locator", value.get("pdfLocator")))
+    if locator is not None:
+        result["pdf_locator"] = locator
+    return result
+
+
+def _honest_safe_resolution(
+    value: object, *, fallback_locator: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    locator = _honest_safe_locator(source.get("pdf_locator", source.get("pdfLocator")))
+    if locator is None:
+        provenance = source.get("provenance")
+        if isinstance(provenance, dict):
+            locator = _honest_safe_locator(provenance.get("pdf_locator", provenance.get("pdfLocator")))
+    locator = locator or fallback_locator
+    status = source.get("resolved_smiles_status")
+    resolved_smiles = _honest_safe_smiles(source.get("resolved_smiles"))
+    gap_reason = _honest_public_text(
+        source.get("gap_reason"), "resolved_smiles_requires_traceable_review"
+    )
+
+    if status == "AI_PROVISIONAL":
+        confidence = _honest_safe_confidence(source.get("confidence"))
+        safe_provenance = _honest_safe_provenance(source.get("provenance"), locator)
+        if resolved_smiles is not None and confidence is not None and safe_provenance is not None and locator is not None:
+            return {
+                "resolved_smiles": resolved_smiles,
+                "resolved_smiles_status": "AI_PROVISIONAL",
+                "confidence": confidence,
+                "provenance": safe_provenance,
+                "pdf_locator": locator,
+                "gap_reason": None,
+            }
+        gap_reason = "ai_provisional_metadata_incomplete"
+    elif status == "CONFIRMED" and resolved_smiles is not None and locator is not None:
+        safe_provenance = _honest_safe_provenance(source.get("provenance"), locator)
+        return {
+            "resolved_smiles": resolved_smiles,
+            "resolved_smiles_status": "CONFIRMED",
+            "confidence": None,
+            "provenance": safe_provenance or {
+                "source": "researcher_confirmation",
+                "pdf_locator": locator,
+            },
+            "pdf_locator": locator,
+            "gap_reason": None,
+        }
+
+    return {
+        "resolved_smiles": None,
+        "resolved_smiles_status": "BLOCKED",
+        "confidence": None,
+        "provenance": None,
+        "pdf_locator": locator,
+        "gap_reason": gap_reason,
+    }
+
+
+def _honest_unknown_summary() -> dict[str, Any]:
+    return {
+        "route": HONEST_PROGRESSIVE_ROUTE,
+        "core_molecule_count": HONEST_CORE_MOLECULE_COUNT,
+        "confirmed_count": None,
+        "ai_provisional_count": None,
+        "blocked_count": None,
+        "coverage_ratio": None,
+        "coverage_threshold": HONEST_COVERAGE_THRESHOLD,
+        "coverage_sufficient": None,
+        "paper_coverage": [],
+        "uncertainty_statement": (
+            "Honest Progressive 三态状态未知；尚无可验证的 Chemical Paper 状态。"
+        ),
+        "gap_registry": [],
+        "actor_provenance_residual": None,
+        "credits_status": HONEST_CREDITS_STATUS,
+    }
+
+
+def _honest_uncertainty_statement(
+    confirmed_count: int | None, ai_provisional_count: int | None, blocked_count: int | None
+) -> str:
+    if confirmed_count is None or ai_provisional_count is None or blocked_count is None:
+        return _honest_unknown_summary()["uncertainty_statement"]
+    return (
+        f"项目级 {HONEST_CORE_MOLECULE_COUNT} 个 core molecules："
+        f"CONFIRMED {confirmed_count}、AI_PROVISIONAL {ai_provisional_count}、"
+        f"BLOCKED {blocked_count}。AI_PROVISIONAL 仅用于内部候选、分组和趋势；"
+        "BLOCKED 的 value=null，并仅进入可追踪 gap registry。"
+    )
+
+
+def _honest_paper_coverage(completion: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = completion.get("studies")
+    if not isinstance(rows, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        study_id = _honest_identifier(row.get("study_id"))
+        if study_id is None:
+            continue
+        molecule_count = _honest_count(
+            row.get("study_molecule_count", row.get("molecule_count")),
+            maximum=HONEST_CORE_MOLECULE_COUNT,
+        )
+        confirmed_count = _honest_count(
+            row.get("study_confirmed_count", row.get("confirmed_count"))
+        )
+        ai_provisional_count = _honest_count(
+            row.get("study_ai_provisional_count", row.get("ai_provisional_count"))
+        )
+        blocked_count = _honest_count(
+            row.get("study_blocked_count", row.get("blocked_count"))
+        )
+        ratio: float | None = None
+        if (
+            molecule_count is not None
+            and molecule_count > 0
+            and confirmed_count is not None
+            and ai_provisional_count is not None
+            and confirmed_count + ai_provisional_count <= molecule_count
+        ):
+            ratio = (confirmed_count + ai_provisional_count) / molecule_count
+        result.append(
+            {
+                "study_id": study_id,
+                "molecule_count": molecule_count,
+                "confirmed_count": confirmed_count,
+                "ai_provisional_count": ai_provisional_count,
+                "blocked_count": blocked_count,
+                "coverage_ratio": ratio,
+                "coverage_threshold": HONEST_COVERAGE_THRESHOLD,
+                "coverage_sufficient": ratio >= HONEST_COVERAGE_THRESHOLD if ratio is not None else None,
+                "uncertainty_statement": _honest_uncertainty_statement(
+                    confirmed_count, ai_provisional_count, blocked_count
+                ),
+                "actor_provenance_residual": (
+                    row.get("actor_provenance_residual")
+                    if isinstance(row.get("actor_provenance_residual"), bool)
+                    else None
+                ),
+            }
+        )
+    return result
+
+
+def _honest_molecule_map(
+    completion: dict[str, Any], chemical: dict[str, Any]
+) -> dict[tuple[str, int], dict[str, Any]]:
+    result: dict[tuple[str, int], dict[str, Any]] = {}
+    for source in (chemical, completion):
+        studies = source.get("studies") if isinstance(source, dict) else None
+        if not isinstance(studies, list):
+            continue
+        for study in studies:
+            if not isinstance(study, dict):
+                continue
+            study_id = _honest_identifier(study.get("study_id"))
+            molecules = study.get("molecules")
+            if study_id is None or not isinstance(molecules, list):
+                continue
+            for molecule in molecules:
+                if not isinstance(molecule, dict):
+                    continue
+                molecule_index = _honest_count(
+                    molecule.get("molecule_index"), maximum=10_000_000
+                )
+                if molecule_index is None:
+                    continue
+                key = (study_id, molecule_index)
+                result[key] = {**result.get(key, {}), **molecule}
+    return result
+
+
+def _honest_safe_existing_queue_row(value: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    study_id = _honest_identifier(value.get("study_id"))
+    if study_id is not None:
+        result["study_id"] = study_id
+    molecule_index = _honest_count(value.get("molecule_index"), maximum=10_000_000)
+    if molecule_index is not None:
+        result["molecule_index"] = molecule_index
+    field = value.get("field")
+    if field in {"mol_idt", "resolved_smiles"}:
+        result["field"] = field
+    version_token = _honest_public_text(value.get("version_token"))
+    if version_token is not None:
+        result["version_token"] = version_token
+    page = _honest_count(value.get("page"), maximum=10_000_000)
+    if page is not None:
+        result["page"] = page
+    bbox = value.get("bbox_normalized")
+    if (
+        isinstance(bbox, list)
+        and len(bbox) == 4
+        and all(
+            isinstance(item, (int, float))
+            and not isinstance(item, bool)
+            and math.isfinite(float(item))
+            and 0 <= float(item) <= 1
+            for item in bbox
+        )
+    ):
+        result["bbox_normalized"] = list(bbox)
+    pdf_page_url = value.get("pdf_page_url")
+    if isinstance(pdf_page_url, str) and pdf_page_url.startswith("/api/project/") and not re.search(
+        r"(?i)(?:token|session|cookie|private)=|/private/|/home/|[0-9a-f]{64}", pdf_page_url
+    ):
+        result["pdf_page_url"] = pdf_page_url
+    for key in ("actor_label", "updated_at"):
+        safe = _honest_public_text(value.get(key))
+        if safe is not None:
+            result[key] = safe
+    return result
+
+
+def _honest_enrich_completion_queue(
+    value: object,
+    molecule_map: dict[tuple[str, int], dict[str, Any]],
+    actor_provenance_residual: object,
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for row in value:
+        if not isinstance(row, dict):
+            continue
+        safe_row = _honest_safe_existing_queue_row(row)
+        if row.get("field") == "resolved_smiles":
+            study_id = safe_row.get("study_id")
+            molecule_index = safe_row.get("molecule_index")
+            source = (
+                molecule_map.get((study_id, molecule_index))
+                if isinstance(study_id, str) and isinstance(molecule_index, int)
+                else None
+            )
+            fallback_locator = None
+            if isinstance(safe_row.get("page"), int):
+                fallback_locator = {"page": safe_row["page"]}
+                if isinstance(safe_row.get("bbox_normalized"), list):
+                    fallback_locator["bbox"] = safe_row["bbox_normalized"]
+            safe_row.update(_honest_safe_resolution(source, fallback_locator=fallback_locator))
+            if isinstance(actor_provenance_residual, bool):
+                safe_row["actor_provenance_residual"] = actor_provenance_residual
+        result.append(safe_row)
+    return result
+
+
+def _honest_augment_studies(
+    value: object, paper_coverage: list[dict[str, Any]], actor_provenance_residual: object
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    by_study = {row["study_id"]: row for row in paper_coverage}
+    result: list[dict[str, Any]] = []
+    for row in value:
+        if not isinstance(row, dict):
+            continue
+        output = dict(row)
+        study_id = _honest_identifier(row.get("study_id"))
+        coverage = by_study.get(study_id) if study_id is not None else None
+        if coverage is not None:
+            output.update(
+                {
+                    "confirmed_count": coverage["confirmed_count"],
+                    "ai_provisional_count": coverage["ai_provisional_count"],
+                    "blocked_count": coverage["blocked_count"],
+                    "coverage_ratio": coverage["coverage_ratio"],
+                    "coverage_threshold": coverage["coverage_threshold"],
+                    "coverage_sufficient": coverage["coverage_sufficient"],
+                    "uncertainty_statement": coverage["uncertainty_statement"],
+                }
+            )
+        if isinstance(actor_provenance_residual, bool):
+            output["actor_provenance_residual"] = actor_provenance_residual
+        result.append(output)
+    return result
+
+
+def _honest_progressive_summary(
+    completion: object, chemical: object
+) -> tuple[dict[str, Any], bool, dict[tuple[str, int], dict[str, Any]]]:
+    if not isinstance(completion, dict) or not isinstance(chemical, dict):
+        return _honest_unknown_summary(), False, {}
+    if (
+        completion.get("schema_version") != "chemical-completion-project-state.v2"
+        or completion.get("route") != HONEST_PROGRESSIVE_ROUTE
+        or chemical.get("schema_version") != "chemical-paper-projection.v2"
+        or not isinstance(completion.get("studies"), list)
+        or not completion.get("studies")
+        or not isinstance(chemical.get("studies"), list)
+        or not chemical.get("studies")
+    ):
+        return _honest_unknown_summary(), False, {}
+
+    counts = {
+        key: _honest_count(completion.get(key))
+        for key in ("confirmed_count", "ai_provisional_count", "blocked_count")
+    }
+    if any(value is None for value in counts.values()):
+        return _honest_unknown_summary(), False, {}
+    confirmed_count = int(counts["confirmed_count"])
+    ai_provisional_count = int(counts["ai_provisional_count"])
+    blocked_count = int(counts["blocked_count"])
+    if confirmed_count + ai_provisional_count > HONEST_CORE_MOLECULE_COUNT:
+        return _honest_unknown_summary(), False, {}
+    coverage_ratio = (
+        confirmed_count + ai_provisional_count
+    ) / HONEST_CORE_MOLECULE_COUNT
+    residual = completion.get("actor_provenance_residual")
+    actor_provenance_residual = residual if isinstance(residual, bool) else None
+
+    gap_values: list[dict[str, Any]] = []
+    raw_gaps = completion.get("gap_registry")
+    if isinstance(raw_gaps, list):
+        gap_values.extend(raw_gaps)
+    else:
+        for row in completion.get("studies", []):
+            if isinstance(row, dict) and isinstance(row.get("gap_registry"), list):
+                gap_values.extend(row["gap_registry"])
+    gap_registry = [
+        safe_gap for value in gap_values if (safe_gap := _honest_safe_gap(value)) is not None
+    ]
+    paper_coverage = _honest_paper_coverage(completion)
+    summary = {
+        "route": HONEST_PROGRESSIVE_ROUTE,
+        "core_molecule_count": HONEST_CORE_MOLECULE_COUNT,
+        "confirmed_count": confirmed_count,
+        "ai_provisional_count": ai_provisional_count,
+        "blocked_count": blocked_count,
+        "coverage_ratio": coverage_ratio,
+        "coverage_threshold": HONEST_COVERAGE_THRESHOLD,
+        "coverage_sufficient": coverage_ratio >= HONEST_COVERAGE_THRESHOLD,
+        "paper_coverage": paper_coverage,
+        "uncertainty_statement": _honest_uncertainty_statement(
+            confirmed_count, ai_provisional_count, blocked_count
+        ),
+        "gap_registry": gap_registry,
+        "actor_provenance_residual": actor_provenance_residual,
+        "credits_status": HONEST_CREDITS_STATUS,
+    }
+    return summary, True, _honest_molecule_map(completion, chemical)
+
+
+def project_honest_progressive_dashboard_projection(
+    project: Path, projection: object
+) -> dict[str, Any]:
+    """Overlay the server-owned Honest Progressive summary on the dual-parse whitelist."""
+
+    result = dict(projection) if isinstance(projection, dict) else {}
+    if result.get("schema_version") != "dual-parse-projection.v2":
+        return result
+    summary = _honest_unknown_summary()
+    state_available = False
+    molecule_map: dict[tuple[str, int], dict[str, Any]] = {}
+    try:
+        completion = project_chemical_completion_state(project)
+        chemical = chemical_paper_projection(project)
+        summary, state_available, molecule_map = _honest_progressive_summary(
+            completion, chemical
+        )
+    except Exception:
+        # A missing/stale authority is public unknown state, not zero coverage.
+        pass
+
+    result["route"] = HONEST_PROGRESSIVE_ROUTE
+    result["honest_progressive"] = summary
+    result["paper_coverage"] = summary["paper_coverage"]
+    result["credits_status"] = HONEST_CREDITS_STATUS
+    if state_available:
+        result["studies"] = _honest_augment_studies(
+            result.get("studies"),
+            summary["paper_coverage"],
+            summary["actor_provenance_residual"],
+        )
+        result["completion_queue"] = _honest_enrich_completion_queue(
+            result.get("completion_queue"),
+            molecule_map,
+            summary["actor_provenance_residual"],
+        )
+    return result
 
 
 class WorkspaceStaleError(ValueError):
@@ -707,7 +1222,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             project = project_dir(self.review_root, project_id)
             if not project.is_dir():
                 raise DualParseReleaseError("PROJECT_INVALID")
-            result = dual_parse_dashboard_projection(project)
+            result = project_honest_progressive_dashboard_projection(
+                project, dual_parse_dashboard_projection(project)
+            )
         except (ValueError, DualParseReleaseError) as exc:
             code = exc.code if isinstance(exc, DualParseReleaseError) else "PROJECT_INVALID"
             self._dual_parse_error(code)
