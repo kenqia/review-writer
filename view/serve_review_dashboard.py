@@ -83,7 +83,10 @@ from review_writer.project.parse_quality import (  # noqa: E402
     parse_quality_state,
     project_parse_quality_state,
 )
-from review_writer.project.workflow_projection import workflow_state  # noqa: E402
+from review_writer.project.workflow_projection import (  # noqa: E402
+    STAGE_PRESENTATION,
+    workflow_state,
+)
 from review_writer.project.paper_evidence import (  # noqa: E402
     PaperEvidenceError,
     apply_paper_evidence_decision,
@@ -411,7 +414,7 @@ def _honest_unknown_summary() -> dict[str, Any]:
         "uncertainty_statement": (
             "Honest Progressive 三态状态未知；待 Chemical Paper 导入，尚无可验证的 Chemical Completion authoritative cohort。"
         ),
-        "gap_registry": [],
+        "gap_registry": None,
         "actor_provenance_residual": None,
         "credits_status": HONEST_CREDITS_STATUS,
     }
@@ -488,6 +491,7 @@ def _honest_paper_coverage(completion: dict[str, Any]) -> list[dict[str, Any]]:
             {
                 "study_id": study_id,
                 "molecule_count": molecule_count,
+                "coverage_denominator": molecule_count,
                 "confirmed_count": confirmed_count,
                 "ai_provisional_count": ai_provisional_count,
                 "blocked_count": blocked_count,
@@ -629,6 +633,7 @@ def _honest_augment_studies(
                     "ai_provisional_count": coverage["ai_provisional_count"],
                     "blocked_count": coverage["blocked_count"],
                     "coverage_ratio": coverage["coverage_ratio"],
+                    "coverage_denominator": coverage["coverage_denominator"],
                     "coverage_threshold": coverage["coverage_threshold"],
                     "coverage_sufficient": coverage["coverage_sufficient"],
                     "uncertainty_statement": coverage["uncertainty_statement"],
@@ -651,28 +656,66 @@ def _honest_authoritative_molecules(
     if not isinstance(aggregation, dict) or aggregation.get("mode") != "project_core_309":
         return None
 
+    completion_studies = [
+        row for row in completion.get("studies", []) if isinstance(row, dict)
+    ]
+    chemical_studies = [
+        row for row in chemical.get("studies", []) if isinstance(row, dict)
+    ]
+    if len(completion_studies) != 3 or len(chemical_studies) != 3:
+        return None
     chemical_by_study = {
         row.get("study_id"): row
-        for row in chemical.get("studies", [])
-        if isinstance(row, dict) and isinstance(row.get("study_id"), str)
+        for row in chemical_studies
+        if isinstance(row.get("study_id"), str)
     }
+    if len(chemical_by_study) != 3:
+        return None
+    expected_counts = ((6, 125), (11, 109), (11, 75))
+    ordered_ids = sorted(
+        row.get("study_id")
+        for row in completion_studies
+        if isinstance(row.get("study_id"), str)
+    )
+    if len(ordered_ids) != 3 or len(set(ordered_ids)) != 3:
+        return None
     authoritative: list[tuple[str, dict[str, Any]]] = []
     seen: set[tuple[str, int]] = set()
-    for completion_row in completion.get("studies", []):
-        if not isinstance(completion_row, dict):
-            continue
+    for expected_id, (expected_pages, expected_molecules) in zip(
+        ordered_ids, expected_counts
+    ):
+        completion_row = next(
+            row for row in completion_studies if row.get("study_id") == expected_id
+        )
         study_id = _honest_identifier(completion_row.get("study_id"))
         molecules = completion_row.get("molecules")
         if study_id is None or not isinstance(molecules, list) or not molecules:
-            continue
+            return None
         chemical_row = chemical_by_study.get(study_id)
         chemical_molecules = chemical_row.get("molecules") if isinstance(chemical_row, dict) else None
         if (
             not isinstance(chemical_row, dict)
+            or completion_row.get("status") != "current"
             or chemical_row.get("status") not in HONEST_CHEMICAL_READY_STATUSES
+            or chemical_row.get("pdf_binding_status") != "bound"
+            or chemical_row.get("page_count") != expected_pages
+            or chemical_row.get("molecule_count") != expected_molecules
+            or completion_row.get("study_molecule_count", completion_row.get("molecule_count"))
+            != expected_molecules
             or not isinstance(chemical_molecules, list)
-            or len(chemical_molecules) != len(molecules)
+            or len(chemical_molecules) != expected_molecules
+            or len(molecules) != expected_molecules
+            or chemical_row.get("reaction_data_status") != "unavailable_not_provided"
+            or completion_row.get("source_tier") not in {None, "core"}
+            or chemical_row.get("source_tier") not in {None, "core"}
         ):
+            return None
+        expected_indexes = set(range(expected_molecules))
+        if {
+            molecule.get("molecule_index")
+            for molecule in chemical_molecules
+            if isinstance(molecule, dict)
+        } != expected_indexes:
             return None
         for molecule in molecules:
             if not isinstance(molecule, dict):
@@ -689,7 +732,7 @@ def _honest_authoritative_molecules(
             seen.add(key)
             authoritative.append((study_id, molecule))
 
-    if len(authoritative) != HONEST_CORE_MOLECULE_COUNT:
+    if len(authoritative) != HONEST_CORE_MOLECULE_COUNT or len(seen) != 309:
         return None
     return authoritative
 
@@ -4545,6 +4588,9 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
     project = project_dir(review_root, project_id)
     authoritative_workflow = workflow_state(project)
     new_route = authoritative_workflow.get("route") == "evidence-to-release.v1"
+    authoritative_stage = (
+        visible_text(authoritative_workflow.get("active_stage")) if new_route else ""
+    )
     source_truth_root = project / SOURCE_TRUTH_ROOT
     source_truth_managed = source_truth_root.is_dir() and any(
         path.is_file() and not path.parent.is_symlink()
@@ -4735,15 +4781,31 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
 
     if new_route:
         stage_definitions = [
-            ("sources", "整理文献来源", sources_complete),
-            ("parsing", "解析全文与补充信息", parsing_complete),
-            ("chemical_import", "导入并绑定 Chemical Paper", bool(authoritative_workflow.get("dual_source_ready"))),
-            ("chemical_completion", "补全 Chemical Completion", bool(authoritative_workflow.get("chemical_completion_ready"))),
-            ("reconciliation", "核对双层解析差异", bool(authoritative_workflow.get("reconciliation_ready"))),
-            ("evidence", "提取并核对逐研究证据", evidence_complete),
-            ("synthesis", "完成比较协议与综合判断", bool(authoritative_workflow.get("synthesis_ready"))),
-            ("drafting", "撰写证据约束正文", draft_complete),
-            ("final", "完成终稿与 DOCX", final_complete),
+            ("sources", STAGE_PRESENTATION["sources"]["label"], sources_complete),
+            ("parsing", STAGE_PRESENTATION["parsing"]["label"], parsing_complete),
+            (
+                "chemical_import",
+                STAGE_PRESENTATION["chemical_import"]["label"],
+                bool(authoritative_workflow.get("dual_source_ready")),
+            ),
+            (
+                "chemical_completion",
+                STAGE_PRESENTATION["chemical_completion"]["label"],
+                bool(authoritative_workflow.get("chemical_completion_ready")),
+            ),
+            (
+                "reconciliation",
+                STAGE_PRESENTATION["reconciliation"]["label"],
+                bool(authoritative_workflow.get("reconciliation_ready")),
+            ),
+            ("evidence", STAGE_PRESENTATION["evidence"]["label"], evidence_complete),
+            (
+                "synthesis",
+                STAGE_PRESENTATION["synthesis"]["label"],
+                bool(authoritative_workflow.get("synthesis_ready")),
+            ),
+            ("drafting", STAGE_PRESENTATION["drafting"]["label"], draft_complete),
+            ("final", STAGE_PRESENTATION["final"]["label"], final_complete),
         ]
     else:
         stage_definitions = [
@@ -4764,6 +4826,15 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
         else state.get("blockers") if isinstance(state, dict) else []
     )
     raw_blockers = raw_blockers if isinstance(raw_blockers, list) else []
+    authoritative_stage_blocked = bool(
+        new_route
+        and authoritative_stage in {
+            "chemical_import",
+            "chemical_completion",
+            "reconciliation",
+        }
+        and raw_blockers
+    )
     authoritative_invalid = (
         new_route
         and parse_reason != "PARSE_QUALITY_MISSING"
@@ -4803,7 +4874,14 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
         if isinstance(row, dict) and visible_text(row.get("stage")).upper() == "BLOCKED"
     ]
     batch_recovery = batch_recoveries[0] if batch_recoveries else None
-    if parse_needs_attention:
+    if authoritative_stage_blocked:
+        blocker = {
+            "DUAL_SOURCE_BINDING_MISSING": "Generic 与 Chemical 尚未形成当前双层绑定；Evidence 保持锁定。",
+            "CHEMICAL_COMPLETION_INCOMPLETE": "Chemical Completion 覆盖率仍低于 80%；请补充可追溯字段，Evidence 保持锁定。",
+            "PARSE_RECONCILIATION_MISSING": "双层解析 reconciliation 尚未形成；Evidence 保持锁定。",
+            "PARSE_RECONCILIATION_UNRESOLVED": "双层解析仍有差异待依据原始 PDF 仲裁；Evidence 保持锁定。",
+        }.get(visible_text(raw_blockers[0]), "当前双层解析阶段仍有阻塞项；Evidence 保持锁定。")
+    elif parse_needs_attention:
         blocker = "解析质量记录不可读取，请重新生成后再核对原始 PDF。"
     elif parse_reparse_required:
         blocker = (
@@ -4955,6 +5033,10 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
         "drafting": "开始撰写证据约束正文",
         "final": "检查正文并导出 DOCX",
     }[active_stage]
+    if authoritative_stage_blocked and isinstance(
+        authoritative_workflow.get("unique_next_action"), str
+    ):
+        recommended = authoritative_workflow["unique_next_action"]
     parse_pdf_locator_only = bool(
         parse_projection
         and any(
@@ -5004,7 +5086,9 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
         "studies": studies,
         "blocker": blocker,
         "blocker_code": (
-            "PARSING_RECORD_INVALID"
+            visible_text(raw_blockers[0])
+            if authoritative_stage_blocked
+            else "PARSING_RECORD_INVALID"
             if parse_needs_attention
             else "PARSE_REPARSE_REQUIRED"
             if parse_reparse_required
@@ -5021,6 +5105,11 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
             else ""
         ),
         "recommended_next": recommended,
+        "unique_next_action": (
+            authoritative_workflow.get("unique_next_action")
+            if new_route
+            else None
+        ),
         "archive_received": archive_received,
         "credits": {"measured": measured_credits, "forecast": forecast_credits},
         "credit_ledger": evaluation.get("credit_ledger"),

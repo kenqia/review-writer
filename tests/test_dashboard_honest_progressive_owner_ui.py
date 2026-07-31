@@ -87,6 +87,14 @@ def test_owner_dashboard_copy_names_honest_progressive_route_and_three_states() 
         assert expected in html
 
 
+def test_new_route_header_and_stage_list_use_progress_authority() -> None:
+    html = (ROOT / "view" / "assets" / "dashboard" / "review.html").read_text(encoding="utf-8")
+
+    assert "const evidenceToReleaseRoute = progressPayload.route === 'evidence-to-release.v1';" in html
+    assert "progressPayload.route === 'evidence-to-release.v1' || parseQualityGateActive()" in html
+    assert "progressPayload.route === 'evidence-to-release.v1'\n        ? progressPayload.recommended_next" in html
+
+
 def test_owner_renderer_shows_counts_study_coverage_blocked_gap_and_actor_residual() -> None:
     module_path = json.dumps(str(DUAL_SCRIPT))
     _run_node(
@@ -102,10 +110,10 @@ def test_owner_renderer_shows_counts_study_coverage_blocked_gap_and_actor_residu
                 "}",
                 "const document={createElement:tag=>new Node(tag),createTextNode:value=>{const node=new Node('#text');node.textContent=String(value);return node;},body:new Node('body')};",
                 "const mount=new Node('main');for(const id of ['honest-progressive-summary','dual-study-status','chemical-import-preflight','chemical-completion-queue','reconciliation-list'])mount.append(new Node('section',id));",
-                "const model=ui.projectionModel({schema_version:'dual-parse-projection.v2',status:'ready',route:'honest_progressive',honest_progressive:{availability:'available',status:'ready',core_molecule_count:2,coverage_denominator:2,confirmed_count:1,ai_provisional_count:0,blocked_count:1,coverage_ratio:0.5,coverage_threshold:0.8,uncertainty_statement:'1 个结构仍无法唯一确定',gap_registry:[{study_id:'secret-study',molecule_index:1,status:'BLOCKED',gap_reason:'PDF 仅给出 generic R-group',value:'C'}],actor_provenance_residual:'本记录只允许 append-only 追加，不覆盖历史。'},studies:[{source_tier:'core',confirmed_count:1,ai_provisional_count:0,blocked_count:1,coverage_ratio:0.5,uncertainty_statement:'该论文仍有 1 个 BLOCKED'}],completion_queue:[{study_id:'secret-study',molecule_index:1,version_token:'v1',field:'resolved_smiles',resolved_smiles:'C',resolved_smiles_status:'BLOCKED',gap_reason:'PDF 仅给出 generic R-group',actor_provenance_residual:'append-only residual'}]});",
+                "const model=ui.projectionModel({schema_version:'dual-parse-projection.v2',status:'ready',route:'honest_progressive',honest_progressive:{availability:'available',status:'ready',core_molecule_count:2,coverage_denominator:2,confirmed_count:1,ai_provisional_count:0,blocked_count:1,coverage_ratio:0.5,coverage_threshold:0.8,uncertainty_statement:'1 个结构仍无法唯一确定',gap_registry:[{study_id:'secret-study',molecule_index:1,status:'BLOCKED',gap_reason:'PDF 仅给出 generic R-group',value:'C'}],actor_provenance_residual:'本记录只允许 append-only 追加，不覆盖历史。'},studies:[{source_tier:'core',confirmed_count:1,ai_provisional_count:0,blocked_count:1,coverage_ratio:0.5,coverage_denominator:2,uncertainty_statement:'该论文仍有 1 个 BLOCKED'}],completion_queue:[{study_id:'secret-study',molecule_index:1,version_token:'v1',field:'resolved_smiles',resolved_smiles:'C',resolved_smiles_status:'BLOCKED',gap_reason:'PDF 仅给出 generic R-group',actor_provenance_residual:'append-only residual'}]});",
                 "ui.render(document,mount,model,{});",
                 "const visibleText=node=>[node.textContent,...node.children.map(visibleText)].join(' ');const rendered=visibleText(mount);",
-                "for(const expected of ['Honest Progressive Route','总分子 2','CONFIRMED 1','AI_PROVISIONAL 0','BLOCKED 1','覆盖率 50%','阈值 80%','不确定性说明','1 个结构仍无法唯一确定','论文覆盖率 50%','PDF 仅给出 generic R-group','value=null','append-only'])if(!rendered.includes(expected))throw new Error(`missing ${expected}: ${rendered}`);",
+                "for(const expected of ['Honest Progressive Route','总分子 2','CONFIRMED 1','AI_PROVISIONAL 0','BLOCKED 1','覆盖率 50%','阈值 80%','不确定性说明','1 个结构仍无法唯一确定','论文覆盖率 50% · 1/2','PDF 仅给出 generic R-group','value=null','append-only'])if(!rendered.includes(expected))throw new Error(`missing ${expected}: ${rendered}`);",
                 "if(rendered.includes('secret-study') || rendered.includes('value=C')) throw new Error(`unsafe or confirmed blocked value: ${rendered}`);",
             ]
         )

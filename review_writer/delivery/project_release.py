@@ -87,6 +87,8 @@ def honest_progressive_release_fields(summary: object) -> dict[str, Any]:
         )
     return {
         "route": HONEST_PROGRESSIVE_ROUTE,
+        "availability": normalized["availability"],
+        "status": normalized["status"],
         "core_molecule_count": normalized["core_molecule_count"],
         "confirmed_count": normalized["confirmed_count"],
         "ai_provisional_count": normalized["ai_provisional_count"],

@@ -590,7 +590,10 @@ def test_post_confirm_http_projects_v2_scientific_projection(
         project_id=project.name,
     )
     assert status == 200
-    assert confirmed == {"status": "imported", "study_id": "scholarly-a"}
+    assert confirmed["status"] == "imported"
+    assert confirmed["study_id"] == "scholarly-a"
+    assert confirmed["derived_refresh_status"] == "blocked"
+    assert confirmed["derived_refresh"]["status"] == "blocked"
 
     status, _, body = _http_request(
         review_root,
@@ -990,7 +993,10 @@ def test_confirm_revalidates_records_actor_and_rejects_second_confirm(
     status, body = _post_json(review_root, "chemical-paper/confirm", request)
 
     assert status == 200
-    assert body == {"status": "imported", "study_id": "study-1"}
+    assert body["status"] == "imported"
+    assert body["study_id"] == "study-1"
+    assert body["derived_refresh_status"] == "blocked"
+    assert body["derived_refresh"]["status"] == "blocked"
     state = json.loads(
         (project / "01_evidence/chemical_paper/study-1/state.json").read_text(
             encoding="utf-8"
@@ -1041,7 +1047,48 @@ def test_confirm_never_reports_failure_after_authoritative_import_commits(
     )
 
     assert status == 200
-    assert body == {"status": "imported", "study_id": "study-1"}
+    assert body["status"] == "imported"
+    assert body["study_id"] == "study-1"
+    assert body["derived_refresh_status"] == "blocked"
+    assert body["derived_refresh"]["status"] == "blocked"
+    assert (project / "01_evidence/chemical_paper/study-1/state.json").is_file()
+
+
+def test_confirm_surfaces_derived_refresh_failure_after_authoritative_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from review_writer.delivery import dual_parse_release as release
+
+    review_root = tmp_path / "review-root"
+    project = source_truth_project(review_root / "review-projects")
+    status, preflight = _post_zip(
+        review_root, write_chemical_zip(tmp_path / "chemical.zip")
+    )
+    assert status == 200
+
+    def fail_refresh(_: Path, __: str) -> dict[str, object]:
+        raise RuntimeError("derived refresh failed")
+
+    monkeypatch.setattr(release, "refresh_dual_parse_derived_state", fail_refresh)
+    status, body = _post_json(
+        review_root,
+        "chemical-paper/confirm",
+        {
+            "study_id": "study-1",
+            "preflight_token": preflight["preflight_token"],
+            "actor_type": "simulated_researcher_agent",
+            "actor_label": "simulated_researcher",
+        },
+    )
+
+    assert status == 200
+    assert body["status"] == "imported"
+    assert body["derived_refresh_status"] == "failed"
+    assert body["derived_refresh"] == {
+        "status": "failed",
+        "stage": "derived_binding",
+        "reason_code": "DERIVED_REFRESH_FAILED",
+    }
     assert (project / "01_evidence/chemical_paper/study-1/state.json").is_file()
 
 

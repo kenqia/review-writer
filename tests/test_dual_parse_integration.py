@@ -357,10 +357,13 @@ def test_dashboard_does_not_call_chemical_pdf_binding_dual_source_binding(
     project = dual_project(tmp_path, chemical=True)
 
     projection = dual_parse_dashboard_projection(project)
+    release = dual_parse_release_state(project)
 
     assert projection["summary"]["chemical_bound"] == 0
     assert projection["studies"][0]["chemical_import_status"] == "stale"
     assert projection["studies"][0]["chemical_binding_status"] == "stale"
+    assert release["dual_parse_status"] != "current"
+    assert release["internal_release_ready"] is False
 
 
 def test_progress_preserves_dual_route_stage_blocker_and_unique_next_action(
@@ -368,11 +371,44 @@ def test_progress_preserves_dual_route_stage_blocker_and_unique_next_action(
 ) -> None:
     project = dual_project(tmp_path, chemical=True)
 
+    initial_workflow = workflow_state(project)
+    assert initial_workflow["active_stage"] == "chemical_import"
+    assert initial_workflow["blocker"] == "DUAL_SOURCE_BINDING_MISSING"
+    assert initial_workflow["unique_next_action"] == "待 Chemical Paper 导入"
+
     before_binding = project_progress_payload(tmp_path, project.name)
 
     assert before_binding["active_stage"] == "chemical_import"
     assert before_binding["blocker_code"] == "DUAL_SOURCE_BINDING_MISSING"
-    assert before_binding["recommended_next"] == "确认下一篇 Chemical Paper 导入"
+    assert before_binding["recommended_next"] == "待 Chemical Paper 导入"
+    assert before_binding["unique_next_action"] == "待 Chemical Paper 导入"
+
+    preflight_archive = write_chemical_zip(
+        tmp_path / "chemical-preflight.zip",
+        pages=1,
+        molecules=[
+            {
+                "mol_id": "mol-preflight",
+                "page_idx": 0,
+                "bbox_normalized": [0.1, 0.2, 0.3, 0.4],
+                "smiles_expanded": "CO",
+                "smiles_unexpanded": "CO",
+                "mol_idt": "compound 1",
+                "mol_block": v2000(),
+            }
+        ],
+    )
+    preflight_chemical_paper_import(
+        project, "scholarly-a", preflight_archive.read_bytes()
+    )
+
+    staged_workflow = workflow_state(project)
+    assert staged_workflow["active_stage"] == "chemical_import"
+    assert staged_workflow["blocker"] == "DUAL_SOURCE_BINDING_MISSING"
+    assert staged_workflow["unique_next_action"] == "确认第一份 Chemical Paper 导入"
+
+    staged_progress = project_progress_payload(tmp_path, project.name)
+    assert staged_progress["recommended_next"] == "确认第一份 Chemical Paper 导入"
 
     write_dual_source_binding(project, "scholarly-a")
     after_binding = project_progress_payload(tmp_path, project.name)
@@ -610,6 +646,12 @@ def test_browser_mutations_can_advance_only_deterministic_dual_gates(
     ).is_file()
     assert not (project / "01_evidence/parse_reconciliation").exists()
     assert workflow_state(project)["active_stage"] == "chemical_completion"
+    completion_progress = project_progress_payload(tmp_path, project.name)
+    assert completion_progress["active_stage"] == "chemical_completion"
+    assert completion_progress["blocker_code"] == "CHEMICAL_COMPLETION_INCOMPLETE"
+    assert completion_progress["blocker"]
+    assert completion_progress["recommended_next"] == "补全下一项化学字段"
+    assert completion_progress["unique_next_action"] == "补全下一项化学字段"
 
     gate = chemical_completion_state(project, "scholarly-a")
     apply_chemical_completion_batch(

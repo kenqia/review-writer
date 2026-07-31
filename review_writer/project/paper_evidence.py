@@ -261,9 +261,14 @@ def _safe_paper_coverage(value: object) -> list[dict[str, Any]]:
                 "blocked_count",
             )
         }
+        denominator = raw.get("coverage_denominator", counts["core_molecule_count"])
         if study_id is None or any(
             isinstance(item, bool) or not isinstance(item, int) or item < 0
             for item in counts.values()
+        ) or (
+            isinstance(denominator, bool)
+            or not isinstance(denominator, int)
+            or denominator < 0
         ):
             continue
         ratio = raw.get("coverage_ratio")
@@ -277,6 +282,7 @@ def _safe_paper_coverage(value: object) -> list[dict[str, Any]]:
             {
                 "study_id": study_id,
                 **counts,
+                "coverage_denominator": denominator,
                 "coverage_ratio": float(ratio),
             }
         )
@@ -587,6 +593,7 @@ def build_honest_progressive_summary(
             {
                 "study_id": study_id,
                 "core_molecule_count": study_core,
+                "coverage_denominator": study_core,
                 "confirmed_count": study_confirmed,
                 "ai_provisional_count": study_provisional,
                 "blocked_count": study_blocked,
@@ -620,15 +627,18 @@ def build_honest_progressive_summary(
         }
         for row in normalized
     ]
+    coverage_sufficient = coverage_ratio >= HONEST_PROGRESSIVE_COVERAGE_THRESHOLD
     return {
         "route": HONEST_PROGRESSIVE_ROUTE,
+        "availability": "available",
+        "status": "ready" if coverage_sufficient else "needs_more_traceable_candidates",
         "core_molecule_count": core_molecule_count,
         "confirmed_count": confirmed_count,
         "ai_provisional_count": ai_provisional_count,
         "blocked_count": blocked_count,
         "coverage_ratio": coverage_ratio,
         "coverage_threshold": HONEST_PROGRESSIVE_COVERAGE_THRESHOLD,
-        "coverage_sufficient": coverage_ratio >= HONEST_PROGRESSIVE_COVERAGE_THRESHOLD,
+        "coverage_sufficient": coverage_sufficient,
         "paper_coverage": paper_coverage,
         "uncertainty_statement": uncertainty_statement.strip(),
         "gap_registry": gaps,
@@ -735,8 +745,26 @@ def honest_progressive_summary_from_projection(
             f"{confirmed + provisional}/{core_count} core molecules are covered; "
             f"{blocked} remain blocked and are disclosed as gaps or limitations."
         )
+    availability = candidate.get("availability", "available")
+    if availability not in {"available", "unknown", "unavailable"}:
+        raise PaperEvidenceError("HONEST_PROGRESSIVE_SUMMARY_INVALID")
+    status = candidate.get("status")
+    expected_status = (
+        "ready"
+        if expected_ratio >= HONEST_PROGRESSIVE_COVERAGE_THRESHOLD
+        else "needs_more_traceable_candidates"
+    )
+    benchmark_report = (
+        isinstance(value, dict)
+        and value.get("schema_version") == "review-benchmark-report.v1"
+        and "release_binding" in value
+    )
+    if status is not None and not benchmark_report and status != expected_status:
+        raise PaperEvidenceError("HONEST_PROGRESSIVE_SUMMARY_INVALID")
     return {
         "route": HONEST_PROGRESSIVE_ROUTE,
+        "availability": availability,
+        "status": expected_status,
         "core_molecule_count": core_count,
         "confirmed_count": confirmed,
         "ai_provisional_count": provisional,

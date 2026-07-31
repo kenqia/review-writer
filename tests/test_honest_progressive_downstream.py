@@ -75,6 +75,8 @@ def test_honest_progressive_evidence_summary_tracks_three_states_and_gaps() -> N
     summary = build_honest_progressive_summary(_rows(), core_molecule_count=3)
 
     assert summary["route"] == "honest_progressive"
+    assert summary["availability"] == "available"
+    assert summary["status"] == "needs_more_traceable_candidates"
     assert summary["core_molecule_count"] == 3
     assert summary["confirmed_count"] == 1
     assert summary["ai_provisional_count"] == 1
@@ -86,6 +88,7 @@ def test_honest_progressive_evidence_summary_tracks_three_states_and_gaps() -> N
         {
             "study_id": "paper-a",
             "core_molecule_count": 3,
+            "coverage_denominator": 3,
             "confirmed_count": 1,
             "ai_provisional_count": 1,
             "blocked_count": 1,
@@ -122,6 +125,8 @@ def test_dual_release_accepts_eighty_percent_coverage_with_visible_blocked_gap()
     summary = honest_progressive_release_projection(rows, core_molecule_count=5)
 
     assert summary["route"] == "honest_progressive"
+    assert summary["availability"] == "available"
+    assert summary["status"] == "ready"
     assert summary["core_molecule_count"] == 309
     assert summary["confirmed_count"] == 248
     assert summary["coverage_ratio"] == pytest.approx(248 / 309)
@@ -152,6 +157,8 @@ def test_project_projection_parser_uses_fixed_denominator_and_recomputes_eligibi
     assert summary["coverage_ratio"] == pytest.approx(2 / 309)
     assert summary["coverage_threshold"] == pytest.approx(0.8)
     assert summary["coverage_sufficient"] is False
+    assert summary["availability"] == "available"
+    assert summary["status"] == "needs_more_traceable_candidates"
 
 
 @pytest.mark.parametrize(
@@ -183,6 +190,8 @@ def test_release_and_evaluation_project_coverage_traceability_and_gap_honesty() 
     evaluation = evaluate_honest_progressive(summary)
 
     assert release_fields["route"] == "honest_progressive"
+    assert release_fields["availability"] == "available"
+    assert release_fields["status"] == "needs_more_traceable_candidates"
     assert release_fields["coverage_ratio"] == pytest.approx(2 / 309)
     assert release_fields["paper_coverage"] == summary["paper_coverage"]
     assert release_fields["uncertainty_statement"]
@@ -218,6 +227,8 @@ def test_legacy_approved_input_remains_compatible_without_strict_exploratory_out
     )
 
     assert summary["route"] == "honest_progressive"
+    assert summary["availability"] == "available"
+    assert summary["status"] == "ready"
     assert summary["confirmed_count"] == 1
     assert summary["ai_provisional_count"] == 0
     assert summary["coverage_ratio"] == 1.0

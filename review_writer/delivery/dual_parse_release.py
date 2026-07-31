@@ -352,7 +352,7 @@ def confirm_chemical_paper_import(
     payload: object,
     *,
     now: float | None = None,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """Consume one stage after revalidating bytes and current source authority."""
 
     if not isinstance(payload, dict) or set(payload) != {
@@ -418,7 +418,26 @@ def confirm_chemical_paper_import(
                 "actor_label": payload.get("actor_label"),
             },
         )
-        refresh_dual_parse_derived_state(root, study_id)
+        try:
+            derived_refresh = refresh_dual_parse_derived_state(root, study_id)
+            if not isinstance(derived_refresh, dict):
+                derived_refresh = {
+                    "status": "failed",
+                    "stage": "derived_binding",
+                    "reason_code": "DERIVED_REFRESH_INVALID",
+                }
+        except Exception as exc:
+            # The importer has already committed the authoritative Chemical
+            # state.  Surface a failed derived refresh without pretending that
+            # the import was rolled back or that the dual lane is current.
+            reason_code = getattr(exc, "code", None)
+            derived_refresh = {
+                "status": "failed",
+                "stage": "derived_binding",
+                "reason_code": reason_code
+                if isinstance(reason_code, str)
+                else "DERIVED_REFRESH_FAILED",
+            }
         try:
             consumed = {
                 "schema_version": "chemical-paper-preflight-stage.v1",
@@ -452,7 +471,12 @@ def confirm_chemical_paper_import(
         except OSError:
             pass
         raise DualParseReleaseError("PREFLIGHT_STAGING_FAILED") from exc
-    return {"status": str(result["status"]), "study_id": study_id}
+    return {
+        "status": str(result["status"]),
+        "study_id": study_id,
+        "derived_refresh": derived_refresh,
+        "derived_refresh_status": derived_refresh.get("status"),
+    }
 
 
 def _researcher_actor(payload: dict[str, Any], code: str) -> None:
@@ -749,10 +773,10 @@ def _chemical_import_contract(
         source.get("pdf_status") == "verified"
         and source.get("generic_parse_status") == "current"
     )
-    dual_source_current = source.get("status") in {
-        "current",
-        "current_generic_only",
-    }
+    # A current Chemical PDF import is not itself a dual-source binding.
+    # ``current_generic_only`` is deliberately excluded here: it names a
+    # Generic-only authority state and must never be relabeled as bound.
+    dual_source_current = source.get("status") == "current"
     bound = (
         source_current
         and dual_source_current
@@ -1488,6 +1512,13 @@ def _honest_progressive_authority_summary(
     blocked = core - confirmed - provisional
     return {
         "route": HONEST_PROGRESSIVE_ROUTE,
+        "availability": "available",
+        "status": (
+            "ready"
+            if (confirmed + provisional) / core
+            >= HONEST_PROGRESSIVE_COVERAGE_THRESHOLD
+            else "needs_more_traceable_candidates"
+        ),
         "core_molecule_count": core,
         "confirmed_count": confirmed,
         "ai_provisional_count": provisional,

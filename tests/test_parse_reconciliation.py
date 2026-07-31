@@ -137,4 +137,4 @@ def test_evidence_prewrite_gate_rejects_unresolved_core_registry_with_zero_write
     assert after == before
     workflow = workflow_state(project)
     assert workflow["active_stage"] == "reconciliation"
-    assert workflow["unique_next_action"] == "Resolve the next dual-parse conflict against the PDF."
+    assert workflow["unique_next_action"] == "依据 PDF 仲裁下一项双层解析差异"

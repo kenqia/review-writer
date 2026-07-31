@@ -591,7 +591,11 @@
 
     function parseQualityGateActive() {
       return parseQualityWorkspaceAvailable() && (
-        progressPayload.active_stage === 'parsing' || parseQualityPayload.status === 'needs_attention'
+        progressPayload.active_stage === 'parsing'
+        || (
+          progressPayload.route !== 'evidence-to-release.v1'
+          && parseQualityPayload.status === 'needs_attention'
+        )
       );
     }
 
@@ -688,11 +692,22 @@
     function renderProjectHeader() {
       const brief = projectState.brief || {};
       const parseGateActive = parseQualityGateActive();
+      const evidenceToReleaseRoute = progressPayload.route === 'evidence-to-release.v1';
       const progressStage = authoritativeProgressStage();
       const legacyStageLabel = stageLabels[projectState.current_stage] || '进行中';
       const legacyStatusLabel = statusLabels[projectState.status] || '状态待核对';
-      const stageLabel = parseGateActive ? progressStage?.label || '核对全文解析' : legacyStageLabel;
-      const statusLabel = parseGateActive
+      const stageLabel = evidenceToReleaseRoute
+        ? progressStage?.label || '当前科研阶段'
+        : parseGateActive
+          ? progressStage?.label || '核对全文解析'
+          : legacyStageLabel;
+      const statusLabel = evidenceToReleaseRoute
+        ? progressPayload.status === 'complete'
+          ? '已完成'
+          : progressPayload.blocker
+            ? '需要处理'
+            : '进行中'
+        : parseGateActive
         ? parseQualityPayload.status === 'needs_attention'
           ? '解析记录需要处理'
           : `${parseQualityPayload.summary?.needs_review || 0} 项待决定`
@@ -728,7 +743,7 @@
 
     function renderStages() {
       clear($('stage-list'));
-      if (parseQualityGateActive()) {
+      if (progressPayload.route === 'evidence-to-release.v1' || parseQualityGateActive()) {
         (progressPayload.stages || []).forEach(stage => {
           const item = document.createElement('li');
           item.className = stage.status === 'complete' ? 'complete' : ['active', 'blocked'].includes(stage.status) ? 'current' : '';
@@ -1607,7 +1622,8 @@
       const showSource = !awaitingBrief && (needsSourceUpload || sourceBlocked);
       const parseWorkspaceAvailable = parseQualityWorkspaceAvailable();
       const showParseQuality = !awaitingBrief && !showSource && parseWorkspaceAvailable && (
-        progressPayload.active_stage === 'parsing' || parseQualityPayload.status === 'needs_attention'
+        progressPayload.active_stage === 'parsing'
+        || (progressPayload.route !== 'evidence-to-release.v1' && parseQualityPayload.status === 'needs_attention')
       );
       const showRisk = !awaitingBrief && !showSource && !showParseQuality && progressPayload.active_stage === 'risk' && Boolean((riskPayload.targets || []).length) && !draftPayload.available;
       const evidenceRoute = progressPayload.route === 'evidence-to-release.v1';
@@ -1637,7 +1653,9 @@
       $('metric-main-coverage').textContent = availability.mainFullText.available ?? '未知';
       $('metric-reviewed').textContent = availability.reviewedEvidence.available ?? '未知';
       $('metric-scientific-risks').textContent = cockpitPayload.metrics.scientific_risks ?? 0;
-      $('recommended-next').textContent = cockpitPayload.recommended_next || '继续核对当前研究证据';
+      $('recommended-next').textContent = progressPayload.route === 'evidence-to-release.v1'
+        ? progressPayload.recommended_next || progressPayload.unique_next_action || '继续核对当前研究证据'
+        : cockpitPayload.recommended_next || '继续核对当前研究证据';
       void metrics;
       renderStages();
       renderHealth();

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -25,10 +26,60 @@ from review_writer.project.parse_reconciliation import project_reconciliation_st
 
 NEW_ROUTE = "evidence-to-release.v1"
 
+# The new route has one stage presentation authority.  Dashboard projections
+# may add safe, route-specific facts, but must not invent a second stage list.
+STAGE_PRESENTATION: dict[str, dict[str, str]] = {
+    "sources": {"label": "整理文献来源"},
+    "parsing": {"label": "解析全文与补充信息"},
+    "chemical_import": {"label": "导入并绑定 Chemical Paper"},
+    "chemical_completion": {"label": "补全 Chemical Completion"},
+    "reconciliation": {"label": "核对双层解析差异"},
+    "evidence": {"label": "提取并核对逐研究证据"},
+    "synthesis": {"label": "完成比较协议与综合判断"},
+    "drafting": {"label": "撰写证据约束正文"},
+    "final": {"label": "完成终稿与 DOCX"},
+}
+
 
 def _regular_file(project: Path, relative: str) -> bool:
     path = project / relative
     return path.is_file() and not path.is_symlink()
+
+
+def _chemical_preflight_ready(project: Path) -> bool:
+    """Return whether a safe, unexpired Chemical ZIP awaits confirmation."""
+
+    stage = project / ".dual-parse-staging/chemical-paper"
+    if stage.is_symlink() or not stage.is_dir():
+        return False
+    try:
+        manifests = sorted(stage.glob("*.json"))
+    except OSError:
+        return False
+    for manifest_path in manifests:
+        if manifest_path.is_symlink() or not manifest_path.is_file():
+            continue
+        key = manifest_path.stem
+        archive = stage / f"{key}.zip"
+        if archive.is_symlink() or not archive.is_file():
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        if (
+            not isinstance(manifest, dict)
+            or manifest.get("schema_version") != "chemical-paper-preflight-stage.v1"
+            or manifest.get("status") != "ready"
+            or manifest.get("token_sha256") != key
+            or not isinstance(manifest.get("study_id"), str)
+            or not isinstance(manifest.get("expires_at_epoch"), (int, float))
+            or isinstance(manifest.get("expires_at_epoch"), bool)
+            or time.time() > float(manifest["expires_at_epoch"])
+        ):
+            continue
+        return True
+    return False
 
 
 def _read_jsonl(project: Path, relative: str) -> list[dict[str, Any]] | None:
@@ -74,6 +125,7 @@ def _legacy_state(project: Path) -> dict[str, Any]:
             "internal_draft_export_ready": manuscript_ready,
             "verified_release_ready": verified_release_ready,
             "blockers": [],
+            "blocker": None,
         }
     )
 
@@ -329,9 +381,13 @@ def _new_route_state(
     next_actions = {
         "sources": "Verify the next source PDF.",
         "parsing": "Review the next Generic parse quality item.",
-        "chemical_import": "Import and bind the next required Chemical Paper ZIP.",
-        "chemical_completion": "Complete the next missing molecule field from the PDF.",
-        "reconciliation": "Resolve the next dual-parse conflict against the PDF.",
+        "chemical_import": (
+            "确认第一份 Chemical Paper 导入"
+            if _chemical_preflight_ready(project)
+            else "待 Chemical Paper 导入"
+        ),
+        "chemical_completion": "补全下一项化学字段",
+        "reconciliation": "依据 PDF 仲裁下一项双层解析差异",
         "evidence": "Review the next Paper Evidence candidate.",
         "synthesis": "Review the next synthesis object.",
         "drafting": "Review the next manuscript section.",
@@ -356,6 +412,7 @@ def _new_route_state(
             "internal_draft_export_ready": internal_draft_export_ready,
             "verified_release_ready": verified_release_ready,
             "blockers": blockers,
+            "blocker": blockers[0] if blockers else None,
             "unique_next_action": next_actions[active_stage],
         }
     )

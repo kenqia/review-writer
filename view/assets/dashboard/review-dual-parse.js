@@ -299,6 +299,9 @@
       aiProvisionalCount: nonNegativeInteger(row.ai_provisional_count),
       blockedCount: nonNegativeInteger(row.blocked_count),
       coverageRatio: ratioValue(row.coverage_ratio),
+      coverageDenominator: nonNegativeInteger(
+        row.coverage_denominator ?? row.molecule_count,
+      ),
       coverageThreshold: ratioValue(row.coverage_threshold),
       uncertaintyStatement: publicText(row.uncertainty_statement, "不确定性说明未提供。"),
       actorProvenanceResidual: publicText(
@@ -979,7 +982,11 @@
           document,
           honestMetrics,
           "strong",
-          `论文覆盖率 ${percentageLabel(study.coverageRatio)} · 阈值 ${percentageLabel(study.coverageThreshold)}`,
+          `论文覆盖率 ${percentageLabel(study.coverageRatio)} · ${countLabel(
+            study.confirmedCount !== null && study.aiProvisionalCount !== null
+              ? study.confirmedCount + study.aiProvisionalCount
+              : null,
+          )}/${countLabel(study.coverageDenominator)} · 阈值 ${percentageLabel(study.coverageThreshold)}`,
         );
         appendText(
           document,

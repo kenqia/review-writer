@@ -96,19 +96,70 @@ def _authoritative_molecules() -> list[dict[str, object]]:
     ]
 
 
+def _authoritative_study_molecules(
+    offset: int, molecule_count: int
+) -> list[dict[str, object]]:
+    source = _authoritative_molecules()
+    return [
+        {
+            **source[offset + molecule_index],
+            "molecule_index": molecule_index,
+        }
+        for molecule_index in range(molecule_count)
+    ]
+
+
 def _honest_completion_state() -> dict[str, object]:
-    molecules = _authoritative_molecules()
+    study_specs = (
+        ("study-a", 0, 125),
+        ("study-b", 125, 109),
+        ("study-c", 234, 75),
+    )
+    studies: list[dict[str, object]] = []
+    molecules: list[dict[str, object]] = []
+    for study_id, offset, molecule_count in study_specs:
+        study_molecules = _authoritative_study_molecules(offset, molecule_count)
+        counts = {
+            status: sum(
+                molecule["resolved_smiles_status"] == status
+                for molecule in study_molecules
+            )
+            for status in ("CONFIRMED", "AI_PROVISIONAL", "BLOCKED")
+        }
+        studies.append(
+            {
+                "study_id": study_id,
+                "source_tier": "core",
+                "status": "current",
+                "study_molecule_count": molecule_count,
+                "study_confirmed_count": counts["CONFIRMED"],
+                "study_ai_provisional_count": counts["AI_PROVISIONAL"],
+                "study_blocked_count": counts["BLOCKED"],
+                "coverage_ratio": (
+                    counts["CONFIRMED"] + counts["AI_PROVISIONAL"]
+                )
+                / molecule_count,
+                "coverage_threshold": 0.8,
+                "workflow_can_continue": True,
+                "uncertainty_statement": "raw study statement",
+                "actor_provenance_residual": True,
+                "molecules": study_molecules,
+            }
+        )
+        molecules.extend(
+            {"study_id": study_id, **molecule} for molecule in study_molecules
+        )
     return {
         "schema_version": "chemical-completion-project-state.v2",
         "route": "honest_progressive",
-        "core_molecule_count": 999,
-        "confirmed_count": 0,
-        "ai_provisional_count": 0,
-        "blocked_count": 0,
-        "coverage_ratio": 0.0,
-        "coverage_threshold": 0.01,
-        "coverage_sufficient": True,
-        "workflow_can_continue": True,
+        "core_molecule_count": 309,
+        "confirmed_count": 180,
+        "ai_provisional_count": 60,
+        "blocked_count": 69,
+        "coverage_ratio": 240 / 309,
+        "coverage_threshold": 0.8,
+        "coverage_sufficient": False,
+        "workflow_can_continue": False,
         "coverage_denominator": 309,
         "compatibility_aggregation": {"mode": "project_core_309"},
         "molecules": molecules,
@@ -131,81 +182,94 @@ def _honest_completion_state() -> dict[str, object]:
             },
             {"status": "AI_PROVISIONAL", "value": "must be excluded"},
         ],
-        "studies": [
-            {
-                "study_id": "study-a",
-                "study_molecule_count": 3,
-                "study_confirmed_count": 1,
-                "study_ai_provisional_count": 1,
-                "study_blocked_count": 1,
-                "coverage_ratio": 0.99,
-                "coverage_threshold": 0.01,
-                "workflow_can_continue": True,
-                "uncertainty_statement": "raw study statement",
-                "actor_provenance_residual": True,
-                "molecules": molecules,
-            }
-        ],
+        "studies": studies,
     }
 
 
 def _honest_chemical_projection() -> dict[str, object]:
-    molecules = [
-        {
-            "molecule_index": 0,
-            "resolved_smiles": "CCO",
-            "resolved_smiles_status": "AI_PROVISIONAL",
-            "confidence": 0.72,
-            "provenance": {
-                "source": "structure_figure",
-                "pdf_locator": {"page": 3, "figure_label": "Scheme 1"},
-                "evidence_excerpt": "RAW JSON SHOULD NOT LEAK",
-                "path": "/private/provenance.json",
-                "sha256": "c" * 64,
-                "session": "private-session",
-            },
-            "pdf_locator": {"page": 3, "figure_label": "Scheme 1"},
-            "gap_reason": None,
-        },
-        {
-            "molecule_index": 1,
-            "resolved_smiles": "SECRET-BLOCKED-VALUE",
-            "resolved_smiles_status": "BLOCKED",
-            "confidence": 0.88,
-            "provenance": {
-                "source": "should-not-be-used",
-                "path": "/private/blocked.json",
-            },
-            "pdf_locator": {"page": 4, "figure_label": "Figure 2"},
-            "gap_reason": "PDF 仅给出 generic R-group",
-        },
-    ]
-    molecules.extend(
-        {
-            "molecule_index": index,
-            "resolved_smiles": "CCO",
-            "resolved_smiles_status": "AI_PROVISIONAL",
-            "confidence": 0.7,
-            "provenance": {
-                "source": "structure_figure",
-                "pdf_locator": {"page": 5},
-            },
-            "pdf_locator": {"page": 5},
-            "gap_reason": None,
-        }
-        for index in range(2, 309)
+    study_specs = (
+        ("study-a", 0, 125, 6),
+        ("study-b", 125, 109, 11),
+        ("study-c", 234, 75, 11),
     )
-    return {
-        "schema_version": "chemical-paper-projection.v2",
-        "studies": [
+    studies: list[dict[str, object]] = []
+    for study_id, offset, molecule_count, page_count in study_specs:
+        molecules: list[dict[str, object]] = []
+        for molecule in _authoritative_study_molecules(offset, molecule_count):
+            index = int(molecule["molecule_index"])
+            status = molecule["resolved_smiles_status"]
+            if study_id == "study-a" and index == 0:
+                molecules.append(
+                    {
+                        "molecule_index": index,
+                        "resolved_smiles": "CCO",
+                        "resolved_smiles_status": status,
+                        "confidence": 0.72,
+                        "provenance": {
+                            "source": "structure_figure",
+                            "pdf_locator": {"page": 3, "figure_label": "Scheme 1"},
+                            "evidence_excerpt": "RAW JSON SHOULD NOT LEAK",
+                            "path": "/private/provenance.json",
+                            "sha256": "c" * 64,
+                            "session": "private-session",
+                        },
+                        "pdf_locator": {"page": 3, "figure_label": "Scheme 1"},
+                        "gap_reason": None,
+                    }
+                )
+            elif study_id == "study-a" and index == 1:
+                molecules.append(
+                    {
+                        "molecule_index": index,
+                        "resolved_smiles": "SECRET-BLOCKED-VALUE",
+                        "resolved_smiles_status": status,
+                        "confidence": 0.88,
+                        "provenance": {
+                            "source": "should-not-be-used",
+                            "path": "/private/blocked.json",
+                        },
+                        "pdf_locator": {"page": 4, "figure_label": "Figure 2"},
+                        "gap_reason": "PDF 仅给出 generic R-group",
+                    }
+                )
+            else:
+                molecules.append(
+                    {
+                        "molecule_index": index,
+                        "resolved_smiles": "CCO" if status != "BLOCKED" else None,
+                        "resolved_smiles_status": status,
+                        "confidence": 0.7 if status == "AI_PROVISIONAL" else None,
+                        "provenance": (
+                            {
+                                "source": "structure_figure",
+                                "pdf_locator": {"page": 5},
+                            }
+                            if status != "BLOCKED"
+                            else None
+                        ),
+                        "pdf_locator": {"page": 5},
+                        "gap_reason": (
+                            None
+                            if status != "BLOCKED"
+                            else "PDF 仅给出 generic R-group"
+                        ),
+                    }
+                )
+        studies.append(
             {
-                "study_id": "study-a",
+                "study_id": study_id,
+                "source_tier": "core",
                 "status": "needs_review",
-                "molecule_count": 309,
+                "pdf_binding_status": "bound",
+                "page_count": page_count,
+                "molecule_count": molecule_count,
                 "reaction_data_status": "unavailable_not_provided",
                 "molecules": molecules,
             }
-        ],
+        )
+    return {
+        "schema_version": "chemical-paper-projection.v2",
+        "studies": studies,
     }
 
 
@@ -345,9 +409,16 @@ def test_dual_parse_api_projects_server_calculated_honest_progressive_summary(
     assert honest["coverage_sufficient"] is False
     assert honest["actor_provenance_residual"] is True
     assert honest["credits_status"] == "NOT_APPLICABLE_BY_CURRENT_SCOPE"
-    assert len(honest["paper_coverage"]) == 1
-    assert honest["paper_coverage"][0]["coverage_ratio"] == pytest.approx(2 / 3)
-    assert honest["paper_coverage"][0]["coverage_sufficient"] is False
+    assert len(honest["paper_coverage"]) == 3
+    paper_coverage = {
+        row["study_id"]: row for row in honest["paper_coverage"]
+    }
+    assert {
+        row["coverage_denominator"] for row in paper_coverage.values()
+    } == {125, 109, 75}
+    assert paper_coverage["study-a"]["coverage_denominator"] == 125
+    assert paper_coverage["study-b"]["coverage_denominator"] == 109
+    assert paper_coverage["study-c"]["coverage_denominator"] == 75
     assert [row["status"] for row in honest["gap_registry"]] == ["BLOCKED"]
     assert honest["gap_registry"][0]["value"] is None
     assert honest["gap_registry"][0]["gap_reason"] == "PDF 仅给出 generic R-group"
@@ -377,6 +448,37 @@ def test_dual_parse_api_projects_server_calculated_honest_progressive_summary(
         "evidence_excerpt",
     ):
         assert forbidden not in encoded
+
+
+@pytest.mark.parametrize(
+    "invalid_shape",
+    ("single_study", "wrong_page_count", "wrong_molecule_count", "wrong_reaction_status"),
+)
+def test_honest_authority_requires_exact_three_paper_contract(
+    invalid_shape: str,
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    completion = _honest_completion_state()
+    chemical = _honest_chemical_projection()
+    if invalid_shape == "single_study":
+        completion["studies"] = completion["studies"][:1]
+        chemical["studies"] = chemical["studies"][:1]
+    elif invalid_shape == "wrong_page_count":
+        chemical["studies"][0]["page_count"] = 11
+    elif invalid_shape == "wrong_molecule_count":
+        completion["studies"][0]["study_molecule_count"] = 309
+    else:
+        chemical["studies"][0]["reaction_data_status"] = "available"
+
+    summary, state_available, _ = dashboard._honest_progressive_summary(
+        completion, chemical
+    )
+
+    assert state_available is False
+    assert summary["status"] == "unknown"
+    assert summary["availability"] == "unknown"
+    assert summary["gap_registry"] is None
 
 
 def test_dual_parse_api_fails_closed_when_honest_state_is_unavailable(
@@ -415,7 +517,7 @@ def test_dual_parse_api_fails_closed_when_honest_state_is_unavailable(
     assert honest["coverage_ratio"] is None
     assert honest["coverage_sufficient"] is None
     assert honest["paper_coverage"] == []
-    assert honest["gap_registry"] == []
+    assert honest["gap_registry"] is None
     assert honest["actor_provenance_residual"] is None
     assert honest["credits_status"] == "NOT_APPLICABLE_BY_CURRENT_SCOPE"
     assert payload["completion_queue"] == _base_projection()["completion_queue"]
@@ -463,7 +565,7 @@ def test_dual_parse_api_keeps_missing_chemical_import_unknown_instead_of_zero(
         "workflow_can_continue",
     ):
         assert honest[field] is None, field
-    assert honest["gap_registry"] == []
+    assert honest["gap_registry"] is None
     assert "待 Chemical Paper 导入" in honest["uncertainty_statement"]
     assert honest["credits_status"] == "NOT_APPLICABLE_BY_CURRENT_SCOPE"
     encoded = json.dumps(payload, ensure_ascii=False)
