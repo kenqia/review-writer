@@ -170,13 +170,22 @@
 
   function honestProgressiveModel(value) {
     const row = object(value);
+    const availability = ["available", "unknown", "unavailable"].includes(row.availability)
+      ? row.availability : "unknown";
+    const status = ["ready", "unknown", "unavailable"].includes(row.status)
+      ? row.status : "unknown";
     return {
+      availability,
+      status,
+      availabilityReason: publicText(row.availability_reason, "待 Chemical Paper 导入；状态未知。"),
       coreMoleculeCount: nonNegativeInteger(row.core_molecule_count),
+      coverageDenominator: nonNegativeInteger(row.coverage_denominator),
       confirmedCount: nonNegativeInteger(row.confirmed_count),
       aiProvisionalCount: nonNegativeInteger(row.ai_provisional_count),
       blockedCount: nonNegativeInteger(row.blocked_count),
       coverageRatio: ratioValue(row.coverage_ratio),
       coverageThreshold: ratioValue(row.coverage_threshold),
+      workflowCanContinue: typeof row.workflow_can_continue === "boolean" ? row.workflow_can_continue : null,
       uncertaintyStatement: publicText(row.uncertainty_statement, "不确定性说明未提供。"),
       gapRegistry: array(row.gap_registry).map(gapModel),
       actorProvenanceResidual: publicText(
@@ -483,6 +492,23 @@
     const summary = object(value.summary);
     const status = ["loading", "ready", "failed", "stale", "unavailable"].includes(value.status)
       ? value.status : "unknown";
+    const honestRoute = value.route === "honest_progressive";
+    const honestProgressive = honestRoute ? honestProgressiveModel(value.honest_progressive) : null;
+    const projectedStudies = array(value.studies).map(studyModel);
+    const studies = !honestRoute || honestProgressive.availability === "available"
+      ? projectedStudies
+      : projectedStudies.map(study => ({
+          ...study,
+          chemicalLabel: "Chemical Paper 待导入；状态未知",
+          chemicalFacts: ["待 Chemical Paper 导入；状态未知"],
+          completionLabel: "Chemical Completion 状态未知",
+          confirmedCount: null,
+          aiProvisionalCount: null,
+          blockedCount: null,
+          coverageRatio: null,
+          coverageThreshold: honestProgressive.coverageThreshold,
+          uncertaintyStatement: honestProgressive.uncertaintyStatement,
+        }));
     return {
       ...emptyModel(),
       contractValid: true,
@@ -501,11 +527,11 @@
         label: publicText(nextAction.label, "等待当前阻塞项明确"),
         description: publicText(nextAction.description, "Evidence 保持锁定。"),
       },
-      studies: array(value.studies).map(studyModel),
+      studies,
       importPreflight: importPreflightModel(value.import_preflight),
       completionQueue: array(value.completion_queue).map(completionModel).filter(Boolean),
       reconciliationItems: array(value.reconciliation_items).map(reconciliationModel),
-      honestProgressive: honestProgressiveModel(value.honest_progressive),
+      honestProgressive: honestProgressive || honestProgressiveModel({}),
       summary: {
         coreStudies: nonNegativeInteger(summary.core_studies),
         genericCurrent: nonNegativeInteger(summary.generic_current),

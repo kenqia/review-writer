@@ -76,18 +76,42 @@ def _base_projection() -> dict[str, object]:
     }
 
 
+def _authoritative_molecules() -> list[dict[str, object]]:
+    return [
+        {
+            "molecule_index": index,
+            "resolved_smiles_status": (
+                "AI_PROVISIONAL"
+                if index == 0
+                else "BLOCKED"
+                if index == 1
+                else "CONFIRMED"
+                if index < 182
+                else "AI_PROVISIONAL"
+                if index < 241
+                else "BLOCKED"
+            ),
+        }
+        for index in range(309)
+    ]
+
+
 def _honest_completion_state() -> dict[str, object]:
+    molecules = _authoritative_molecules()
     return {
         "schema_version": "chemical-completion-project-state.v2",
         "route": "honest_progressive",
         "core_molecule_count": 999,
-        "confirmed_count": 180,
-        "ai_provisional_count": 60,
-        "blocked_count": 69,
-        "coverage_ratio": 0.99,
+        "confirmed_count": 0,
+        "ai_provisional_count": 0,
+        "blocked_count": 0,
+        "coverage_ratio": 0.0,
         "coverage_threshold": 0.01,
         "coverage_sufficient": True,
         "workflow_can_continue": True,
+        "coverage_denominator": 309,
+        "compatibility_aggregation": {"mode": "project_core_309"},
+        "molecules": molecules,
         "actor_provenance_residual": True,
         "uncertainty_statement": "/private/raw-state.json should never be returned",
         "gap_registry": [
@@ -119,50 +143,106 @@ def _honest_completion_state() -> dict[str, object]:
                 "workflow_can_continue": True,
                 "uncertainty_statement": "raw study statement",
                 "actor_provenance_residual": True,
+                "molecules": molecules,
             }
         ],
     }
 
 
 def _honest_chemical_projection() -> dict[str, object]:
+    molecules = [
+        {
+            "molecule_index": 0,
+            "resolved_smiles": "CCO",
+            "resolved_smiles_status": "AI_PROVISIONAL",
+            "confidence": 0.72,
+            "provenance": {
+                "source": "structure_figure",
+                "pdf_locator": {"page": 3, "figure_label": "Scheme 1"},
+                "evidence_excerpt": "RAW JSON SHOULD NOT LEAK",
+                "path": "/private/provenance.json",
+                "sha256": "c" * 64,
+                "session": "private-session",
+            },
+            "pdf_locator": {"page": 3, "figure_label": "Scheme 1"},
+            "gap_reason": None,
+        },
+        {
+            "molecule_index": 1,
+            "resolved_smiles": "SECRET-BLOCKED-VALUE",
+            "resolved_smiles_status": "BLOCKED",
+            "confidence": 0.88,
+            "provenance": {
+                "source": "should-not-be-used",
+                "path": "/private/blocked.json",
+            },
+            "pdf_locator": {"page": 4, "figure_label": "Figure 2"},
+            "gap_reason": "PDF 仅给出 generic R-group",
+        },
+    ]
+    molecules.extend(
+        {
+            "molecule_index": index,
+            "resolved_smiles": "CCO",
+            "resolved_smiles_status": "AI_PROVISIONAL",
+            "confidence": 0.7,
+            "provenance": {
+                "source": "structure_figure",
+                "pdf_locator": {"page": 5},
+            },
+            "pdf_locator": {"page": 5},
+            "gap_reason": None,
+        }
+        for index in range(2, 309)
+    )
     return {
         "schema_version": "chemical-paper-projection.v2",
         "studies": [
             {
                 "study_id": "study-a",
                 "status": "needs_review",
-                "molecule_count": 2,
+                "molecule_count": 309,
                 "reaction_data_status": "unavailable_not_provided",
-                "molecules": [
-                    {
-                        "molecule_index": 0,
-                        "resolved_smiles": "CCO",
-                        "resolved_smiles_status": "AI_PROVISIONAL",
-                        "confidence": 0.72,
-                        "provenance": {
-                            "source": "structure_figure",
-                            "pdf_locator": {"page": 3, "figure_label": "Scheme 1"},
-                            "evidence_excerpt": "RAW JSON SHOULD NOT LEAK",
-                            "path": "/private/provenance.json",
-                            "sha256": "c" * 64,
-                            "session": "private-session",
-                        },
-                        "pdf_locator": {"page": 3, "figure_label": "Scheme 1"},
-                        "gap_reason": None,
-                    },
-                    {
-                        "molecule_index": 1,
-                        "resolved_smiles": "SECRET-BLOCKED-VALUE",
-                        "resolved_smiles_status": "BLOCKED",
-                        "confidence": 0.88,
-                        "provenance": {
-                            "source": "should-not-be-used",
-                            "path": "/private/blocked.json",
-                        },
-                        "pdf_locator": {"page": 4, "figure_label": "Figure 2"},
-                        "gap_reason": "PDF 仅给出 generic R-group",
-                    },
-                ],
+                "molecules": molecules,
+            }
+        ],
+    }
+
+
+def _missing_chemical_completion_state() -> dict[str, object]:
+    """Shape returned when the project has declared studies but no Chemical cohort."""
+    return {
+        "schema_version": "chemical-completion-project-state.v2",
+        "route": "honest_progressive",
+        "studies": [
+            {
+                "study_id": "study-a",
+                "status": "blocked",
+                "workflow_can_continue": False,
+            }
+        ],
+        # These are the misleading values from the fresh no-import projection.
+        "core_molecule_count": 309,
+        "confirmed_count": 0,
+        "ai_provisional_count": 0,
+        "blocked_count": 0,
+        "coverage_ratio": 0.0,
+        "coverage_threshold": 0.8,
+        "coverage_denominator": 0,
+        "coverage_sufficient": False,
+        "workflow_can_continue": False,
+    }
+
+
+def _missing_chemical_projection() -> dict[str, object]:
+    return {
+        "schema_version": "chemical-paper-projection.v2",
+        "studies": [
+            {
+                "study_id": "study-a",
+                "status": "missing",
+                "molecule_count": None,
+                "molecules": [],
             }
         ],
     }
@@ -197,7 +277,10 @@ def test_dual_parse_api_projects_server_calculated_honest_progressive_summary(
     payload = json.loads(body)
     assert payload["route"] == "honest_progressive"
     honest = payload["honest_progressive"]
+    assert honest["availability"] == "available"
+    assert honest["status"] == "ready"
     assert honest["core_molecule_count"] == 309
+    assert honest["coverage_denominator"] == 309
     assert honest["coverage_threshold"] == pytest.approx(0.8)
     assert honest["confirmed_count"] == 180
     assert honest["ai_provisional_count"] == 60
@@ -265,7 +348,10 @@ def test_dual_parse_api_fails_closed_when_honest_state_is_unavailable(
     payload = json.loads(body)
     honest = payload["honest_progressive"]
     assert payload["route"] == "honest_progressive"
-    assert honest["core_molecule_count"] == 309
+    assert honest["availability"] in {"unknown", "unavailable"}
+    assert honest["status"] == "unknown"
+    assert honest["core_molecule_count"] is None
+    assert honest["coverage_denominator"] is None
     assert honest["coverage_threshold"] == pytest.approx(0.8)
     assert honest["confirmed_count"] is None
     assert honest["ai_provisional_count"] is None
@@ -277,3 +363,53 @@ def test_dual_parse_api_fails_closed_when_honest_state_is_unavailable(
     assert honest["actor_provenance_residual"] is None
     assert honest["credits_status"] == "NOT_APPLICABLE_BY_CURRENT_SCOPE"
     assert payload["completion_queue"] == _base_projection()["completion_queue"]
+
+
+def test_dual_parse_api_keeps_missing_chemical_import_unknown_instead_of_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    review_root = tmp_path / "review-root"
+    (review_root / "review-projects" / "project").mkdir(parents=True)
+    monkeypatch.setattr(dashboard, "dual_parse_dashboard_projection", lambda _: _base_projection())
+    monkeypatch.setattr(
+        dashboard,
+        "project_chemical_completion_state",
+        lambda _: _missing_chemical_completion_state(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "chemical_paper_projection",
+        lambda _: _missing_chemical_projection(),
+    )
+
+    status, _, body = _http_request(
+        review_root,
+        b"GET /api/project/project/dual-parse HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    )
+
+    assert status == 200
+    payload = json.loads(body)
+    honest = payload["honest_progressive"]
+    assert payload["route"] == "honest_progressive"
+    assert honest["availability"] in {"unknown", "unavailable"}
+    assert honest["status"] == "unknown"
+    for field in (
+        "core_molecule_count",
+        "coverage_denominator",
+        "confirmed_count",
+        "ai_provisional_count",
+        "blocked_count",
+        "coverage_ratio",
+        "coverage_sufficient",
+        "workflow_can_continue",
+    ):
+        assert honest[field] is None, field
+    assert honest["gap_registry"] == []
+    assert "待 Chemical Paper 导入" in honest["uncertainty_statement"]
+    assert honest["credits_status"] == "NOT_APPLICABLE_BY_CURRENT_SCOPE"
+    encoded = json.dumps(payload, ensure_ascii=False)
+    assert "已完成" not in encoded
+    assert "0 个已确认" not in encoded

@@ -204,6 +204,8 @@ SOURCE_SUPPLEMENT_MAX_TITLE_CHARS = 2_000
 HONEST_PROGRESSIVE_ROUTE = "honest_progressive"
 HONEST_CORE_MOLECULE_COUNT = 309
 HONEST_COVERAGE_THRESHOLD = 0.8
+HONEST_RESOLUTION_STATUSES = frozenset({"CONFIRMED", "AI_PROVISIONAL", "BLOCKED"})
+HONEST_CHEMICAL_READY_STATUSES = frozenset({"ready", "needs_review"})
 HONEST_CREDITS_STATUS = "NOT_APPLICABLE_BY_CURRENT_SCOPE"
 
 
@@ -392,16 +394,22 @@ def _honest_safe_resolution(
 def _honest_unknown_summary() -> dict[str, Any]:
     return {
         "route": HONEST_PROGRESSIVE_ROUTE,
-        "core_molecule_count": HONEST_CORE_MOLECULE_COUNT,
+        "availability": "unknown",
+        "status": "unknown",
+        "availability_reason": "待 Chemical Paper 导入；Chemical Completion 状态未知。",
+        "gap_reason": "待 Chemical Paper 导入；Chemical Completion 状态未知。",
+        "core_molecule_count": None,
+        "coverage_denominator": None,
         "confirmed_count": None,
         "ai_provisional_count": None,
         "blocked_count": None,
         "coverage_ratio": None,
         "coverage_threshold": HONEST_COVERAGE_THRESHOLD,
         "coverage_sufficient": None,
+        "workflow_can_continue": None,
         "paper_coverage": [],
         "uncertainty_statement": (
-            "Honest Progressive 三态状态未知；尚无可验证的 Chemical Paper 状态。"
+            "Honest Progressive 三态状态未知；待 Chemical Paper 导入，尚无可验证的 Chemical Completion authoritative cohort。"
         ),
         "gap_registry": [],
         "actor_provenance_residual": None,
@@ -611,6 +619,60 @@ def _honest_augment_studies(
     return result
 
 
+def _honest_authoritative_molecules(
+    completion: dict[str, Any], chemical: dict[str, Any]
+) -> list[tuple[str, dict[str, Any]]] | None:
+    """Return the complete, imported core cohort or fail closed as unknown."""
+
+    if completion.get("coverage_denominator") != HONEST_CORE_MOLECULE_COUNT:
+        return None
+    aggregation = completion.get("compatibility_aggregation")
+    if not isinstance(aggregation, dict) or aggregation.get("mode") != "project_core_309":
+        return None
+
+    chemical_by_study = {
+        row.get("study_id"): row
+        for row in chemical.get("studies", [])
+        if isinstance(row, dict) and isinstance(row.get("study_id"), str)
+    }
+    authoritative: list[tuple[str, dict[str, Any]]] = []
+    seen: set[tuple[str, int]] = set()
+    for completion_row in completion.get("studies", []):
+        if not isinstance(completion_row, dict):
+            continue
+        study_id = _honest_identifier(completion_row.get("study_id"))
+        molecules = completion_row.get("molecules")
+        if study_id is None or not isinstance(molecules, list) or not molecules:
+            continue
+        chemical_row = chemical_by_study.get(study_id)
+        chemical_molecules = chemical_row.get("molecules") if isinstance(chemical_row, dict) else None
+        if (
+            not isinstance(chemical_row, dict)
+            or chemical_row.get("status") not in HONEST_CHEMICAL_READY_STATUSES
+            or not isinstance(chemical_molecules, list)
+            or len(chemical_molecules) != len(molecules)
+        ):
+            return None
+        for molecule in molecules:
+            if not isinstance(molecule, dict):
+                return None
+            molecule_index = molecule.get("molecule_index")
+            if not isinstance(molecule_index, int) or isinstance(molecule_index, bool) or molecule_index < 0:
+                return None
+            status = molecule.get("resolved_smiles_status")
+            if status not in HONEST_RESOLUTION_STATUSES:
+                return None
+            key = (study_id, molecule_index)
+            if key in seen:
+                return None
+            seen.add(key)
+            authoritative.append((study_id, molecule))
+
+    if len(authoritative) != HONEST_CORE_MOLECULE_COUNT:
+        return None
+    return authoritative
+
+
 def _honest_progressive_summary(
     completion: object, chemical: object
 ) -> tuple[dict[str, Any], bool, dict[tuple[str, int], dict[str, Any]]]:
@@ -627,17 +689,15 @@ def _honest_progressive_summary(
     ):
         return _honest_unknown_summary(), False, {}
 
-    counts = {
-        key: _honest_count(completion.get(key))
-        for key in ("confirmed_count", "ai_provisional_count", "blocked_count")
-    }
-    if any(value is None for value in counts.values()):
+    authoritative = _honest_authoritative_molecules(completion, chemical)
+    if authoritative is None:
         return _honest_unknown_summary(), False, {}
-    confirmed_count = int(counts["confirmed_count"])
-    ai_provisional_count = int(counts["ai_provisional_count"])
-    blocked_count = int(counts["blocked_count"])
-    if confirmed_count + ai_provisional_count > HONEST_CORE_MOLECULE_COUNT:
-        return _honest_unknown_summary(), False, {}
+    counts = {status: 0 for status in HONEST_RESOLUTION_STATUSES}
+    for _, molecule in authoritative:
+        counts[molecule["resolved_smiles_status"]] += 1
+    confirmed_count = counts["CONFIRMED"]
+    ai_provisional_count = counts["AI_PROVISIONAL"]
+    blocked_count = counts["BLOCKED"]
     coverage_ratio = (
         confirmed_count + ai_provisional_count
     ) / HONEST_CORE_MOLECULE_COUNT
@@ -658,13 +718,19 @@ def _honest_progressive_summary(
     paper_coverage = _honest_paper_coverage(completion)
     summary = {
         "route": HONEST_PROGRESSIVE_ROUTE,
+        "availability": "available",
+        "status": "ready",
+        "availability_reason": "Chemical Paper 与 Chemical Completion authoritative core cohort 已可验证。",
+        "gap_reason": None,
         "core_molecule_count": HONEST_CORE_MOLECULE_COUNT,
+        "coverage_denominator": HONEST_CORE_MOLECULE_COUNT,
         "confirmed_count": confirmed_count,
         "ai_provisional_count": ai_provisional_count,
         "blocked_count": blocked_count,
         "coverage_ratio": coverage_ratio,
         "coverage_threshold": HONEST_COVERAGE_THRESHOLD,
         "coverage_sufficient": coverage_ratio >= HONEST_COVERAGE_THRESHOLD,
+        "workflow_can_continue": coverage_ratio >= HONEST_COVERAGE_THRESHOLD,
         "paper_coverage": paper_coverage,
         "uncertainty_statement": _honest_uncertainty_statement(
             confirmed_count, ai_provisional_count, blocked_count
