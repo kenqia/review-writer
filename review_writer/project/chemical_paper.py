@@ -315,14 +315,19 @@ def _safe_member_name(name: str) -> str:
 
 def _read_archive_snapshot(path: Path) -> bytes:
     path = Path(path)
-    if path.is_symlink():
-        raise ChemicalPaperError("ZIP_INVALID")
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptor: int | None = None
     try:
+        path_metadata = os.lstat(path)
+        if not stat.S_ISREG(path_metadata.st_mode):
+            raise ChemicalPaperError("ZIP_INVALID")
         descriptor = os.open(path, flags)
         metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode):
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_dev != path_metadata.st_dev
+            or metadata.st_ino != path_metadata.st_ino
+        ):
             raise ChemicalPaperError("ZIP_INVALID")
         if metadata.st_size > MAX_ARCHIVE_BYTES:
             raise ChemicalPaperError("ZIP_SIZE_LIMIT")

@@ -1062,6 +1062,99 @@ def test_first_import_rejects_symlink_zip_without_o_nofollow(
     ).exists()
 
 
+def test_first_import_rejects_dynamic_symlink_swap_without_o_nofollow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import review_writer.project.chemical_paper as chemical_paper
+    from review_writer.project.chemical_paper import ChemicalPaperError
+
+    project = source_truth_project(tmp_path)
+    legitimate = write_chemical_zip(
+        tmp_path / "input.zip",
+        molecules=[{
+            "mol_id": "legitimate",
+            "page_idx": 0,
+            "bbox_normalized": [0.1, 0.2, 0.3, 0.4],
+            "smiles_expanded": "C",
+            "smiles_unexpanded": "C",
+            "mol_idt": "legitimate",
+            "mol_block": v2000(("C",)),
+        }],
+    )
+    attacker = write_chemical_zip(
+        tmp_path / "outside-attacker.zip",
+        molecules=[{
+            "mol_id": "attacker",
+            "page_idx": 0,
+            "bbox_normalized": [0.1, 0.2, 0.3, 0.4],
+            "smiles_expanded": "N",
+            "smiles_unexpanded": "N",
+            "mol_idt": "attacker",
+            "mol_block": v2000(("N",)),
+        }],
+    )
+    parked = tmp_path / "parked-legitimate.zip"
+    real_open = chemical_paper.os.open
+    swap_count = 0
+
+    def swap_to_symlink_during_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swap_count
+        if isinstance(path, (str, bytes, os.PathLike)) and Path(path) == legitimate:
+            legitimate.rename(parked)
+            legitimate.symlink_to(attacker)
+            try:
+                descriptor = real_open(path, flags, mode, dir_fd=dir_fd)
+            finally:
+                legitimate.unlink()
+                parked.rename(legitimate)
+            swap_count += 1
+            return descriptor
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.delattr(chemical_paper.os, "O_NOFOLLOW", raising=False)
+    monkeypatch.setattr(chemical_paper.os, "open", swap_to_symlink_during_open)
+    before = snapshot(project)
+
+    with pytest.raises(ChemicalPaperError, match="ZIP_INVALID"):
+        chemical_paper.import_chemical_paper(
+            project,
+            "study-1",
+            PDF_SHA,
+            legitimate,
+            ACTOR,
+        )
+
+    assert swap_count == 1
+    assert snapshot(project) == before
+    assert not (
+        project / "01_evidence/chemical_paper/study-1/state.json"
+    ).exists()
+
+
+def test_first_import_supports_regular_zip_without_o_nofollow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import review_writer.project.chemical_paper as chemical_paper
+
+    project = source_truth_project(tmp_path)
+    archive = write_chemical_zip(tmp_path / "regular.zip")
+    monkeypatch.delattr(chemical_paper.os, "O_NOFOLLOW", raising=False)
+
+    result = chemical_paper.import_chemical_paper(
+        project,
+        "study-1",
+        PDF_SHA,
+        archive,
+        ACTOR,
+    )
+
+    assert result["status"] == "imported"
+    state = chemical_paper.load_chemical_paper_state(project, "study-1")
+    assert state["molecules"][0]["molecule_id"] == "mol-1"
+
+
 def test_corrections_are_append_only_bound_and_stale_safe(tmp_path: Path) -> None:
     from review_writer.project.chemical_paper import (
         ChemicalPaperError,
