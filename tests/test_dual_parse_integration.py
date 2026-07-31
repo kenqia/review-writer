@@ -39,11 +39,13 @@ from review_writer.project.dual_source import (
     write_dual_source_binding,
 )
 from review_writer.project.paper_evidence import paper_evidence_state
-from review_writer.project.parse_quality import write_parse_quality_gate
+from review_writer.project.parse_quality import parse_quality_state, write_parse_quality_gate
 from review_writer.project.parse_reconciliation import write_parse_reconciliation
 from review_writer.project.source_truth import (
     canonical_digest,
     load_source_truth_bundle,
+    source_truth_asset,
+    source_truth_asset_snapshot,
     write_source_truth_bundle,
 )
 from review_writer.project.workflow_projection import workflow_state
@@ -346,6 +348,78 @@ def test_fresh_generic_sources_remain_available_before_parse_and_chemical_review
     assert cockpit["metrics"]["full_text_main_coverage"] == 3
     assert cockpit["metrics"]["reviewed_studies"] == 0
     assert evidence["workflow_can_continue"] is False
+
+
+def test_fresh_generic_binding_snapshots_each_bound_pdf(tmp_path: Path) -> None:
+    request = source_request(tmp_path)
+    project = bootstrap_dual_parse_project(
+        tmp_path / "review-projects",
+        request,
+    )
+    bind_generic_parse_outputs(
+        project,
+        generic_output(tmp_path / "generic", request),
+    )
+
+    for source in request["sources"]:
+        bundle = load_source_truth_bundle(project, source["study_id"])
+        gate = parse_quality_state(project, source["study_id"])
+        assert bundle["project_id"] == project.name
+        assert bundle["study_id"] == source["study_id"]
+        assert gate["bundle_digest"] == bundle["bundle_digest"]
+        assert gate["status"] != "stale"
+        authoritative = source_truth_asset(
+            project,
+            source["study_id"],
+            source["source_id"],
+            "pdf",
+        )
+        with source_truth_asset_snapshot(
+            project,
+            source["study_id"],
+            source["source_id"],
+            "pdf",
+        ) as snapshot:
+            assert snapshot.path.read_bytes() == authoritative.read_bytes()
+            assert snapshot.size_bytes == authoritative.stat().st_size
+
+
+def test_fresh_generic_pdf_page_route_uses_bound_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    request = source_request(tmp_path)
+    review_root = tmp_path / "review-root"
+    project = bootstrap_dual_parse_project(
+        review_root / "review-projects",
+        request,
+    )
+    bind_generic_parse_outputs(
+        project,
+        generic_output(tmp_path / "generic", request),
+    )
+    source = request["sources"][0]
+    expected_pdf = Path(source["pdf_input_path"]).read_bytes()
+    rendered: list[tuple[bytes, int]] = []
+
+    def render(snapshot_path: Path, page: int) -> bytes:
+        rendered.append((snapshot_path.read_bytes(), page))
+        return b"\x89PNG\r\n\x1a\nfresh-generic-page"
+
+    monkeypatch.setattr(dashboard, "render_pdf_page", render)
+    status, _, body = _http_request(
+        review_root,
+        (
+            f"GET /api/project/{project.name}/source/{source['source_id']}"
+            "/pdf-page?page=1 HTTP/1.1\r\nHost: localhost\r\n\r\n"
+        ).encode("ascii"),
+    )
+
+    assert status == 200
+    assert body == b"\x89PNG\r\n\x1a\nfresh-generic-page"
+    assert rendered == [(expected_pdf, 1)]
 
 
 def test_dashboard_projection_validates_each_source_once_per_request(

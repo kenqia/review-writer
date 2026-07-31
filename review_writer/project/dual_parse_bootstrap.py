@@ -221,7 +221,10 @@ def bind_generic_parse_outputs(project: Path, mineru_output: Path) -> dict[str, 
             raise DualParseBootstrapError("GENERIC_BINDING_AMBIGUOUS")
         by_pdf[key] = row
 
-    stage_root = Path(tempfile.mkdtemp(prefix=f".{project.name}.generic.", dir=project.parent))
+    staging_parent = Path(
+        tempfile.mkdtemp(prefix=f".{project.name}.generic.", dir=project.parent)
+    )
+    stage_root = staging_parent / project.name
     published = False
     try:
         shutil.copytree(project, stage_root, dirs_exist_ok=True, copy_function=shutil.copy2)
@@ -328,7 +331,7 @@ def bind_generic_parse_outputs(project: Path, mineru_output: Path) -> dict[str, 
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise DualParseBootstrapError("GENERIC_BINDING_FAILED") from exc
     finally:
-        shutil.rmtree(stage_root, ignore_errors=True)
+        shutil.rmtree(staging_parent, ignore_errors=True)
     return {
         "status": "bound", "completed_count": 3, "failed_count": 0,
         "source_truth_count": 3, "parse_quality_count": 3,
