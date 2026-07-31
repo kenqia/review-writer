@@ -752,3 +752,61 @@ def test_v2_consumes_authoritative_resolved_smiles_and_keeps_counts_unknown_safe
             ]
         )
     )
+
+
+def test_completion_submit_sends_only_complete_rows_and_explains_unresolved_rows() -> None:
+    module_path = json.dumps(str(DUAL_SCRIPT))
+    _run_node(
+        "\n".join(
+            [
+                f"const ui=require({module_path});",
+                "class Node {",
+                " constructor(tag,id=''){this.tag=tag;this.id=id;this.children=[];this.attributes={};this.className='';this.textContent='';this.style={};this.listeners={};}",
+                " append(...nodes){this.children.push(...nodes);} replaceChildren(...nodes){this.children=[...nodes];}",
+                " setAttribute(name,value){this.attributes[name]=String(value);if(name==='id')this.id=String(value);}",
+                " addEventListener(name,handler){this.listeners[name]=handler;} querySelector(selector){const id=selector.startsWith('#')?selector.slice(1):'';if(id&&this.id===id)return this;for(const child of this.children){if(child&&typeof child.querySelector==='function'){const found=child.querySelector(selector);if(found)return found;}}return null;}",
+                "}",
+                "const document={createElement:tag=>new Node(tag),createTextNode:value=>{const node=new Node('#text');node.textContent=String(value);return node;},body:new Node('body')};",
+                "const mount=new Node('main');for(const id of ['dual-study-status','chemical-import-preflight','chemical-completion-queue','reconciliation-list'])mount.append(new Node('section',id));",
+                "const model=ui.projectionModel({schema_version:'dual-parse-projection.v2',status:'ready',studies:[],completion_queue:[",
+                " {study_id:'study',molecule_index:0,version_token:'version',field:'resolved_smiles',page:2},",
+                " {study_id:'study',molecule_index:1,version_token:'version',field:'mol_idt',page:3}]});",
+                "let saved=null;let validationError=null;ui.render(document,mount,model,{actor:{actorType:'human_researcher',actorLabel:'李研究员'},onCompletionSave:payload=>{saved=payload;},onValidationError:message=>{validationError=message;}});",
+                "const completion=mount.querySelector('#chemical-completion-queue');const descendants=[];const collect=node=>{descendants.push(node);for(const child of node.children||[])if(child&&typeof child==='object')collect(child);};collect(completion);",
+                "const values=descendants.filter(node=>node.className==='dual-completion-value');const reasons=descendants.filter(node=>node.className==='dual-completion-reason');const pages=descendants.filter(node=>node.type==='number');",
+                "if(values.length!==2||reasons.length!==2||pages.length!==2)throw new Error(JSON.stringify({values:values.length,reasons:reasons.length,pages:pages.length}));",
+                "values[0].value='C=C';reasons[0].value='原页结构支持该值。';",
+                "values[1].value='仅作未提交测试';reasons[1].value='仅作未提交测试';pages[1].value='';",
+                "const rendered=descendants.map(node=>node.textContent).join(' ');if(!rendered.includes('未填写条目保留待核对/未写入'))throw new Error(`missing unresolved copy: ${rendered}`);",
+                "const form=descendants.find(node=>node.className==='dual-completion-form');form.listeners.submit({preventDefault(){}});",
+                "if(validationError!==null||!saved)throw new Error(JSON.stringify({saved,validationError}));",
+                "if(saved.corrections.length!==1||saved.corrections[0].molecule_index!==0||saved.corrections[0].value!=='C=C')throw new Error(JSON.stringify(saved));",
+                "if(JSON.stringify(saved).includes('仅作未提交测试')||saved.corrections.some(correction=>correction.molecule_index===1))throw new Error(JSON.stringify(saved));",
+            ]
+        )
+    )
+
+
+def test_completion_submit_with_no_complete_rows_requires_at_least_one_without_writing() -> None:
+    module_path = json.dumps(str(DUAL_SCRIPT))
+    _run_node(
+        "\n".join(
+            [
+                f"const ui=require({module_path});",
+                "class Node {",
+                " constructor(tag,id=''){this.tag=tag;this.id=id;this.children=[];this.attributes={};this.className='';this.textContent='';this.style={};this.listeners={};}",
+                " append(...nodes){this.children.push(...nodes);} replaceChildren(...nodes){this.children=[...nodes];}",
+                " setAttribute(name,value){this.attributes[name]=String(value);if(name==='id')this.id=String(value);}",
+                " addEventListener(name,handler){this.listeners[name]=handler;} querySelector(selector){const id=selector.startsWith('#')?selector.slice(1):'';if(id&&this.id===id)return this;for(const child of this.children){if(child&&typeof child.querySelector==='function'){const found=child.querySelector(selector);if(found)return found;}}return null;}",
+                "}",
+                "const document={createElement:tag=>new Node(tag),createTextNode:value=>{const node=new Node('#text');node.textContent=String(value);return node;},body:new Node('body')};",
+                "const mount=new Node('main');for(const id of ['dual-study-status','chemical-import-preflight','chemical-completion-queue','reconciliation-list'])mount.append(new Node('section',id));",
+                "const model=ui.projectionModel({schema_version:'dual-parse-projection.v2',status:'ready',studies:[],completion_queue:[{study_id:'study',molecule_index:0,version_token:'version',field:'resolved_smiles'}]});",
+                "let saved=null;let validationError=null;ui.render(document,mount,model,{actor:{actorType:'human_researcher',actorLabel:'李研究员'},onCompletionSave:payload=>{saved=payload;},onValidationError:message=>{validationError=message;}});",
+                "const completion=mount.querySelector('#chemical-completion-queue');const descendants=[];const collect=node=>{descendants.push(node);for(const child of node.children||[])if(child&&typeof child==='object')collect(child);};collect(completion);",
+                "const form=descendants.find(node=>node.className==='dual-completion-form');form.listeners.submit({preventDefault(){}});",
+                "if(saved!==null)throw new Error(JSON.stringify(saved));",
+                "if(validationError!=='请至少完整填写一项，并为该项填写补充值、PDF 页码与核对理由。')throw new Error(JSON.stringify(validationError));",
+            ]
+        )
+    )

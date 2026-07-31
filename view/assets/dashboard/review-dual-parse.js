@@ -916,6 +916,13 @@
     groups.forEach((group, groupIndex) => {
       const form = document.createElement("form");
       form.className = "dual-completion-form";
+      appendText(
+        document,
+        form,
+        "p",
+        "未填写条目保留待核对/未写入；仅提交本批次中完整填写的条目。",
+        "dual-completion-partial-note",
+      );
       appendText(document, form, "h5", `待补全批次 ${groupIndex + 1}`);
       const controls = [];
       group.rows.forEach((row, rowIndex) => {
@@ -970,7 +977,16 @@
       form.addEventListener("submit", event => {
         event.preventDefault();
         try {
-          const corrections = controls.map(control => ({
+          const completeControls = controls.filter(control => {
+            const value = text(control.value.value, "");
+            const reason = text(control.reason.value, "");
+            const page = Number(control.page.value);
+            return value && reason && Number.isInteger(page) && page >= 1;
+          });
+          if (!completeControls.length) {
+            throw new Error("at least one complete correction required");
+          }
+          const corrections = completeControls.map(control => ({
             moleculeIndex: completionTargetByModel.get(control.row).moleculeIndex,
             field: control.row.field,
             value: control.value.value,
@@ -986,8 +1002,12 @@
             ),
             form,
           );
-        } catch (_) {
-          handlers?.onValidationError?.("请为本批次填写决定者，并为每一项填写补充值、PDF 页码与核对理由。");
+        } catch (error) {
+          handlers?.onValidationError?.(
+            error?.message === "at least one complete correction required"
+              ? "请至少完整填写一项，并为该项填写补充值、PDF 页码与核对理由。"
+              : "请为本批次填写决定者，并为已填写条目填写补充值、PDF 页码与核对理由。",
+          );
         }
       });
       parent.append(form);
