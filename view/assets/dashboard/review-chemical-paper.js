@@ -132,8 +132,8 @@
   function safeSmilesText(value) {
     const candidate = text(value, "");
     if (!candidate || candidate.length > 1000) return null;
-    if (/(?:^|\s)(?:\/(?:home|mnt|users|tmp)\/|[a-z]:\\)/i.test(candidate)) return null;
-    if (/\b[a-f0-9]{64}\b/i.test(candidate) && !hasPlausibleSmilesSyntax(candidate)) return null;
+    if (/(?:^|\s)(?:\/(?:home|mnt|users|tmp|private)\/|[a-z]:\\)/i.test(candidate)) return null;
+    if (!hasPlausibleSmilesSyntax(candidate)) return null;
     if (/\bV(?:2000|3000)\b|M\s+END/.test(candidate)) return null;
     if (/^\s*\{/.test(candidate)) return null;
     return candidate;

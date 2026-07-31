@@ -233,3 +233,32 @@ def test_long_carbon_smiles_is_preserved_while_hex_digests_are_hidden() -> None:
             ]
         )
     )
+
+
+def test_resolved_smiles_projection_hides_non_smiles_raw_text() -> None:
+    module_path = json.dumps(str(DASHBOARD / "review-chemical-paper.js"))
+    _run_node(
+        "\n".join(
+            [
+                f"const ui=require({module_path});",
+                "const longSmiles='C'.repeat(64);",
+                "const forbidden=[",
+                " '[\"C=C\",\"CC\"]',",
+                " '{\"smiles\":\"C=C\"}',",
+                " '/private/review-writer/source.json',",
+                " 'https://private.example/source.pdf?session=secret',",
+                " 'a'.repeat(64),",
+                " '0'.repeat(64),",
+                " 'V2000\\nM  END',",
+                " 'internal-study-42',",
+                "];",
+                "const model=ui.buildChemicalPaperModel({schema_version:'chemical-paper-projection.v2',route:'chemical-paper-zip-only',project_status:'ready',summary:{},studies:[{study_id:'study',status:'ready',molecules:[",
+                " {molecule_index:0,version_token:'v',resolved_smiles:longSmiles,smiles_candidates:{expanded:longSmiles,unexpanded:'C=C'}},",
+                " ...forbidden.map((value,molecule_index)=>({molecule_index:molecule_index+1,version_token:'v',resolved_smiles:value,smiles_candidates:{expanded:value,unexpanded:value}})),",
+                "]}]});",
+                "const molecules=model.studies[0].molecules;",
+                "if(molecules[0].fields.resolvedSmiles.label!==longSmiles || molecules[0].smilesCandidates.expanded!==longSmiles) throw new Error(JSON.stringify(molecules[0]));",
+                "for(const [index,value] of forbidden.entries()){const molecule=molecules[index+1];if(molecule.fields.resolvedSmiles.label!=='状态未提供' || molecule.smilesCandidates.expanded!==null || molecule.smilesCandidates.unexpanded!==null) throw new Error(JSON.stringify({index,value,molecule}));}",
+            ]
+        )
+    )

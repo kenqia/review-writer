@@ -649,6 +649,33 @@ def test_long_carbon_smiles_is_preserved_while_hex_digest_candidates_are_hidden(
     )
 
 
+def test_resolved_smiles_candidates_hide_non_smiles_raw_text() -> None:
+    module_path = json.dumps(str(DUAL_SCRIPT))
+    _run_node(
+        "\n".join(
+            [
+                f"const ui=require({module_path});",
+                "const longSmiles='C'.repeat(64);",
+                "const forbidden=[",
+                " '[\"C=C\",\"CC\"]',",
+                " '{\"smiles\":\"C=C\"}',",
+                " '/private/review-writer/source.json',",
+                " 'https://private.example/source.pdf?session=secret',",
+                " 'a'.repeat(64),",
+                " '0'.repeat(64),",
+                " 'V2000\\nM  END',",
+                " 'internal-study-42',",
+                "];",
+                "const completion_queue=[{study_id:'study',molecule_index:0,version_token:'v',field:'resolved_smiles',smiles_candidates:{expanded:longSmiles,unexpanded:'C=C',selected_source:'smiles_expanded',candidate_difference:true}},...forbidden.map((value,molecule_index)=>({study_id:'study',molecule_index:molecule_index+1,version_token:'v',field:'resolved_smiles',smiles_candidates:{expanded:value,unexpanded:value,selected_source:'smiles_expanded',candidate_difference:true}}))];",
+                "const model=ui.projectionModel({schema_version:'dual-parse-projection.v2',status:'ready',studies:[],completion_queue});",
+                "const rows=model.completionQueue;",
+                "if(rows[0].smilesCandidates.expanded!==longSmiles || rows[0].smilesCandidates.unexpanded!=='C=C') throw new Error(JSON.stringify(rows[0]));",
+                "for(const [index,value] of forbidden.entries()){const row=rows[index+1];if(row.smilesCandidates.expanded!==null || row.smilesCandidates.unexpanded!==null) throw new Error(JSON.stringify({index,value,row}));}",
+            ]
+        )
+    )
+
+
 def test_completion_request_rejects_legacy_smiles_mutations() -> None:
     module_path = json.dumps(str(DUAL_SCRIPT))
     _run_node(
