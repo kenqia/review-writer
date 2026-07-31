@@ -172,7 +172,7 @@ def test_content_agent_result_is_stale_after_chemical_state_change_and_zero_writ
         project,
         study_id="scholarly-a",
         molecule_index=0,
-        field="smiles_expanded",
+        field="resolved_smiles",
         value="CC",
         actor=ACTOR,
         reason="Checked against the original PDF.",
@@ -403,7 +403,7 @@ def test_cli_exposes_only_the_four_frozen_commands(tmp_path: Path) -> None:
         text=True,
     )
     payload = json.loads(projected.stdout)["result"]
-    assert payload["schema_version"] == "chemical-paper-projection.v1"
+    assert payload["schema_version"] == "chemical-paper-projection.v2"
     assert "source_pdf_sha256" not in projected.stdout
 
 
@@ -499,7 +499,7 @@ def test_primary_vertical_cli_executes_safe_chemical_workflow(tmp_path: Path) ->
     state = json.loads(state_process.stdout)
     assert state["ok"] is True
     projection = state["result"]
-    assert projection["schema_version"] == "chemical-paper-projection.v1"
+    assert projection["schema_version"] == "chemical-paper-projection.v2"
     assert projection["route"] == "chemical-paper-zip-only"
     version = projection["studies"][0]["version_token"]
 
@@ -512,7 +512,7 @@ def test_primary_vertical_cli_executes_safe_chemical_workflow(tmp_path: Path) ->
         "--molecule-index",
         "0",
         "--field",
-        "smiles_expanded",
+        "resolved_smiles",
         "--value",
         "CC",
         "--reason",
@@ -555,7 +555,8 @@ def test_primary_vertical_cli_executes_safe_chemical_workflow(tmp_path: Path) ->
     final_state_process = invoke("chemical-paper-state", "--project", str(project))
     final_state = json.loads(final_state_process.stdout)["result"]
     molecule = final_state["studies"][0]["molecules"][0]
-    assert molecule["smiles_expanded"] == "CC"
+    assert molecule["resolved_smiles"] == "CC"
+    assert molecule["smiles_candidates"]["expanded"] == "C"
     assert molecule["element_review_state"] == "confirmed"
 
     encoded_outputs = "\n".join(
@@ -594,7 +595,7 @@ def test_primary_vertical_cli_executes_safe_chemical_workflow(tmp_path: Path) ->
     assert str(invalid_project) not in failed.stderr
 
 
-def test_http_get_and_patch_follow_safe_frozen_v1_contract(tmp_path: Path) -> None:
+def test_http_get_and_patch_follow_safe_v2_contract(tmp_path: Path) -> None:
     review_root = tmp_path / "review-root"
     project = source_truth_project(review_root / "review-projects")
     import_chemical_paper(
@@ -612,7 +613,7 @@ def test_http_get_and_patch_follow_safe_frozen_v1_contract(tmp_path: Path) -> No
     assert status == 200
     assert headers["Content-Type"] == "application/json; charset=utf-8"
     projection = json.loads(body)
-    assert projection["schema_version"] == "chemical-paper-projection.v1"
+    assert projection["schema_version"] == "chemical-paper-projection.v2"
     encoded = body.decode("utf-8")
     assert PDF_SHA not in encoded
     assert "mol-2" not in encoded
@@ -621,7 +622,7 @@ def test_http_get_and_patch_follow_safe_frozen_v1_contract(tmp_path: Path) -> No
     request = {
         "study_id": "study-1",
         "molecule_index": 1,
-        "field": "smiles_expanded",
+        "field": "resolved_smiles",
         "value": "N",
         "reason": "Checked against the original PDF.",
         "actor_type": "simulated_researcher_agent",

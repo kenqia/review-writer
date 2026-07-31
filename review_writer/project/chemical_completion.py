@@ -28,7 +28,7 @@ from review_writer.project.source_truth import SourceTruthError, canonical_diges
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SCHEMA = REPO_ROOT / "schemas/evidence/chemical_completion_gate.v1.schema.json"
+SCHEMA = REPO_ROOT / "schemas/evidence/chemical_completion_gate.v2.schema.json"
 SMILES_RE = re.compile(r"^[A-Za-z0-9@+\-\[\]()=#$\\/%.*:]+$")
 ACTOR_TYPES = frozenset({"human_researcher", "simulated_researcher_agent"})
 
@@ -81,11 +81,11 @@ def chemical_completion_state(project: Path, study_id: str) -> dict[str, object]
         if event["bound_import_digest"] == state["current_import_digest"] and event.get("pdf_locator") is not None
     ]
     body: dict[str, Any] = {
-        "schema_version": "chemical-completion-gate.v1", "project_id": root.name,
+        "schema_version": "chemical-completion-gate.v2", "project_id": root.name,
         "study_id": study_id, "molecule_count": len(state["molecules"]),
         "missing_name_count": missing["mol_idt"],
-        "missing_smiles_expanded_count": missing["smiles_expanded"],
-        "missing_smiles_unexpanded_count": missing["smiles_unexpanded"],
+        "missing_resolved_smiles_count": missing["resolved_smiles"],
+        "ai_authored_smiles_count": 0,
         "missing_fields": missing_rows, "history": history,
         "version_token": _version_token(state),
         "workflow_can_continue": not missing_rows,
@@ -118,7 +118,7 @@ def _locator(value: object, page_count: int) -> dict[str, Any]:
 def _value(field: str, value: object) -> str:
     if not isinstance(value, str) or not value.strip() or value != value.strip() or len(value) > 20000:
         raise ChemicalCompletionError("CHEMICAL_FIELD_VALUE_INVALID")
-    if field.startswith("smiles_") and (not SMILES_RE.fullmatch(value) or not re.search(r"[A-Za-z]", value)):
+    if field == "resolved_smiles" and (not SMILES_RE.fullmatch(value) or not re.search(r"[A-Za-z]", value)):
         raise ChemicalCompletionError("SMILES_INVALID")
     return value
 
@@ -160,7 +160,7 @@ def apply_chemical_completion_batch(project: Path, study_id: str, payload: objec
             for molecule, field, value, reason, locator in normalized:
                 event = {
                     "molecule_id": molecule["molecule_id"], "field": field,
-                    "prior_value": None, "value": value, "actor": actor, "reason": reason,
+                    "prior_value": _current_value(updated, molecule, field), "value": value, "actor": actor, "reason": reason,
                     "pdf_locator": locator, "recorded_at": _now(),
                     "bound_import_digest": updated["current_import_digest"],
                     "bound_molecule_digest": molecule["molecule_digest"],
@@ -210,5 +210,8 @@ def project_chemical_completion_state(project: Path) -> dict[str, object]:
                 "status": "blocked",
                 "workflow_can_continue": False,
                 "reason_code": exc.code,
+                "missing_name_count": 0,
+                "missing_resolved_smiles_count": 0,
+                "ai_authored_smiles_count": 0,
             })
-    return {"schema_version": "chemical-completion-project-state.v1", "studies": rows, "workflow_can_continue": bool(rows) and all(row["workflow_can_continue"] for row in rows)}
+    return {"schema_version": "chemical-completion-project-state.v2", "studies": rows, "workflow_can_continue": bool(rows) and all(row["workflow_can_continue"] for row in rows)}

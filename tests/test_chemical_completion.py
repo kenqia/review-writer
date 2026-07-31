@@ -33,12 +33,12 @@ def completion_project(tmp_path: Path) -> Path:
     return project
 
 
-def test_core_requires_name_and_both_smiles_for_every_molecule(tmp_path: Path) -> None:
+def test_core_requires_name_and_one_resolved_smiles_for_every_molecule(tmp_path: Path) -> None:
     gate = chemical_completion_state(completion_project(tmp_path), "scholarly-a")
 
     assert gate["missing_name_count"] == 1
-    assert gate["missing_smiles_expanded_count"] == 1
-    assert gate["missing_smiles_unexpanded_count"] == 1
+    assert gate["missing_resolved_smiles_count"] == 1
+    assert gate["ai_authored_smiles_count"] == 0
     assert gate["workflow_can_continue"] is False
 
 
@@ -51,12 +51,11 @@ def test_batch_is_atomic_and_researcher_attributed(tmp_path: Path) -> None:
         "actor_type": "simulated_researcher_agent", "actor_label": "simulated_researcher",
         "corrections": [
             {"molecule_index": 0, "field": "mol_idt", "value": "compound 3a", "reason": "Label visible in Scheme 2.", "pdf_locator": {"page": 1, "figure_label": "Scheme 2"}},
-            {"molecule_index": 0, "field": "smiles_expanded", "value": "CO", "reason": "Structure visible in Scheme 2.", "pdf_locator": {"page": 1, "figure_label": "Scheme 2"}},
-            {"molecule_index": 0, "field": "smiles_unexpanded", "value": "CO", "reason": "Structure visible in Scheme 2.", "pdf_locator": {"page": 1, "figure_label": "Scheme 2"}},
+            {"molecule_index": 0, "field": "resolved_smiles", "value": "CO", "reason": "Structure visible in Scheme 2.", "pdf_locator": {"page": 1, "figure_label": "Scheme 2"}},
         ],
     })
 
-    assert result["applied_count"] == 3
+    assert result["applied_count"] == 2
     ready = chemical_completion_state(project, "scholarly-a")
     assert ready["workflow_can_continue"] is True
     assert require_chemical_completion_ready(project, "scholarly-a") == ready["gate_digest"]
@@ -70,7 +69,7 @@ def test_batch_is_atomic_and_researcher_attributed(tmp_path: Path) -> None:
         lambda payload: payload.update({"actor_type": "system"}),
         lambda payload: payload["corrections"][0].update({"reason": ""}),
         lambda payload: payload["corrections"][0].update({"pdf_locator": {"figure_label": "Scheme 2"}}),
-        lambda payload: payload["corrections"][0].update({"value": "not smiles !", "field": "smiles_expanded"}),
+        lambda payload: payload["corrections"][0].update({"value": "not smiles !", "field": "resolved_smiles"}),
         lambda payload: payload.update({"version_token": "0" * 64}),
     ],
 )

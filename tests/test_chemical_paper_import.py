@@ -277,7 +277,7 @@ def test_import_binds_pdf_and_preserves_explicit_unknowns_with_safe_projection(t
 
     assert result["status"] == "imported"
     state = load_chemical_paper_state(project, "study-1")
-    assert state["schema_version"] == "chemical-paper-state.v1"
+    assert state["schema_version"] == "chemical-paper-state.v2"
     assert state["current_import_digest"]
     assert (
         project / "01_evidence/chemical_paper/study-1/state.json"
@@ -299,7 +299,7 @@ def test_import_binds_pdf_and_preserves_explicit_unknowns_with_safe_projection(t
 
     projection = chemical_paper_projection(project)
     encoded = json.dumps(projection)
-    assert projection["schema_version"] == "chemical-paper-projection.v1"
+    assert projection["schema_version"] == "chemical-paper-projection.v2"
     assert projection["studies"][0]["reaction_data_status"] == "unavailable_not_provided"
     molecule_projection = projection["studies"][0]["molecules"][1]
     assert molecule_projection["molecule_index"] == 1
@@ -309,8 +309,7 @@ def test_import_binds_pdf_and_preserves_explicit_unknowns_with_safe_projection(t
     )
     assert molecule_projection["missing_fields"] == [
         "mol_idt",
-        "smiles_expanded",
-        "smiles_unexpanded",
+        "resolved_smiles",
     ]
     assert "molecule_id" not in molecule_projection
     assert "mol_block" not in molecule_projection
@@ -1210,7 +1209,7 @@ def test_import_preserves_exported_molecule_order_for_stable_review_indexes(
         project,
         study_id="study-1",
         molecule_index=0,
-        field="smiles_expanded",
+        field="resolved_smiles",
         value="CC",
         actor=ACTOR,
         reason="Checked exported index against the original PDF.",
@@ -1219,7 +1218,7 @@ def test_import_preserves_exported_molecule_order_for_stable_review_indexes(
     state = load_chemical_paper_state(project, "study-1")
     assert state["field_corrections"][-1]["molecule_id"] == "export-first"
     assert chemical_paper_projection(project)["studies"][0]["molecules"][0][
-        "smiles_expanded"
+        "resolved_smiles"
     ] == "CC"
     state_path = project / "01_evidence/chemical_paper/study-1/state.json"
     before = state_path.read_bytes()
@@ -1615,7 +1614,7 @@ def test_corrections_are_append_only_bound_and_stale_safe(tmp_path: Path) -> Non
         project,
         "study-1",
         "mol-2",
-        "smiles_expanded",
+        "resolved_smiles",
         "N",
         ACTOR,
         reason="Checked against the original PDF.",
@@ -1629,7 +1628,7 @@ def test_corrections_are_append_only_bound_and_stale_safe(tmp_path: Path) -> Non
     assert after["field_corrections"][0]["value"] == "N"
     assert correction["version_token"] != imported["version_token"]
     projection = chemical_paper_projection(project)
-    assert projection["studies"][0]["molecules"][1]["smiles_expanded"] == "N"
+    assert projection["studies"][0]["molecules"][1]["resolved_smiles"] == "N"
 
     before = snapshot(project)
     with pytest.raises(ChemicalPaperError, match="STALE_CHEMICAL_PAPER_STATE"):
@@ -1704,11 +1703,11 @@ def test_dependency_state_blocks_only_evidence_that_uses_unresolved_fields(tmp_p
         "molecule_id": "mol-2",
         "molecule_digest": unresolved["molecule_digest"],
         "chemical_paper_import_digest": state["current_import_digest"],
-        "required_fields": ["smiles_expanded"],
+        "required_fields": ["resolved_smiles"],
     }])
     assert text_only["dependency_status"] == "ready"
     assert chemical["dependency_status"] == "blocked_unresolved"
-    assert chemical["gaps"] == ["study-1/mol-2:smiles_expanded:unresolved"]
+    assert chemical["gaps"] == ["study-1/mol-2:resolved_smiles:unresolved"]
 
 
 def test_zip_bomb_file_count_and_encryption_flags_are_fail_closed(tmp_path: Path) -> None:
@@ -1772,7 +1771,7 @@ def test_empty_but_framed_molblock_is_an_explicit_fillable_gap(tmp_path: Path) -
     projected = chemical_paper_projection(project)["studies"][0]["molecules"][0]
     assert projected["molblock_available"] is False
     assert projected["candidate_elements"] == []
-    assert projected["missing_fields"] == ["mol_idt", "smiles_expanded", "smiles_unexpanded"]
+    assert projected["missing_fields"] == ["mol_idt", "resolved_smiles"]
 
 
 def test_safe_index_mutations_require_current_opaque_version_and_are_zero_write_on_stale(
@@ -1799,7 +1798,7 @@ def test_safe_index_mutations_require_current_opaque_version_and_are_zero_write_
         project,
         study_id="study-1",
         molecule_index=1,
-        field="smiles_expanded",
+        field="resolved_smiles",
         value="N",
         actor=ACTOR,
         reason="Checked against the original PDF.",
@@ -1833,7 +1832,8 @@ def test_safe_index_mutations_require_current_opaque_version_and_are_zero_write_
     assert reviewed["status"] == "confirmed"
     molecule = chemical_paper_projection(project)["studies"][0]["molecules"][1]
     assert molecule["element_review_state"] == "confirmed"
-    assert molecule["smiles_unexpanded"] is None
+    assert molecule["resolved_smiles"] == "N"
+    assert molecule["smiles_candidates"]["unexpanded"] is None
 
 
 def test_source_truth_change_makes_chemical_state_stale(tmp_path: Path) -> None:
@@ -1889,11 +1889,11 @@ def test_manuscript_bindings_use_exact_frozen_v1_shapes(tmp_path: Path) -> None:
     }
     summary = binding["chemical_paper_safe_summary"]
     assert summary == {
-        "schema_version": "chemical-paper-safe-summary.v1",
+        "schema_version": "chemical-paper-safe-summary.v2",
         "route": "chemical-paper-zip-only",
         "study_count": 1,
         "molecule_count": 2,
-        "unresolved_field_count": 3,
+        "unresolved_field_count": 2,
         "element_review_counts": {
             "not_reviewed": 2,
             "confirmed": 0,
@@ -1925,7 +1925,7 @@ def test_dependency_currentness_is_the_strict_release_authority(tmp_path: Path) 
             "claim_id": "claim-1",
             "study_id": "study-1",
             "molecule_index": 1,
-            "required_fields": ["smiles_expanded"],
+            "required_fields": ["resolved_smiles"],
             "requires_element_review": True,
             "requires_reaction_data": False,
         }
@@ -1936,7 +1936,7 @@ def test_dependency_currentness_is_the_strict_release_authority(tmp_path: Path) 
         claim_dependencies=claims,
     )
     assert result == {
-        "schema_version": "chemical-paper-dependency-currentness.v1",
+        "schema_version": "chemical-paper-dependency-currentness.v2",
         "lineage_binding_status": "current",
         "claims": [
             {
@@ -1948,26 +1948,26 @@ def test_dependency_currentness_is_the_strict_release_authority(tmp_path: Path) 
                         "molecule_index": 1,
                         "status": "needs_review",
                         "required_field_statuses": {
-                            "smiles_expanded": "unresolved",
+                            "resolved_smiles": "unresolved",
                         },
                         "element_review_state": "not_reviewed",
                         "reaction_data_status": "unavailable_not_provided",
                         "blocking_reasons": [
                             "claim-1:elements:not_reviewed",
-                            "claim-1:smiles_expanded:unresolved",
+                            "claim-1:resolved_smiles:unresolved",
                         ],
                     }
                 ],
                 "blocking_reasons": [
                     "claim-1:elements:not_reviewed",
-                    "claim-1:smiles_expanded:unresolved",
+                    "claim-1:resolved_smiles:unresolved",
                 ],
             }
         ],
         "can_release": False,
         "blocking_reasons": [
             "claim-1:elements:not_reviewed",
-            "claim-1:smiles_expanded:unresolved",
+            "claim-1:resolved_smiles:unresolved",
         ],
     }
 

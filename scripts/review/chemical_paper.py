@@ -72,7 +72,7 @@ def add_subcommands(commands: argparse._SubParsersAction) -> None:
     correct.add_argument("--project", type=Path, required=True)
     correct.add_argument("--study-id", required=True)
     correct.add_argument("--molecule-index", type=int, required=True)
-    correct.add_argument("--field", required=True, choices=("mol_idt", "smiles_expanded", "smiles_unexpanded"))
+    correct.add_argument("--field", required=True, choices=("mol_idt", "resolved_smiles"))
     correct.add_argument("--value", required=True)
     correct.add_argument("--reason", required=True)
     correct.add_argument("--version-token", required=True)

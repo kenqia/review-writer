@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://review-writer.local/schemas/evidence/chemical_completion_gate.v2.schema.json",
+  "title": "Chemical completion gate v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "project_id", "study_id", "molecule_count",
+    "missing_name_count", "missing_resolved_smiles_count",
+    "ai_authored_smiles_count", "missing_fields", "history",
+    "version_token", "gate_digest", "workflow_can_continue"
+  ],
+  "properties": {
+    "schema_version": {"const": "chemical-completion-gate.v2"},
+    "project_id": {"type": "string", "minLength": 1},
+    "study_id": {"type": "string", "minLength": 1},
+    "molecule_count": {"type": "integer", "minimum": 1},
+    "missing_name_count": {"type": "integer", "minimum": 0},
+    "missing_resolved_smiles_count": {"type": "integer", "minimum": 0},
+    "ai_authored_smiles_count": {"type": "integer", "minimum": 0},
+    "missing_fields": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["molecule_index", "field", "page", "bbox_normalized"],
+        "properties": {
+          "molecule_index": {"type": "integer", "minimum": 0},
+          "field": {"enum": ["mol_idt", "resolved_smiles"]},
+          "page": {"type": "integer", "minimum": 1},
+          "bbox_normalized": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number", "minimum": 0, "maximum": 1}}
+        }
+      }
+    },
+    "history": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["molecule_index", "field", "value", "actor_type", "actor_label", "reason", "pdf_locator", "recorded_at"],
+        "properties": {
+          "molecule_index": {"type": "integer", "minimum": 0},
+          "field": {"enum": ["mol_idt", "resolved_smiles"]},
+          "value": {"type": "string", "minLength": 1},
+          "actor_type": {"enum": ["human_researcher", "simulated_researcher_agent"]},
+          "actor_label": {"type": "string", "minLength": 1},
+          "reason": {"type": "string", "minLength": 1},
+          "pdf_locator": {"type": "object", "required": ["page"]},
+          "recorded_at": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "version_token": {"type": "string", "pattern": "^cpv2\\.[A-Za-z0-9_-]+$"},
+    "gate_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "workflow_can_continue": {"type": "boolean"}
+  }
+}

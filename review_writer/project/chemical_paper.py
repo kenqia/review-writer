@@ -44,8 +44,9 @@ from .source_truth import (
 
 STATE_ROOT = Path("01_evidence/chemical_paper")
 STATE_NAME = "state.json"
-STATE_SCHEMA = REPO_ROOT / "schemas/evidence/chemical_paper_state.v1.schema.json"
-FIELD_NAMES = ("mol_idt", "smiles_expanded", "smiles_unexpanded")
+STATE_SCHEMA = REPO_ROOT / "schemas/evidence/chemical_paper_state.v2.schema.json"
+PROVENANCE_SMILES_FIELDS = ("smiles_expanded", "smiles_unexpanded")
+FIELD_NAMES = ("mol_idt", "resolved_smiles")
 REQUIRED_FIELD_NAMES = frozenset((*FIELD_NAMES, "elements"))
 ELEMENT_REVIEW_STATES = frozenset({"not_reviewed", "confirmed", "corrected", "not_applicable"})
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
@@ -187,7 +188,7 @@ def _canonical_state_digest(state: dict[str, Any]) -> str:
 
 def _version_token(state: dict[str, Any]) -> str:
     encoded = base64.urlsafe_b64encode(bytes.fromhex(state["state_digest"])).decode("ascii").rstrip("=")
-    return f"cpv1.{encoded}"
+    return f"cpv2.{encoded}"
 
 
 def _validate_event_chain(rows: list[dict[str, Any]], *, event_key: str, prior_key: str) -> str | None:
@@ -504,7 +505,10 @@ def _normalize_molecules(value: object, page_count: int, import_digest_seed: str
         raise ChemicalPaperError("CHEMICAL_PAPER_CONTRACT_MISSING")
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
-    required = {"mol_id", "page_idx", "bbox_normalized", "smiles_expanded", "smiles_unexpanded", "mol_idt", "mol_block"}
+    required = {
+        "mol_id", "page_idx", "bbox_normalized", "mol_idt", "mol_block",
+        *PROVENANCE_SMILES_FIELDS,
+    }
     for raw in value["molecules"]:
         if not isinstance(raw, dict) or not required <= set(raw):
             raise ChemicalPaperError("MOLECULE_INVALID")
@@ -516,13 +520,21 @@ def _normalize_molecules(value: object, page_count: int, import_digest_seed: str
         if not isinstance(page, int) or isinstance(page, bool) or page < 0 or page >= page_count:
             raise ChemicalPaperError("MOLECULE_PAGE_INVALID")
         block_version, elements = _molblock_elements(raw.get("mol_block"))
+        expanded = _field(raw.get("smiles_expanded"))
+        unexpanded = _field(raw.get("smiles_unexpanded"))
+        resolved = expanded["value"] if expanded["value"] is not None else unexpanded["value"]
         body = {
             "molecule_id": molecule_id,
             "page_index": page,
             "normalized_bbox": _bbox(raw.get("bbox_normalized")),
             "mol_block": raw["mol_block"],
             "molblock_format": block_version,
-            "fields": {field: _field(raw.get(field)) for field in FIELD_NAMES},
+            "fields": {
+                "mol_idt": _field(raw.get("mol_idt")),
+                "resolved_smiles": _field(resolved),
+                "smiles_expanded": expanded,
+                "smiles_unexpanded": unexpanded,
+            },
             "element_candidate_counts": elements,
             "element_review_state": "not_reviewed",
             "bound_import_seed": import_digest_seed,
@@ -700,7 +712,7 @@ def import_chemical_paper(
             }
             event["import_event_digest"] = canonical_digest(event)
             state: dict[str, Any] = {
-                "schema_version": "chemical-paper-state.v1",
+                "schema_version": "chemical-paper-state.v2",
                 "project_id": root.name,
                 "study_id": study_id,
                 "source_id": source["source_id"],
@@ -747,6 +759,38 @@ def _current_value(state: dict[str, Any], molecule: dict[str, Any], field: str) 
         if event["bound_import_digest"] == state["current_import_digest"] and event["molecule_id"] == molecule["molecule_id"] and event["field"] == field:
             value = event["value"]
     return value
+
+
+def _resolved_smiles_details(
+    state: dict[str, Any], molecule: dict[str, Any]
+) -> tuple[str | None, dict[str, str | bool | None]]:
+    expanded = molecule["fields"]["smiles_expanded"]["value"]
+    unexpanded = molecule["fields"]["smiles_unexpanded"]["value"]
+    corrected = any(
+        event["bound_import_digest"] == state["current_import_digest"]
+        and event["molecule_id"] == molecule["molecule_id"]
+        and event["field"] == "resolved_smiles"
+        for event in state["field_corrections"]
+    )
+    selected_source: str | None
+    if corrected:
+        selected_source = "researcher_correction"
+    elif expanded is not None:
+        selected_source = "smiles_expanded"
+    elif unexpanded is not None:
+        selected_source = "smiles_unexpanded"
+    else:
+        selected_source = None
+    return _current_value(state, molecule, "resolved_smiles"), {
+        "expanded": expanded,
+        "unexpanded": unexpanded,
+        "selected_source": selected_source,
+        "candidate_difference": (
+            expanded is not None
+            and unexpanded is not None
+            and expanded != unexpanded
+        ),
+    }
 
 
 def _current_element_review(state: dict[str, Any], molecule: dict[str, Any]) -> tuple[str, dict[str, int], str | None]:
@@ -1243,6 +1287,7 @@ def _study_summary(
     state: dict[str, Any],
 ) -> dict[str, Any]:
     unresolved = {field: 0 for field in FIELD_NAMES}
+    candidate_difference_count = 0
     unreviewed = 0
     molecules: list[dict[str, Any]] = []
     version_token = _version_token(state)
@@ -1257,12 +1302,15 @@ def _study_summary(
         state["source_pdf_sha256"],
     )
     for molecule_index, molecule in enumerate(state["molecules"]):
-        values: dict[str, str | None] = {}
-        for field in FIELD_NAMES:
-            current = _current_value(state, molecule, field)
-            values[field] = current
+        resolved_smiles, smiles_candidates = _resolved_smiles_details(state, molecule)
+        values: dict[str, str | None] = {
+            "mol_idt": _current_value(state, molecule, "mol_idt"),
+            "resolved_smiles": resolved_smiles,
+        }
+        for field, current in values.items():
             if current is None:
                 unresolved[field] += 1
+        candidate_difference_count += int(smiles_candidates["candidate_difference"])
         review_state, _, _ = _current_element_review(state, molecule)
         if review_state == "not_reviewed":
             unreviewed += 1
@@ -1285,6 +1333,7 @@ def _study_summary(
             "bbox_normalized": molecule["normalized_bbox"],
             "molblock_available": bool(molecule["element_candidate_counts"]),
             **values,
+            "smiles_candidates": smiles_candidates,
             "missing_fields": missing_fields,
             "candidate_elements": [
                 {"symbol": symbol, "count": count}
@@ -1304,6 +1353,15 @@ def _study_summary(
     active = state["imports"][state["current_import_digest"]]
     gaps = [f"{count} molecule(s) have unresolved {field}." for field, count in unresolved.items() if count]
     status = "needs_review" if gaps else "ready"
+    limitations = [
+        "Reaction data was not provided in this export.",
+        "No exported image assets were provided; molecule boxes are original-PDF locators only.",
+    ]
+    if candidate_difference_count:
+        limitations.append(
+            f"{candidate_difference_count} molecule(s) have an expanded/unexpanded SMILES candidate difference; "
+            "resolved_smiles defaults to the expanded candidate until a researcher correction is recorded."
+        )
     return {
         "study_id": state["study_id"], "status": status, "backend": active["backend"],
         "version": active["version"], "pdf_binding_status": "bound",
@@ -1311,10 +1369,7 @@ def _study_summary(
         "file_kinds": ["layout", "markdown", "molecule_info"], "molecule_count": len(molecules),
         "reaction_data_status": "unavailable_not_provided", "missing_field_counts": unresolved,
         "unreviewed_element_molecule_count": unreviewed, "gaps": gaps,
-        "limitations": [
-            "Reaction data was not provided in this export.",
-            "No exported image assets were provided; molecule boxes are original-PDF locators only.",
-        ],
+        "limitations": limitations,
         "version_token": version_token, "molecules": molecules,
     }
 
@@ -1370,7 +1425,7 @@ def chemical_paper_safe_project_state(project: Path) -> dict[str, Any]:
         sum((row["missing_field_counts"] or {}).values()) for row in imported
     )
     return {
-        "schema_version": "chemical-paper-projection.v1",
+        "schema_version": "chemical-paper-projection.v2",
         "route": "chemical-paper-zip-only",
         "project_status": project_status,
         "summary": {
@@ -1421,7 +1476,7 @@ def chemical_paper_manuscript_bindings(project: Path) -> dict[str, Any]:
     return {
         "chemical_paper_import_digests": import_rows,
         "chemical_paper_safe_summary": {
-            "schema_version": "chemical-paper-safe-summary.v1",
+            "schema_version": "chemical-paper-safe-summary.v2",
             "route": "chemical-paper-zip-only",
             "study_count": len(import_rows),
             "molecule_count": molecule_count,
@@ -1583,7 +1638,7 @@ def chemical_paper_dependency_currentness(
         top_blocking.append(f"chemical_paper_import_digests:{lineage_status}")
     top_blocking = sorted(set(top_blocking))
     return {
-        "schema_version": "chemical-paper-dependency-currentness.v1",
+        "schema_version": "chemical-paper-dependency-currentness.v2",
         "lineage_binding_status": lineage_status,
         "claims": claims,
         "can_release": lineage_status == "current" and all(row["status"] == "current" for row in claims),

@@ -28,7 +28,7 @@ from review_writer.project.source_truth import (
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SCHEMA = REPO_ROOT / "schemas/evidence/parse_reconciliation.v1.schema.json"
+SCHEMA = REPO_ROOT / "schemas/evidence/parse_reconciliation.v2.schema.json"
 ROOT = Path("01_evidence/parse_reconciliation")
 UNRESOLVED = frozenset({"conflict", "single_lane_only", "needs_review", "stale", "blocked"})
 
@@ -82,7 +82,20 @@ def _atomic(path: Path, value: object) -> None:
 
 
 def _candidate(row: dict[str, Any]) -> dict[str, str | None]:
-    return {field: row.get(field) if isinstance(row.get(field), str) and row.get(field) else None for field in ("mol_idt", "smiles_expanded", "smiles_unexpanded")}
+    resolved = row.get("resolved_smiles")
+    if not isinstance(resolved, str) or not resolved:
+        expanded = row.get("smiles_expanded")
+        unexpanded = row.get("smiles_unexpanded")
+        resolved = (
+            expanded
+            if isinstance(expanded, str) and expanded
+            else unexpanded if isinstance(unexpanded, str) and unexpanded else None
+        )
+    name = row.get("mol_idt")
+    return {
+        "mol_idt": name if isinstance(name, str) and name else None,
+        "resolved_smiles": resolved,
+    }
 
 
 def _workflow(objects: list[dict[str, Any]]) -> bool:
@@ -140,7 +153,7 @@ def build_parse_reconciliation(project: Path, study_id: str) -> dict[str, object
             "decision": None, "prior_decisions": [],
         })
     body = {
-        "schema_version": "parse-reconciliation.v1", "project_id": root.name,
+        "schema_version": "parse-reconciliation.v2", "project_id": root.name,
         "study_id": study_id, "dual_source_binding_digest": dual_digest,
         "chemical_completion_digest": completion_digest, "objects": objects,
     }
@@ -271,4 +284,4 @@ def project_reconciliation_state(project: Path) -> dict[str, object]:
             })
         except ParseReconciliationError as exc:
             rows.append({"study_id": study_id, "status": "blocked", "reason_code": exc.code})
-    return {"schema_version": "parse-reconciliation-project-state.v1", "studies": rows, "workflow_can_continue": bool(rows) and all(row["status"] == "current" for row in rows)}
+    return {"schema_version": "parse-reconciliation-project-state.v2", "studies": rows, "workflow_can_continue": bool(rows) and all(row["status"] == "current" for row in rows)}

@@ -250,7 +250,7 @@ def _safe_chemical_projection(project: Path, study_id: str) -> dict[str, Any]:
                 key: copy.deepcopy(molecule[key])
                 for key in (
                     "molecule_index", "page", "bbox_normalized", "mol_idt",
-                    "smiles_expanded", "smiles_unexpanded", "missing_fields",
+                    "resolved_smiles", "smiles_candidates", "missing_fields",
                     "candidate_elements", "history"
                 )
             }
