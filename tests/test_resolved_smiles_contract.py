@@ -11,6 +11,7 @@ from review_writer.project.chemical_completion import (
     chemical_completion_state,
     project_chemical_completion_state,
 )
+from review_writer.delivery.dual_parse_release import preflight_chemical_paper_import
 from review_writer.project.chemical_paper import (
     ChemicalPaperError,
     _canonical_state_digest,
@@ -29,6 +30,7 @@ from review_writer.project.dual_source import write_dual_source_binding
 from review_writer.project.source_truth import canonical_digest, load_source_truth_bundle
 from test_chemical_paper_import import (
     ACTOR,
+    PDF_SHA,
     snapshot,
     source_truth_project,
     v2000,
@@ -119,6 +121,153 @@ def test_projection_resolves_expanded_then_falls_back_and_keeps_candidates(
     assert "smiles_unexpanded" not in missing
     assert study["missing_field_counts"] == {"mol_idt": 0, "resolved_smiles": 1}
     assert any("candidate difference" in item.casefold() for item in study["limitations"])
+
+
+def test_placeholder_smiles_candidates_survive_preflight_and_import_as_missing_authority(
+    tmp_path: Path,
+) -> None:
+    project = source_truth_project(tmp_path, pages=1)
+    archive = write_chemical_zip(
+        tmp_path / "chemical-placeholders.zip",
+        pages=1,
+        molecules=[
+            _molecule(
+                "mol-placeholder",
+                expanded="Rα/Rβ",
+                unexpanded="R'2",
+            )
+        ],
+    )
+
+    preflight = preflight_chemical_paper_import(
+        project,
+        "study-1",
+        archive.read_bytes(),
+    )
+    assert preflight["status"] == "ready_for_confirmation"
+    assert preflight["molecule_count"] == 1
+    assert not (project / "01_evidence/chemical_paper/study-1/state.json").exists()
+
+    imported = import_chemical_paper(project, "study-1", PDF_SHA, archive, ACTOR)
+    assert imported["status"] == "imported"
+    state = load_chemical_paper_state(project, "study-1")
+    fields = state["molecules"][0]["fields"]
+    assert fields["smiles_expanded"] == {
+        "status": "candidate",
+        "value": "Rα/Rβ",
+    }
+    assert fields["smiles_unexpanded"] == {
+        "status": "candidate",
+        "value": "R'2",
+    }
+    assert fields["resolved_smiles"] == {
+        "status": "unresolved",
+        "value": None,
+    }
+
+    projected = chemical_paper_projection(project)
+    study = projected["studies"][0]
+    molecule = study["molecules"][0]
+    assert molecule["resolved_smiles"] is None
+    assert molecule["smiles_candidates"] == {
+        "expanded": "Rα/Rβ",
+        "unexpanded": "R'2",
+        "selected_source": None,
+        "candidate_difference": True,
+    }
+    assert molecule["missing_fields"] == ["resolved_smiles"]
+    assert study["missing_field_counts"] == {"mol_idt": 0, "resolved_smiles": 1}
+    assert any("provenance candidate" in item.casefold() for item in study["limitations"])
+
+    completion = chemical_completion_state(project, "study-1")
+    assert completion["missing_resolved_smiles_count"] == 1
+    assert completion["workflow_can_continue"] is False
+
+
+@pytest.mark.parametrize(
+    ("expanded", "unexpanded", "expected", "selected_source"),
+    [
+        ("CO", "R'2", "CO", "smiles_expanded"),
+        ("Rα/Rβ", "N", "N", "smiles_unexpanded"),
+    ],
+)
+def test_initial_resolved_smiles_uses_only_the_first_valid_candidate(
+    tmp_path: Path,
+    expanded: str,
+    unexpanded: str,
+    expected: str,
+    selected_source: str,
+) -> None:
+    project = _project_with_molecules(
+        tmp_path,
+        [_molecule("mol-selection", expanded=expanded, unexpanded=unexpanded)],
+    )
+
+    state = load_chemical_paper_state(project, "scholarly-a")
+    assert state["molecules"][0]["fields"]["resolved_smiles"]["value"] == expected
+    molecule = chemical_paper_projection(project)["studies"][0]["molecules"][0]
+    assert molecule["resolved_smiles"] == expected
+    assert molecule["smiles_candidates"]["selected_source"] == selected_source
+
+
+def test_missing_resolved_smiles_keeps_release_and_evidence_fail_closed(
+    tmp_path: Path,
+) -> None:
+    project = source_truth_project(tmp_path, pages=1)
+    archive = write_chemical_zip(
+        tmp_path / "chemical-placeholders.zip",
+        pages=1,
+        molecules=[
+            _molecule(
+                "mol-placeholder",
+                expanded="Rα/Rβ",
+                unexpanded="R'2",
+            )
+        ],
+    )
+    import_chemical_paper(project, "study-1", PDF_SHA, archive, ACTOR)
+
+    binding = chemical_paper_manuscript_bindings(project)
+    assert binding["chemical_paper_safe_summary"]["missing_resolved_smiles_count"] == 1
+    claims = [
+        {
+            "claim_id": "claim-placeholder",
+            "study_id": "study-1",
+            "molecule_index": 0,
+            "required_fields": ["resolved_smiles"],
+            "requires_element_review": False,
+            "requires_reaction_data": False,
+        }
+    ]
+    currentness = chemical_paper_dependency_currentness(
+        project,
+        import_digests=binding["chemical_paper_import_digests"],
+        claim_dependencies=claims,
+    )
+    assert currentness["can_release"] is False
+    assert currentness["claims"][0]["status"] == "needs_review"
+    assert currentness["claims"][0]["blocking_reasons"] == [
+        "claim-placeholder:resolved_smiles:unresolved"
+    ]
+
+    state = load_chemical_paper_state(project, "study-1")
+    evidence = chemical_dependency_state(
+        project,
+        "evidence-placeholder",
+        [
+            {
+                "study_id": "study-1",
+                "molecule_id": "mol-placeholder",
+                "molecule_digest": state["molecules"][0]["molecule_digest"],
+                "chemical_paper_import_digest": state["current_import_digest"],
+                "required_fields": ["resolved_smiles"],
+            }
+        ],
+    )
+    assert evidence["dependency_status"] == "blocked_unresolved"
+    assert evidence["gaps"] == [
+        "study-1/mol-placeholder:resolved_smiles:unresolved"
+    ]
 
 
 def test_completion_gate_and_batch_use_one_researcher_owned_smiles_field(
@@ -570,11 +719,17 @@ def test_manuscript_binding_uses_resolved_completion_counters_only(
     assert "unresolved_field_count" not in summary
 
 
-def test_import_rejects_invalid_resolved_smiles_syntax(tmp_path: Path) -> None:
-    with pytest.raises(ChemicalPaperError, match="SMILES_INVALID"):
-        _project_with_molecules(
-            tmp_path, [_molecule("mol-invalid", expanded="C1CC")]
-        )
+def test_import_preserves_invalid_provenance_smiles_as_unresolved(tmp_path: Path) -> None:
+    project = _project_with_molecules(
+        tmp_path,
+        [_molecule("mol-invalid", expanded="C1CC", unexpanded="R'2")],
+    )
+
+    state = load_chemical_paper_state(project, "scholarly-a")
+    fields = state["molecules"][0]["fields"]
+    assert fields["smiles_expanded"]["value"] == "C1CC"
+    assert fields["smiles_unexpanded"]["value"] == "R'2"
+    assert fields["resolved_smiles"]["value"] is None
 
 
 def _reseal_state(path: Path, state: dict[str, object]) -> None:

@@ -298,6 +298,19 @@ def _valid_resolved_smiles(value: str) -> bool:
     return bool(atom_count and component_has_atom and previous_atom and pending_bond is None and not branch_stack and not ring_bonds)
 
 
+def _first_valid_smiles_candidate(
+    expanded: str | None,
+    unexpanded: str | None,
+) -> tuple[str | None, str | None]:
+    for field, candidate in (
+        ("smiles_expanded", expanded),
+        ("smiles_unexpanded", unexpanded),
+    ):
+        if candidate is not None and _valid_resolved_smiles(candidate):
+            return candidate, field
+    return None, None
+
+
 def _correction_value(field: str, value: object) -> str:
     if not isinstance(value, str) or value != value.strip() or not value or len(value) > 20000:
         raise ChemicalPaperError("CHEMICAL_FIELD_VALUE_INVALID")
@@ -471,9 +484,13 @@ def _validate_state(state: object) -> dict[str, Any]:
         if molecule_id in molecules_by_id:
             raise ChemicalPaperError("CHEMICAL_PAPER_STATE_INVALID")
         molecules_by_id[molecule_id] = molecule
-        for field in ("resolved_smiles", "smiles_expanded", "smiles_unexpanded"):
+        for field in ("resolved_smiles", *PROVENANCE_SMILES_FIELDS):
             candidate = molecule["fields"][field]["value"]
-            if candidate is not None and not _valid_resolved_smiles(candidate):
+            try:
+                _field(candidate)
+            except (ChemicalPaperError, TypeError) as exc:
+                raise ChemicalPaperError("CHEMICAL_PAPER_STATE_INVALID") from exc
+            if field == "resolved_smiles" and candidate is not None and not _valid_resolved_smiles(candidate):
                 raise ChemicalPaperError("CHEMICAL_PAPER_STATE_INVALID")
 
     correction_values: dict[tuple[str, str, str], str | None] = {}
@@ -802,10 +819,10 @@ def _normalize_molecules(value: object, page_count: int, import_digest_seed: str
         block_version, elements = _molblock_elements(raw.get("mol_block"))
         expanded = _field(raw.get("smiles_expanded"))
         unexpanded = _field(raw.get("smiles_unexpanded"))
-        for candidate in (expanded["value"], unexpanded["value"]):
-            if candidate is not None and not _valid_resolved_smiles(candidate):
-                raise ChemicalPaperError("SMILES_INVALID")
-        resolved = expanded["value"] if expanded["value"] is not None else unexpanded["value"]
+        resolved, _ = _first_valid_smiles_candidate(
+            expanded["value"],
+            unexpanded["value"],
+        )
         body = {
             "molecule_id": molecule_id,
             "page_index": page,
@@ -1058,12 +1075,8 @@ def _resolved_smiles_details(
     selected_source: str | None
     if corrected:
         selected_source = "researcher_correction"
-    elif expanded is not None:
-        selected_source = "smiles_expanded"
-    elif unexpanded is not None:
-        selected_source = "smiles_unexpanded"
     else:
-        selected_source = None
+        _, selected_source = _first_valid_smiles_candidate(expanded, unexpanded)
     return _current_value(state, molecule, "resolved_smiles"), {
         "expanded": expanded,
         "unexpanded": unexpanded,
@@ -1578,6 +1591,7 @@ def _study_summary(
 ) -> dict[str, Any]:
     unresolved = {field: 0 for field in FIELD_NAMES}
     candidate_difference_count = 0
+    invalid_candidate_count = 0
     unreviewed = 0
     molecules: list[dict[str, Any]] = []
     version_token = _version_token(state)
@@ -1601,6 +1615,10 @@ def _study_summary(
             if current is None:
                 unresolved[field] += 1
         candidate_difference_count += int(smiles_candidates["candidate_difference"])
+        invalid_candidate_count += sum(
+            int(candidate is not None and not _valid_resolved_smiles(candidate))
+            for candidate in (smiles_candidates["expanded"], smiles_candidates["unexpanded"])
+        )
         review_state, _, _ = _current_element_review(state, molecule)
         if review_state == "not_reviewed":
             unreviewed += 1
@@ -1646,11 +1664,16 @@ def _study_summary(
     limitations = [
         "Reaction data was not provided in this export.",
         "No exported image assets were provided; molecule boxes are original-PDF locators only.",
+        "Expanded/unexpanded SMILES values are provenance candidates only; selected_source reports only a valid candidate or researcher correction.",
     ]
     if candidate_difference_count:
         limitations.append(
             f"{candidate_difference_count} molecule(s) have an expanded/unexpanded SMILES candidate difference; "
-            "resolved_smiles defaults to the expanded candidate until a researcher correction is recorded."
+            "resolved_smiles selects the first valid candidate (expanded, then unexpanded) and remains missing if neither passes validation until a researcher correction is recorded."
+        )
+    if invalid_candidate_count:
+        limitations.append(
+            f"{invalid_candidate_count} expanded/unexpanded SMILES value(s) do not pass the resolved SMILES validator and remain provenance candidates, not resolved_smiles."
         )
     return {
         "study_id": state["study_id"], "status": status, "backend": active["backend"],
