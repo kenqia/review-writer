@@ -32,6 +32,17 @@
     return candidate;
   }
 
+  function publicChemicalText(value) {
+    const candidate = text(value, "");
+    if (!candidate || candidate.length > 1000) return null;
+    if (/(?:^|\s)(?:\/(?:home|mnt|users|tmp)\/|[a-z]:\\)/i.test(candidate)) return null;
+    if (/\b[a-f0-9]{64}\b/i.test(candidate)) return null;
+    if (/(?:token|session|cookie)\s*[:=]/i.test(candidate)) return null;
+    if (/\bV(?:2000|3000)\b|M\s+END/.test(candidate)) return null;
+    if (/^\s*\{/.test(candidate)) return null;
+    return candidate;
+  }
+
   function stateLabel(kind, status) {
     const labels = {
       pdf: {
@@ -166,6 +177,12 @@
       unresolvedReconciliation ? "needs_review" : text(row.reconciliation_status, "unknown"),
     );
     const evidenceStatus = text(row.paper_evidence_status, "unknown");
+    const missingNameCount = nonNegativeInteger(row.missing_name_count);
+    const missingResolvedSmilesCount = nonNegativeInteger(row.missing_resolved_smiles_count);
+    const completionGapLabel = missingNameCount === null || missingResolvedSmilesCount === null
+      ? "补全缺口数未提供"
+      : `缺失名称 ${missingNameCount} · 缺失已解析 SMILES ${missingResolvedSmilesCount}`;
+    if (chemicalStatus === "needs_review") chemicalFacts.push(completionGapLabel);
     const model = {
       displayLabel: `研究 ${index + 1}`,
       citation: publicText(row.citation, `Core study ${index + 1}`),
@@ -178,12 +195,30 @@
       completionLabel: stateLabel("completion", completionStatus),
       reconciliationLabel: stateLabel("reconciliation", reconciliationStatus),
       evidenceLabel: stateLabel("evidence", evidenceStatus),
+      missingNameCount,
+      missingResolvedSmilesCount,
+      completionGapLabel,
       actorLabel: publicText(row.actor_label, "决定者未提供"),
       updatedLabel: publicText(row.updated_at, "更新时间未提供"),
     };
     const studyId = text(row.study_id, "");
     if (studyId) studyTargetByModel.set(model, {studyId});
     return model;
+  }
+
+  function smilesCandidatesModel(value) {
+    const row = object(value);
+    const sourceLabels = {
+      smiles_expanded: "展开候选",
+      smiles_unexpanded: "未展开候选",
+      researcher_correction: "研究者更正",
+    };
+    return {
+      expanded: publicChemicalText(row.expanded),
+      unexpanded: publicChemicalText(row.unexpanded),
+      selectedSource: sourceLabels[row.selected_source] || "流程来源未选择",
+      difference: row.candidate_difference === true,
+    };
   }
 
   function importPreflightModel(value) {
@@ -225,10 +260,10 @@
     const row = object(value);
     const fieldLabels = {
       mol_idt: "名称或论文局部标签",
-      smiles_expanded: "展开 SMILES",
-      smiles_unexpanded: "未展开 SMILES",
+      resolved_smiles: "已解析 SMILES",
     };
-    const field = fieldLabels[row.field] ? row.field : "unknown";
+    if (!fieldLabels[row.field]) return null;
+    const field = row.field;
     const moleculeIndex = nonNegativeInteger(row.molecule_index);
     const model = {
       displayLabel: moleculeIndex === null ? "分子条目序号未提供" : `分子条目 ${moleculeIndex + 1}`,
@@ -238,9 +273,12 @@
       actorLabel: publicText(row.actor_label, "决定者未提供"),
       updatedLabel: publicText(row.updated_at, "更新时间未提供"),
     };
+    if (field === "resolved_smiles") {
+      model.smilesCandidates = smilesCandidatesModel(row.smiles_candidates);
+    }
     const studyId = text(row.study_id, "");
     const versionToken = text(row.version_token, "");
-    if (studyId && moleculeIndex !== null && versionToken && field !== "unknown") {
+    if (studyId && moleculeIndex !== null && versionToken) {
       completionTargetByModel.set(model, {studyId, moleculeIndex, versionToken});
     }
     return model;
@@ -312,7 +350,7 @@
 
   function projectionModel(input) {
     const value = object(input);
-    if (value.schema_version !== "dual-parse-projection.v1") return emptyModel();
+    if (value.schema_version !== "dual-parse-projection.v2") return emptyModel();
     const nextAction = object(value.next_action);
     const summary = object(value.summary);
     const status = ["loading", "ready", "failed", "stale", "unavailable"].includes(value.status)
@@ -336,7 +374,7 @@
       },
       studies: array(value.studies).map(studyModel),
       importPreflight: importPreflightModel(value.import_preflight),
-      completionQueue: array(value.completion_queue).map(completionModel),
+      completionQueue: array(value.completion_queue).map(completionModel).filter(Boolean),
       reconciliationItems: array(value.reconciliation_items).map(reconciliationModel),
       summary: {
         coreStudies: nonNegativeInteger(summary.core_studies),
@@ -454,7 +492,7 @@
   }
 
   function completionBatchRequest(studyId, versionToken, rows, actor) {
-    const allowedFields = new Set(["mol_idt", "smiles_expanded", "smiles_unexpanded"]);
+    const allowedFields = new Set(["mol_idt", "resolved_smiles"]);
     const corrections = array(rows).map(rowValue => {
       const row = object(rowValue);
       if (!Number.isInteger(row.moleculeIndex) || row.moleculeIndex < 0) throw new Error("molecule index required");
@@ -815,6 +853,33 @@
     return locator;
   }
 
+  function appendSmilesCandidateContext(document, fieldset, row) {
+    if (row.field !== "resolved_smiles" || !row.smilesCandidates) return;
+    const candidates = row.smilesCandidates;
+    const context = document.createElement("section");
+    context.className = "dual-smiles-candidate-context";
+    appendText(document, context, "h6", "SMILES 候选上下文（不需双重补全）");
+    const values = document.createElement("dl");
+    [
+      ["展开候选", candidates.expanded || "未提供"],
+      ["未展开候选", candidates.unexpanded || "未提供"],
+    ].forEach(([label, value]) => {
+      const item = document.createElement("div");
+      appendText(document, item, "dt", label);
+      appendText(document, item, "dd", value);
+      values.append(item);
+    });
+    context.append(values);
+    appendText(
+      document,
+      context,
+      "p",
+      `${candidates.difference ? "候选存在差异" : "候选未标记差异"} · 候选来源：${candidates.selectedSource}`,
+      "dual-smiles-candidate-note",
+    );
+    fieldset.append(context);
+  }
+
   function renderCompletion(document, parent, rows, handlers) {
     parent.replaceChildren();
     appendText(document, parent, "h4", "Chemical Completion Queue");
@@ -840,9 +905,12 @@
           link.textContent = "另开原始整页（不含红框） ↗";
           fieldset.append(link);
         }
+        appendSmilesCandidateContext(document, fieldset, row);
         const value = document.createElement("input");
+        value.className = "dual-completion-value";
         value.autocomplete = "off";
         const reason = document.createElement("textarea");
+        reason.className = "dual-completion-reason";
         reason.rows = 2;
         const page = document.createElement("input");
         page.type = "number";
@@ -859,6 +927,12 @@
         form.append(fieldset);
         controls.push({row, value, reason, page, figure, rowIndex});
       });
+      const actor = safeActor(handlers);
+      const actorInput = document.createElement("input");
+      actorInput.className = "dual-completion-actor";
+      actorInput.autocomplete = "off";
+      actorInput.value = actor.actorLabel;
+      form.append(labelledControl(document, "本批次决定者", actorInput));
       const submit = document.createElement("button");
       submit.type = "submit";
       submit.className = "dual-parse-primary";
@@ -875,16 +949,21 @@
             pdfLocator: {page: Number(control.page.value), figureLabel: control.figure.value},
           }));
           handlers?.onCompletionSave?.(
-            completionBatchRequest(group.target.studyId, group.target.versionToken, corrections, safeActor(handlers)),
+            completionBatchRequest(
+              group.target.studyId,
+              group.target.versionToken,
+              corrections,
+              {...actor, actorLabel: actorInput.value},
+            ),
             form,
           );
         } catch (_) {
-          handlers?.onValidationError?.("请为本批次每一项填写补充值、PDF 页码与核对理由。");
+          handlers?.onValidationError?.("请为本批次填写决定者，并为每一项填写补充值、PDF 页码与核对理由。");
         }
       });
       parent.append(form);
     });
-    if (!groups.length) appendText(document, parent, "p", "当前没有缺失名称、局部标签或 SMILES。", "dual-parse-empty");
+    if (!groups.length) appendText(document, parent, "p", "当前没有缺失名称、局部标签或已解析 SMILES。", "dual-parse-empty");
   }
 
   function renderReconciliation(document, parent, items, handlers) {
@@ -1014,7 +1093,7 @@
       const response = await requester.call(globalThis, `/api/project/${encoded}/dual-parse`);
       if (!response.ok) {
         return projectionModel({
-          schema_version: "dual-parse-projection.v1",
+          schema_version: "dual-parse-projection.v2",
           status: "failed",
           failure_message: "双层解析状态读取失败；权威状态未更改。",
           retryable: true,
@@ -1023,7 +1102,7 @@
       return projectionModel(await response.json());
     } catch (_) {
       return projectionModel({
-        schema_version: "dual-parse-projection.v1",
+        schema_version: "dual-parse-projection.v2",
         status: "failed",
         failure_message: "网络不可用；双层解析状态未更改。",
         retryable: true,

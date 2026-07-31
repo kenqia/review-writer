@@ -214,6 +214,26 @@
   font: 700 11px/1.2 var(--rw-mono);
 }
 
+.chemical-paper-smiles-candidates {
+  min-width: 0;
+  padding: 12px;
+  background: #f5f1e7;
+  border-left: 3px solid var(--review-gold, #8f5f28);
+}
+
+.chemical-paper-smiles-candidates > strong {
+  font: 800 11px/1.45 var(--rw-serif);
+}
+
+.chemical-paper-smiles-candidates .chemical-paper-facts {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 0;
+}
+
+.chemical-paper-smiles-candidates .chemical-paper-facts dd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
 .chemical-paper-caveat,
 .chemical-paper-empty {
   color: var(--review-muted);
@@ -238,6 +258,7 @@
   .chemical-paper-molecule,
   .chemical-paper-panel { padding: 14px; }
   .chemical-paper-facts,
+  .chemical-paper-smiles-candidates .chemical-paper-facts,
   .chemical-paper-correction-form,
   .chemical-paper-element-form { grid-template-columns: 1fr; }
 }

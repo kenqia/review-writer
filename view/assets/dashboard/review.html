@@ -500,7 +500,7 @@
     let finalPayload = {final_draft_docx_exists:false, final_draft_docx_path:''};
     let sourcePayload = {counts:{total:0,ready:0,missing:0}, sources:[], supplements:[], unresolved:[], upload_required:false};
     let chemicalPaperPayload = {status:'unavailable', studies:[]};
-    let dualParseModel = ReviewDualParseUI.projectionModel({schema_version:'dual-parse-projection.v1',status:'unavailable'});
+    let dualParseModel = ReviewDualParseUI.projectionModel({schema_version:'dual-parse-projection.v2',status:'unavailable'});
     let progressPayload = {active_stage:'sources', stages:[], studies:[], blocker:'', recommended_next:'', release_capabilities:{internal_draft_export_ready:false,verified_release_ready:false}};
     let parseQualityPayload = {status:'unavailable', workflow_can_continue:false, summary:{}, studies:[]};
     let parseQualityBusy = new Set();
@@ -944,7 +944,7 @@
       const snapshot = preserveInputs ? dualParseInputSnapshot() : [];
       dualParseBusy = true;
       dualParseModel = ReviewDualParseUI.projectionModel({
-        schema_version:'dual-parse-projection.v1',
+        schema_version:'dual-parse-projection.v2',
         status:'loading',
         next_action:{label:'读取当前双层解析任务',description:'完成读取前不会提交决定。'},
       });
@@ -2369,7 +2369,7 @@
       setProjectLoadBusy(true);
       $('workbench-message').textContent = '正在读取项目…';
       dualParseModel = ReviewDualParseUI.projectionModel({
-        schema_version:'dual-parse-projection.v1',
+        schema_version:'dual-parse-projection.v2',
         status:'loading',
         next_action:{label:'读取当前双层解析任务',description:'完成读取前不会提交决定。'},
       });
@@ -2551,7 +2551,7 @@
           setProjectLoadBusy(false);
           event.target.value = '';
           dualParseModel = ReviewDualParseUI.projectionModel({
-            schema_version:'dual-parse-projection.v1',
+            schema_version:'dual-parse-projection.v2',
             status:'unavailable',
             next_action:{label:'请重新选择项目',description:'项目读取失败；明确选择后将重新读取。'},
           });

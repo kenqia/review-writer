@@ -5,7 +5,7 @@
 }(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
-  const fieldNames = new Set(["mol_idt", "smiles_expanded", "smiles_unexpanded"]);
+  const fieldNames = new Set(["mol_idt", "resolved_smiles"]);
   const elementActions = new Set(["confirmed", "corrected", "not_applicable"]);
   const mutationTargetByMolecule = new WeakMap();
 
@@ -89,7 +89,9 @@
 
   function safePdfPageUrl(value) {
     const candidate = text(value, "");
-    return candidate.startsWith("/") && !candidate.startsWith("//") ? candidate : "";
+    if (!candidate.startsWith("/api/project/") || candidate.startsWith("//")) return "";
+    if (/(?:token|session|cookie)=/i.test(candidate)) return "";
+    return candidate;
   }
 
   function fieldModel(row, missingFields, field) {
@@ -112,9 +114,34 @@
   function fieldLabel(value) {
     return ({
       mol_idt: "mol_idt",
-      smiles_expanded: "展开 SMILES",
-      smiles_unexpanded: "未展开 SMILES",
+      resolved_smiles: "已解析 SMILES",
+      smiles_expanded: "展开候选（历史）",
+      smiles_unexpanded: "未展开候选（历史）",
     })[value] || "化学字段";
+  }
+
+  function safeCandidateText(value) {
+    const candidate = text(value, "");
+    if (!candidate || candidate.length > 1000) return null;
+    if (/(?:^|\s)(?:\/(?:home|mnt|users|tmp)\/|[a-z]:\\)/i.test(candidate)) return null;
+    if (/\b[a-f0-9]{64}\b/i.test(candidate)) return null;
+    if (/\bV(?:2000|3000)\b|M\s+END/.test(candidate)) return null;
+    if (/^\s*\{/.test(candidate)) return null;
+    return candidate;
+  }
+
+  function smilesCandidatesModel(value) {
+    const row = object(value);
+    return {
+      expanded: safeCandidateText(row.expanded),
+      unexpanded: safeCandidateText(row.unexpanded),
+      selectedSource: ({
+        smiles_expanded: "展开候选",
+        smiles_unexpanded: "未展开候选",
+        researcher_correction: "研究者更正",
+      })[row.selected_source] || "流程来源未选择",
+      difference: row.candidate_difference === true,
+    };
   }
 
   function historyModel(value) {
@@ -144,14 +171,11 @@
         ? `第 ${page} 页 · ${bbox.length === 4 && bbox.every(Number.isFinite) ? "页面区域已定位" : "页面区域未提供"}`
         : "页码与页面区域未提供",
       pdfPageUrl: safePdfPageUrl(row.pdf_page_url),
-      molblockLabel: row.molblock_available === true
-        ? "MolBlock 候选可用"
-        : row.molblock_available === false ? "MolBlock 候选未提供" : "MolBlock 状态未提供",
       fields: {
         molIdt: fieldModel(row, missingFields, "mol_idt"),
-        smilesExpanded: fieldModel(row, missingFields, "smiles_expanded"),
-        smilesUnexpanded: fieldModel(row, missingFields, "smiles_unexpanded"),
+        resolvedSmiles: fieldModel(row, missingFields, "resolved_smiles"),
       },
+      smilesCandidates: smilesCandidatesModel(row.smiles_candidates),
       candidateElements: candidateElements(row.candidate_elements),
       elementReview: {
         state: text(row.element_review_state, "unknown"),
@@ -206,7 +230,7 @@
   function buildChemicalPaperModel(input) {
     const value = object(input);
     if (
-      value.schema_version !== "chemical-paper-projection.v1"
+      value.schema_version !== "chemical-paper-projection.v2"
       || value.route !== "chemical-paper-zip-only"
     ) {
       return {
@@ -368,6 +392,19 @@
     parent.append(list);
   }
 
+  function appendSmilesCandidates(document, parent, candidates) {
+    const details = document.createElement("section");
+    details.className = "chemical-paper-smiles-candidates";
+    appendText(document, details, "strong", "SMILES 候选上下文（不需双重补全）");
+    appendFacts(document, details, [
+      ["展开候选", candidates.expanded || "未提供"],
+      ["未展开候选", candidates.unexpanded || "未提供"],
+      ["候选来源", candidates.selectedSource],
+      ["候选差异", candidates.difference ? "存在差异" : "未标记差异"],
+    ]);
+    parent.append(details);
+  }
+
   function appendCorrectionForm(document, parent, molecule, field, label, actor, handler, validationHandler) {
     const target = mutationTargetByMolecule.get(molecule);
     const form = document.createElement("form");
@@ -403,7 +440,7 @@
     const target = mutationTargetByMolecule.get(molecule);
     const details = document.createElement("details");
     details.className = "chemical-paper-element-review";
-    appendText(document, details, "summary", "可选：审查 MolBlock 候选元素");
+    appendText(document, details, "summary", "可选：审查结构候选元素");
     appendText(document, details, "p", "候选元素来自 Chemical Paper 导出；研究者决定前不代表科学确认，原始 PDF 始终优先。", "chemical-paper-caveat");
     appendText(document, details, "strong", molecule.elementReview.label);
     const elements = document.createElement("ul");
@@ -473,14 +510,12 @@
       appendText(document, card, "p", "原始 PDF 页入口未提供。", "chemical-paper-caveat");
     }
     appendFacts(document, card, [
-      ["结构候选", molecule.molblockLabel],
       ["mol_idt", molecule.fields.molIdt.label],
-      ["展开 SMILES", molecule.fields.smilesExpanded.label],
-      ["未展开 SMILES", molecule.fields.smilesUnexpanded.label],
+      ["已解析 SMILES", molecule.fields.resolvedSmiles.label],
     ]);
+    appendSmilesCandidates(document, card, molecule.smilesCandidates);
     if (molecule.fields.molIdt.editable) appendCorrectionForm(document, card, molecule, "mol_idt", "mol_idt", actor, handlers.onCorrectField, handlers.onValidationError);
-    if (molecule.fields.smilesExpanded.editable) appendCorrectionForm(document, card, molecule, "smiles_expanded", "展开 SMILES", actor, handlers.onCorrectField, handlers.onValidationError);
-    if (molecule.fields.smilesUnexpanded.editable) appendCorrectionForm(document, card, molecule, "smiles_unexpanded", "未展开 SMILES", actor, handlers.onCorrectField, handlers.onValidationError);
+    if (molecule.fields.resolvedSmiles.editable) appendCorrectionForm(document, card, molecule, "resolved_smiles", "已解析 SMILES", actor, handlers.onCorrectField, handlers.onValidationError);
     appendElementReview(document, card, molecule, actor, handlers.onReviewElements, handlers.onValidationError);
     appendHistory(document, card, molecule.history);
     parent.append(card);

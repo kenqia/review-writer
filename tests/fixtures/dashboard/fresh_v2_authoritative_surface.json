@@ -1,6 +1,6 @@
 {
   "dual_parse": {
-    "schema_version": "dual-parse-projection.v1",
+    "schema_version": "dual-parse-projection.v2",
     "status": "ready",
     "next_action": {
       "label": "完成 11 项 Generic Parse 决定",

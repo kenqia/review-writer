@@ -268,6 +268,50 @@
   font-weight: 800;
 }
 
+.dual-smiles-candidate-context {
+  min-width: 0;
+  padding: 10px;
+  background: #f5f1e7;
+  border-left: 3px solid var(--review-gold, #8f5f28);
+}
+
+.dual-smiles-candidate-context h6 {
+  margin: 0 0 8px;
+  font: 800 10px/1.45 var(--rw-serif);
+}
+
+.dual-smiles-candidate-context dl {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.dual-smiles-candidate-context dl > div {
+  display: grid;
+  grid-template-columns: minmax(88px, auto) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.dual-smiles-candidate-context dt {
+  color: var(--review-muted);
+  font-size: 9px;
+  font-weight: 900;
+}
+
+.dual-smiles-candidate-context dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font: 600 10px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.dual-smiles-candidate-note {
+  margin: 8px 0 0;
+  color: var(--review-muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
 .dual-parse-import-form label,
 .dual-completion-form label,
 .dual-reconciliation-form label {
@@ -400,4 +444,5 @@
   }
   .dual-parse-dialog-actions { flex-direction: column-reverse; }
   .dual-parse-dialog-actions button { width: 100%; }
+  .dual-smiles-candidate-context dl > div { grid-template-columns: 1fr; }
 }

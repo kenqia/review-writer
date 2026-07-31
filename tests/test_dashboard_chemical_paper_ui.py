@@ -55,20 +55,20 @@ def test_dashboard_exposes_chemical_review_without_removing_original_pdf_intake(
     assert "/assets/dashboard/review-chemical-paper.css" in html
 
 
-def test_projection_v1_model_preserves_unknown_and_reaction_absence_semantics() -> None:
+def test_projection_v2_model_preserves_unknown_and_reaction_absence_semantics() -> None:
     module_path = json.dumps(str(DASHBOARD / "review-chemical-paper.js"))
     _run_node(
         "\n".join(
             [
                 f"const ui=require({module_path});",
                 "const model=ui.buildChemicalPaperModel({",
-                " schema_version:'chemical-paper-projection.v1',route:'chemical-paper-zip-only',project_status:'needs_review',",
+                " schema_version:'chemical-paper-projection.v2',route:'chemical-paper-zip-only',project_status:'needs_review',",
                 " summary:{studies:3,imported:1,molecules:125,unresolved_fields:32,reaction_data_status:'unavailable_not_provided'},",
                 " studies:[{study_id:'scholarly-secret',status:'needs_review',pdf_binding_status:'bound',backend:'pipeline',version:'3.4.4',imported_at:'2026-07-30T08:00:00Z',",
                 "   file_kinds:['layout','markdown','molecule_info'],page_count:6,molecule_count:125,reaction_data_status:'unavailable_not_provided',",
-                "   missing_field_counts:{mol_idt:30,smiles_expanded:1,smiles_unexpanded:1},gaps:['32 个候选字段待核对'],",
-                "   molecules:[{molecule_index:7,page:3,bbox_normalized:[0.1,0.2,0.3,0.4],molblock_available:true,",
-                "     mol_idt:null,smiles_expanded:null,smiles_unexpanded:'C=C',missing_fields:['mol_idt','smiles_expanded'],",
+                "   missing_field_counts:{mol_idt:30,resolved_smiles:2},gaps:['32 个候选字段待核对'],",
+                "   molecules:[{molecule_index:7,page:3,bbox_normalized:[0.1,0.2,0.3,0.4],",
+                "     mol_idt:null,resolved_smiles:null,missing_fields:['mol_idt','resolved_smiles'],smiles_candidates:{expanded:null,unexpanded:'C=C',selected_source:'smiles_unexpanded',candidate_difference:false},",
                 "     candidate_elements:[{symbol:'C',count:2},{symbol:'H',count:4}],element_review_state:'not_reviewed',",
                 "     pdf_page_url:'/api/project/case/pdf/study?page=3',version_token:'opaque-v1',",
                 "     history:[{kind:'field_correction',field:'smiles_unexpanded',prior_value:null,value:'C=C',actor_label:'李研究员',recorded_at:'2026-07-30T08:10:00Z',reason:'核对原始 PDF'},",
@@ -82,7 +82,7 @@ def test_projection_v1_model_preserves_unknown_and_reaction_absence_semantics() 
                 "if(study.backendLabel!=='pipeline · 3.4.4' || study.pdfBindingLabel!=='已绑定原始 PDF') throw new Error(JSON.stringify(study));",
                 "if(study.missingFieldLabel!=='32 个候选字段待核对') throw new Error(JSON.stringify(study));",
                 "const molecule=study.molecules[0];",
-                "if(molecule.fields.molIdt.label!=='待补充' || molecule.fields.smilesUnexpanded.label!=='C=C') throw new Error(JSON.stringify(molecule));",
+                "if(molecule.fields.molIdt.label!=='待补充' || molecule.fields.resolvedSmiles.label!=='待补充' || molecule.smilesCandidates.unexpanded!=='C=C') throw new Error(JSON.stringify(molecule));",
                 "if(molecule.elementReview.label!=='候选元素尚未审查' || molecule.candidateElements.length!==2) throw new Error(JSON.stringify(molecule));",
                 "if(molecule.locatorLabel!=='第 3 页 · 页面区域已定位') throw new Error(JSON.stringify(molecule));",
                 "if(molecule.history[1].prior!=='候选元素尚未审查' || molecule.history[1].current!=='候选元素已确认') throw new Error(JSON.stringify(molecule.history));",
@@ -103,7 +103,8 @@ def test_projection_model_fails_closed_on_wrong_schema_or_route() -> None:
                 f"const ui=require({module_path});",
                 "for(const payload of [",
                 " {schema_version:'internal-v2',route:'chemical-paper-zip-only',project_status:'ready',studies:[{study_id:'private',molecules:[]}]},",
-                " {schema_version:'chemical-paper-projection.v1',route:'generic-mineru',project_status:'ready',studies:[{study_id:'private',molecules:[]}]}]",
+                " {schema_version:'chemical-paper-projection.v1',route:'chemical-paper-zip-only',project_status:'ready',studies:[{study_id:'private',molecules:[]}]},",
+                " {schema_version:'chemical-paper-projection.v2',route:'generic-mineru',project_status:'ready',studies:[{study_id:'private',molecules:[]}]}]",
                 " ) { const model=ui.buildChemicalPaperModel(payload); if(model.contractValid!==false || model.studies.length!==0 || model.projectStatus!=='unknown') throw new Error(JSON.stringify(model)); }",
             ]
         )
@@ -188,3 +189,27 @@ def test_dashboard_loads_projection_and_wires_both_patch_mutations() -> None:
     assert "window.reviewDecisionActor" in html
     assert "chemicalPaperPayload.summary" not in html
     assert "chemicalPaperPayload.molecule" not in html
+
+
+def test_legacy_chemical_panel_projects_one_resolved_smiles_value_and_editor() -> None:
+    module_path = json.dumps(str(DASHBOARD / "review-chemical-paper.js"))
+    _run_node(
+        "\n".join(
+            [
+                f"const ui=require({module_path});",
+                "const model=ui.buildChemicalPaperModel({schema_version:'chemical-paper-projection.v2',route:'chemical-paper-zip-only',project_status:'needs_review',summary:{studies:1,imported:1,molecules:1,unresolved_fields:1},studies:[{study_id:'study',status:'needs_review',missing_field_counts:{mol_idt:0,resolved_smiles:1},molecules:[{molecule_index:0,version_token:'version',page:2,pdf_page_url:'/private/local-page.png',resolved_smiles:null,missing_fields:['resolved_smiles'],smiles_candidates:{expanded:'C=C',unexpanded:'CC',selected_source:'smiles_unexpanded',candidate_difference:true}}]}]});",
+                "if(!model.contractValid) throw new Error(JSON.stringify(model));",
+                "const molecule=model.studies[0].molecules[0];",
+                "if(molecule.fields.resolvedSmiles.label!=='待补充' || molecule.fields.resolvedSmiles.editable!==true) throw new Error(JSON.stringify(molecule));",
+                "if(molecule.pdfPageUrl!=='') throw new Error(JSON.stringify(molecule));",
+                "if(JSON.stringify(molecule.smilesCandidates)!==JSON.stringify({expanded:'C=C',unexpanded:'CC',selectedSource:'未展开候选',difference:true})) throw new Error(JSON.stringify(molecule));",
+                "const mutation=ui.buildFieldMutation({studyId:'study',moleculeIndex:0,versionToken:'version',field:'resolved_smiles',value:'C=C',actorType:'human_researcher',actorLabel:'研究者',reason:'原页核对'});",
+                "if(mutation.field!=='resolved_smiles') throw new Error(JSON.stringify(mutation));",
+                "for(const field of ['smiles_expanded','smiles_unexpanded']){let rejected=false;try{ui.buildFieldMutation({...mutation,studyId:'study',moleculeIndex:0,versionToken:'version',actorType:'human_researcher',actorLabel:'研究者',reason:'原页核对',field});}catch(_){rejected=true;}if(!rejected)throw new Error(`legacy field accepted: ${field}`);}",
+            ]
+        )
+    )
+    script = (DASHBOARD / "review-chemical-paper.js").read_text(encoding="utf-8")
+    assert 'appendCorrectionForm(document, card, molecule, "resolved_smiles"' in script
+    assert 'appendCorrectionForm(document, card, molecule, "smiles_expanded"' not in script
+    assert 'appendCorrectionForm(document, card, molecule, "smiles_unexpanded"' not in script
