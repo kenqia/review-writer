@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import io
 import json
 import os
 import re
@@ -26,8 +27,11 @@ from jsonschema import Draft202012Validator
 
 from .paper_evidence_store import PaperEvidenceStoreError, project_write_lock
 from .source_truth import (
+    ProjectSourceIndex,
     REPO_ROOT,
     SourceTruthError,
+    acquisition_receipt_digest,
+    build_project_source_index,
     canonical_digest,
     declared_study_ids,
     load_source_truth_bundle,
@@ -120,17 +124,6 @@ def _state_path(project: Path, study_id: str) -> Path:
     return project / STATE_ROOT / _identifier(study_id, "STUDY_ID_INVALID") / STATE_NAME
 
 
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    try:
-        with path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-    except OSError as exc:
-        raise ChemicalPaperError("ZIP_INVALID") from exc
-    return digest.hexdigest()
-
-
 def _json_bytes(value: object) -> bytes:
     try:
         return (json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True, indent=2) + "\n").encode("utf-8")
@@ -214,7 +207,13 @@ def _validate_state(state: object) -> dict[str, Any]:
     return copy.deepcopy(state)
 
 
-def load_chemical_paper_state(project: Path, study_id: str) -> dict[str, Any]:
+def load_chemical_paper_state(
+    project: Path,
+    study_id: str,
+    *,
+    source_index: ProjectSourceIndex | None = None,
+    declared_studies: list[str] | None = None,
+) -> dict[str, Any]:
     root = _project(project)
     path = _state_path(root, study_id)
     if not path.is_file() or path.is_symlink():
@@ -225,21 +224,20 @@ def load_chemical_paper_state(project: Path, study_id: str) -> dict[str, Any]:
         raise ChemicalPaperError("CHEMICAL_PAPER_STATE_INVALID") from exc
     state = _validate_state(value)
     try:
-        bundle = load_source_truth_bundle(root, study_id)
-        for current_study_id in declared_study_ids(root):
-            current_bundle = (
-                bundle
-                if current_study_id == study_id
-                else load_source_truth_bundle(root, current_study_id)
-            )
-            if (
-                current_bundle.get("project_id") != root.name
-                or current_bundle.get("study_id") != current_study_id
-            ):
-                raise SourceTruthError("SOURCE_TRUTH_IDENTITY_MISMATCH")
+        index = source_index or build_project_source_index(root)
+        studies = declared_studies or declared_study_ids(root)
+        if index.project != root or any(
+            current_study_id not in index.bundles_by_study
+            for current_study_id in studies
+        ):
+            raise SourceTruthError("SOURCE_TRUTH_IDENTITY_MISMATCH")
+        bundle = index.bundles_by_study.get(study_id)
+        if bundle is None:
+            raise SourceTruthError("SOURCE_TRUTH_MISSING")
         resolved_study_id, resolved_source = project_source_binding(
             root,
             state["source_id"],
+            source_index=index,
         )
     except SourceTruthError as exc:
         raise ChemicalPaperError("CHEMICAL_PAPER_SOURCE_TRUTH_STALE") from exc
@@ -308,13 +306,36 @@ def _safe_member_name(name: str) -> str:
     return normalized
 
 
-def _zip_inventory(path: Path) -> tuple[zipfile.ZipFile, list[zipfile.ZipInfo]]:
-    if path.is_symlink() or not path.is_file():
-        raise ChemicalPaperError("ZIP_INVALID")
+def _read_archive_snapshot(path: Path) -> bytes:
+    path = Path(path)
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor: int | None = None
     try:
-        if path.stat().st_size > MAX_ARCHIVE_BYTES:
+        descriptor = os.open(path, flags)
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ChemicalPaperError("ZIP_INVALID")
+        if metadata.st_size > MAX_ARCHIVE_BYTES:
             raise ChemicalPaperError("ZIP_SIZE_LIMIT")
-        archive = zipfile.ZipFile(path, "r")
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = None
+            snapshot = handle.read(MAX_ARCHIVE_BYTES + 1)
+    except ChemicalPaperError:
+        raise
+    except OSError as exc:
+        raise ChemicalPaperError("ZIP_INVALID") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    if len(snapshot) > MAX_ARCHIVE_BYTES:
+        raise ChemicalPaperError("ZIP_SIZE_LIMIT")
+    return snapshot
+
+
+def _zip_inventory(source: Path | bytes) -> tuple[zipfile.ZipFile, list[zipfile.ZipInfo]]:
+    snapshot = source if isinstance(source, bytes) else _read_archive_snapshot(source)
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(snapshot), "r")
         members = archive.infolist()
     except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile) as exc:
         raise ChemicalPaperError("ZIP_INVALID") from exc
@@ -473,8 +494,12 @@ def _source_binding(project: Path, study_id: str, pdf_sha256: str) -> tuple[dict
     _digest(pdf_sha256, "SOURCE_PDF_SHA256_INVALID")
     try:
         bundle = load_source_truth_bundle(project, study_id)
+        if study_id not in declared_study_ids(project):
+            raise SourceTruthError("STUDY_NOT_FOUND")
     except SourceTruthError as exc:
         raise ChemicalPaperError(exc.code) from exc
+    if bundle.get("project_id") != project.name or bundle.get("study_id") != study_id:
+        raise ChemicalPaperError("SOURCE_TRUTH_IDENTITY_MISMATCH")
     sources = bundle.get("sources")
     matches = [
         row for row in sources if isinstance(row, dict) and row.get("document_role") == "MAIN"
@@ -482,6 +507,15 @@ def _source_binding(project: Path, study_id: str, pdf_sha256: str) -> tuple[dict
     ] if isinstance(sources, list) else []
     if len(matches) != 1:
         raise ChemicalPaperError("SOURCE_PDF_STALE")
+    try:
+        resolved_study_id, resolved_source = project_source_binding(
+            project,
+            matches[0]["source_id"],
+        )
+    except SourceTruthError as exc:
+        raise ChemicalPaperError(exc.code) from exc
+    if resolved_study_id != study_id or resolved_source != matches[0]:
+        raise ChemicalPaperError("SOURCE_BINDING_INVALID")
     return bundle, matches[0]
 
 
@@ -504,7 +538,8 @@ def _validate_main(value: object, expected_pages: int) -> tuple[str, str, int]:
 
 
 def _archive_payload(path: Path, expected_pages: int) -> dict[str, Any]:
-    archive, members = _zip_inventory(path)
+    snapshot = _read_archive_snapshot(path)
+    archive, members = _zip_inventory(snapshot)
     try:
         if len(members) != 3:
             raise ChemicalPaperError("CHEMICAL_PAPER_FILE_SET_INVALID")
@@ -529,7 +564,7 @@ def _archive_payload(path: Path, expected_pages: int) -> dict[str, Any]:
         )
         inventory.append({"entry_name": member.filename, "file_kind": kind, "sha256": hashlib.sha256(payload).hexdigest(), "size_bytes": len(payload)})
     inventory.sort(key=lambda row: row["file_kind"])
-    archive_sha = _sha256_file(path)
+    archive_sha = hashlib.sha256(snapshot).hexdigest()
     seed = canonical_digest({"archive_sha256": archive_sha, "inventory": inventory})
     normalized_molecules = _normalize_molecules(molecules[0][2], page_count, seed)
     return {
@@ -553,7 +588,15 @@ def import_chemical_paper(
     root = _project(project)
     study_id = _identifier(study_id, "STUDY_ID_INVALID")
     who = _actor(actor)
+    try:
+        receipt_digest = acquisition_receipt_digest(root)
+    except SourceTruthError as exc:
+        raise ChemicalPaperError(exc.code) from exc
     bundle, source = _source_binding(root, study_id, source_pdf_sha256)
+    try:
+        source_truth_asset(root, study_id, source["source_id"], "pdf")
+    except SourceTruthError as exc:
+        raise ChemicalPaperError(exc.code) from exc
     parsed = _archive_payload(Path(zip_path), int(source["page_count"]))
     import_body = {
         "archive_sha256": parsed["archive_sha256"],
@@ -571,6 +614,31 @@ def import_chemical_paper(
     path = _state_path(root, study_id)
     try:
         with project_write_lock(root):
+            try:
+                current_receipt_digest = acquisition_receipt_digest(root)
+                current_bundle, current_source = _source_binding(
+                    root,
+                    study_id,
+                    source_pdf_sha256,
+                )
+            except (SourceTruthError, ChemicalPaperError) as exc:
+                raise ChemicalPaperError("SOURCE_INPUT_STALE") from exc
+            if (
+                current_receipt_digest != receipt_digest
+                or current_bundle.get("bundle_digest") != bundle.get("bundle_digest")
+                or current_source != source
+            ):
+                raise ChemicalPaperError("SOURCE_INPUT_STALE")
+            try:
+                source_truth_asset(root, study_id, source["source_id"], "pdf")
+            except SourceTruthError as exc:
+                raise ChemicalPaperError(exc.code) from exc
+            try:
+                current_archive = _read_archive_snapshot(Path(zip_path))
+            except ChemicalPaperError as exc:
+                raise ChemicalPaperError("ZIP_INPUT_STALE") from exc
+            if hashlib.sha256(current_archive).hexdigest() != parsed["archive_sha256"]:
+                raise ChemicalPaperError("ZIP_INPUT_STALE")
             existing: dict[str, Any] | None = None
             if path.exists():
                 existing = load_chemical_paper_state(root, study_id)
@@ -915,11 +983,26 @@ def chemical_paper_safe_project_state(project: Path) -> dict[str, Any]:
         studies = declared_study_ids(root)
     except SourceTruthError as exc:
         raise ChemicalPaperError(exc.code) from exc
+    source_index: ProjectSourceIndex | None = None
+    if any(_state_path(root, study_id).exists() for study_id in studies):
+        try:
+            source_index = build_project_source_index(root)
+        except SourceTruthError as exc:
+            raise ChemicalPaperError("CHEMICAL_PAPER_SOURCE_TRUTH_STALE") from exc
     summaries: list[dict[str, Any]] = []
     for study_id in studies:
         path = _state_path(root, study_id)
         if path.exists():
-            summaries.append(_study_summary(load_chemical_paper_state(root, study_id)))
+            summaries.append(
+                _study_summary(
+                    load_chemical_paper_state(
+                        root,
+                        study_id,
+                        source_index=source_index,
+                        declared_studies=studies,
+                    )
+                )
+            )
         else:
             summaries.append({
                 "study_id": study_id, "status": "missing", "backend": None,

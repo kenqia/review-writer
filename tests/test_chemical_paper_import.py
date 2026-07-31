@@ -3,8 +3,10 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import stat
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -150,6 +152,36 @@ def snapshot(project: Path) -> dict[str, bytes]:
     }
 
 
+def expand_source_truth_studies(project: Path, study_count: int) -> list[str]:
+    study_ids = [f"study-{index}" for index in range(1, study_count + 1)]
+    base_path = project / "01_evidence/source_truth/study-1/bundle.json"
+    base = json.loads(base_path.read_text(encoding="utf-8"))
+    receipt_path = project / "00_sources/acquisition_final_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["studies"] = [{"study_id": study_id} for study_id in study_ids]
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    for index, study_id in enumerate(study_ids, start=1):
+        body = {
+            key: copy.deepcopy(value)
+            for key, value in base.items()
+            if key != "bundle_digest"
+        }
+        body["study_id"] = study_id
+        body["study_identity"] = {
+            "doi": f"10.1000/performance-{index}",
+            "title": f"Performance fixture {index}",
+        }
+        body["sources"][0]["source_id"] = f"source-{index}"
+        body["sources"][0]["mineru_slug"] = f"study-{index}-main"
+        bundle_path = project / f"01_evidence/source_truth/{study_id}/bundle.json"
+        bundle_path.parent.mkdir(parents=True, exist_ok=True)
+        bundle_path.write_text(
+            json.dumps({**body, "bundle_digest": canonical_digest(body)}),
+            encoding="utf-8",
+        )
+    return study_ids
+
+
 def test_import_binds_pdf_and_preserves_explicit_unknowns_with_safe_projection(tmp_path: Path) -> None:
     from review_writer.project.chemical_paper import (
         chemical_paper_projection,
@@ -171,6 +203,9 @@ def test_import_binds_pdf_and_preserves_explicit_unknowns_with_safe_projection(t
     assert state["source_pdf_sha256"] == PDF_SHA
     assert state["source_truth_bundle_digest"]
     imported_event = state["imports"][state["current_import_digest"]]
+    assert imported_event["archive_sha256"] == hashlib.sha256(
+        archive.read_bytes()
+    ).hexdigest()
     assert imported_event["backend"] == "pipeline"
     assert imported_event["version"] == "3.4.4"
     assert imported_event["reaction_data_status"] == "unavailable_not_provided"
@@ -277,6 +312,73 @@ def test_safe_projection_routes_three_studies_to_their_quoted_bound_sources(
         str(project),
     ):
         assert forbidden not in encoded
+
+
+@pytest.mark.parametrize("study_count", (3, 30))
+def test_safe_projection_builds_a_fresh_linear_source_index_per_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    study_count: int,
+) -> None:
+    import review_writer.project.source_truth as source_truth
+    from review_writer.project.chemical_paper import (
+        ChemicalPaperError,
+        chemical_paper_projection,
+        import_chemical_paper,
+    )
+
+    project = source_truth_project(tmp_path)
+    study_ids = expand_source_truth_studies(project, study_count)
+    for index, study_id in enumerate(study_ids, start=1):
+        import_chemical_paper(
+            project,
+            study_id,
+            PDF_SHA,
+            write_chemical_zip(tmp_path / f"chemical-{index}.zip"),
+            ACTOR,
+        )
+
+    real_load = source_truth.load_source_truth_bundle
+    load_count = 0
+
+    def counted_load(root: Path, study_id: str) -> dict[str, object]:
+        nonlocal load_count
+        load_count += 1
+        return real_load(root, study_id)
+
+    monkeypatch.setattr(source_truth, "load_source_truth_bundle", counted_load)
+    projected = chemical_paper_projection(project)
+
+    assert len(projected["studies"]) == study_count
+    assert load_count <= 2 * study_count + 1
+    first_request_loads = load_count
+
+    first_bundle = real_load(project, study_ids[0])
+    orphan_body = {
+        key: copy.deepcopy(value)
+        for key, value in first_bundle.items()
+        if key != "bundle_digest"
+    }
+    orphan_body["study_id"] = "orphan-study"
+    orphan_body["study_identity"] = {
+        "doi": "10.1000/performance-orphan",
+        "title": "Fresh-index orphan collision",
+    }
+    orphan_path = project / "01_evidence/source_truth/orphan-study/bundle.json"
+    orphan_path.parent.mkdir(parents=True)
+    orphan_path.write_text(
+        json.dumps(
+            {**orphan_body, "bundle_digest": canonical_digest(orphan_body)}
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ChemicalPaperError,
+        match="CHEMICAL_PAPER_SOURCE_TRUTH_STALE",
+    ):
+        chemical_paper_projection(project)
+    assert first_request_loads < load_count <= first_request_loads + study_count + 2
 
 
 @pytest.mark.parametrize(
@@ -690,6 +792,173 @@ def test_import_rejects_source_stale_invalid_bbox_and_invalid_molblock_atomicall
         with pytest.raises(ChemicalPaperError, match=code):
             import_chemical_paper(project, "study-1", sha, archive, ACTOR)
         assert snapshot(project) == before
+
+
+@pytest.mark.parametrize(
+    ("asset_failure", "error_code"),
+    (("deleted", "SOURCE_ASSET_INVALID"), ("drift", "SOURCE_ASSET_DRIFT")),
+)
+def test_first_import_rejects_missing_or_drifted_pdf_without_chemical_state(
+    tmp_path: Path,
+    asset_failure: str,
+    error_code: str,
+) -> None:
+    from review_writer.project.chemical_paper import (
+        ChemicalPaperError,
+        import_chemical_paper,
+    )
+
+    project = source_truth_project(tmp_path)
+    archive = write_chemical_zip(tmp_path / "chemical.zip")
+    pdf_path = project / "00_sources/main.pdf"
+    pdf_path.unlink()
+    if asset_failure == "drift":
+        pdf_path.write_bytes(b"drifted original PDF")
+    before = snapshot(project)
+
+    with pytest.raises(ChemicalPaperError, match=error_code):
+        import_chemical_paper(project, "study-1", PDF_SHA, archive, ACTOR)
+
+    assert snapshot(project) == before
+    assert not (
+        project / "01_evidence/chemical_paper/study-1/state.json"
+    ).exists()
+
+
+@pytest.mark.parametrize(
+    ("stale_input", "error_code"),
+    (
+        ("bundle", "SOURCE_INPUT_STALE"),
+        ("receipt", "SOURCE_INPUT_STALE"),
+        ("pdf_deleted", "SOURCE_ASSET_INVALID"),
+        ("pdf_drift", "SOURCE_ASSET_DRIFT"),
+    ),
+)
+def test_first_import_revalidates_source_inputs_inside_commit_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stale_input: str,
+    error_code: str,
+) -> None:
+    import review_writer.project.chemical_paper as chemical_paper
+    from review_writer.project.chemical_paper import ChemicalPaperError
+    from review_writer.project.paper_evidence_store import (
+        project_write_lock as real_project_write_lock,
+    )
+
+    project = source_truth_project(tmp_path)
+    archive = write_chemical_zip(tmp_path / "chemical.zip")
+
+    @contextmanager
+    def drift_input_after_lock(root: Path):
+        with real_project_write_lock(root):
+            if stale_input == "bundle":
+                bundle_path = root / "01_evidence/source_truth/study-1/bundle.json"
+                bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+                body = {
+                    key: value
+                    for key, value in bundle.items()
+                    if key != "bundle_digest"
+                }
+                body["warnings"] = ["changed while import waited for commit lock"]
+                bundle_path.write_text(
+                    json.dumps({**body, "bundle_digest": canonical_digest(body)}),
+                    encoding="utf-8",
+                )
+            elif stale_input == "receipt":
+                receipt_path = root / "00_sources/acquisition_final_receipt.json"
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                receipt["lock_race_marker"] = "changed"
+                receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            else:
+                pdf_path = root / "00_sources/main.pdf"
+                pdf_path.unlink()
+                if stale_input == "pdf_drift":
+                    pdf_path.write_bytes(b"drifted while import waited for lock")
+            yield
+
+    monkeypatch.setattr(
+        chemical_paper,
+        "project_write_lock",
+        drift_input_after_lock,
+    )
+
+    with pytest.raises(ChemicalPaperError, match=error_code):
+        chemical_paper.import_chemical_paper(
+            project,
+            "study-1",
+            PDF_SHA,
+            archive,
+            ACTOR,
+        )
+
+    assert not (
+        project / "01_evidence/chemical_paper/study-1/state.json"
+    ).exists()
+
+
+def test_first_import_rejects_zip_path_replacement_without_mixed_lineage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import review_writer.project.chemical_paper as chemical_paper
+    from review_writer.project.chemical_paper import ChemicalPaperError
+
+    project = source_truth_project(tmp_path)
+    original = write_chemical_zip(
+        tmp_path / "chemical.zip",
+        molecules=[{
+            "mol_id": "old-carbon",
+            "page_idx": 0,
+            "bbox_normalized": [0.1, 0.2, 0.3, 0.4],
+            "smiles_expanded": "C",
+            "smiles_unexpanded": "C",
+            "mol_idt": "old-carbon",
+            "mol_block": v2000(("C",)),
+        }],
+    )
+    replacement = write_chemical_zip(
+        tmp_path / "replacement.zip",
+        molecules=[{
+            "mol_id": "new-nitrogen",
+            "page_idx": 0,
+            "bbox_normalized": [0.1, 0.2, 0.3, 0.4],
+            "smiles_expanded": "N",
+            "smiles_unexpanded": "N",
+            "mol_idt": "new-nitrogen",
+            "mol_block": v2000(("N",)),
+        }],
+    )
+    replacement_sha256 = hashlib.sha256(replacement.read_bytes()).hexdigest()
+    real_read_entry = chemical_paper._read_entry
+    replaced = False
+
+    def replace_path_after_entry_read(
+        archive: zipfile.ZipFile,
+        member: zipfile.ZipInfo,
+    ) -> bytes:
+        nonlocal replaced
+        payload = real_read_entry(archive, member)
+        if not replaced:
+            os.replace(replacement, original)
+            replaced = True
+        return payload
+
+    monkeypatch.setattr(chemical_paper, "_read_entry", replace_path_after_entry_read)
+
+    with pytest.raises(ChemicalPaperError, match="ZIP_INPUT_STALE"):
+        chemical_paper.import_chemical_paper(
+            project,
+            "study-1",
+            PDF_SHA,
+            original,
+            ACTOR,
+        )
+
+    assert hashlib.sha256(original.read_bytes()).hexdigest() == replacement_sha256
+    assert not (
+        project / "01_evidence/chemical_paper/study-1/state.json"
+    ).exists()
 
 
 def test_corrections_are_append_only_bound_and_stale_safe(tmp_path: Path) -> None:
