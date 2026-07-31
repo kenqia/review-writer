@@ -56,6 +56,7 @@
           "properties": {
             "dual_source_binding_digest": {"$ref": "#/$defs/sha256"},
             "chemical_completion_digest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+            "honest_progressive_digest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
             "reconciliation_digest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]}
           }
         }

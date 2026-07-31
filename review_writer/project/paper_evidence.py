@@ -30,7 +30,7 @@ from review_writer.project.source_truth import (
 from review_writer.project.dual_source import DualSourceError, require_dual_source_ready
 from review_writer.project.chemical_completion import (
     ChemicalCompletionError,
-    require_chemical_completion_ready,
+    require_honest_progressive_projection,
 )
 from review_writer.project.parse_reconciliation import (
     ParseReconciliationError,
@@ -1055,6 +1055,7 @@ def require_dual_evidence_ready(
     study_id: str,
     *,
     requires_chemical: bool,
+    allow_provisional: bool = True,
 ) -> dict[str, str | None]:
     """Fail closed on every current dual-parse dependency before Evidence writes."""
     try:
@@ -1064,10 +1065,19 @@ def require_dual_evidence_ready(
                 project, study_id, requires_chemical=chemical_required
             ),
             "chemical_completion_digest": None,
+            "honest_progressive_digest": None,
             "reconciliation_digest": None,
         }
         if chemical_required:
-            bindings["chemical_completion_digest"] = require_chemical_completion_ready(project, study_id)
+            honest_digest = require_honest_progressive_projection(
+                project,
+                study_id,
+                allow_provisional=allow_provisional,
+            )
+            # Keep the historical field populated for existing consumers while
+            # making the Honest Progressive binding explicit for new consumers.
+            bindings["chemical_completion_digest"] = honest_digest
+            bindings["honest_progressive_digest"] = honest_digest
             bindings["reconciliation_digest"] = require_reconciliation_ready(project, study_id)
         return bindings
     except (SourceTruthError, DualSourceError, ChemicalCompletionError, ParseReconciliationError) as exc:
@@ -1573,6 +1583,16 @@ def apply_paper_evidence_decision(project: Path, payload: object) -> dict[str, A
         freshness, _ = _freshness(project, candidate)
         if not freshness:
             raise PaperEvidenceError("PAPER_EVIDENCE_STALE")
+        bindings = candidate.get("dual_parse_bindings")
+        if isinstance(bindings, dict) and bindings.get("honest_progressive_digest"):
+            try:
+                require_honest_progressive_projection(
+                    project,
+                    candidate["study_id"],
+                    allow_provisional=False,
+                )
+            except ChemicalCompletionError as exc:
+                raise PaperEvidenceError("PAPER_EVIDENCE_STALE") from exc
         event, semantic = _normalize_decision_payload(candidate, payload)
         decisions = _load_decisions(project)
         prior_for_evidence = [

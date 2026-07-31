@@ -18,7 +18,8 @@ from .paper_evidence import (
     paper_evidence_state,
 )
 from .paper_evidence_store import PaperEvidenceStoreError, project_write_lock
-from .source_truth import REPO_ROOT, canonical_digest
+from .chemical_completion import ChemicalCompletionError, require_honest_progressive_projection
+from .source_truth import REPO_ROOT, SourceTruthError, canonical_digest, declared_study_ids, study_source_tier
 from .verification_decision import VerificationDecisionError, verification_decision
 
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -204,6 +205,29 @@ def _approved_evidence(project: Path) -> dict[str, dict[str, Any]]:
     }
 
 
+def _require_exact_chemical_coverage(project: Path) -> None:
+    """Keep exact synthesis candidate registration behind the 80% gate."""
+
+    if not (project / "01_evidence/dual_source").is_dir():
+        return
+    try:
+        studies = declared_study_ids(project)
+        core_studies = [
+            study_id
+            for study_id in studies
+            if study_source_tier(project, study_id) == "core"
+        ]
+    except SourceTruthError as exc:
+        raise SynthesisError(exc.code) from exc
+    try:
+        for study_id in core_studies:
+            require_honest_progressive_projection(
+                project, study_id, allow_provisional=False
+            )
+    except ChemicalCompletionError as exc:
+        raise SynthesisError(exc.code) from exc
+
+
 def partition_honest_progressive_evidence(rows: object) -> dict[str, Any]:
     """Partition evidence by the only downstream uses allowed by its state."""
 
@@ -252,6 +276,7 @@ def partition_honest_progressive_evidence(rows: object) -> dict[str, Any]:
 def register_synthesis_candidates(project: Path, payload: object) -> dict[str, Any]:
     project = _root(project); protocol = comparison_protocol_state(project)
     if not protocol.get("workflow_can_continue"): raise SynthesisError("COMPARISON_PROTOCOL_NOT_APPROVED")
+    _require_exact_chemical_coverage(project)
     if not isinstance(payload, dict): raise SynthesisError("SYNTHESIS_INVALID")
     raw = payload.get("claims", [payload])
     if not isinstance(raw, list): raise SynthesisError("SYNTHESIS_INVALID")

@@ -15,6 +15,7 @@ from jsonschema import Draft202012Validator
 from review_writer.project.chemical_completion import (
     ChemicalCompletionError,
     require_chemical_completion_ready,
+    require_honest_progressive_projection,
 )
 from review_writer.project.chemical_paper import ChemicalPaperError, chemical_paper_projection
 from review_writer.project.dual_source import DualSourceError, require_dual_source_ready
@@ -115,7 +116,9 @@ def build_parse_reconciliation(project: Path, study_id: str) -> dict[str, object
     root = Path(project).resolve(strict=True)
     try:
         dual_digest = require_dual_source_ready(root, study_id, requires_chemical=True)
-        completion_digest = require_chemical_completion_ready(root, study_id)
+        completion_digest = require_honest_progressive_projection(
+            root, study_id, allow_provisional=True
+        )
         bundle = load_source_truth_bundle(root, study_id)
         chemical_state = chemical_paper_projection(root)
     except (DualSourceError, ChemicalCompletionError, SourceTruthError, ChemicalPaperError) as exc:

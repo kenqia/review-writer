@@ -441,6 +441,60 @@ def apply_chemical_completion_batch(project: Path, study_id: str, payload: objec
     return {"status": "applied", "study_id": study_id, "applied_count": len(corrections), "version_token": state_view["version_token"], "gate_digest": state_view["gate_digest"]}
 
 
+def require_honest_progressive_projection(
+    project: Path,
+    study_id: str,
+    *,
+    allow_provisional: bool = True,
+) -> str:
+    """Require a current, structurally valid tri-state projection.
+
+    ``allow_provisional`` controls only the project coverage threshold.  It
+    never relaxes the authoritative-row or per-state value requirements.
+    """
+
+    gate = chemical_completion_state(project, study_id)
+    molecules = gate.get("molecules")
+    if not isinstance(molecules, list) or len(molecules) != gate.get("molecule_count"):
+        raise ChemicalCompletionError("HONEST_PROGRESSIVE_PROJECTION_INVALID")
+    for row in molecules:
+        if not isinstance(row, dict) or row.get("resolved_smiles_status") not in {
+            "CONFIRMED",
+            "AI_PROVISIONAL",
+            "BLOCKED",
+        }:
+            raise ChemicalCompletionError("HONEST_PROGRESSIVE_PROJECTION_INVALID")
+        status = row["resolved_smiles_status"]
+        value = row.get("resolved_smiles")
+        if status in {"CONFIRMED", "AI_PROVISIONAL"} and (
+            not isinstance(value, str) or not value.strip()
+        ):
+            raise ChemicalCompletionError("HONEST_PROGRESSIVE_VALUE_REQUIRED")
+        if status == "AI_PROVISIONAL":
+            confidence = row.get("confidence")
+            if (
+                not isinstance(row.get("pdf_locator"), dict)
+                or not row["pdf_locator"]
+                or isinstance(confidence, bool)
+                or not isinstance(confidence, (int, float))
+                or not 0 <= confidence <= 1
+                or not isinstance(row.get("provenance"), dict)
+                or not row["provenance"]
+            ):
+                raise ChemicalCompletionError(
+                    "HONEST_PROGRESSIVE_PROVISIONAL_PROVENANCE_REQUIRED"
+                )
+        if status == "BLOCKED" and (
+            value is not None
+            or not isinstance(row.get("gap_reason"), str)
+            or not row["gap_reason"].strip()
+        ):
+            raise ChemicalCompletionError("HONEST_PROGRESSIVE_GAP_REQUIRED")
+    if not allow_provisional and not gate["workflow_can_continue"]:
+        raise ChemicalCompletionError("CHEMICAL_COMPLETION_INCOMPLETE")
+    return str(gate["gate_digest"])
+
+
 def require_chemical_completion_ready(project: Path, study_id: str) -> str:
     gate = chemical_completion_state(project, study_id)
     if not gate["workflow_can_continue"]:

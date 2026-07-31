@@ -133,8 +133,11 @@ def _normalize_request(project: Path, request: object) -> dict[str, Any]:
     except SourceTruthError as exc:
         raise ContentAgentError(exc.code) from exc
     targets = value["target_ids"]
-    if value["request_kind"] == "paper_evidence" and not set(targets) <= studies:
-        raise ContentAgentError("REQUEST_TARGET_OUT_OF_SCOPE")
+    if value["request_kind"] == "paper_evidence":
+        if len(targets) != 1:
+            raise ContentAgentError("REQUEST_STUDY_LOCAL_REQUIRED")
+        if not set(targets) <= studies:
+            raise ContentAgentError("REQUEST_TARGET_OUT_OF_SCOPE")
     if value["request_kind"] == "synthesis_claims" and set(targets) != studies:
         raise ContentAgentError("REQUEST_TARGET_OUT_OF_SCOPE")
     return value
@@ -575,8 +578,11 @@ def _result_scope(root: Path, result: dict[str, Any]) -> None:
     except SourceTruthError as exc:
         raise ContentAgentError(exc.code) from exc
     targets = set(result["target_ids"])
-    if result["request_kind"] == "paper_evidence" and not targets <= studies:
-        raise ContentAgentError("RESULT_OUT_OF_SCOPE")
+    if result["request_kind"] == "paper_evidence":
+        if len(result["target_ids"]) != 1:
+            raise ContentAgentError("RESULT_STUDY_LOCAL_REQUIRED")
+        if not targets <= studies:
+            raise ContentAgentError("RESULT_OUT_OF_SCOPE")
     if result["request_kind"] == "synthesis_claims" and targets != studies:
         raise ContentAgentError("RESULT_OUT_OF_SCOPE")
     content = result["content"]
