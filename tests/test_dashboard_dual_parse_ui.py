@@ -311,7 +311,7 @@ def test_work_queues_project_only_researcher_safe_fields_without_default_lane() 
                 " reconciliation_items:[{study_id:'secret-study',object_id:'secret-object',registry_digest:'opaque-registry',kind:'molecule',status:'conflict',generic_candidate:'compound 3a',chemical_candidate:'compound 3b',page:4,pdf_page_url:'/api/project/case/pdf/study?page=4',actor_label:'模拟研究者',updated_at:'2026-07-30T09:12:00Z'}]});",
                 "if(model.importPreflight.statusLabel!=='预检完成，等待确认导入' || !model.importPreflight.confirmAvailable || model.importPreflight.pageLabel!=='6 页') throw new Error(JSON.stringify(model.importPreflight));",
                 "const completion=model.completionQueue[0];",
-                "if(completion.field!=='smiles_expanded' || completion.fieldLabel!=='展开 SMILES' || completion.locatorLabel!=='第 3 页 · 页面区域已定位') throw new Error(JSON.stringify(completion));",
+                "if(completion.displayLabel!=='分子条目 8' || completion.field!=='smiles_expanded' || completion.fieldLabel!=='展开 SMILES' || completion.locatorLabel!=='第 3 页 · 区域 x 10–30% · y 20–40%') throw new Error(JSON.stringify(completion));",
                 "const item=model.reconciliationItems[0];",
                 "if(item.statusLabel!=='两层候选冲突' || item.selectedLane!==null || item.genericCandidate!=='compound 3a' || item.chemicalCandidate!=='compound 3b') throw new Error(JSON.stringify(item));",
                 "if(JSON.stringify(item.allowedActions)!==JSON.stringify(['pdf_resolved','pdf_locator_only','reject_both'])) throw new Error(JSON.stringify(item));",
@@ -320,6 +320,66 @@ def test_work_queues_project_only_researcher_safe_fields_without_default_lane() 
             ]
         )
     )
+
+
+def test_completion_rows_expose_source_order_and_distinct_same_page_regions() -> None:
+    module_path = json.dumps(str(DUAL_SCRIPT))
+    _run_node(
+        "\n".join(
+            [
+                f"const ui=require({module_path});",
+                "const model=ui.projectionModel({schema_version:'dual-parse-projection.v1',status:'ready',studies:[],completion_queue:[",
+                " {study_id:'secret-study',molecule_index:7,molecule_id:'raw-molecule-a',version_token:'opaque-version',field:'mol_idt',page:4,bbox_normalized:[0.1,0.2,0.3,0.4],pdf_page_url:'/api/project/case/pdf/study?page=4',mol_block:'raw V2000 M  END',digest:'a'.repeat(64)},",
+                " {study_id:'secret-study',molecule_index:12,molecule_id:'raw-molecule-b',version_token:'opaque-version',field:'mol_idt',page:4,bbox_normalized:[0.55,0.1,0.8,0.25],pdf_page_url:'/api/project/case/pdf/study?page=4'}]});",
+                "const [first,second]=model.completionQueue;",
+                "if(first.displayLabel!=='分子条目 8' || second.displayLabel!=='分子条目 13') throw new Error(JSON.stringify(model.completionQueue));",
+                "if(first.locatorLabel!=='第 4 页 · 区域 x 10–30% · y 20–40%' || second.locatorLabel!=='第 4 页 · 区域 x 55–80% · y 10–25%') throw new Error(JSON.stringify(model.completionQueue));",
+                "if(JSON.stringify(first.normalizedBbox)!==JSON.stringify([0.1,0.2,0.3,0.4]) || first.locatorLabel===second.locatorLabel) throw new Error(JSON.stringify(model.completionQueue));",
+                "const encoded=JSON.stringify(model).toLowerCase();",
+                "for(const forbidden of ['secret-study','raw-molecule','opaque-version','mol_block','v2000','digest','aaaaaaaa']) if(encoded.includes(forbidden)) throw new Error(`leaked ${forbidden}`);",
+            ]
+        )
+    )
+
+
+def test_completion_renderer_draws_keyboard_reachable_distinct_bbox_overlays() -> None:
+    module_path = json.dumps(str(DUAL_SCRIPT))
+    _run_node(
+        "\n".join(
+            [
+                f"const ui=require({module_path});",
+                "class Node {",
+                " constructor(tag,id=''){this.tag=tag;this.id=id;this.children=[];this.attributes={};this.className='';this.textContent='';this.style={};}",
+                " append(...nodes){this.children.push(...nodes);}",
+                " replaceChildren(...nodes){this.children=[...nodes];}",
+                " setAttribute(name,value){this.attributes[name]=String(value);if(name==='id')this.id=String(value);}",
+                " addEventListener(){}",
+                " querySelector(selector){const id=selector.startsWith('#')?selector.slice(1):'';if(id&&this.id===id)return this;for(const child of this.children){if(child&&typeof child.querySelector==='function'){const found=child.querySelector(selector);if(found)return found;}}return null;}",
+                "}",
+                "const document={createElement:tag=>new Node(tag),createTextNode:value=>{const node=new Node('#text');node.textContent=String(value);return node;},body:new Node('body')};",
+                "const mount=new Node('main');for(const id of ['dual-study-status','chemical-import-preflight','chemical-completion-queue','reconciliation-list'])mount.append(new Node('section',id));",
+                "const model=ui.projectionModel({schema_version:'dual-parse-projection.v1',status:'ready',studies:[],completion_queue:[",
+                " {study_id:'secret-study',molecule_index:7,version_token:'opaque-version',field:'mol_idt',page:4,bbox_normalized:[0.1,0.2,0.3,0.4],pdf_page_url:'/api/project/case/pdf/study?page=4'},",
+                " {study_id:'secret-study',molecule_index:12,version_token:'opaque-version',field:'smiles_expanded',page:4,bbox_normalized:[0.55,0.1,0.8,0.25],pdf_page_url:'/api/project/case/pdf/study?page=4'}]});",
+                "ui.render(document,mount,model,{});",
+                "const all=[];const visit=node=>{all.push(node);for(const child of node.children||[])if(child&&typeof child==='object')visit(child);};visit(mount);",
+                "const locators=all.filter(node=>node.className==='dual-completion-locator');",
+                "const overlays=all.filter(node=>node.className==='dual-completion-bbox');",
+                "if(locators.length!==2 || overlays.length!==2) throw new Error(JSON.stringify({locators:locators.length,overlays:overlays.length}));",
+                "for(const [index,link] of locators.entries()){if(link.tag!=='a' || link.href!=='/api/project/case/pdf/study?page=4' || link.target!=='_blank' || !link.attributes['aria-label']?.includes(`分子条目 ${index===0?8:13}`)) throw new Error(JSON.stringify(link));}",
+                "const firstStyle=JSON.stringify(overlays[0].style);const secondStyle=JSON.stringify(overlays[1].style);",
+                "if(firstStyle===secondStyle || overlays[0].style.left!=='10%' || overlays[0].style.top!=='20%' || overlays[0].style.width!=='20%' || overlays[0].style.height!=='20%') throw new Error(JSON.stringify(overlays.map(node=>node.style)));",
+                "const visible=node=>[node.textContent,...(node.children||[]).map(visible)].join(' ');const rendered=visible(mount);",
+                "for(const expected of ['分子条目 8','分子条目 13','区域 x 10–30% · y 20–40%','区域 x 55–80% · y 10–25%'])if(!rendered.includes(expected))throw new Error(rendered);",
+                "for(const forbidden of ['secret-study','opaque-version','molecule_index'])if(rendered.includes(forbidden))throw new Error(`leaked ${forbidden}`);",
+            ]
+        )
+    )
+
+    css = DUAL_STYLE.read_text(encoding="utf-8")
+    assert ".dual-completion-locator" in css
+    assert ".dual-completion-bbox" in css
+    assert ".dual-completion-locator:focus-visible" in css
 
 
 def test_public_renderer_loader_and_dialog_keyboard_contract_are_present() -> None:

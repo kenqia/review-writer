@@ -192,6 +192,45 @@
   font-weight: 800;
 }
 
+.dual-completion-locator {
+  display: grid;
+  gap: 7px;
+  width: min(100%, 320px);
+  color: var(--review-green);
+  text-decoration: none;
+}
+
+.dual-completion-page-preview {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  background: #ece8dc;
+  border: 1px solid var(--review-rule-dark);
+}
+
+.dual-completion-page-image {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.dual-completion-bbox {
+  position: absolute;
+  box-sizing: border-box;
+  min-width: 4px;
+  min-height: 4px;
+  pointer-events: none;
+  background: rgba(210, 73, 45, .18);
+  border: 3px solid #d2492d;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, .88);
+}
+
+.dual-completion-locator-caption {
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.45;
+}
+
 .dual-parse-import-form label,
 .dual-completion-form label,
 .dual-reconciliation-form label {
@@ -282,6 +321,11 @@
 .dual-parse-workspace select:focus-visible,
 .dual-parse-workspace textarea:focus-visible,
 .dual-parse-dialog button:focus-visible {
+  outline: 3px solid var(--review-focus, #146c43);
+  outline-offset: 3px;
+}
+
+.dual-completion-locator:focus-visible {
   outline: 3px solid var(--review-focus, #146c43);
   outline-offset: 3px;
 }

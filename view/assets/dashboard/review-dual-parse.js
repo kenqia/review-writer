@@ -102,16 +102,38 @@
     return candidate;
   }
 
-  function locatorModel(row) {
+  function normalizedBbox(value) {
+    const bbox = array(value);
+    if (
+      bbox.length !== 4
+      || !bbox.every(Number.isFinite)
+      || bbox.some(coordinate => coordinate < 0 || coordinate > 1)
+      || bbox[0] > bbox[2]
+      || bbox[1] > bbox[3]
+    ) return null;
+    return bbox.slice();
+  }
+
+  function percentValue(value) {
+    return String(Number((value * 100).toFixed(4)));
+  }
+
+  function regionLabel(bbox) {
+    return `区域 x ${percentValue(bbox[0])}–${percentValue(bbox[2])}% · y ${percentValue(bbox[1])}–${percentValue(bbox[3])}%`;
+  }
+
+  function locatorModel(row, showRegion) {
     const page = positiveInteger(row.page);
-    const bbox = array(row.bbox_normalized);
-    return {
+    const bbox = normalizedBbox(row.bbox_normalized);
+    const model = {
       locatorLabel: page
-        ? `第 ${page} 页 · ${bbox.length === 4 && bbox.every(Number.isFinite) ? "页面区域已定位" : "页面区域未提供"}`
+        ? `第 ${page} 页 · ${bbox ? (showRegion ? regionLabel(bbox) : "页面区域已定位") : "页面区域未提供"}`
         : "PDF 定位未提供",
       pdfPageUrl: safePdfUrl(row.pdf_page_url),
       page,
     };
+    if (showRegion && bbox) model.normalizedBbox = bbox;
+    return model;
   }
 
   function studyModel(value, index) {
@@ -207,15 +229,16 @@
       smiles_unexpanded: "未展开 SMILES",
     };
     const field = fieldLabels[row.field] ? row.field : "unknown";
+    const moleculeIndex = nonNegativeInteger(row.molecule_index);
     const model = {
+      displayLabel: moleculeIndex === null ? "分子条目序号未提供" : `分子条目 ${moleculeIndex + 1}`,
       field,
       fieldLabel: fieldLabels[field] || "未知化学字段",
-      ...locatorModel(row),
+      ...locatorModel(row, true),
       actorLabel: publicText(row.actor_label, "决定者未提供"),
       updatedLabel: publicText(row.updated_at, "更新时间未提供"),
     };
     const studyId = text(row.study_id, "");
-    const moleculeIndex = nonNegativeInteger(row.molecule_index);
     const versionToken = text(row.version_token, "");
     if (studyId && moleculeIndex !== null && versionToken && field !== "unknown") {
       completionTargetByModel.set(model, {studyId, moleculeIndex, versionToken});
@@ -710,14 +733,39 @@
       group.rows.forEach((row, rowIndex) => {
         const fieldset = document.createElement("fieldset");
         const legend = document.createElement("legend");
-        legend.textContent = `${row.fieldLabel} · ${row.locatorLabel}`;
+        legend.textContent = `${row.displayLabel} · ${row.fieldLabel} · ${row.locatorLabel}`;
         fieldset.append(legend);
         if (row.pdfPageUrl) {
           const link = document.createElement("a");
           link.href = row.pdfPageUrl;
           link.target = "_blank";
           link.rel = "noopener";
-          link.textContent = "打开原始 PDF 页核对 ↗";
+          link.setAttribute("aria-label", `${row.displayLabel} · ${row.locatorLabel} · 打开原始 PDF 页核对`);
+          if (row.normalizedBbox) {
+            link.className = "dual-completion-locator";
+            const preview = document.createElement("span");
+            preview.className = "dual-completion-page-preview";
+            const image = document.createElement("img");
+            image.className = "dual-completion-page-image";
+            image.src = row.pdfPageUrl;
+            image.alt = "";
+            image.loading = "lazy";
+            image.decoding = "async";
+            const overlay = document.createElement("span");
+            overlay.className = "dual-completion-bbox";
+            overlay.setAttribute("aria-hidden", "true");
+            overlay.style.left = `${percentValue(row.normalizedBbox[0])}%`;
+            overlay.style.top = `${percentValue(row.normalizedBbox[1])}%`;
+            overlay.style.width = `${percentValue(row.normalizedBbox[2] - row.normalizedBbox[0])}%`;
+            overlay.style.height = `${percentValue(row.normalizedBbox[3] - row.normalizedBbox[1])}%`;
+            preview.append(image, overlay);
+            const caption = document.createElement("span");
+            caption.className = "dual-completion-locator-caption";
+            caption.textContent = "打开带高亮定位的原始 PDF 页 ↗";
+            link.append(preview, caption);
+          } else {
+            link.textContent = "打开原始 PDF 页核对 ↗";
+          }
           fieldset.append(link);
         }
         const value = document.createElement("input");
