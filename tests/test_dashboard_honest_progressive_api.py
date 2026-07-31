@@ -248,6 +248,62 @@ def _missing_chemical_projection() -> dict[str, object]:
     }
 
 
+def test_progress_exposes_honest_parse_quality_blocker_and_unique_next_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    project = tmp_path / "project"
+    project.mkdir()
+    bundle = project / "01_evidence" / "source_truth" / "study-a" / "bundle.json"
+    bundle.parent.mkdir(parents=True)
+    bundle.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(dashboard, "project_dir", lambda _root, _project_id: project)
+    monkeypatch.setattr(
+        dashboard,
+        "workflow_state",
+        lambda _project: {
+            "route": "evidence-to-release.v1",
+            "active_stage": "parsing",
+            "paper_evidence_ready": False,
+            "synthesis_ready": False,
+            "section_contracts_ready": False,
+            "manuscript_ready": False,
+            "internal_draft_export_ready": False,
+            "verified_release_ready": False,
+            "blockers": ["PARSE_QUALITY_REVIEW_REQUIRED"],
+        },
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "project_parse_quality_state",
+        lambda _project: {
+            "status": "needs_review",
+            "workflow_can_continue": False,
+            "reason_code": None,
+            "studies": [{"study_id": "study-a", "status": "needs_review"}],
+        },
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "project_source_handoff_payload",
+        lambda _root, _project_id: {
+            "counts": {"total": 3, "ready": 3},
+            "sources": [
+                {"study_id": "study-a", "role": "MAIN", "status": "已获得"}
+            ],
+        },
+    )
+    monkeypatch.setattr(dashboard, "project_evaluation_payload", lambda _project: {})
+
+    payload = dashboard.project_progress_payload(tmp_path, "project")
+
+    assert payload["active_stage"] == "parsing"
+    assert payload["blocker_code"] == "PARSE_QUALITY_REVIEW_REQUIRED"
+    assert "Generic" in payload["blocker"]
+    assert payload["recommended_next"] == "核对解析质量后继续"
+
+
 def test_dual_parse_api_projects_server_calculated_honest_progressive_summary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

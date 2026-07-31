@@ -4562,6 +4562,14 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
             for row in parse_projection.get("studies", [])
         )
     )
+    parse_review_required = bool(
+        new_route
+        and not parse_reparse_required
+        and not parse_needs_re_review
+        and isinstance(parse_projection, dict)
+        and parse_projection.get("status") == "needs_review"
+        and parse_projection.get("workflow_can_continue") is False
+    )
     state = read_json_if_exists(project / "00_brief/review_state.json") or {}
     source_payload = project_source_handoff_payload(review_root, project_id)
     screening = read_json_if_exists(project / "00_discovery/screening_decisions.json") or {}
@@ -4766,24 +4774,25 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
         if isinstance(row, dict) and visible_text(row.get("stage")).upper() == "BLOCKED"
     ]
     batch_recovery = batch_recoveries[0] if batch_recoveries else None
-    blocker = (
-        "解析质量记录不可读取，请重新生成后再核对原始 PDF。"
-        if parse_needs_attention
-        else (
+    if parse_needs_attention:
+        blocker = "解析质量记录不可读取，请重新生成后再核对原始 PDF。"
+    elif parse_reparse_required:
+        blocker = (
             f"{len(parse_reparse_studies)} 篇研究仍需重新解析；"
             "新解析结果生成前 Evidence 保持锁定。"
         )
-        if parse_reparse_required
-        else "上传的压缩包未通过来源核验，请按缺失清单修正后重新上传。"
-        if source_invalid
-        else "项目来源清单与后续证据状态不一致，请在 QoderWork 中恢复后继续。"
-        if pipeline_state_inconsistent
-        else batch_recovery["message"]
-        if batch_recovery
-        else "当前阶段需要补充信息，请查看推荐操作。"
-        if authoritative_invalid
-        else ""
-    )
+    elif parse_review_required:
+        blocker = "三篇论文的 Generic 解析质量仍需研究者逐项核对；Evidence 保持锁定。"
+    elif source_invalid:
+        blocker = "上传的压缩包未通过来源核验，请按缺失清单修正后重新上传。"
+    elif pipeline_state_inconsistent:
+        blocker = "项目来源清单与后续证据状态不一致，请在 QoderWork 中恢复后继续。"
+    elif batch_recovery:
+        blocker = batch_recovery["message"]
+    elif authoritative_invalid:
+        blocker = "当前阶段需要补充信息，请查看推荐操作。"
+    else:
+        blocker = ""
     stages = []
     for index, (stage_id, label, complete) in enumerate(stage_definitions):
         status = (
@@ -4960,6 +4969,8 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
             if parse_needs_attention
             else "PARSE_REPARSE_REQUIRED"
             if parse_reparse_required
+            else "PARSE_QUALITY_REVIEW_REQUIRED"
+            if parse_review_required
             else "SOURCE_ARCHIVE_INVALID"
             if source_invalid
             else "PIPELINE_STATE_INCONSISTENT"
