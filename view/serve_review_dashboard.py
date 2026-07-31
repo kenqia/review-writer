@@ -4646,7 +4646,27 @@ def normalized_project_id(project_id: str) -> str:
     # Route parsing owns the single percent-decoding boundary. A second decode
     # here would turn a legal literal "%2F" directory name into a separator.
     decoded = project_id
-    if not decoded or decoded in {".", ".."} or "\x00" in decoded or "/" in decoded or "\\" in decoded:
+    if (
+        not decoded
+        or decoded in {".", ".."}
+        or "\x00" in decoded
+        or "/" in decoded
+        or "\\" in decoded
+        or any(character in decoded for character in "\u2044\u2215\uff0f")
+    ):
+        raise ValueError("invalid project_id")
+    validation_shadow = decoded
+    for _ in range(16):
+        shadow_path = validation_shadow.replace("\\", "/")
+        if any(part in {".", ".."} for part in shadow_path.split("/")):
+            raise ValueError("invalid project_id")
+        if any(character in validation_shadow for character in "\u2044\u2215\uff0f"):
+            raise ValueError("invalid project_id")
+        next_shadow = unquote(validation_shadow)
+        if next_shadow == validation_shadow:
+            break
+        validation_shadow = next_shadow
+    else:
         raise ValueError("invalid project_id")
     return decoded
 

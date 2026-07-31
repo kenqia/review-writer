@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,7 @@ from review_writer.project.source_truth import (
     declared_study_ids,
     load_source_truth_bundle,
     source_truth_asset,
+    source_truth_asset_snapshot,
     write_source_truth_bundle,
 )
 
@@ -322,6 +325,70 @@ def test_write_load_and_asset_access_revalidate_current_bytes(tmp_path: Path) ->
     (project / "00_sources/papers/paper-a.pdf").write_bytes(b"changed")
     with pytest.raises(SourceTruthError, match="SOURCE_ASSET_DRIFT"):
         source_truth_asset(project, "scholarly-a", "stud-a", "pdf")
+
+
+def test_snapshot_fails_closed_when_secure_open_capabilities_are_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from review_writer.project import source_truth
+
+    project = _source_truth_project(tmp_path)
+    write_source_truth_bundle(project, "scholarly-a")
+    source_path = project / "00_sources/papers/paper-a.pdf"
+    outside = tmp_path / "outside.pdf"
+    outside.write_bytes(source_path.read_bytes())
+    real_safe_file = source_truth._safe_file
+    swapped = False
+
+    def safe_file_then_swap(root: Path, relative: str, code: str = "SOURCE_ASSET_INVALID") -> Path:
+        nonlocal swapped
+        path = real_safe_file(root, relative, code)
+        if relative == "00_sources/papers/paper-a.pdf" and not swapped:
+            swapped = True
+            source_path.unlink()
+            source_path.symlink_to(outside)
+        return path
+
+    real_is_dir = Path.is_dir
+    monkeypatch.setattr(source_truth, "_safe_file", safe_file_then_swap)
+    monkeypatch.delattr(source_truth.os, "O_NOFOLLOW")
+    monkeypatch.setattr(
+        Path,
+        "is_dir",
+        lambda path: False if path == Path("/proc/self/fd") else real_is_dir(path),
+    )
+
+    with pytest.raises(SourceTruthError, match="SOURCE_ASSET_SECURITY_UNAVAILABLE"):
+        with source_truth_asset_snapshot(
+            project,
+            "scholarly-a",
+            "stud-a",
+            "pdf",
+        ):
+            pass
+
+
+def test_snapshot_uses_effective_private_permissions_and_cleans_up(tmp_path: Path) -> None:
+    project = _source_truth_project(tmp_path)
+    write_source_truth_bundle(project, "scholarly-a")
+
+    with source_truth_asset_snapshot(
+        project,
+        "scholarly-a",
+        "stud-a",
+        "pdf",
+    ) as snapshot:
+        snapshot_path = snapshot.path
+        snapshot_dir = snapshot_path.parent
+        assert stat.S_IMODE(snapshot_dir.stat().st_mode) == 0o700
+        assert stat.S_IMODE(snapshot_path.stat().st_mode) == 0o600
+        if hasattr(os, "geteuid"):
+            assert snapshot_dir.stat().st_uid == os.geteuid()
+            assert snapshot_path.stat().st_uid == os.geteuid()
+        assert snapshot_path.read_bytes() == b"%PDF-main-a"
+
+    assert not snapshot_dir.exists()
 
 
 def test_real_three_paper_case_is_read_only_compatible() -> None:
