@@ -368,6 +368,52 @@ def test_progress_exposes_honest_parse_quality_blocker_and_unique_next_action(
     assert payload["recommended_next"] == "核对解析质量后继续"
 
 
+def test_review_state_projects_authoritative_honest_progressive_workflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    project = tmp_path / "project"
+    (project / "00_brief").mkdir(parents=True)
+    (project / "00_brief" / "review_state.json").write_text(
+        json.dumps(
+            {
+                "project_id": "project",
+                "brief": {"topic": "visible-light chemistry"},
+                "current_stage": "source_parse",
+                "status": "in_progress",
+                "blockers": [],
+                "counts": {"sources": 3, "evidence": 0, "claims": 0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(dashboard, "project_dir", lambda _root, _project_id: project)
+    monkeypatch.setattr(
+        dashboard,
+        "workflow_state",
+        lambda _project: {
+            "route": "evidence-to-release.v1",
+            "active_stage": "chemical_completion",
+            "blockers": ["CHEMICAL_COMPLETION_INCOMPLETE"],
+            "unique_next_action": "补全下一项化学字段",
+            "paper_evidence_ready": False,
+            "manuscript_ready": False,
+            "internal_draft_export_ready": False,
+            "verified_release_ready": False,
+        },
+    )
+
+    payload = dashboard.project_review_state_payload(tmp_path, "project")
+
+    assert payload["route"] == "evidence-to-release.v1"
+    assert payload["current_stage"] == "chemical_completion"
+    assert payload["status"] == "in_progress"
+    assert payload["blockers"] == ["CHEMICAL_COMPLETION_INCOMPLETE"]
+    assert payload["workflow_can_continue"] is False
+    assert payload["next_action"] == "补全下一项化学字段"
+
+
 def test_dual_parse_api_projects_server_calculated_honest_progressive_summary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

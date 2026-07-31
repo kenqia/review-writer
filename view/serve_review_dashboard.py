@@ -5685,6 +5685,38 @@ def project_review_state_payload(review_root: Path, project_id: str) -> dict[str
         project,
         Path("04_first_draft/first_draft.md"),
     ) is not None
+    try:
+        authoritative_workflow = workflow_state(project)
+    except (OSError, ValueError, KeyError, TypeError):
+        authoritative_workflow = {}
+    if authoritative_workflow.get("route") == "evidence-to-release.v1":
+        blockers = [
+            str(item)
+            for item in authoritative_workflow.get("blockers", [])
+            if str(item).strip()
+        ]
+        current_stage = visible_text(authoritative_workflow.get("active_stage")) or "sources"
+        return {
+            "project_id": project_id,
+            "route": "evidence-to-release.v1",
+            "brief": state.get("brief") if isinstance(state.get("brief"), dict) else {"topic": infer_project_topic(project)},
+            "current_stage": current_stage,
+            "status": "complete"
+            if not blockers and authoritative_workflow.get("verified_release_ready")
+            else "in_progress",
+            "blockers": blockers,
+            "counts": {key: int(counts.get(key) or 0) for key in ("sources", "evidence", "claims")},
+            "updated_at": state.get("updated_at"),
+            "default_workspace": (
+                "manuscript"
+                if first_draft_exists and current_stage in {"drafting", "final"}
+                else "cockpit"
+            ),
+            "workflow_can_continue": not blockers,
+            "next_action": authoritative_workflow.get("unique_next_action"),
+            "draft": {"first_draft_exists": first_draft_exists, "final_draft_exists": final_draft.exists(), "docx_exists": (final_stage / "final_draft.docx").exists()},
+            "summary": project_summary(review_root, project_id),
+        }
     return {
         "project_id": project_id,
         "brief": state.get("brief") if isinstance(state.get("brief"), dict) else {"topic": infer_project_topic(project)},
