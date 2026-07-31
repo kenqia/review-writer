@@ -57,6 +57,63 @@ EPISTEMIC_TYPES = frozenset(
 DECISION_ACTIONS = frozenset({"approve", "revise_and_approve", "reject"})
 ACTOR_TYPES = frozenset({"human_researcher", "simulated_researcher_agent"})
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+HONEST_PROGRESSIVE_ROUTE = "honest_progressive"
+HONEST_PROGRESSIVE_STATUSES = frozenset(
+    {"CONFIRMED", "AI_PROVISIONAL", "BLOCKED"}
+)
+HONEST_PROGRESSIVE_COVERAGE_THRESHOLD = 0.8
+HONEST_PROGRESSIVE_PROJECT_CORE_MOLECULE_COUNT = 309
+
+_SENSITIVE_TEXT_MARKERS = (
+    "path",
+    "sha",
+    "hash",
+    "digest",
+    "token",
+    "session",
+    "cookie",
+    "auth",
+    "private",
+    "http://",
+    "https://",
+    "url",
+    "uri",
+    "json",
+    "molblock",
+    "begin ct",
+    "m  end",
+)
+_SAFE_PROVENANCE_KEYS = frozenset(
+    {
+        "source",
+        "provider",
+        "evidence_id",
+        "claim_id",
+        "source_id",
+        "document_role",
+        "actor_type",
+        "actor_label",
+        "reason_code",
+        "status",
+        "page",
+        "section_or_item",
+        "figure_or_table",
+    }
+)
+_SAFE_LOCATOR_KEYS = frozenset(
+    {"source_mode", "page", "section_or_item", "figure_or_table"}
+)
+_SAFE_ACTOR_RESIDUAL_KEYS = frozenset(
+    {
+        "actor_type",
+        "actor_label",
+        "expected_actor_type",
+        "observed_actor_type",
+        "reason_code",
+        "status",
+        "occurred_at",
+    }
+)
 
 
 class PaperEvidenceError(ValueError):
@@ -65,6 +122,638 @@ class PaperEvidenceError(ValueError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+def _safe_text(value: object, *, fallback: str | None = None) -> str | None:
+    if not isinstance(value, str):
+        return fallback
+    text = value.strip()
+    if not text or len(text) > 2000:
+        return fallback
+    lowered = text.casefold()
+    if any(marker in lowered for marker in _SENSITIVE_TEXT_MARKERS):
+        return fallback
+    if text.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:[\\/]", text):
+        return fallback
+    if SHA256_RE.fullmatch(text):
+        return fallback
+    if text.startswith(("{", "[")) and text.endswith(("}", "]")):
+        return fallback
+    return text
+
+
+def _safe_provenance(value: object) -> dict[str, Any] | list[dict[str, Any]]:
+    source = value if isinstance(value, list) else [value]
+    safe_rows: list[dict[str, Any]] = []
+    for raw in source:
+        if not isinstance(raw, dict):
+            continue
+        safe: dict[str, Any] = {}
+        for key, item in raw.items():
+            if key not in _SAFE_PROVENANCE_KEYS:
+                continue
+            if key == "page":
+                if isinstance(item, int) and not isinstance(item, bool) and item >= 1:
+                    safe[key] = item
+                continue
+            text = _safe_text(item)
+            if text is not None:
+                safe[key] = text
+        if safe:
+            safe_rows.append(safe)
+    if isinstance(value, list):
+        return safe_rows
+    return safe_rows[0] if safe_rows else {}
+
+
+def _safe_locator(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    safe: dict[str, Any] = {}
+    for key, item in value.items():
+        if key not in _SAFE_LOCATOR_KEYS:
+            continue
+        if key == "page":
+            if isinstance(item, int) and not isinstance(item, bool) and item >= 1:
+                safe[key] = item
+            continue
+        text = _safe_text(item)
+        if text is not None:
+            safe[key] = text
+    return safe
+
+
+def _safe_value(value: object) -> object | None:
+    if value is None or isinstance(value, (int, float, bool)):
+        return value
+    if isinstance(value, str):
+        return _safe_text(value)
+    return None
+
+
+def _safe_actor_provenance_residual(value: object) -> list[dict[str, Any]]:
+    source = value if isinstance(value, list) else [value]
+    safe_rows: list[dict[str, Any]] = []
+    for raw in source:
+        if not isinstance(raw, dict):
+            continue
+        safe: dict[str, Any] = {}
+        for key, item in raw.items():
+            if key not in _SAFE_ACTOR_RESIDUAL_KEYS:
+                continue
+            if key == "occurred_at":
+                text = _safe_text(item)
+                if text is not None:
+                    safe[key] = text
+            else:
+                text = _safe_text(item)
+                if text is not None:
+                    safe[key] = text
+        if safe:
+            safe_rows.append(safe)
+    return safe_rows
+
+
+def _safe_gap_registry(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    safe_rows: list[dict[str, Any]] = []
+    for raw in value:
+        if not isinstance(raw, dict):
+            continue
+        reason = _safe_text(raw.get("reason"), fallback="Gap details omitted.")
+        item: dict[str, Any] = {
+            "status": "BLOCKED",
+            "reason": reason or "Gap details omitted.",
+        }
+        study_id = _safe_text(raw.get("study_id"))
+        molecule_id = _safe_text(raw.get("molecule_id"))
+        source_id = _safe_text(raw.get("source_id"))
+        locator = _safe_locator(raw.get("pdf_locator"))
+        if study_id is not None:
+            item["study_id"] = study_id
+        if molecule_id is not None:
+            item["molecule_id"] = molecule_id
+        if source_id is not None:
+            item["source_id"] = source_id
+        if locator:
+            item["pdf_locator"] = locator
+        if isinstance(raw.get("gap_index"), int) and raw["gap_index"] >= 1:
+            item["gap_index"] = raw["gap_index"]
+        safe_rows.append(item)
+    return safe_rows
+
+
+def _safe_paper_coverage(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    safe_rows: list[dict[str, Any]] = []
+    for raw in value:
+        if not isinstance(raw, dict):
+            continue
+        study_id = _safe_text(raw.get("study_id"))
+        counts = {
+            key: raw.get(key)
+            for key in (
+                "core_molecule_count",
+                "confirmed_count",
+                "ai_provisional_count",
+                "blocked_count",
+            )
+        }
+        if study_id is None or any(
+            isinstance(item, bool) or not isinstance(item, int) or item < 0
+            for item in counts.values()
+        ):
+            continue
+        ratio = raw.get("coverage_ratio")
+        if (
+            isinstance(ratio, bool)
+            or not isinstance(ratio, (int, float))
+            or not 0 <= ratio <= 1
+        ):
+            continue
+        safe_rows.append(
+            {
+                "study_id": study_id,
+                **counts,
+                "coverage_ratio": float(ratio),
+            }
+        )
+    return safe_rows
+
+
+def _safe_traceability(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    safe_rows: list[dict[str, Any]] = []
+    for raw in value:
+        if not isinstance(raw, dict):
+            continue
+        item: dict[str, Any] = {}
+        for key in ("study_id", "molecule_id", "status", "source_id"):
+            text = _safe_text(raw.get(key))
+            if text is not None:
+                item[key] = text
+        locator = _safe_locator(raw.get("pdf_locator"))
+        provenance = _safe_provenance(raw.get("provenance"))
+        if locator:
+            item["pdf_locator"] = locator
+        if provenance:
+            item["provenance"] = provenance
+        confidence = raw.get("confidence")
+        if (
+            isinstance(confidence, (int, float))
+            and not isinstance(confidence, bool)
+            and 0 <= confidence <= 1
+        ):
+            item["confidence"] = confidence
+        if item:
+            safe_rows.append(item)
+    return safe_rows
+
+
+def _honest_progressive_status(row: dict[str, Any]) -> tuple[str, bool]:
+    """Normalize current and legacy evidence statuses without upgrading AI output."""
+
+    value = row.get("status", row.get("molecule_status", row.get("state")))
+    if isinstance(value, str):
+        status = value.strip().upper()
+        if status in HONEST_PROGRESSIVE_STATUSES:
+            return status, False
+        if status in {"APPROVED", "HUMAN_APPROVED", "VERIFIED"}:
+            return "CONFIRMED", True
+        if status in {
+            "REJECTED",
+            "STALE",
+            "NEEDS_REVIEW",
+            "MISSING",
+            "UNRESOLVED",
+        }:
+            return "BLOCKED", True
+    decision = row.get("decision")
+    if isinstance(decision, dict):
+        action = decision.get("action")
+        if action in {"approve", "revise_and_approve", "verify"}:
+            return "CONFIRMED", True
+        if action in {"reject", "block"}:
+            return "BLOCKED", True
+    if row.get("human_verified") is True:
+        return "CONFIRMED", True
+    return "BLOCKED", True
+
+
+def _honest_progressive_rows(rows: object) -> list[dict[str, Any]]:
+    if not isinstance(rows, list):
+        raise PaperEvidenceError("HONEST_PROGRESSIVE_ROWS_INVALID")
+    normalized: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for index, raw in enumerate(rows):
+        if not isinstance(raw, dict):
+            raise PaperEvidenceError("HONEST_PROGRESSIVE_ROW_INVALID")
+        status, legacy = _honest_progressive_status(raw)
+        study_id = raw.get("study_id", raw.get("paper_id", "unknown-study"))
+        molecule_id = raw.get(
+            "molecule_id", raw.get("mol_id", raw.get("id", f"molecule-{index + 1}"))
+        )
+        if not isinstance(study_id, str) or not study_id.strip():
+            raise PaperEvidenceError("HONEST_PROGRESSIVE_STUDY_ID_INVALID")
+        if not isinstance(molecule_id, str) or not molecule_id.strip():
+            raise PaperEvidenceError("HONEST_PROGRESSIVE_MOLECULE_ID_INVALID")
+        safe_study_id = _safe_text(study_id)
+        safe_molecule_id = _safe_text(molecule_id)
+        if safe_study_id is None:
+            raise PaperEvidenceError("HONEST_PROGRESSIVE_STUDY_ID_UNSAFE")
+        if safe_molecule_id is None:
+            raise PaperEvidenceError("HONEST_PROGRESSIVE_MOLECULE_ID_UNSAFE")
+        study_id = safe_study_id
+        molecule_id = safe_molecule_id
+        identity = (study_id, molecule_id)
+        if identity in seen:
+            raise PaperEvidenceError("HONEST_PROGRESSIVE_MOLECULE_DUPLICATE")
+        seen.add(identity)
+        locator = raw.get("pdf_locator", raw.get("locator"))
+        provenance = raw.get("provenance")
+        if provenance is None and isinstance(raw.get("source"), str):
+            provenance = {"source": raw["source"]}
+        safe_locator = _safe_locator(locator)
+        safe_provenance = _safe_provenance(provenance)
+        raw_source_id = raw.get("source_id")
+        if raw_source_id is not None and (
+            not isinstance(raw_source_id, str) or not raw_source_id.strip()
+        ):
+            raise PaperEvidenceError("HONEST_PROGRESSIVE_SOURCE_ID_INVALID")
+        source_id = _safe_text(raw_source_id)
+        actual_value = raw.get("value", raw.get("statement"))
+        confidence = raw.get("confidence")
+        if status == "AI_PROVISIONAL":
+            if (
+                isinstance(confidence, bool)
+                or not isinstance(confidence, (int, float))
+                or not 0 <= confidence <= 1
+                or not safe_locator
+                or not safe_provenance
+            ):
+                raise PaperEvidenceError(
+                    "HONEST_PROGRESSIVE_PROVISIONAL_PROVENANCE_REQUIRED"
+                )
+        if status == "CONFIRMED" and not legacy and actual_value is None:
+            raise PaperEvidenceError("HONEST_PROGRESSIVE_CONFIRMED_VALUE_REQUIRED")
+        safe_actual_value = _safe_value(actual_value)
+        if status == "CONFIRMED" and not legacy and safe_actual_value is None:
+            raise PaperEvidenceError("HONEST_PROGRESSIVE_VALUE_UNSAFE")
+        gap_reason = _safe_text(raw.get("gap_reason"))
+        if status == "BLOCKED":
+            if actual_value is not None:
+                raise PaperEvidenceError("HONEST_PROGRESSIVE_BLOCKED_VALUE_FORBIDDEN")
+            if not isinstance(gap_reason, str) or not gap_reason.strip():
+                gap_reason = (
+                    "Legacy evidence is not currently eligible for an exact conclusion."
+                    if legacy
+                    else None
+                )
+            if not isinstance(gap_reason, str) or not gap_reason.strip():
+                raise PaperEvidenceError("HONEST_PROGRESSIVE_GAP_REASON_REQUIRED")
+            actual_value = None
+        traceability_ready = bool(
+            isinstance(source_id, str)
+            and bool(safe_locator)
+            and bool(safe_provenance)
+        )
+        item: dict[str, Any] = {
+            "study_id": study_id,
+            "molecule_id": molecule_id,
+            "status": status,
+            "value": safe_actual_value,
+            "source_id": source_id,
+            "pdf_locator": safe_locator,
+            "provenance": safe_provenance,
+            "traceability_ready": traceability_ready,
+        }
+        if status == "AI_PROVISIONAL":
+            item["confidence"] = confidence
+            item["provisional"] = True
+        elif status == "CONFIRMED":
+            item["provisional"] = False
+        else:
+            item["gap_reason"] = gap_reason
+        residual = _safe_actor_provenance_residual(
+            raw.get("actor_provenance_residual")
+        )
+        if residual:
+            item["_actor_provenance_residual"] = residual
+        normalized.append(item)
+    return normalized
+
+
+def build_honest_progressive_summary(
+    rows: object,
+    core_molecule_count: int | None = None,
+    *,
+    uncertainty_statement: str | None = None,
+    gap_registry: object | None = None,
+    paper_core_molecule_counts: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    """Build the shared tri-state, coverage-bound downstream projection.
+
+    This is deliberately a downstream projection: it never turns an AI value
+    into a confirmed value and never exposes a blocked value as scientific data.
+    """
+
+    source_rows = rows
+    inferred_core: object = None
+    if isinstance(rows, dict):
+        inferred_core = rows.get("core_molecule_count")
+        source_rows = rows.get("molecules", rows.get("rows", rows.get("evidence", [])))
+        if gap_registry is None:
+            gap_registry = rows.get("gap_registry")
+        if uncertainty_statement is None:
+            candidate_uncertainty = rows.get("uncertainty_statement")
+            if isinstance(candidate_uncertainty, str):
+                uncertainty_statement = candidate_uncertainty
+        if paper_core_molecule_counts is None and isinstance(
+            rows.get("paper_core_molecule_counts"), dict
+        ):
+            paper_core_molecule_counts = rows["paper_core_molecule_counts"]
+    normalized = _honest_progressive_rows(source_rows)
+    if core_molecule_count is None:
+        core_molecule_count = inferred_core if inferred_core is not None else len(normalized)
+    if (
+        isinstance(core_molecule_count, bool)
+        or not isinstance(core_molecule_count, int)
+        or core_molecule_count < 0
+        or core_molecule_count < len(normalized)
+    ):
+        raise PaperEvidenceError("HONEST_PROGRESSIVE_CORE_MOLECULE_COUNT_INVALID")
+    confirmed_count = sum(row["status"] == "CONFIRMED" for row in normalized)
+    ai_provisional_count = sum(row["status"] == "AI_PROVISIONAL" for row in normalized)
+    if confirmed_count + ai_provisional_count > core_molecule_count:
+        raise PaperEvidenceError("HONEST_PROGRESSIVE_CORE_MOLECULE_COUNT_INVALID")
+    blocked_count = core_molecule_count - confirmed_count - ai_provisional_count
+    coverage_ratio = (
+        1.0
+        if core_molecule_count == 0
+        else (confirmed_count + ai_provisional_count) / core_molecule_count
+    )
+    study_ids = sorted({row["study_id"] for row in normalized})
+    if paper_core_molecule_counts is not None:
+        safe_paper_core_molecule_counts: dict[str, int] = {}
+        for key, value in paper_core_molecule_counts.items():
+            if (
+                not isinstance(key, str)
+                or not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < 0
+            ):
+                raise PaperEvidenceError("HONEST_PROGRESSIVE_PAPER_COUNT_INVALID")
+            safe_key = _safe_text(key)
+            if safe_key is not None:
+                safe_paper_core_molecule_counts[safe_key] = value
+        paper_core_molecule_counts = safe_paper_core_molecule_counts
+        study_ids = sorted(set(study_ids) | set(paper_core_molecule_counts))
+    if len(study_ids) == 1 and paper_core_molecule_counts is None:
+        paper_counts = {study_ids[0]: core_molecule_count}
+    else:
+        paper_counts = {
+            study_id: (
+                paper_core_molecule_counts.get(study_id, 0)
+                if paper_core_molecule_counts is not None
+                else sum(row["study_id"] == study_id for row in normalized)
+            )
+            for study_id in study_ids
+        }
+        assigned = sum(paper_counts.values())
+        if assigned < core_molecule_count:
+            paper_counts["__unattributed__"] = core_molecule_count - assigned
+            study_ids = sorted(set(study_ids) | {"__unattributed__"})
+    actor_provenance_residual: list[dict[str, Any]] = []
+    for row in normalized:
+        actor_provenance_residual.extend(
+            copy.deepcopy(row.get("_actor_provenance_residual", []))
+        )
+    if isinstance(rows, dict):
+        actor_provenance_residual.extend(
+            _safe_actor_provenance_residual(rows.get("actor_provenance_residual"))
+        )
+    gaps = [
+        {
+            "study_id": row["study_id"],
+            "molecule_id": row["molecule_id"],
+            "status": "BLOCKED",
+            "reason": row["gap_reason"],
+            **(
+                {"source_id": row["source_id"]}
+                if row.get("source_id") is not None
+                else {}
+            ),
+            **(
+                {"pdf_locator": copy.deepcopy(row["pdf_locator"])}
+                if row.get("pdf_locator") is not None
+                else {}
+            ),
+        }
+        for row in normalized
+        if row["status"] == "BLOCKED"
+    ]
+    missing_count = blocked_count - len(gaps)
+    for index in range(max(0, missing_count)):
+        gaps.append(
+            {
+                "study_id": (
+                    study_ids[0]
+                    if len(study_ids) == 1
+                    else "__unattributed__"
+                ),
+                "molecule_id": None,
+                "status": "BLOCKED",
+                "reason": "No current molecule record was provided.",
+                "gap_index": index + 1,
+            }
+        )
+    if gap_registry is not None:
+        if not isinstance(gap_registry, list) or not all(
+            isinstance(item, dict) for item in gap_registry
+        ):
+            raise PaperEvidenceError("HONEST_PROGRESSIVE_GAP_REGISTRY_INVALID")
+        gaps.extend(_safe_gap_registry(gap_registry))
+    paper_coverage: list[dict[str, Any]] = []
+    for study_id in study_ids:
+        study_rows = [row for row in normalized if row["study_id"] == study_id]
+        study_confirmed = sum(row["status"] == "CONFIRMED" for row in study_rows)
+        study_provisional = sum(row["status"] == "AI_PROVISIONAL" for row in study_rows)
+        study_core = paper_counts.get(study_id, len(study_rows))
+        study_blocked = max(0, study_core - study_confirmed - study_provisional)
+        paper_coverage.append(
+            {
+                "study_id": study_id,
+                "core_molecule_count": study_core,
+                "confirmed_count": study_confirmed,
+                "ai_provisional_count": study_provisional,
+                "blocked_count": study_blocked,
+                "coverage_ratio": (
+                    1.0
+                    if study_core == 0
+                    else (study_confirmed + study_provisional) / study_core
+                ),
+            }
+        )
+    uncertainty_statement = _safe_text(uncertainty_statement)
+    if uncertainty_statement is None:
+        uncertainty_statement = (
+            f"{confirmed_count + ai_provisional_count}/{core_molecule_count} core "
+            "molecules are covered by confirmed or AI-provisional evidence; "
+            f"{blocked_count} remain blocked and are disclosed only as gaps or limitations."
+        )
+    traceability = [
+        {
+            key: copy.deepcopy(row[key])
+            for key in (
+                "study_id",
+                "molecule_id",
+                "status",
+                "source_id",
+                "pdf_locator",
+                "provenance",
+                "confidence",
+            )
+            if key in row and row[key] is not None
+        }
+        for row in normalized
+    ]
+    return {
+        "route": HONEST_PROGRESSIVE_ROUTE,
+        "core_molecule_count": core_molecule_count,
+        "confirmed_count": confirmed_count,
+        "ai_provisional_count": ai_provisional_count,
+        "blocked_count": blocked_count,
+        "coverage_ratio": coverage_ratio,
+        "coverage_threshold": HONEST_PROGRESSIVE_COVERAGE_THRESHOLD,
+        "coverage_sufficient": coverage_ratio >= HONEST_PROGRESSIVE_COVERAGE_THRESHOLD,
+        "paper_coverage": paper_coverage,
+        "uncertainty_statement": uncertainty_statement.strip(),
+        "gap_registry": gaps,
+        "traceability": traceability,
+        "actor_provenance_residual": actor_provenance_residual,
+        "credits_status": "NOT_APPLICABLE_BY_CURRENT_SCOPE",
+    }
+
+
+def honest_progressive_summary_from_projection(
+    value: object, *, project_scope: bool = False
+) -> dict[str, Any] | None:
+    """Read a future Domain projection or return ``None`` for legacy input."""
+
+    if not isinstance(value, dict):
+        return None
+    candidate = value.get("honest_progressive", value)
+    if not isinstance(candidate, dict):
+        return None
+    molecules = candidate.get("molecules", candidate.get("rows"))
+    if isinstance(molecules, list):
+        project_core_molecule_count = (
+            HONEST_PROGRESSIVE_PROJECT_CORE_MOLECULE_COUNT
+            if project_scope
+            else candidate.get("core_molecule_count")
+        )
+        return build_honest_progressive_summary(
+            {
+                "molecules": molecules,
+                "actor_provenance_residual": candidate.get(
+                    "actor_provenance_residual"
+                ),
+            },
+            core_molecule_count=project_core_molecule_count,
+            uncertainty_statement=candidate.get("uncertainty_statement"),
+            gap_registry=candidate.get("gap_registry"),
+            paper_core_molecule_counts=candidate.get("paper_core_molecule_counts"),
+        )
+    required = {
+        "route",
+        "core_molecule_count",
+        "confirmed_count",
+        "ai_provisional_count",
+        "blocked_count",
+        "coverage_ratio",
+        "coverage_threshold",
+        "paper_coverage",
+        "uncertainty_statement",
+        "gap_registry",
+        "traceability",
+    }
+    if candidate.get("route") != HONEST_PROGRESSIVE_ROUTE or not required.issubset(
+        candidate
+    ):
+        return None
+    integer_fields = (
+        "core_molecule_count",
+        "confirmed_count",
+        "ai_provisional_count",
+        "blocked_count",
+    )
+    if any(
+        isinstance(candidate.get(key), bool)
+        or not isinstance(candidate.get(key), int)
+        or candidate[key] < 0
+        for key in integer_fields
+    ):
+        raise PaperEvidenceError("HONEST_PROGRESSIVE_SUMMARY_INVALID")
+    core_count = candidate["core_molecule_count"]
+    confirmed = candidate["confirmed_count"]
+    provisional = candidate["ai_provisional_count"]
+    blocked = candidate["blocked_count"]
+    if confirmed + provisional + blocked != core_count:
+        raise PaperEvidenceError("HONEST_PROGRESSIVE_SUMMARY_INVALID")
+    ratio = candidate["coverage_ratio"]
+    threshold = candidate["coverage_threshold"]
+    if (
+        isinstance(ratio, bool)
+        or not isinstance(ratio, (int, float))
+        or not 0 <= ratio <= 1
+        or isinstance(threshold, bool)
+        or not isinstance(threshold, (int, float))
+        or not 0 <= threshold <= 1
+        or not isinstance(candidate["uncertainty_statement"], str)
+        or not candidate["uncertainty_statement"].strip()
+        or not isinstance(candidate["paper_coverage"], list)
+        or not isinstance(candidate["gap_registry"], list)
+        or not isinstance(candidate["traceability"], list)
+    ):
+        raise PaperEvidenceError("HONEST_PROGRESSIVE_SUMMARY_INVALID")
+    expected_ratio = 1.0 if core_count == 0 else (confirmed + provisional) / core_count
+    if (
+        abs(float(ratio) - expected_ratio) > 1e-9
+        or abs(float(threshold) - HONEST_PROGRESSIVE_COVERAGE_THRESHOLD) > 1e-9
+        or (
+            project_scope
+            and core_count != HONEST_PROGRESSIVE_PROJECT_CORE_MOLECULE_COUNT
+        )
+    ):
+        raise PaperEvidenceError("HONEST_PROGRESSIVE_SUMMARY_INVALID")
+    uncertainty = _safe_text(candidate["uncertainty_statement"])
+    if uncertainty is None:
+        uncertainty = (
+            f"{confirmed + provisional}/{core_count} core molecules are covered; "
+            f"{blocked} remain blocked and are disclosed as gaps or limitations."
+        )
+    return {
+        "route": HONEST_PROGRESSIVE_ROUTE,
+        "core_molecule_count": core_count,
+        "confirmed_count": confirmed,
+        "ai_provisional_count": provisional,
+        "blocked_count": blocked,
+        "coverage_ratio": float(ratio),
+        "coverage_threshold": HONEST_PROGRESSIVE_COVERAGE_THRESHOLD,
+        "coverage_sufficient": expected_ratio
+        >= HONEST_PROGRESSIVE_COVERAGE_THRESHOLD,
+        "paper_coverage": _safe_paper_coverage(candidate["paper_coverage"]),
+        "uncertainty_statement": uncertainty,
+        "gap_registry": _safe_gap_registry(candidate["gap_registry"]),
+        "traceability": _safe_traceability(candidate["traceability"]),
+        "actor_provenance_residual": _safe_actor_provenance_residual(
+            candidate.get("actor_provenance_residual")
+        ),
+        "credits_status": "NOT_APPLICABLE_BY_CURRENT_SCOPE",
+    }
 
 
 @contextmanager
@@ -1013,9 +1702,17 @@ def _paper_evidence_state(project: Path, *, persist: bool) -> dict[str, Any]:
     else:
         reason_code = "PAPER_EVIDENCE_NOT_READY"
     projection_digest = canonical_digest(rows)
+    try:
+        honest_summary = build_honest_progressive_summary(
+            rows, core_molecule_count=len(rows)
+        )
+    except PaperEvidenceError:
+        # Existing v1 projections remain readable even when they lack the
+        # optional Honest Progressive provenance fields.
+        honest_summary = None
     if persist:
         _atomic_jsonl(project, project / PROJECTION_PATH, rows)
-    return {
+    result: dict[str, Any] = {
         "status": "approved" if ready else "needs_review",
         "reason_code": reason_code,
         "workflow_can_continue": ready,
@@ -1029,6 +1726,11 @@ def _paper_evidence_state(project: Path, *, persist: bool) -> dict[str, Any]:
         "stale_count": counts["stale"],
         "rows": rows,
     }
+    if honest_summary is not None:
+        result.update(honest_summary)
+    else:
+        result["route"] = HONEST_PROGRESSIVE_ROUTE
+    return result
 
 
 def paper_evidence_state(project: Path) -> dict[str, Any]:

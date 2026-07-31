@@ -11,7 +11,12 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
-from .paper_evidence import PaperEvidenceError, paper_evidence_state
+from .paper_evidence import (
+    HONEST_PROGRESSIVE_ROUTE,
+    PaperEvidenceError,
+    _honest_progressive_rows,
+    paper_evidence_state,
+)
 from .paper_evidence_store import PaperEvidenceStoreError, project_write_lock
 from .source_truth import REPO_ROOT, canonical_digest
 from .verification_decision import VerificationDecisionError, verification_decision
@@ -192,7 +197,56 @@ def coverage_map_state(project: Path) -> dict[str, Any]:
 
 def _approved_evidence(project: Path) -> dict[str, dict[str, Any]]:
     state = paper_evidence_state(project)
-    return {row["evidence_id"]: row for row in state.get("rows", []) if row.get("status") == "approved"}
+    return {
+        row["evidence_id"]: row
+        for row in state.get("rows", [])
+        if row.get("status") in {"approved", "CONFIRMED"}
+    }
+
+
+def partition_honest_progressive_evidence(rows: object) -> dict[str, Any]:
+    """Partition evidence by the only downstream uses allowed by its state."""
+
+    normalized = _honest_progressive_rows(rows)
+    exact: list[dict[str, Any]] = []
+    internal: list[dict[str, Any]] = []
+    limitations: list[dict[str, Any]] = []
+    traceability: list[dict[str, Any]] = []
+    for raw in normalized:
+        row = copy.deepcopy(raw)
+        row.pop("traceability_ready", None)
+        row.pop("provisional", None)
+        status = row.get("status")
+        if status == "BLOCKED":
+            row["value"] = None
+            limitations.append(row)
+        elif status in {"CONFIRMED", "AI_PROVISIONAL"}:
+            row["provisional"] = status == "AI_PROVISIONAL"
+            internal.append(row)
+            if status == "CONFIRMED":
+                exact.append(copy.deepcopy(row))
+        traceability.append(
+            {
+                key: copy.deepcopy(row[key])
+                for key in (
+                    "study_id",
+                    "molecule_id",
+                    "status",
+                    "source_id",
+                    "pdf_locator",
+                    "provenance",
+                    "confidence",
+                )
+                if key in row and row[key] is not None
+            }
+        )
+    return {
+        "route": HONEST_PROGRESSIVE_ROUTE,
+        "exact_conclusions": exact,
+        "internal_comparison": internal,
+        "limitation_disclosures": limitations,
+        "traceability": traceability,
+    }
 
 
 def register_synthesis_candidates(project: Path, payload: object) -> dict[str, Any]:

@@ -20,6 +20,12 @@ from review_writer.delivery.chemical_paper_release import (
     safe_chemical_paper_projection,
 )
 from review_writer.delivery.dual_parse_release import dual_parse_release_state
+from review_writer.project.paper_evidence import (
+    HONEST_PROGRESSIVE_ROUTE,
+    HONEST_PROGRESSIVE_COVERAGE_THRESHOLD,
+    PaperEvidenceError,
+    honest_progressive_summary_from_projection,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -78,6 +84,70 @@ class BenchmarkError(ValueError):
     def __init__(self, code: str, message: str = "") -> None:
         super().__init__(f"{code}: {message}" if message else code)
         self.code = code
+
+
+def evaluate_honest_progressive(summary: object) -> dict[str, Any]:
+    """Evaluate coverage, source traceability, and gap honesty only."""
+
+    try:
+        normalized = honest_progressive_summary_from_projection(
+            summary, project_scope=True
+        )
+    except PaperEvidenceError as exc:
+        raise BenchmarkError(exc.code, "Honest Progressive summary is invalid") from exc
+    if normalized is None:
+        raise BenchmarkError("HONEST_PROGRESSIVE_SUMMARY_INVALID")
+    core_count = normalized["core_molecule_count"]
+    traceability_rows = normalized["traceability"]
+    traceable_count = sum(
+        isinstance(row, dict)
+        and isinstance(row.get("source_id"), str)
+        and isinstance(row.get("pdf_locator"), dict)
+        and bool(row.get("pdf_locator"))
+        and isinstance(row.get("provenance"), (dict, list))
+        and bool(row.get("provenance"))
+        for row in traceability_rows
+    )
+    source_traceability = (
+        1.0 if core_count == 0 else min(1.0, traceable_count / core_count)
+    )
+    gaps = normalized["gap_registry"]
+    gap_honesty = (
+        len(gaps) == normalized["blocked_count"]
+        and all(
+            isinstance(gap, dict)
+            and gap.get("status") == "BLOCKED"
+            and isinstance(gap.get("reason"), str)
+            and bool(gap["reason"].strip())
+            for gap in gaps
+        )
+    )
+    status = (
+        "pass_internal"
+        if normalized["coverage_ratio"] >= HONEST_PROGRESSIVE_COVERAGE_THRESHOLD
+        and source_traceability >= HONEST_PROGRESSIVE_COVERAGE_THRESHOLD
+        and gap_honesty
+        else "needs_revision"
+    )
+    return {
+        "route": HONEST_PROGRESSIVE_ROUTE,
+        "status": status,
+        "core_molecule_count": normalized["core_molecule_count"],
+        "confirmed_count": normalized["confirmed_count"],
+        "ai_provisional_count": normalized["ai_provisional_count"],
+        "blocked_count": normalized["blocked_count"],
+        "coverage_ratio": normalized["coverage_ratio"],
+        "coverage_threshold": normalized["coverage_threshold"],
+        "coverage_sufficient": normalized["coverage_sufficient"],
+        "source_traceability": source_traceability,
+        "gap_honesty": gap_honesty,
+        "paper_coverage": normalized["paper_coverage"],
+        "uncertainty_statement": normalized["uncertainty_statement"],
+        "gap_registry": normalized["gap_registry"],
+        "traceability": normalized["traceability"],
+        "actor_provenance_residual": normalized["actor_provenance_residual"],
+        "credits_status": "NOT_APPLICABLE_BY_CURRENT_SCOPE",
+    }
 
 
 def _canonical_bytes(payload: object) -> bytes:
@@ -493,6 +563,14 @@ def _release_payload(release: Path, release_level: str | None) -> dict[str, Any]
         signals.append("SYSTEM_GENERATED_SYNTHESIS_FIGURE")
     if divergence:
         signals.append("STATE_SURFACE_DIVERGENCE")
+    try:
+        honest_progressive = honest_progressive_summary_from_projection(
+            snapshot, project_scope=True
+        )
+    except PaperEvidenceError as exc:
+        raise BenchmarkError(
+            exc.code, "Honest Progressive release projection is invalid"
+        ) from exc
     return {
         "project_id": project_id,
         "release_level": level,
@@ -511,6 +589,7 @@ def _release_payload(release: Path, release_level: str | None) -> dict[str, Any]
         "reaction_data_status": reaction_data_status,
         "reaction_count": reaction_count,
         "hard_fail_signals": signals,
+        "honest_progressive": honest_progressive,
     }
 
 
@@ -604,14 +683,26 @@ def validate_report(report: object) -> dict[str, Any]:
     dual_binding = report["release_binding"].get("dual_parse_binding_digest")
     reaction_status = report.get("reaction_data_status", "not_applicable")
     reaction_count = report.get("reaction_count")
+    honest_mode = report.get("route") == HONEST_PROGRESSIVE_ROUTE
+    honest_evaluation = (
+        evaluate_honest_progressive(report) if honest_mode else None
+    )
     expected_ids = [key for key, _ in RUBRIC_DIMENSIONS]
     if (
         [row["dimension_id"] for row in rows] != expected_ids
         or [row["max_score"] for row in rows] != [value for _, value in RUBRIC_DIMENSIONS]
         or report["score"] != sum(row["score"] for row in rows)
         or report["tier"] != _tier(report["score"])
-        or report["status"]
-        != _expected_status(report["release_level"], report["score"], report["hard_fails"])
+        or (
+            report["status"]
+            != (
+                honest_evaluation["status"]
+                if honest_mode and honest_evaluation is not None
+                else _expected_status(
+                    report["release_level"], report["score"], report["hard_fails"]
+                )
+            )
+        )
         or report["comparison_metrics"] != list(COMPARISON_METRICS)
         or actual_chemical_issues != expected_chemical_issues
         or report.get("credits_status", "NOT_APPLICABLE_BY_CURRENT_SCOPE")
@@ -646,11 +737,17 @@ def validate_report(report: object) -> dict[str, Any]:
     ):
         raise BenchmarkError("BENCHMARK_REPORT_INCONSISTENT")
     expert_ready = (
-        report["score"] >= 80
+        (
+            honest_evaluation is not None
+            and honest_evaluation["status"] == "pass_internal"
+        )
+        if honest_mode
+        else report["score"] >= 80
         and not report["hard_fails"]
         and "SYNTHESIS_FIGURE_PENDING" not in report["issues"]
         and "CHEMICAL_DEPENDENCY_UNRESOLVED" not in report["issues"]
-        and dependency_can_release
+    ) and not report["hard_fails"] and dependency_can_release and (
+        "SYNTHESIS_FIGURE_PENDING" not in report["issues"]
     )
     if report["expert_release_ready"] is not expert_ready:
         raise BenchmarkError("BENCHMARK_REPORT_INCONSISTENT")
@@ -685,6 +782,15 @@ def evaluate_review(
         and not binding["chemical_paper_dependency_can_release"]
     ):
         all_hard_fails.append("CHEMICAL_DEPENDENCY_UNRESOLVED")
+    honest_evaluation: dict[str, Any] | None = None
+    if binding.get("honest_progressive") is not None:
+        honest_evaluation = evaluate_honest_progressive(
+            binding["honest_progressive"]
+        )
+        if honest_evaluation["blocked_count"]:
+            issues.append("HONEST_PROGRESSIVE_GAPS_PRESENT")
+        if not honest_evaluation["coverage_sufficient"]:
+            all_hard_fails.append("HONEST_PROGRESSIVE_COVERAGE_BELOW_THRESHOLD")
     allowed = COMMON_HARD_FAILS | EXPERT_HARD_FAILS
     if any(code not in allowed for code in all_hard_fails):
         raise BenchmarkError("BENCHMARK_HARD_FAIL_INVALID")
@@ -727,4 +833,41 @@ def evaluate_review(
         "human_review_required": True,
         "disclaimer": "Regression score only; not scientific correctness, expert acceptance, or publication approval.",
     }
+    if honest_evaluation is not None:
+        report.update(
+            {
+                "route": HONEST_PROGRESSIVE_ROUTE,
+                "status": (
+                    "fail"
+                    if unique_hard_fails
+                    else honest_evaluation["status"]
+                ),
+                "expert_release_ready": (
+                    honest_evaluation["status"] == "pass_internal"
+                    and not unique_hard_fails
+                    and not pending
+                    and binding["chemical_paper_dependency_can_release"]
+                ),
+                "core_molecule_count": honest_evaluation["core_molecule_count"],
+                "confirmed_count": honest_evaluation["confirmed_count"],
+                "ai_provisional_count": honest_evaluation["ai_provisional_count"],
+                "blocked_count": honest_evaluation["blocked_count"],
+                "coverage_ratio": honest_evaluation["coverage_ratio"],
+                "coverage_threshold": honest_evaluation["coverage_threshold"],
+                "coverage_sufficient": honest_evaluation["coverage_sufficient"],
+                "source_traceability": honest_evaluation["source_traceability"],
+                "gap_honesty": honest_evaluation["gap_honesty"],
+                "paper_coverage": honest_evaluation["paper_coverage"],
+                "uncertainty_statement": honest_evaluation["uncertainty_statement"],
+                "gap_registry": honest_evaluation["gap_registry"],
+                "traceability": honest_evaluation["traceability"],
+                "actor_provenance_residual": honest_evaluation[
+                    "actor_provenance_residual"
+                ],
+                "disclaimer": (
+                    "Coverage and provenance evaluation only; AI-provisional values "
+                    "remain excluded from exact conclusions and blocked gaps remain disclosed."
+                ),
+            }
+        )
     return validate_report(report)

@@ -36,6 +36,11 @@ from review_writer.delivery.chemical_paper_release import (
     safe_chemical_paper_projection,
 )
 from review_writer.delivery.dual_parse_release import dual_parse_release_state
+from review_writer.project.paper_evidence import (
+    HONEST_PROGRESSIVE_ROUTE,
+    PaperEvidenceError,
+    honest_progressive_summary_from_projection,
+)
 from review_writer.project.manuscript_v2 import manuscript_state
 from review_writer.project.source_truth import canonical_digest
 from review_writer.project.vertical_review import VerticalReviewError, benchmark_metrics
@@ -64,6 +69,38 @@ class ProjectReleaseError(ValueError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(f"{code}: {message}")
         self.code = code
+
+
+def honest_progressive_release_fields(summary: object) -> dict[str, Any]:
+    """Return only the release-safe Honest Progressive fields."""
+
+    try:
+        normalized = honest_progressive_summary_from_projection(
+            summary, project_scope=True
+        )
+    except PaperEvidenceError as exc:
+        raise ProjectReleaseError(exc.code, "Honest Progressive summary is invalid") from exc
+    if normalized is None:
+        raise ProjectReleaseError(
+            "HONEST_PROGRESSIVE_SUMMARY_INVALID",
+            "Honest Progressive summary is missing",
+        )
+    return {
+        "route": HONEST_PROGRESSIVE_ROUTE,
+        "core_molecule_count": normalized["core_molecule_count"],
+        "confirmed_count": normalized["confirmed_count"],
+        "ai_provisional_count": normalized["ai_provisional_count"],
+        "blocked_count": normalized["blocked_count"],
+        "coverage_ratio": normalized["coverage_ratio"],
+        "coverage_threshold": normalized["coverage_threshold"],
+        "coverage_sufficient": normalized["coverage_sufficient"],
+        "paper_coverage": normalized["paper_coverage"],
+        "uncertainty_statement": normalized["uncertainty_statement"],
+        "gap_registry": normalized["gap_registry"],
+        "traceability": normalized["traceability"],
+        "actor_provenance_residual": normalized["actor_provenance_residual"],
+        "credits_status": "NOT_APPLICABLE_BY_CURRENT_SCOPE",
+    }
 
 
 def _section_id(heading: str, seen: dict[str, int]) -> str:
@@ -1130,6 +1167,7 @@ def _new_route_release(
     ):
         raise ProjectReleaseError("MANUSCRIPT_LINEAGE_STALE", "authoritative manuscript binding is stale")
     dual_quality: dict[str, Any] = {}
+    honest_summary: dict[str, Any] | None = None
     dual_source_root = project / "01_evidence/dual_source"
     has_dual_lineage = isinstance(lineage, dict) and isinstance(
         lineage.get("dual_parse_bindings"), list
@@ -1144,6 +1182,14 @@ def _new_route_release(
                 "DUAL_PARSE_STALE", "dual-parse manuscript authority is missing or stale"
             )
         dual_state = dual_parse_release_state(project)
+        try:
+            honest_summary = honest_progressive_summary_from_projection(
+                dual_state, project_scope=True
+            )
+        except PaperEvidenceError as exc:
+            raise ProjectReleaseError(
+                exc.code, "Honest Progressive release projection is invalid"
+            ) from exc
         hard_fails = dual_state.get("hard_fails")
         if (
             dual_state.get("internal_release_ready") is not True
@@ -1177,6 +1223,23 @@ def _new_route_release(
             "reaction_count": dual_state.get("reaction_count"),
             "credits_status": "NOT_APPLICABLE_BY_CURRENT_SCOPE",
         }
+        if honest_summary is not None:
+            dual_quality.update(honest_progressive_release_fields(honest_summary))
+    if honest_summary is None:
+        candidate = workflow.get("honest_progressive")
+        if candidate is None:
+            candidate = workflow.get("honest_progressive_summary")
+        if candidate is not None:
+            try:
+                honest_summary = honest_progressive_summary_from_projection(
+                    candidate, project_scope=True
+                )
+            except PaperEvidenceError as exc:
+                raise ProjectReleaseError(
+                    exc.code, "Honest Progressive release projection is invalid"
+                ) from exc
+            if honest_summary is not None:
+                dual_quality.update(honest_progressive_release_fields(honest_summary))
     chemical_paper = _chemical_paper_release_state(project, lineage)
     if (
         release_level == "EXPERT_REVIEWED_RELEASE"
@@ -1283,10 +1346,15 @@ def _new_route_release(
 
         docx_bytes = temporary_docx.read_bytes()
         docx_sha256 = _sha256_bytes(docx_bytes)
+        honest_fields = (
+            honest_progressive_release_fields(honest_summary)
+            if honest_summary is not None
+            else {}
+        )
         snapshot_payload = {
             "schema_version": "release-snapshot.v1",
             "project_id": project.name,
-            "route": NEW_ROUTE,
+            "route": honest_fields.get("route", NEW_ROUTE),
             "release_level": release_level,
             "status": release_level,
             "workflow_digest": workflow_digest,
@@ -1307,8 +1375,10 @@ def _new_route_release(
             "system_generated_synthesis_figure": False,
             "integrity": integrity,
         }
+        snapshot_payload.update(honest_fields)
         quality_payload = {
             "schema_version": "project-release.v2",
+            **honest_fields,
             "status": release_level,
             "release_level": release_level,
             "workflow_digest": workflow_digest,
@@ -1445,7 +1515,7 @@ def new_route_release_docx_is_current(docx_path: Path) -> bool:
         expected_docx_relative = f"05_release/{candidate.name}"
         if (
             snapshot.get("schema_version") != "release-snapshot.v1"
-            or snapshot.get("route") != NEW_ROUTE
+            or snapshot.get("route") not in {NEW_ROUTE, HONEST_PROGRESSIVE_ROUTE}
             or snapshot.get("release_level") != release_level
             or snapshot.get("status") != release_level
             or snapshot.get("markdown_path") != expected_markdown_relative
@@ -1480,6 +1550,18 @@ def new_route_release_docx_is_current(docx_path: Path) -> bool:
             or authoritative.get("lineage_digest") != lineage_digest
         ):
             return False
+        if snapshot.get("route") == HONEST_PROGRESSIVE_ROUTE:
+            try:
+                snapshot_honest = honest_progressive_summary_from_projection(
+                    snapshot, project_scope=True
+                )
+                quality_honest = honest_progressive_summary_from_projection(
+                    quality, project_scope=True
+                )
+            except PaperEvidenceError:
+                return False
+            if snapshot_honest is None or snapshot_honest != quality_honest:
+                return False
         markdown = manuscript_bytes.decode("utf-8")
         chemical_paper = _chemical_paper_release_state(project, lineage)
         if (

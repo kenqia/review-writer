@@ -29,6 +29,14 @@ from review_writer.project.source_truth import (
     canonical_digest,
     load_source_truth_bundle,
 )
+from review_writer.project.paper_evidence import (
+    HONEST_PROGRESSIVE_ROUTE,
+    HONEST_PROGRESSIVE_COVERAGE_THRESHOLD,
+    HONEST_PROGRESSIVE_PROJECT_CORE_MOLECULE_COUNT,
+    PaperEvidenceError,
+    build_honest_progressive_summary,
+    honest_progressive_summary_from_projection,
+)
 
 
 STAGING_ROOT = Path(".dual-parse-staging/chemical-paper")
@@ -64,6 +72,43 @@ _LEGACY_COMPLETION_COUNTERS = frozenset(
         "missing_smiles_unexpanded_count",
     }
 )
+
+
+def honest_progressive_release_projection(
+    rows: object,
+    *,
+    core_molecule_count: int | None = None,
+) -> dict[str, Any]:
+    """Project tri-state scientific coverage into release eligibility.
+
+    A blocked molecule is retained in the gap registry and does not become a
+    release hard fail when the 80% coverage threshold is met.  This helper is
+    intentionally independent of the dual-parse binding checks below.
+    """
+
+    try:
+        summary = build_honest_progressive_summary(
+            rows,
+            core_molecule_count=HONEST_PROGRESSIVE_PROJECT_CORE_MOLECULE_COUNT,
+        )
+    except PaperEvidenceError as exc:
+        raise DualParseReleaseError(exc.code) from exc
+    hard_fails = (
+        []
+        if summary["coverage_sufficient"]
+        else ["HONEST_PROGRESSIVE_COVERAGE_BELOW_THRESHOLD"]
+    )
+    return {
+        **summary,
+        "internal_release_ready": not hard_fails,
+        "expert_release_ready": not hard_fails,
+        "hard_fails": hard_fails,
+        "issues": (
+            ["HONEST_PROGRESSIVE_GAPS_PRESENT"]
+            if summary["blocked_count"]
+            else []
+        ),
+    }
 
 
 class DualParseReleaseError(ValueError):
@@ -1068,13 +1113,25 @@ def _v2_completion_counters(row: object) -> dict[str, int]:
         raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_INVALID")
     if _LEGACY_COMPLETION_COUNTERS.intersection(row):
         raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_INVALID")
+    honest_fields = {
+        "honest_progressive",
+        "molecules",
+        "molecule_rows",
+        "core_molecule_count",
+        "confirmed_count",
+        "ai_provisional_count",
+        "blocked_count",
+    }
+    honest_payload = bool(honest_fields.intersection(row))
     counters: dict[str, int] = {}
     for key in _V2_COMPLETION_COUNTERS:
         value = row.get(key)
+        if value is None and honest_payload:
+            value = 0
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_INVALID")
         counters[key] = value
-    molecule_count = row.get("molecule_count")
+    molecule_count = row.get("molecule_count", row.get("core_molecule_count"))
     if molecule_count is not None:
         if (
             isinstance(molecule_count, bool)
@@ -1159,57 +1216,75 @@ def authority_rows_from_projections(
             "binding_digest",
             "version_digest",
         )
-        rows.append(
-            {
-                "study_id": study_id,
-                "source_tier": source.get("source_tier", source.get("tier")),
-                "requires_chemical": source.get("requires_chemical") is True,
-                "dual_source_binding_digest": _first_value(
-                    source, "dual_source_binding_digest", "binding_digest"
-                ),
-                "generic_status": source.get(
-                    "generic_status", generic_lane.get("status")
-                ),
-                "generic_version": generic_version,
-                "chemical_status": source.get(
-                    "chemical_status", chemical_lane.get("status")
-                ),
-                "chemical_version": chemical_version,
-                "chemical_completion_digest": _first_value(
-                    chemical,
-                    "chemical_completion_digest",
-                    "completion_digest",
-                    "gate_digest",
-                ),
-                "chemical_completion_status": chemical.get("status"),
-                "reconciliation_digest": _first_value(
-                    registry, "registry_digest", "reconciliation_digest"
-                ),
-                "reconciliation_status": registry.get("status"),
-                "content_result_status": source.get(
-                    "content_result_status", "current"
-                ),
-                "missing_name_count": chemical.get("missing_name_count"),
-                "missing_resolved_smiles_count": chemical.get(
-                    "missing_resolved_smiles_count"
-                ),
-                "ai_authored_smiles_count": chemical.get(
-                    "ai_authored_smiles_count"
-                ),
-                "reaction_data_status": _first_value(
-                    source, "reaction_data_status"
-                )
-                or chemical_lane.get(
-                    "reaction_data_status", REACTION_UNAVAILABLE
-                ),
-                "reaction_count": source.get(
-                    "reaction_count", chemical_lane.get("reaction_count")
-                ),
-                "unreviewed_element_molecule_count": chemical.get(
-                    "unreviewed_element_molecule_count", 0
-                ),
-            }
+        molecule_count = chemical.get(
+            "molecule_count", chemical.get("core_molecule_count")
         )
+        honest_progressive = _first_value(
+            chemical,
+            "honest_progressive",
+            "honest_progressive_summary",
+        )
+        if honest_progressive is None:
+            honest_progressive = _first_value(
+                chemical_lane,
+                "honest_progressive",
+                "honest_progressive_summary",
+            )
+        if honest_progressive is None:
+            honest_progressive = _first_value(
+                source,
+                "honest_progressive",
+                "honest_progressive_summary",
+            )
+        row = {
+            "study_id": study_id,
+            "source_tier": source.get("source_tier", source.get("tier")),
+            "requires_chemical": source.get("requires_chemical") is True,
+            "dual_source_binding_digest": _first_value(
+                source, "dual_source_binding_digest", "binding_digest"
+            ),
+            "generic_status": source.get(
+                "generic_status", generic_lane.get("status")
+            ),
+            "generic_version": generic_version,
+            "chemical_status": source.get(
+                "chemical_status", chemical_lane.get("status")
+            ),
+            "chemical_version": chemical_version,
+            "chemical_completion_digest": _first_value(
+                chemical,
+                "chemical_completion_digest",
+                "completion_digest",
+                "gate_digest",
+            ),
+            "chemical_completion_status": chemical.get("status"),
+            "reconciliation_digest": _first_value(
+                registry, "registry_digest", "reconciliation_digest"
+            ),
+            "reconciliation_status": registry.get("status"),
+            "content_result_status": source.get(
+                "content_result_status", "current"
+            ),
+            "missing_name_count": chemical.get("missing_name_count"),
+            "missing_resolved_smiles_count": chemical.get(
+                "missing_resolved_smiles_count"
+            ),
+            "ai_authored_smiles_count": chemical.get("ai_authored_smiles_count"),
+            "reaction_data_status": _first_value(
+                source, "reaction_data_status"
+            ) or chemical_lane.get("reaction_data_status", REACTION_UNAVAILABLE),
+            "reaction_count": source.get(
+                "reaction_count", chemical_lane.get("reaction_count")
+            ),
+            "unreviewed_element_molecule_count": chemical.get(
+                "unreviewed_element_molecule_count", 0
+            ),
+        }
+        if molecule_count is not None:
+            row["molecule_count"] = molecule_count
+        if honest_progressive is not None:
+            row["honest_progressive"] = honest_progressive
+        rows.append(row)
     return rows
 
 
@@ -1354,6 +1429,95 @@ def _awaiting_human_figure(project: Path) -> bool:
     )
 
 
+def _honest_progressive_authority_summary(
+    rows: object,
+) -> dict[str, Any] | None:
+    if not isinstance(rows, list):
+        return None
+    summaries: list[dict[str, Any]] = []
+    molecule_rows: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        nested = row.get("honest_progressive")
+        if isinstance(nested, dict):
+            nested_molecules = nested.get("molecules", nested.get("rows"))
+            if isinstance(nested_molecules, list):
+                molecule_rows.extend(
+                    item
+                    for item in nested_molecules
+                    if isinstance(item, dict)
+                )
+                continue
+            try:
+                normalized = honest_progressive_summary_from_projection(
+                    nested, project_scope=True
+                )
+            except PaperEvidenceError as exc:
+                raise DualParseReleaseError(exc.code) from exc
+            if normalized is not None:
+                summaries.append(normalized)
+                continue
+        direct_molecules = row.get("molecules", row.get("molecule_rows"))
+        if isinstance(direct_molecules, list):
+            molecule_rows.extend(
+                item for item in direct_molecules if isinstance(item, dict)
+            )
+    if molecule_rows:
+        try:
+            return build_honest_progressive_summary(
+                molecule_rows,
+                core_molecule_count=HONEST_PROGRESSIVE_PROJECT_CORE_MOLECULE_COUNT,
+            )
+        except PaperEvidenceError as exc:
+            raise DualParseReleaseError(exc.code) from exc
+    if not summaries:
+        return None
+    if len(summaries) == 1:
+        return summaries[0]
+    core = HONEST_PROGRESSIVE_PROJECT_CORE_MOLECULE_COUNT
+    confirmed = sum(item["confirmed_count"] for item in summaries)
+    provisional = sum(item["ai_provisional_count"] for item in summaries)
+    if confirmed + provisional > core:
+        raise DualParseReleaseError("HONEST_PROGRESSIVE_SUMMARY_INVALID")
+    blocked = core - confirmed - provisional
+    return {
+        "route": HONEST_PROGRESSIVE_ROUTE,
+        "core_molecule_count": core,
+        "confirmed_count": confirmed,
+        "ai_provisional_count": provisional,
+        "blocked_count": blocked,
+        "coverage_ratio": 1.0 if core == 0 else (confirmed + provisional) / core,
+        "coverage_threshold": HONEST_PROGRESSIVE_COVERAGE_THRESHOLD,
+        "coverage_sufficient": (
+            True
+            if core == 0
+            else (confirmed + provisional) / core
+            >= HONEST_PROGRESSIVE_COVERAGE_THRESHOLD
+        ),
+        "paper_coverage": [
+            coverage
+            for item in summaries
+            for coverage in item["paper_coverage"]
+        ],
+        "uncertainty_statement": "; ".join(
+            item["uncertainty_statement"] for item in summaries
+        ),
+        "gap_registry": [
+            gap for item in summaries for gap in item["gap_registry"]
+        ],
+        "traceability": [
+            trace for item in summaries for trace in item["traceability"]
+        ],
+        "actor_provenance_residual": [
+            residual
+            for item in summaries
+            for residual in item["actor_provenance_residual"]
+        ],
+        "credits_status": "NOT_APPLICABLE_BY_CURRENT_SCOPE",
+    }
+
+
 def dual_parse_release_state(project: Path) -> dict[str, Any]:
     root = _project(project)
     lineage_path = root / "04_manuscript/manuscript_lineage.v2.json"
@@ -1365,6 +1529,7 @@ def dual_parse_release_state(project: Path) -> dict[str, Any]:
         lineage.get("dual_parse_bindings"), list
     ):
         return {
+            "route": HONEST_PROGRESSIVE_ROUTE,
             "dual_parse_status": "missing",
             "internal_release_ready": False,
             "expert_release_ready": False,
@@ -1381,6 +1546,7 @@ def dual_parse_release_state(project: Path) -> dict[str, Any]:
         current_rows = _current_authority_rows(root)
     except DualParseReleaseError:
         return {
+            "route": HONEST_PROGRESSIVE_ROUTE,
             "dual_parse_status": "stale",
             "internal_release_ready": False,
             "expert_release_ready": False,
@@ -1391,6 +1557,17 @@ def dual_parse_release_state(project: Path) -> dict[str, Any]:
             "credits_status": CREDITS_STATUS,
         }
     hard_fails = set(validation["hard_fails"])
+    honest_summary = _honest_progressive_authority_summary(current_rows)
+    if honest_summary is not None:
+        if honest_summary["coverage_sufficient"]:
+            # Honest Progressive gaps are represented in the release surface,
+            # not silently promoted to exact evidence or treated as a global
+            # completion hard fail.
+            hard_fails.difference_update(
+                {"CHEMICAL_COMPLETION_INCOMPLETE", "AI_AUTHORED_SMILES"}
+            )
+        else:
+            hard_fails.add("HONEST_PROGRESSIVE_COVERAGE_BELOW_THRESHOLD")
     reaction_statuses = {
         row.get("reaction_data_status", REACTION_UNAVAILABLE)
         for row in current_rows
@@ -1421,7 +1598,8 @@ def dual_parse_release_state(project: Path) -> dict[str, Any]:
     awaiting_figure = _awaiting_human_figure(root)
     if awaiting_figure:
         issues.add("SYNTHESIS_FIGURE_PENDING")
-    return {
+    result: dict[str, Any] = {
+        "route": HONEST_PROGRESSIVE_ROUTE,
         "dual_parse_status": validation["status"],
         "internal_release_ready": internal_ready,
         "expert_release_ready": internal_ready and not awaiting_figure,
@@ -1431,3 +1609,17 @@ def dual_parse_release_state(project: Path) -> dict[str, Any]:
         "reaction_count": reaction_count,
         "credits_status": CREDITS_STATUS,
     }
+    if honest_summary is not None:
+        result.update(honest_summary)
+        result["issues"] = sorted(
+            set(result["issues"])
+            | (
+                {"HONEST_PROGRESSIVE_GAPS_PRESENT"}
+                if honest_summary["blocked_count"]
+                else set()
+            )
+        )
+        result["hard_fails"] = sorted(hard_fails)
+        result["internal_release_ready"] = not hard_fails
+        result["expert_release_ready"] = not hard_fails and not awaiting_figure
+    return result

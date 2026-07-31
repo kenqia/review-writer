@@ -25,10 +25,11 @@
   ],
   "properties": {
     "schema_version": {"const": "review-benchmark-report.v1"},
+    "route": {"enum": ["evidence-to-release.v1", "honest_progressive"]},
     "evaluated_at": {"type": "string", "format": "date-time"},
     "project_id": {"type": "string", "minLength": 1},
     "release_level": {"enum": ["SELF_REVIEWED_DRAFT", "EXPERT_REVIEWED_RELEASE"]},
-    "status": {"enum": ["fail", "pass_internal", "pass_expert"]},
+    "status": {"enum": ["fail", "needs_revision", "pass_internal", "pass_expert"]},
     "score": {"type": "number", "minimum": 0, "maximum": 100},
     "tier": {
       "enum": [
@@ -88,7 +89,8 @@
           "DUAL_SOURCE_BINDING_MISMATCH",
           "STALE_DUAL_PARSE_CONTENT_RESULT",
           "AI_AUTHORED_SMILES",
-          "REACTION_ABSENCE_MISREPRESENTED"
+          "REACTION_ABSENCE_MISREPRESENTED",
+          "HONEST_PROGRESSIVE_COVERAGE_BELOW_THRESHOLD"
         ]
       }
     },
@@ -98,7 +100,7 @@
       "items": {"enum": [
         "SYNTHESIS_FIGURE_PENDING", "CHEMICAL_FIELDS_UNRESOLVED",
         "CHEMICAL_ELEMENTS_NOT_REVIEWED", "CHEMICAL_REACTION_DATA_UNAVAILABLE",
-        "CHEMICAL_DEPENDENCY_UNRESOLVED"
+        "CHEMICAL_DEPENDENCY_UNRESOLVED", "HONEST_PROGRESSIVE_GAPS_PRESENT"
       ]}
     },
     "chemical_paper_safe_summary": {
@@ -117,6 +119,23 @@
       "oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0}]
     },
     "credits_status": {"const": "NOT_APPLICABLE_BY_CURRENT_SCOPE"},
+    "core_molecule_count": {"const": 309},
+    "confirmed_count": {"type": "integer", "minimum": 0},
+    "ai_provisional_count": {"type": "integer", "minimum": 0},
+    "blocked_count": {"type": "integer", "minimum": 0},
+    "coverage_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+    "coverage_threshold": {"const": 0.8},
+    "coverage_sufficient": {"type": "boolean"},
+    "source_traceability": {"type": "number", "minimum": 0, "maximum": 1},
+    "gap_honesty": {"type": "boolean"},
+    "paper_coverage": {"type": "array", "items": {"type": "object"}},
+    "uncertainty_statement": {"type": "string", "minLength": 1},
+    "gap_registry": {"type": "array", "items": {"type": "object"}},
+    "traceability": {"type": "array", "items": {"type": "object"}},
+    "actor_provenance_residual": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/actor_provenance_residual"}
+    },
     "release_binding": {
       "type": "object",
       "additionalProperties": false,
@@ -179,8 +198,39 @@
     "human_review_required": {"const": true},
     "disclaimer": {"type": "string", "minLength": 1}
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"route": {"const": "honest_progressive"}},
+        "required": ["route"]
+      },
+      "then": {
+        "required": [
+          "core_molecule_count", "confirmed_count", "ai_provisional_count",
+          "blocked_count", "coverage_ratio", "coverage_threshold",
+          "coverage_sufficient", "source_traceability", "gap_honesty",
+          "paper_coverage", "uncertainty_statement", "gap_registry",
+          "traceability", "actor_provenance_residual", "credits_status"
+        ]
+      }
+    }
+  ],
   "$defs": {
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "actor_provenance_residual": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "actor_type": {"type": "string", "minLength": 1},
+        "actor_label": {"type": "string", "minLength": 1},
+        "expected_actor_type": {"type": "string", "minLength": 1},
+        "observed_actor_type": {"type": "string", "minLength": 1},
+        "reason_code": {"type": "string", "minLength": 1},
+        "status": {"type": "string", "minLength": 1},
+        "occurred_at": {"type": "string", "minLength": 1}
+      }
+    },
     "chemical_paper_safe_summary": {
       "type": "object", "additionalProperties": false,
       "required": [
