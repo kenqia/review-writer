@@ -68,10 +68,25 @@ The server calculates all counts, denominator, ratio, threshold, and
 `coverage_sufficient`; client-supplied counts are untrusted. Missing reaction
 data remains `unavailable_not_provided`, never zero.
 
+For the approved-inputs fresh-v3 audit snapshot, the authoritative projection
+is `CONFIRMED=0`, `AI_PROVISIONAL=210`, `BLOCKED=99`, so covered rows are
+`210/309 = 0.6796116505`. The threshold target is
+`ceil(309 * 0.80) = 248`; therefore this snapshot needs **38 additional
+traceable candidates** before `coverage_sufficient` can become true. The
+per-study slices are ANIE `78/125`, ACS Catalysis `80/109`, and JACS `52/75`;
+the project gap registry contains exactly `99` BLOCKED rows. These values are
+server-derived audit evidence, not a permission to fabricate or backfill
+values; every later change must be append-only and recompute the same formula.
+
 Approved ZIPs enter only through the formal preflight → confirm → importer
 path. Never hand-unzip them, use a v2 Generic ZIP, or reuse old Generic
 outputs. ZIP/PDF binding and path/hash evidence are Coordinator-only and never
 enter Dashboard or Researcher projections.
+
+A current Generic Parse gate may be `approved_with_pdf_locator`: this keeps
+automatic Generic extraction fail-closed while still permitting the current
+PDF-bound Chemical lane and reconciliation to proceed. It must never be
+treated as automatic extraction approval.
 
 ### Progressive continuation and role sequence
 

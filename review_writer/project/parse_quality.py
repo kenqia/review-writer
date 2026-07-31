@@ -884,3 +884,28 @@ def require_parse_quality_ready(project: Path, study_id: str) -> str:
     if "pdf_locator_only" in actions and state["workflow_can_continue"]:
         raise ParseQualityError("PARSE_PDF_LOCATOR_ONLY")
     raise ParseQualityError("PARSE_QUALITY_REVIEW_REQUIRED")
+
+
+def require_parse_quality_current(project: Path, study_id: str) -> str:
+    """Return the current Parse gate for a dual-source binding.
+
+    ``pdf_locator_only`` is a valid fail-closed workflow decision: it keeps
+    Generic extraction out of automatic scientific use while preserving a
+    current PDF-bound gate for the Chemical lane and later reconciliation.
+    The stricter ``require_parse_quality_ready`` remains the authority for
+    operations that require automatic extraction.
+    """
+
+    state = parse_quality_state(project, study_id)
+    if state["status"] == "stale":
+        raise ParseQualityError("PARSE_QUALITY_STALE")
+    if state["workflow_can_continue"]:
+        return str(state["gate_digest"])
+    actions = {
+        row["decision"]["action"]
+        for row in state["objects"]
+        if isinstance(row.get("decision"), dict)
+    }
+    if "reparse_required" in actions:
+        raise ParseQualityError("PARSE_REPARSE_REQUIRED")
+    raise ParseQualityError("PARSE_QUALITY_REVIEW_REQUIRED")

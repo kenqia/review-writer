@@ -430,6 +430,27 @@ def _honest_uncertainty_statement(
     )
 
 
+def _honest_paper_uncertainty_statement(
+    molecule_count: int | None,
+    confirmed_count: int | None,
+    ai_provisional_count: int | None,
+    blocked_count: int | None,
+) -> str:
+    if (
+        molecule_count is None
+        or confirmed_count is None
+        or ai_provisional_count is None
+        or blocked_count is None
+    ):
+        return "该论文覆盖与不确定性统计待核验。"
+    return (
+        f"该论文 {molecule_count} 个 core molecules："
+        f"CONFIRMED {confirmed_count}、AI_PROVISIONAL {ai_provisional_count}、"
+        f"BLOCKED {blocked_count}。AI_PROVISIONAL 仅用于内部候选、分组和趋势；"
+        "BLOCKED 的 value=null，并仅进入可追踪 gap registry。"
+    )
+
+
 def _honest_paper_coverage(completion: dict[str, Any]) -> list[dict[str, Any]]:
     rows = completion.get("studies")
     if not isinstance(rows, list):
@@ -473,8 +494,8 @@ def _honest_paper_coverage(completion: dict[str, Any]) -> list[dict[str, Any]]:
                 "coverage_ratio": ratio,
                 "coverage_threshold": HONEST_COVERAGE_THRESHOLD,
                 "coverage_sufficient": ratio >= HONEST_COVERAGE_THRESHOLD if ratio is not None else None,
-                "uncertainty_statement": _honest_uncertainty_statement(
-                    confirmed_count, ai_provisional_count, blocked_count
+                "uncertainty_statement": _honest_paper_uncertainty_statement(
+                    molecule_count, confirmed_count, ai_provisional_count, blocked_count
                 ),
                 "actor_provenance_residual": (
                     row.get("actor_provenance_residual")
@@ -716,10 +737,11 @@ def _honest_progressive_summary(
         safe_gap for value in gap_values if (safe_gap := _honest_safe_gap(value)) is not None
     ]
     paper_coverage = _honest_paper_coverage(completion)
+    coverage_sufficient = coverage_ratio >= HONEST_COVERAGE_THRESHOLD
     summary = {
         "route": HONEST_PROGRESSIVE_ROUTE,
         "availability": "available",
-        "status": "ready",
+        "status": "ready" if coverage_sufficient else "needs_more_traceable_candidates",
         "availability_reason": "Chemical Paper 与 Chemical Completion authoritative core cohort 已可验证。",
         "gap_reason": None,
         "core_molecule_count": HONEST_CORE_MOLECULE_COUNT,
@@ -729,8 +751,8 @@ def _honest_progressive_summary(
         "blocked_count": blocked_count,
         "coverage_ratio": coverage_ratio,
         "coverage_threshold": HONEST_COVERAGE_THRESHOLD,
-        "coverage_sufficient": coverage_ratio >= HONEST_COVERAGE_THRESHOLD,
-        "workflow_can_continue": coverage_ratio >= HONEST_COVERAGE_THRESHOLD,
+        "coverage_sufficient": coverage_sufficient,
+        "workflow_can_continue": coverage_sufficient,
         "paper_coverage": paper_coverage,
         "uncertainty_statement": _honest_uncertainty_statement(
             confirmed_count, ai_provisional_count, blocked_count
@@ -4689,6 +4711,9 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
         if active_stage not in {
             "sources",
             "parsing",
+            "chemical_import",
+            "chemical_completion",
+            "reconciliation",
             "evidence",
             "synthesis",
             "drafting",
@@ -4708,23 +4733,27 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
     else:
         active_stage = "final"
 
-    stage_definitions = [
-        ("sources", "整理文献来源", sources_complete),
-        ("parsing", "解析全文与补充信息", parsing_complete),
-        ("evidence", "提取并核对逐研究证据", evidence_complete),
-    ]
     if new_route:
-        stage_definitions.append(
-            ("synthesis", "完成比较协议与综合判断", bool(authoritative_workflow.get("synthesis_ready")))
-        )
-    else:
-        stage_definitions.append(("risk", "汇总科学风险", risk_complete))
-    stage_definitions.extend(
-        [
+        stage_definitions = [
+            ("sources", "整理文献来源", sources_complete),
+            ("parsing", "解析全文与补充信息", parsing_complete),
+            ("chemical_import", "导入并绑定 Chemical Paper", bool(authoritative_workflow.get("dual_source_ready"))),
+            ("chemical_completion", "补全 Chemical Completion", bool(authoritative_workflow.get("chemical_completion_ready"))),
+            ("reconciliation", "核对双层解析差异", bool(authoritative_workflow.get("reconciliation_ready"))),
+            ("evidence", "提取并核对逐研究证据", evidence_complete),
+            ("synthesis", "完成比较协议与综合判断", bool(authoritative_workflow.get("synthesis_ready"))),
             ("drafting", "撰写证据约束正文", draft_complete),
             ("final", "完成终稿与 DOCX", final_complete),
         ]
-    )
+    else:
+        stage_definitions = [
+            ("sources", "整理文献来源", sources_complete),
+            ("parsing", "解析全文与补充信息", parsing_complete),
+            ("evidence", "提取并核对逐研究证据", evidence_complete),
+            ("risk", "汇总科学风险", risk_complete),
+            ("drafting", "撰写证据约束正文", draft_complete),
+            ("final", "完成终稿与 DOCX", final_complete),
+        ]
     active_index = next(
         (index for index, (stage_id, _, _) in enumerate(stage_definitions) if stage_id == active_stage),
         0,
@@ -4783,6 +4812,13 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
         )
     elif parse_review_required:
         blocker = "三篇论文的 Generic 解析质量仍需研究者逐项核对；Evidence 保持锁定。"
+    elif new_route and raw_blockers:
+        blocker = {
+            "DUAL_SOURCE_BINDING_MISSING": "Generic 与 Chemical 尚未形成当前双层绑定；Evidence 保持锁定。",
+            "CHEMICAL_COMPLETION_INCOMPLETE": "Chemical Completion 覆盖率仍低于 80%；请补充可追溯字段，Evidence 保持锁定。",
+            "PARSE_RECONCILIATION_MISSING": "双层解析 reconciliation 尚未形成；Evidence 保持锁定。",
+            "PARSE_RECONCILIATION_UNRESOLVED": "双层解析仍有差异待依据原始 PDF 仲裁；Evidence 保持锁定。",
+        }.get(visible_text(raw_blockers[0]), "当前双层解析阶段仍有阻塞项；Evidence 保持锁定。")
     elif source_invalid:
         blocker = "上传的压缩包未通过来源核验，请按缺失清单修正后重新上传。"
     elif pipeline_state_inconsistent:
@@ -4910,6 +4946,9 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
     recommended = {
         "sources": "正在核验您上传的来源" if archive_received else "上传一次 PDF ZIP",
         "parsing": "等待全文解析完成",
+        "chemical_import": "确认下一篇 Chemical Paper 导入",
+        "chemical_completion": "补全下一项化学字段",
+        "reconciliation": "依据 PDF 仲裁下一项双层解析差异",
         "evidence": "继续处理下一篇研究证据",
         "synthesis": "核对比较协议与综合判断",
         "risk": "检查集中科学风险",
@@ -4971,6 +5010,8 @@ def project_progress_payload(review_root: Path, project_id: str) -> dict[str, An
             if parse_reparse_required
             else "PARSE_QUALITY_REVIEW_REQUIRED"
             if parse_review_required
+            else visible_text(raw_blockers[0])
+            if new_route and raw_blockers
             else "SOURCE_ARCHIVE_INVALID"
             if source_invalid
             else "PIPELINE_STATE_INCONSISTENT"

@@ -359,6 +359,9 @@ def test_new_route_progress_uses_authoritative_final_stage_not_legacy_risk(
         "complete",
         "complete",
         "complete",
+        "complete",
+        "complete",
+        "complete",
         "active",
     ]
     assert payload["studies"][0]["status"] == "已完成"

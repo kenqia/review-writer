@@ -13,6 +13,7 @@ from review_writer.project.parse_quality import (
     ParseQualityError,
     apply_parse_quality_decision,
     parse_quality_state,
+    require_parse_quality_current,
     require_parse_quality_ready,
     write_parse_quality_gate,
 )
@@ -694,6 +695,8 @@ def test_pdf_locator_only_never_allows_provider_packet(tmp_path: Path) -> None:
         target_action="pdf_locator_only",
     )
     assert state["workflow_can_continue"] is True
+
+    assert require_parse_quality_current(project, "scholarly-a") == state["gate_digest"]
 
     with pytest.raises(ParseQualityError, match="PARSE_PDF_LOCATOR_ONLY"):
         require_parse_quality_ready(project, "scholarly-a")

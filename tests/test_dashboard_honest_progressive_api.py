@@ -334,7 +334,7 @@ def test_dual_parse_api_projects_server_calculated_honest_progressive_summary(
     assert payload["route"] == "honest_progressive"
     honest = payload["honest_progressive"]
     assert honest["availability"] == "available"
-    assert honest["status"] == "ready"
+    assert honest["status"] == "needs_more_traceable_candidates"
     assert honest["core_molecule_count"] == 309
     assert honest["coverage_denominator"] == 309
     assert honest["coverage_threshold"] == pytest.approx(0.8)

@@ -749,8 +749,13 @@ def _chemical_import_contract(
         source.get("pdf_status") == "verified"
         and source.get("generic_parse_status") == "current"
     )
+    dual_source_current = source.get("status") in {
+        "current",
+        "current_generic_only",
+    }
     bound = (
         source_current
+        and dual_source_current
         and chemistry.get("pdf_binding_status") == "bound"
         and chemistry.get("status") in {"needs_review", "ready"}
     )

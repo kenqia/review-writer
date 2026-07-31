@@ -15,7 +15,7 @@ from review_writer.project.chemical_paper import (
     chemical_paper_current_binding,
 )
 from review_writer.project.paper_evidence_store import PaperEvidenceStoreError, project_write_lock
-from review_writer.project.parse_quality import ParseQualityError, require_parse_quality_ready
+from review_writer.project.parse_quality import ParseQualityError, require_parse_quality_current
 from review_writer.project.source_truth import (
     SourceTruthError,
     build_source_truth_bundle,
@@ -81,7 +81,7 @@ def build_dual_source_binding(project: Path, study_id: str) -> dict[str, object]
     try:
         tier = study_source_tier(root, study_id)
         bundle = load_source_truth_bundle(root, study_id)
-        parse_digest = require_parse_quality_ready(root, study_id)
+        parse_digest = require_parse_quality_current(root, study_id)
     except (SourceTruthError, ParseQualityError) as exc:
         raise DualSourceError(exc.code) from exc
     main = [row for row in bundle["sources"] if row.get("document_role") == "MAIN"]

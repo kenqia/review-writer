@@ -64,6 +64,7 @@ from test_dual_source import dual_project
 from test_parse_reconciliation import reconciliation_project
 from test_dual_parse_bootstrap import generic_output, source_request
 from view.serve_review_dashboard import project_cockpit_payload
+from view.serve_review_dashboard import project_progress_payload
 from view.serve_review_dashboard import project_review_figures_workspace_payload
 
 
@@ -346,6 +347,50 @@ def test_fresh_generic_sources_remain_available_before_parse_and_chemical_review
     assert cockpit["metrics"]["full_text_main_coverage"] == 3
     assert cockpit["metrics"]["reviewed_studies"] == 0
     assert evidence["workflow_can_continue"] is False
+
+
+def test_dashboard_does_not_call_chemical_pdf_binding_dual_source_binding(
+    tmp_path: Path,
+) -> None:
+    """A Chemical import is not a current dual-source lane until binding exists."""
+
+    project = dual_project(tmp_path, chemical=True)
+
+    projection = dual_parse_dashboard_projection(project)
+
+    assert projection["summary"]["chemical_bound"] == 0
+    assert projection["studies"][0]["chemical_import_status"] == "stale"
+    assert projection["studies"][0]["chemical_binding_status"] == "stale"
+
+
+def test_progress_preserves_dual_route_stage_blocker_and_unique_next_action(
+    tmp_path: Path,
+) -> None:
+    project = dual_project(tmp_path, chemical=True)
+
+    before_binding = project_progress_payload(tmp_path, project.name)
+
+    assert before_binding["active_stage"] == "chemical_import"
+    assert before_binding["blocker_code"] == "DUAL_SOURCE_BINDING_MISSING"
+    assert before_binding["recommended_next"] == "确认下一篇 Chemical Paper 导入"
+
+    write_dual_source_binding(project, "scholarly-a")
+    after_binding = project_progress_payload(tmp_path, project.name)
+
+    assert after_binding["active_stage"] == "reconciliation"
+    assert after_binding["blocker_code"] == "PARSE_RECONCILIATION_MISSING"
+    assert after_binding["recommended_next"] == "依据 PDF 仲裁下一项双层解析差异"
+    assert [stage["id"] for stage in after_binding["stages"]] == [
+        "sources",
+        "parsing",
+        "chemical_import",
+        "chemical_completion",
+        "reconciliation",
+        "evidence",
+        "synthesis",
+        "drafting",
+        "final",
+    ]
 
 
 def test_fresh_generic_binding_snapshots_each_bound_pdf(tmp_path: Path) -> None:

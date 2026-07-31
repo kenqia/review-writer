@@ -172,7 +172,7 @@
     const row = object(value);
     const availability = ["available", "unknown", "unavailable"].includes(row.availability)
       ? row.availability : "unknown";
-    const status = ["ready", "unknown", "unavailable"].includes(row.status)
+    const status = ["ready", "needs_more_traceable_candidates", "unknown", "unavailable"].includes(row.status)
       ? row.status : "unknown";
     return {
       availability,
@@ -834,6 +834,14 @@
       "三态结果保持可见：CONFIRMED、AI_PROVISIONAL 与 BLOCKED 不互相伪装。",
       "honest-progressive-lead",
     );
+    const statusLabel = honest.status === "needs_more_traceable_candidates"
+      ? "状态：需要更多可追溯候选（流程可继续，缺口保持可见）"
+      : honest.status === "ready"
+        ? "状态：覆盖率已达到当前阈值"
+        : honest.status === "unknown"
+          ? "状态：未知"
+          : "状态：不可用";
+    appendText(document, header, "p", statusLabel, "honest-progressive-status");
     parent.append(header);
 
     const counts = document.createElement("div");

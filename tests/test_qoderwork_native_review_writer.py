@@ -1278,7 +1278,8 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
                 completed["next_action"]["label"],
                 completed_progress["recommended_next"],
             )
-            self.assertEqual("", completed_progress["blocker_code"])
+            self.assertEqual("PARSE_QUALITY_REVIEW_REQUIRED", completed_progress["blocker_code"])
+            self.assertIn("Evidence 保持锁定", completed_progress["blocker"])
 
     def test_parse_quality_pdf_page_route_accepts_authoritative_four_digit_page(self) -> None:
         sys.path.insert(0, str(ROOT))
@@ -1384,10 +1385,20 @@ class NativeReviewWriterDashboardTests(unittest.TestCase):
 
             self.assertEqual("parsing", payload["active_stage"])
             self.assertEqual("in_progress", payload["status"])
-            self.assertEqual("", payload["blocker"])
-            self.assertEqual("", payload["blocker_code"])
+            self.assertEqual("当前双层解析阶段仍有阻塞项；Evidence 保持锁定。", payload["blocker"])
+            self.assertEqual("PARSE_QUALITY_INVALID", payload["blocker_code"])
             self.assertEqual(
-                ["complete", "active", "pending", "pending", "pending", "pending"],
+                [
+                    "complete",
+                    "blocked",
+                    "pending",
+                    "pending",
+                    "pending",
+                    "pending",
+                    "pending",
+                    "pending",
+                    "pending",
+                ],
                 [stage["status"] for stage in payload["stages"]],
             )
             self.assertFalse(payload["release_capabilities"]["internal_draft_export_ready"])

@@ -73,6 +73,20 @@ def test_unknown_projection_preserves_nulls_and_does_not_render_completion_as_do
     )
 
 
+def test_below_threshold_projection_preserves_needs_more_candidates_status() -> None:
+    module_path = json.dumps(str(DUAL_SCRIPT))
+    _run_node(
+        "\n".join(
+            [
+                f"const ui=require({module_path});",
+                "const model=ui.projectionModel({schema_version:'dual-parse-projection.v2',status:'ready',route:'honest_progressive',",
+                " honest_progressive:{availability:'available',status:'needs_more_traceable_candidates',core_molecule_count:309,coverage_denominator:309,confirmed_count:0,ai_provisional_count:210,blocked_count:99,coverage_ratio:210/309,coverage_sufficient:false,coverage_threshold:0.8,uncertainty_statement:'99 个结构仍无法唯一确定',gap_registry:[]},studies:[]});",
+                "if(model.honestProgressive.status!=='needs_more_traceable_candidates') throw new Error(JSON.stringify(model.honestProgressive));",
+            ]
+        )
+    )
+
+
 def test_completion_model_preserves_three_resolution_states_and_ai_provenance() -> None:
     module_path = json.dumps(str(DUAL_SCRIPT))
     _run_node(
