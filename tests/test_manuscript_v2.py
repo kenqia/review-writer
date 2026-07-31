@@ -315,6 +315,7 @@ def test_manuscript_lineage_binds_current_dual_versions(
             "reconciliation_digest": SHA_D,
             "reconciliation_status": "current",
             "content_result_status": "current",
+            "missing_resolved_smiles_count": 0,
             "ai_authored_smiles_count": 0,
             "reaction_data_status": "unavailable_not_provided",
         }
@@ -350,6 +351,37 @@ def test_manuscript_lineage_binds_current_dual_versions(
     stale = manuscript_state(project)
     assert stale["workflow_can_continue"] is False
     assert stale["reason_code"] == "MANUSCRIPT_DUAL_PARSE_STALE"
+
+
+def test_manuscript_dependency_requires_resolved_smiles_and_rejects_legacy_fields() -> None:
+    from review_writer.project import manuscript_v2
+
+    claim_bindings = [
+        {
+            "section_id": "section-one",
+            "marker": "[evidence:evidence-low]",
+            "paper_evidence_ids": ["evidence-low"],
+            "synthesis_ids": [],
+            "section_approval_digest": SHA_A,
+        }
+    ]
+    dependency = {
+        "evidence_id": "evidence-low",
+        "study_id": "study-a",
+        "molecule_index": 0,
+        "required_fields": ["resolved_smiles"],
+        "requires_element_review": False,
+        "requires_reaction_data": False,
+    }
+
+    current = manuscript_v2._chemical_claim_dependencies(claim_bindings, [dependency])
+
+    assert current[0]["required_fields"] == ["resolved_smiles"]
+    legacy = {**dependency, "required_fields": ["smiles_expanded", "smiles_unexpanded"]}
+    with pytest.raises(
+        ManuscriptV2Error, match="CHEMICAL_DEPENDENCY_REQUIRED_FIELDS_LEGACY"
+    ):
+        manuscript_v2._chemical_claim_dependencies(claim_bindings, [legacy])
 
 
 def test_merge_failure_does_not_overwrite_existing_authoritative_pair(project: Path) -> None:

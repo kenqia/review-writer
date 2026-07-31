@@ -42,9 +42,7 @@ _CLAIM_KEYS = frozenset(
         "requires_reaction_data",
     }
 )
-_CHEMICAL_FIELDS = frozenset(
-    {"mol_idt", "resolved_smiles"}
-)
+_CHEMICAL_FIELDS = frozenset({"resolved_smiles"})
 _LINEAGE_KEYS = (
     "chemical_paper_import_digests",
     "chemical_paper_safe_summary",
@@ -170,6 +168,8 @@ def _validate_summary(value: object, *, study_count: int) -> dict[str, Any]:
         value.get("missing_resolved_smiles_count")
     )
     ai_authored_smiles_count = _nonnegative(value.get("ai_authored_smiles_count"))
+    if missing_resolved_smiles_count > molecule_count:
+        raise _invalid()
     counts = value.get("element_review_counts")
     if not isinstance(counts, dict) or set(counts) != set(_ELEMENT_REVIEW_STATES):
         raise _invalid()
@@ -334,7 +334,7 @@ def validate_dependency_currentness(
         if value is not None:
             raise _currentness_invalid()
         return {
-            "schema_version": "chemical-paper-dependency-currentness.v1",
+            "schema_version": "chemical-paper-dependency-currentness.v2",
             "lineage_binding_status": "missing",
             "claims": [],
             "can_release": True,
@@ -346,7 +346,7 @@ def validate_dependency_currentness(
     binding_status = value.get("lineage_binding_status")
     if (
         value.get("schema_version")
-        != "chemical-paper-dependency-currentness.v1"
+        != "chemical-paper-dependency-currentness.v2"
         or binding_status not in {"current", "stale", "missing"}
         or not isinstance(value.get("can_release"), bool)
         or not isinstance(value.get("claims"), list)
@@ -476,7 +476,7 @@ def validate_dependency_currentness(
     if top_reasons != expected_top_reasons or value["can_release"] is not expected_release:
         raise _currentness_invalid()
     return {
-        "schema_version": "chemical-paper-dependency-currentness.v1",
+        "schema_version": "chemical-paper-dependency-currentness.v2",
         "lineage_binding_status": binding_status,
         "claims": actual_claims,
         "can_release": expected_release,
@@ -523,7 +523,7 @@ def render_chemical_paper_limitations(state: dict[str, Any]) -> str:
             f"Chemical Paper lineage covers {state['study_import_count']} study import(s) and "
             f"{state['molecule_count']} candidate molecule record(s); "
             f"{state['missing_name_count']} molecule name value(s) and "
-            f"{state['missing_resolved_smiles_count']} resolved SMILES value(s) remain unresolved, and "
+            f"{state['missing_resolved_smiles_count']} authoritative SMILES value(s) remain unresolved, and "
             f"{state['element_review_counts']['not_reviewed']} molecule element record(s) remain not reviewed."
         ),
     ]

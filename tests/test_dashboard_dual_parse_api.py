@@ -108,6 +108,111 @@ def _authoritative_snapshot(project: Path) -> dict[str, bytes]:
     }
 
 
+def test_dual_parse_api_projects_only_resolved_smiles_completion_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from review_writer.delivery import dual_parse_release
+
+    review_root = tmp_path / "review-root"
+    project = review_root / "review-projects" / "project"
+    project.mkdir(parents=True)
+    monkeypatch.setattr(
+        dual_parse_release,
+        "_dashboard_authority_payloads",
+        lambda _: (
+            {
+                "studies": [
+                    {
+                        "study_id": "study-a",
+                        "source_tier": "core",
+                        "status": "current",
+                        "generic_status": "current",
+                        "chemical_status": "current",
+                    }
+                ]
+            },
+            {
+                "schema_version": "chemical-completion-project-state.v2",
+                "studies": [
+                    {
+                        "study_id": "study-a",
+                        "status": "blocked",
+                        "missing_name_count": 0,
+                        "missing_resolved_smiles_count": 1,
+                        "ai_authored_smiles_count": 0,
+                        "version_token": "cpv1.opaque",
+                        "missing_fields": [
+                            {
+                                "molecule_index": 0,
+                                "field": "resolved_smiles",
+                                "page": 1,
+                                "bbox_normalized": [0.1, 0.2, 0.3, 0.4],
+                            }
+                        ],
+                    }
+                ]
+            },
+            {
+                "schema_version": "parse-reconciliation-project-state.v2",
+                "studies": [{"study_id": "study-a", "status": "blocked"}],
+            },
+            {
+                "schema_version": "chemical-paper-projection.v2",
+                "studies": [
+                    {
+                        "study_id": "study-a",
+                        "status": "needs_review",
+                        "molecule_count": 1,
+                        "reaction_data_status": "unavailable_not_provided",
+                        "molecules": [
+                            {
+                                "molecule_index": 0,
+                                "smiles_expanded": "RAW-EXPANDED-CANDIDATE",
+                                "smiles_unexpanded": "RAW-UNEXPANDED-CANDIDATE",
+                                "mol_block": "RAW-MOLBLOCK",
+                                "state_digest": "a" * 64,
+                                "local_path": "/private/chemical.json",
+                            }
+                        ],
+                    }
+                ]
+            },
+            {"unique_next_action": "Resolve the authoritative SMILES."},
+        ),
+    )
+
+    status, _, body = _http_request(
+        review_root,
+        b"GET /api/project/project/dual-parse HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    )
+
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["studies"][0]["missing_resolved_smiles_count"] == 1
+    assert payload["completion_queue"] == [
+        {
+            "study_id": "study-a",
+            "molecule_index": 0,
+            "version_token": "cpv1.opaque",
+            "field": "resolved_smiles",
+            "page": 1,
+            "bbox_normalized": [0.1, 0.2, 0.3, 0.4],
+        }
+    ]
+    encoded = json.dumps(payload, sort_keys=True)
+    for forbidden in (
+        "smiles_expanded",
+        "smiles_unexpanded",
+        "RAW-EXPANDED-CANDIDATE",
+        "RAW-UNEXPANDED-CANDIDATE",
+        "RAW-MOLBLOCK",
+        "state_digest",
+        "/private/",
+        "reaction_count",
+    ):
+        assert forbidden not in encoded
+
+
 @pytest.mark.parametrize(
     ("kind", "relative_asset"),
     [
@@ -445,7 +550,7 @@ def test_preflight_writes_no_authoritative_state_and_returns_safe_projection(
         assert forbidden not in encoded
 
 
-def test_post_confirm_http_projects_bound_import_as_researcher_review_not_current(
+def test_post_confirm_http_projects_v2_scientific_projection(
     tmp_path: Path,
 ) -> None:
     review_root = tmp_path / "review-root"
@@ -519,7 +624,6 @@ def test_post_confirm_http_projects_bound_import_as_researcher_review_not_curren
     assert isinstance(row["imported_at"], str) and row["imported_at"]
     assert row["reaction_data_status"] == "unavailable_not_provided"
     assert len(payload["completion_queue"]) == 1
-
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     for forbidden in (
         "source_pdf_sha256",

@@ -712,10 +712,20 @@ def dual_parse_dashboard_projection(project: Path) -> dict[str, Any]:
     dual, completion, reconciliation, chemical, workflow = _dashboard_authority_payloads(
         _project(project)
     )
+    if (
+        completion.get("schema_version")
+        != "chemical-completion-project-state.v2"
+        or reconciliation.get("schema_version")
+        != "parse-reconciliation-project-state.v2"
+        or chemical.get("schema_version") != "chemical-paper-projection.v2"
+    ):
+        raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_INVALID")
     completion_by_id = {row.get("study_id"): row for row in _study_rows(completion)}
     reconciliation_by_id = {
         row.get("study_id"): row for row in _study_rows(reconciliation)
     }
+    for row in completion_by_id.values():
+        _resolved_smiles_counters(row)
     chemical_by_id = {row.get("study_id"): row for row in _study_rows(chemical)}
     studies: list[dict[str, Any]] = []
     completion_queue: list[dict[str, Any]] = []
@@ -1038,6 +1048,23 @@ def _first_value(row: dict[str, Any], *keys: str) -> Any:
     return next((row[key] for key in keys if row.get(key) is not None), None)
 
 
+def _resolved_smiles_counters(row: object) -> tuple[int, int]:
+    if not isinstance(row, dict):
+        raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_INVALID")
+    missing = row.get("missing_resolved_smiles_count")
+    ai_authored = row.get("ai_authored_smiles_count")
+    if (
+        isinstance(missing, bool)
+        or not isinstance(missing, int)
+        or missing < 0
+        or isinstance(ai_authored, bool)
+        or not isinstance(ai_authored, int)
+        or ai_authored < 0
+    ):
+        raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_INVALID")
+    return missing, ai_authored
+
+
 def authority_rows_from_projections(
     dual: object, completion: object, reconciliation: object
 ) -> list[dict[str, Any]]:
@@ -1047,6 +1074,11 @@ def authority_rows_from_projections(
     if any(
         not isinstance(state, dict) or not isinstance(state.get("studies"), list)
         for state in states
+    ) or (
+        completion.get("schema_version")
+        != "chemical-completion-project-state.v2"
+        or reconciliation.get("schema_version")
+        != "parse-reconciliation-project-state.v2"
     ):
         raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_INVALID")
     assert isinstance(dual, dict)
@@ -1058,6 +1090,8 @@ def authority_rows_from_projections(
     reconciliation_by_id = {
         row.get("study_id"): row for row in reconciliation["studies"] if isinstance(row, dict)
     }
+    for row in completion["studies"]:
+        _resolved_smiles_counters(row)
     rows: list[dict[str, Any]] = []
     for source in dual["studies"]:
         if not isinstance(source, dict):
@@ -1127,7 +1161,9 @@ def authority_rows_from_projections(
                 "missing_resolved_smiles_count": chemical.get(
                     "missing_resolved_smiles_count"
                 ),
-                "ai_authored_smiles_count": chemical.get("ai_authored_smiles_count", 0),
+                "ai_authored_smiles_count": chemical.get(
+                    "ai_authored_smiles_count"
+                ),
                 "reaction_data_status": _first_value(
                     source, "reaction_data_status"
                 )
@@ -1208,13 +1244,20 @@ def _hard_fails_for_row(
             or current.get("reconciliation_digest") != frozen["reconciliation_digest"]
         ):
             hard_fails.update({"PARSE_RECONCILIATION_UNRESOLVED", "DUAL_PARSE_STALE"})
+        missing_count = current.get("missing_resolved_smiles_count")
+        if (
+            isinstance(missing_count, bool)
+            or not isinstance(missing_count, int)
+            or missing_count != 0
+        ):
+            hard_fails.add("CHEMICAL_COMPLETION_INCOMPLETE")
+        ai_count = current.get("ai_authored_smiles_count")
+        if isinstance(ai_count, bool) or not isinstance(ai_count, int) or ai_count < 0:
+            hard_fails.add("CHEMICAL_COMPLETION_INCOMPLETE")
+        elif ai_count:
+            hard_fails.add("AI_AUTHORED_SMILES")
     if current.get("content_result_status", "current") != "current":
         hard_fails.add("STALE_DUAL_PARSE_CONTENT_RESULT")
-    ai_count = current.get("ai_authored_smiles_count", 0)
-    if isinstance(ai_count, bool) or not isinstance(ai_count, int) or ai_count < 0:
-        hard_fails.add("CHEMICAL_COMPLETION_INCOMPLETE")
-    elif ai_count:
-        hard_fails.add("AI_AUTHORED_SMILES")
     reaction_status = current.get("reaction_data_status", REACTION_UNAVAILABLE)
     reaction_count = current.get("reaction_count")
     if reaction_status == REACTION_UNAVAILABLE and reaction_count is not None:

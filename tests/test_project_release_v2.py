@@ -92,7 +92,7 @@ def _attach_chemical_lineage(
 def _dependency_currentness(*, blocked: bool) -> dict[str, object]:
     reasons = ["CHEMICAL_REQUIRED_FIELD_UNRESOLVED"] if blocked else []
     return {
-        "schema_version": "chemical-paper-dependency-currentness.v1",
+        "schema_version": "chemical-paper-dependency-currentness.v2",
         "lineage_binding_status": "current",
         "claims": [
             {
@@ -323,7 +323,7 @@ def test_internal_docx_binds_chemical_lineage_and_adds_explicit_limitations(
         project_release,
         "dependency_currentness_for_project",
         lambda *_args, **_kwargs: {
-            "schema_version": "chemical-paper-dependency-currentness.v1",
+            "schema_version": "chemical-paper-dependency-currentness.v2",
             "lineage_binding_status": "current",
             "claims": [],
             "can_release": True,
@@ -347,6 +347,7 @@ def test_internal_docx_binds_chemical_lineage_and_adds_explicit_limitations(
     )
     assert snapshot["chemical_paper_binding_digest"] == canonical_digest(chemical)
     assert snapshot["chemical_paper_safe_summary"]["missing_resolved_smiles_count"] == 32
+    assert "unresolved_field_count" not in snapshot["chemical_paper_safe_summary"]
     assert "import_digest" not in json.dumps(snapshot["chemical_paper_safe_summary"])
 
 
@@ -503,7 +504,7 @@ def test_released_docx_becomes_stale_when_chemical_binding_changes(
         project_release,
         "dependency_currentness_for_project",
         lambda *_args, **_kwargs: {
-            "schema_version": "chemical-paper-dependency-currentness.v1",
+            "schema_version": "chemical-paper-dependency-currentness.v2",
             "lineage_binding_status": "current",
             "claims": [],
             "can_release": True,

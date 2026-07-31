@@ -109,10 +109,23 @@ def test_absent_optional_binding_remains_not_applicable_without_fabricating_zero
             raw_path="/private/export.zip"
         ),
         lambda value: value["chemical_paper_safe_summary"].update(study_count=2),
+        lambda value: value["chemical_paper_safe_summary"].update(
+            schema_version="chemical-paper-safe-summary.v1"
+        ),
+        lambda value: value["chemical_paper_safe_summary"].pop("schema_version"),
+        lambda value: value["chemical_paper_safe_summary"].update(
+            schema_version="chemical-paper-safe-summary.v1",
+            unresolved_field_count=value["chemical_paper_safe_summary"].pop(
+                "missing_resolved_smiles_count"
+            ),
+        ),
         lambda value: value["chemical_paper_safe_summary"].update(extra="raw"),
         lambda value: value["chemical_paper_safe_summary"].update(molecule_count=-1),
         lambda value: value["chemical_paper_safe_summary"].update(
             missing_resolved_smiles_count=-1
+        ),
+        lambda value: value["chemical_paper_safe_summary"].update(
+            missing_resolved_smiles_count=310
         ),
         lambda value: value["chemical_paper_safe_summary"].update(
             element_review_counts={
@@ -157,39 +170,19 @@ def test_legacy_full_chemical_lineage_is_rejected_instead_of_projected() -> None
         )
 
 
-def test_legacy_unresolved_field_count_summary_is_rejected() -> None:
+def test_v2_summary_cannot_substitute_legacy_unresolved_field_count() -> None:
     from review_writer.delivery.chemical_paper_release import (
         ChemicalPaperReleaseError,
         analyze_chemical_paper_release,
     )
 
+    lineage = _lineage()
+    summary = lineage["chemical_paper_safe_summary"]
+    summary.pop("missing_resolved_smiles_count")
+    summary["unresolved_field_count"] = 0
+
     with pytest.raises(ChemicalPaperReleaseError, match="CHEMICAL_PAPER_LINEAGE_INVALID"):
-        analyze_chemical_paper_release(
-            {
-                "chemical_paper_import_digests": [
-                    {
-                        "study_id": "study-a",
-                        "import_digest": "a" * 64,
-                        "state_digest": "b" * 64,
-                    }
-                ],
-                "chemical_paper_safe_summary": {
-                    "schema_version": "chemical-paper-safe-summary.v1",
-                    "route": "chemical-paper-zip-only",
-                    "study_count": 1,
-                    "molecule_count": 1,
-                    "unresolved_field_count": 1,
-                    "element_review_counts": {
-                        "not_reviewed": 1,
-                        "confirmed": 0,
-                        "corrected": 0,
-                        "not_applicable": 0,
-                    },
-                    "reaction_data_status": "unavailable_not_provided",
-                },
-                "chemical_paper_claim_dependencies": [],
-            }
-        )
+        analyze_chemical_paper_release(lineage)
 
 
 def test_claim_dependencies_are_exact_sorted_internal_bindings_not_safe_projection() -> None:
@@ -204,7 +197,7 @@ def test_claim_dependencies_are_exact_sorted_internal_bindings_not_safe_projecti
                 "claim_id": "claim-a",
                 "study_id": "study-a",
                 "molecule_index": 7,
-                "required_fields": ["mol_idt", "resolved_smiles"],
+                "required_fields": ["resolved_smiles"],
                 "requires_element_review": False,
                 "requires_reaction_data": False,
             }
@@ -243,6 +236,14 @@ def test_claim_dependencies_are_exact_sorted_internal_bindings_not_safe_projecti
             "study_id": "study-a",
             "molecule_index": 0,
             "required_fields": ["elements"],
+            "requires_element_review": False,
+            "requires_reaction_data": False,
+        },
+        {
+            "claim_id": "claim-a",
+            "study_id": "study-a",
+            "molecule_index": 0,
+            "required_fields": ["smiles_expanded"],
             "requires_element_review": False,
             "requires_reaction_data": False,
         },
@@ -295,7 +296,7 @@ def _currentness(
 ) -> dict[str, object]:
     reasons = list(blocking_reasons or [])
     return {
-        "schema_version": "chemical-paper-dependency-currentness.v1",
+        "schema_version": "chemical-paper-dependency-currentness.v2",
         "lineage_binding_status": "current",
         "claims": [
             {
@@ -385,10 +386,17 @@ def test_stale_authority_binding_accepts_uninspectable_fields_but_never_releases
 @pytest.mark.parametrize(
     "mutate",
     [
+        lambda value: value.pop("schema_version"),
+        lambda value: value.update(
+            schema_version="chemical-paper-dependency-currentness.v1"
+        ),
         lambda value: value["claims"][0].update(claim_id="claim-b"),
         lambda value: value["claims"][0]["dependencies"][0].update(molecule_index=8),
         lambda value: value["claims"][0]["dependencies"][0].update(
             required_field_statuses={"mol_idt": "resolved"}
+        ),
+        lambda value: value["claims"][0]["dependencies"][0].update(
+            required_field_statuses={"smiles_expanded": "resolved"}
         ),
         lambda value: value["claims"][0]["dependencies"][0].update(
             raw_path="/private/state.json"

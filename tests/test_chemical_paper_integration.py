@@ -17,7 +17,12 @@ from review_writer.project.content_agent_handoff import (
     build_content_task_package,
     import_content_agent_result,
 )
-from review_writer.project.manuscript_v2 import approve_section, merge_authoritative_manuscript, register_section_draft
+from review_writer.project.manuscript_v2 import (
+    ManuscriptV2Error,
+    approve_section,
+    merge_authoritative_manuscript,
+    register_section_draft,
+)
 from review_writer.project.review_figures import build_source_figure_registry, load_source_figure_registry
 from review_writer.project.source_truth import canonical_digest
 from test_chemical_paper_import import ACTOR, PDF_SHA, snapshot, source_truth_project, v2000, write_chemical_zip
@@ -311,7 +316,7 @@ def test_source_figure_registry_keeps_generic_authority_with_chemical_gap(tmp_pa
     assert load_source_figure_registry(project)["registry_digest"] == registry["registry_digest"]
 
 
-def test_manuscript_lineage_includes_exact_frozen_chemical_fields(
+def test_manuscript_lineage_rejects_legacy_v1_chemical_summary_explicitly(
     project: Path, monkeypatch
 ) -> None:
     chemical_root = project / "01_evidence/chemical_paper"
@@ -343,18 +348,8 @@ def test_manuscript_lineage_includes_exact_frozen_chemical_fields(
         project, _draft("The experiment reported the product. [evidence:evidence-low]")
     )
     approve_section(project, draft["section_id"], actor=_actor(), reason="Checked evidence.")
-    merge_authoritative_manuscript(project)
-    lineage = json.loads(
-        (project / "04_manuscript/manuscript_lineage.v2.json").read_text(encoding="utf-8")
-    )
-    assert lineage["chemical_paper_import_digests"] == expected["chemical_paper_import_digests"]
-    assert lineage["chemical_paper_safe_summary"] == expected["chemical_paper_safe_summary"]
-    assert lineage["chemical_paper_claim_dependencies"] == []
-    assert {key for key in lineage if key.startswith("chemical_paper_")} == {
-        "chemical_paper_import_digests",
-        "chemical_paper_safe_summary",
-        "chemical_paper_claim_dependencies",
-    }
+    with pytest.raises(ManuscriptV2Error, match="MANUSCRIPT_LINEAGE_INVALID"):
+        merge_authoritative_manuscript(project)
 
 
 def test_cli_exposes_only_the_four_frozen_commands(tmp_path: Path) -> None:

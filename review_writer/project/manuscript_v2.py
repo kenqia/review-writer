@@ -713,11 +713,20 @@ def _chemical_claim_dependencies(
         evidence_ids = binding.get("paper_evidence_ids", [])
         for evidence_id in evidence_ids:
             for dependency in by_evidence.get(evidence_id, []):
+                required_fields = dependency.get("required_fields", [])
+                if (
+                    not isinstance(required_fields, list)
+                    or required_fields != sorted(set(required_fields))
+                    or any(field != "resolved_smiles" for field in required_fields)
+                ):
+                    raise ManuscriptV2Error(
+                        "CHEMICAL_DEPENDENCY_REQUIRED_FIELDS_LEGACY"
+                    )
                 row = {
                     "claim_id": canonical_digest(binding),
                     "study_id": dependency.get("study_id"),
                     "molecule_index": dependency.get("molecule_index"),
-                    "required_fields": sorted(dependency.get("required_fields", [])),
+                    "required_fields": list(required_fields),
                     "requires_element_review": dependency.get("requires_element_review", False),
                     "requires_reaction_data": dependency.get("requires_reaction_data", False),
                 }

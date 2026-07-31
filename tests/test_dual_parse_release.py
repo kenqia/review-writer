@@ -29,6 +29,7 @@ def _authority_rows() -> list[dict[str, object]]:
             "reconciliation_digest": SHA_D,
             "reconciliation_status": "current",
             "content_result_status": "current",
+            "missing_resolved_smiles_count": 0,
             "ai_authored_smiles_count": 0,
             "reaction_data_status": "unavailable_not_provided",
         }
@@ -114,6 +115,57 @@ def test_ai_authored_smiles_is_a_hard_fail(
 
     assert state["internal_release_ready"] is False
     assert "AI_AUTHORED_SMILES" in state["hard_fails"]
+
+
+@pytest.mark.parametrize(
+    ("counter", "value"),
+    [
+        ("missing_resolved_smiles_count", 1),
+        ("missing_resolved_smiles_count", None),
+        ("ai_authored_smiles_count", None),
+    ],
+)
+def test_resolved_smiles_completion_counters_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    counter: str,
+    value: object,
+) -> None:
+    from review_writer.delivery import dual_parse_release as release
+
+    rows = _authority_rows()
+    bindings = release.build_dual_parse_manuscript_bindings(rows, {"study-a"})
+    project = _project(tmp_path, bindings)
+    if value is None:
+        rows[0].pop(counter)
+    else:
+        rows[0][counter] = value
+    monkeypatch.setattr(release, "_current_authority_rows", lambda _: copy.deepcopy(rows))
+
+    state = release.dual_parse_release_state(project)
+
+    assert state["internal_release_ready"] is False
+    assert "CHEMICAL_COMPLETION_INCOMPLETE" in state["hard_fails"]
+
+
+def test_legacy_dual_smiles_counters_do_not_satisfy_resolved_smiles_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from review_writer.delivery import dual_parse_release as release
+
+    rows = _authority_rows()
+    rows[0].pop("missing_resolved_smiles_count")
+    rows[0]["missing_smiles_expanded_count"] = 0
+    rows[0]["missing_smiles_unexpanded_count"] = 0
+    project = _project(
+        tmp_path, release.build_dual_parse_manuscript_bindings(rows, {"study-a"})
+    )
+    monkeypatch.setattr(release, "_current_authority_rows", lambda _: copy.deepcopy(rows))
+
+    state = release.dual_parse_release_state(project)
+
+    assert state["internal_release_ready"] is False
+    assert "CHEMICAL_COMPLETION_INCOMPLETE" in state["hard_fails"]
 
 
 def test_credits_are_not_applicable_and_never_projected_as_zero(
@@ -202,12 +254,14 @@ def test_dashboard_projection_whitelists_researcher_safe_fields(
                 ],
             },
             {
+                "schema_version": "chemical-completion-project-state.v2",
                 "studies": [
                     {
                         "study_id": "study-a",
                         "status": "blocked",
                         "missing_name_count": 1,
                         "missing_resolved_smiles_count": 2,
+                        "ai_authored_smiles_count": 0,
                         "version_token": "completion-v1.opaque",
                         "missing_fields": [
                             {
@@ -225,6 +279,7 @@ def test_dashboard_projection_whitelists_researcher_safe_fields(
                 ]
             },
             {
+                "schema_version": "parse-reconciliation-project-state.v2",
                 "studies": [
                     {
                         "study_id": "study-a",
@@ -235,6 +290,7 @@ def test_dashboard_projection_whitelists_researcher_safe_fields(
                 ]
             },
             {
+                "schema_version": "chemical-paper-projection.v2",
                 "studies": [
                     {
                         "study_id": "study-a",
@@ -300,6 +356,129 @@ def test_dashboard_projection_whitelists_researcher_safe_fields(
     ]
 
 
+@pytest.mark.parametrize(
+    ("completion_version", "reconciliation_version", "chemical_version"),
+    [
+        (
+            None,
+            "parse-reconciliation-project-state.v2",
+            "chemical-paper-projection.v2",
+        ),
+        (
+            "chemical-completion-project-state.v2",
+            None,
+            "chemical-paper-projection.v2",
+        ),
+        (
+            "chemical-completion-project-state.v2",
+            "parse-reconciliation-project-state.v2",
+            None,
+        ),
+        (
+            "chemical-completion-project-state.v1",
+            "parse-reconciliation-project-state.v2",
+            "chemical-paper-projection.v2",
+        ),
+        (
+            "chemical-completion-project-state.v2",
+            "parse-reconciliation-project-state.v1",
+            "chemical-paper-projection.v2",
+        ),
+        (
+            "chemical-completion-project-state.v2",
+            "parse-reconciliation-project-state.v2",
+            "chemical-paper-projection.v1",
+        ),
+    ],
+)
+def test_dashboard_projection_rejects_legacy_scientific_authority_versions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    completion_version: str | None,
+    reconciliation_version: str | None,
+    chemical_version: str | None,
+) -> None:
+    from review_writer.delivery import dual_parse_release as release
+
+    project = tmp_path / "project"
+    project.mkdir()
+    completion: dict[str, object] = {"studies": []}
+    reconciliation: dict[str, object] = {"studies": []}
+    chemical: dict[str, object] = {"studies": []}
+    if completion_version is not None:
+        completion["schema_version"] = completion_version
+    if reconciliation_version is not None:
+        reconciliation["schema_version"] = reconciliation_version
+    if chemical_version is not None:
+        chemical["schema_version"] = chemical_version
+    monkeypatch.setattr(
+        release,
+        "_dashboard_authority_payloads",
+        lambda _: (
+            {"studies": []},
+            completion,
+            reconciliation,
+            chemical,
+            {},
+        ),
+    )
+
+    with pytest.raises(
+        release.DualParseReleaseError, match="DUAL_PARSE_AUTHORITY_INVALID"
+    ):
+        release.dual_parse_dashboard_projection(project)
+
+
+def test_candidate_smiles_difference_is_not_projected_as_reaction_or_zero() -> None:
+    from review_writer.delivery import dual_parse_release as release
+
+    rows = release.authority_rows_from_projections(
+        {
+            "studies": [
+                {
+                    "study_id": "study-a",
+                    "source_tier": "core",
+                    "requires_chemical": True,
+                    "binding_digest": SHA_A,
+                    "generic": {"status": "current", "binding_digest": SHA_B},
+                    "chemical": {
+                        "status": "current",
+                        "state_digest": SHA_C,
+                        "reaction_data_status": "unavailable_not_provided",
+                        "candidate_smiles_differ_count": 1,
+                    },
+                }
+            ]
+        },
+        {
+            "schema_version": "chemical-completion-project-state.v2",
+            "studies": [
+                {
+                    "study_id": "study-a",
+                    "status": "current",
+                    "gate_digest": SHA_D,
+                    "missing_resolved_smiles_count": 0,
+                    "ai_authored_smiles_count": 0,
+                }
+            ]
+        },
+        {
+            "schema_version": "parse-reconciliation-project-state.v2",
+            "studies": [
+                {
+                    "study_id": "study-a",
+                    "status": "current",
+                    "registry_digest": SHA_A,
+                }
+            ]
+        },
+    )
+
+    assert rows[0]["reaction_data_status"] == "unavailable_not_provided"
+    assert rows[0]["reaction_count"] is None
+    assert "candidate_smiles_differ_count" not in rows[0]
+
+
 def test_scientific_projection_adapter_accepts_nested_public_contracts() -> None:
     from review_writer.delivery import dual_parse_release as release
 
@@ -321,17 +500,19 @@ def test_scientific_projection_adapter_accepts_nested_public_contracts() -> None
             ]
         },
         {
+            "schema_version": "chemical-completion-project-state.v2",
             "studies": [
                 {
                     "study_id": "study-a",
                     "status": "current",
                     "gate_digest": SHA_D,
-                    "missing_resolved_smiles_count": 2,
+                    "missing_resolved_smiles_count": 0,
                     "ai_authored_smiles_count": 0,
                 }
             ]
         },
         {
+            "schema_version": "parse-reconciliation-project-state.v2",
             "studies": [
                 {
                     "study_id": "study-a",
@@ -357,13 +538,79 @@ def test_scientific_projection_adapter_accepts_nested_public_contracts() -> None
             "reconciliation_status": "current",
             "reconciliation_digest": "e" * 64,
             "content_result_status": "current",
-            "missing_resolved_smiles_count": 2,
+            "missing_resolved_smiles_count": 0,
             "ai_authored_smiles_count": 0,
             "reaction_data_status": "unavailable_not_provided",
             "reaction_count": None,
             "unreviewed_element_molecule_count": 0,
         }
     ]
+
+
+@pytest.mark.parametrize(
+    ("completion_version", "reconciliation_version"),
+    [
+        (None, "parse-reconciliation-project-state.v2"),
+        ("chemical-completion-project-state.v2", None),
+        ("chemical-completion-project-state.v1", "parse-reconciliation-project-state.v2"),
+        ("chemical-completion-project-state.v2", "parse-reconciliation-project-state.v1"),
+    ],
+)
+def test_scientific_projection_adapter_rejects_legacy_authority_versions(
+    completion_version: str | None, reconciliation_version: str | None
+) -> None:
+    from review_writer.delivery import dual_parse_release as release
+
+    completion: dict[str, object] = {"studies": []}
+    reconciliation: dict[str, object] = {"studies": []}
+    if completion_version is not None:
+        completion["schema_version"] = completion_version
+    if reconciliation_version is not None:
+        reconciliation["schema_version"] = reconciliation_version
+    with pytest.raises(
+        release.DualParseReleaseError, match="DUAL_PARSE_AUTHORITY_INVALID"
+    ):
+        release.authority_rows_from_projections(
+            {"studies": []},
+            completion,
+            reconciliation,
+        )
+
+
+@pytest.mark.parametrize(
+    "completion_row",
+    [
+        {
+            "study_id": "study-a",
+            "missing_smiles_expanded_count": 0,
+            "missing_smiles_unexpanded_count": 0,
+            "ai_authored_smiles_count": 0,
+        },
+        {
+            "study_id": "study-a",
+            "missing_resolved_smiles_count": 0,
+        },
+    ],
+)
+def test_scientific_projection_adapter_rejects_legacy_or_missing_smiles_counters(
+    completion_row: dict[str, object],
+) -> None:
+    from review_writer.delivery import dual_parse_release as release
+
+    with pytest.raises(
+        release.DualParseReleaseError, match="DUAL_PARSE_AUTHORITY_INVALID"
+    ):
+        release.authority_rows_from_projections(
+            {"studies": []},
+            {
+                "schema_version": "chemical-completion-project-state.v2",
+                "studies": [completion_row],
+            },
+            {
+                "schema_version": "parse-reconciliation-project-state.v2",
+                "studies": [],
+            },
+        )
 
 
 def test_release_state_fails_closed_when_authority_projection_is_unavailable(

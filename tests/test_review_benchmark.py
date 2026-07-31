@@ -114,7 +114,7 @@ def _chemical_lineage(*, with_dependency: bool) -> dict[str, object]:
 def _chemical_currentness(*, blocked: bool) -> dict[str, object]:
     if not blocked:
         return {
-            "schema_version": "chemical-paper-dependency-currentness.v1",
+            "schema_version": "chemical-paper-dependency-currentness.v2",
             "lineage_binding_status": "current",
             "claims": [],
             "can_release": True,
@@ -122,7 +122,7 @@ def _chemical_currentness(*, blocked: bool) -> dict[str, object]:
         }
     reasons = ["CHEMICAL_REQUIRED_FIELD_UNRESOLVED"]
     return {
-        "schema_version": "chemical-paper-dependency-currentness.v1",
+        "schema_version": "chemical-paper-dependency-currentness.v2",
         "lineage_binding_status": "current",
         "claims": [
             {
