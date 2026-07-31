@@ -344,6 +344,26 @@
     };
   }
 
+  function completionCandidateSuggestionsModel(value) {
+    return array(value).map(candidateValue => {
+      const candidate = object(candidateValue);
+      const locator = object(candidate.pdf_locator || candidate.pdfLocator);
+      const page = positiveInteger(locator.page);
+      const provenance = object(candidate.provenance);
+      const valueText = publicChemicalText(candidate.value);
+      const reason = publicText(candidate.reason, "候选理由未提供");
+      if (!valueText || page === null) return null;
+      return {
+        value: valueText,
+        confidence: ratioValue(candidate.confidence),
+        provenance: publicText(provenance.source, "候选来源未提供"),
+        page,
+        figureLabel: publicText(locator.figure_label || locator.figureLabel, ""),
+        reason,
+      };
+    }).filter(Boolean);
+  }
+
   function importPreflightModel(value) {
     const row = object(value);
     if (!Object.keys(row).length) return null;
@@ -409,6 +429,7 @@
       ...locatorModel(row, true),
       actorLabel: publicText(row.actor_label, "决定者未提供"),
       updatedLabel: publicText(row.updated_at, "更新时间未提供"),
+      candidateSuggestions: completionCandidateSuggestionsModel(row.candidate_suggestions),
     };
     if (field === "resolved_smiles") {
       model.resolvedSmiles = blocked ? null : publicChemicalText(row.resolved_smiles);
@@ -1209,127 +1230,6 @@
     fieldset.append(summary);
   }
 
-  function renderAICandidateForms(document, parent, rows, handlers) {
-    const groups = groupCompletionRows(rows)
-      .map(group => ({...group, rows:group.rows.filter(row => row.field === "resolved_smiles")}))
-      .filter(group => group.rows.length);
-    if (!groups.length) return;
-    const panel = document.createElement("section");
-    panel.className = "dual-ai-candidate-panel";
-    appendText(document, panel, "h4", "AI candidate batch · AI_PROVISIONAL only");
-    appendText(
-      document,
-      panel,
-      "p",
-      "批量 AI candidate 只能提交 AI_PROVISIONAL；不会伪装为 CONFIRMED。每条候选必须记录 confidence、provenance 与 PDF locator。",
-      "dual-ai-candidate-note",
-    );
-    groups.forEach((group, groupIndex) => {
-      const form = document.createElement("form");
-      form.className = "dual-ai-candidate-form";
-      appendText(document, form, "h5", `AI candidate 批次 ${groupIndex + 1}`);
-      const controls = [];
-      group.rows.forEach(row => {
-        const fieldset = document.createElement("fieldset");
-        const legend = document.createElement("legend");
-        legend.textContent = `${row.displayLabel} · AI_PROVISIONAL · ${row.locatorLabel}`;
-        fieldset.append(legend);
-        const value = document.createElement("input");
-        value.className = "dual-ai-candidate-value";
-        value.autocomplete = "off";
-        const confidence = document.createElement("input");
-        confidence.className = "dual-ai-candidate-confidence";
-        confidence.type = "number";
-        confidence.min = "0";
-        confidence.max = "1";
-        confidence.step = "0.01";
-        confidence.value = row.confidence === null ? "" : String(row.confidence);
-        const provenance = document.createElement("input");
-        provenance.className = "dual-ai-candidate-provenance";
-        provenance.autocomplete = "off";
-        provenance.value = row.provenanceSource === "来源未提供" ? "" : row.provenanceSource;
-        const page = document.createElement("input");
-        page.className = "dual-ai-candidate-page";
-        page.type = "number";
-        page.min = "1";
-        page.value = row.page ? String(row.page) : "";
-        const figure = document.createElement("input");
-        figure.className = "dual-ai-candidate-figure";
-        figure.autocomplete = "off";
-        const reason = document.createElement("textarea");
-        reason.className = "dual-ai-candidate-reason";
-        reason.rows = 2;
-        fieldset.append(
-          labelledControl(document, "AI candidate resolved SMILES", value),
-          labelledControl(document, "confidence（0–1）", confidence),
-          labelledControl(document, "provenance source", provenance),
-          labelledControl(document, "PDF 页码", page),
-          labelledControl(document, "图、Scheme 或表号（可选）", figure),
-          labelledControl(document, "候选理由", reason),
-        );
-        form.append(fieldset);
-        controls.push({row, value, confidence, provenance, page, figure, reason});
-      });
-      const actor = safeActor(handlers);
-      const actorInput = document.createElement("input");
-      actorInput.className = "dual-ai-candidate-actor";
-      actorInput.autocomplete = "off";
-      actorInput.value = actor.actorLabel;
-      form.append(labelledControl(document, "本批次候选记录者", actorInput));
-      const submit = document.createElement("button");
-      submit.type = "submit";
-      submit.className = "dual-parse-primary";
-      submit.textContent = "提交 AI_PROVISIONAL 候选";
-      form.append(submit);
-      form.addEventListener("submit", event => {
-        event.preventDefault();
-        try {
-          const completeControls = controls.filter(control => {
-            const value = publicChemicalText(control.value.value);
-            const confidence = ratioValue(Number(control.confidence.value));
-            return value
-              && text(control.provenance.value, "")
-              && text(control.reason.value, "")
-              && Number.isInteger(Number(control.page.value))
-              && Number(control.page.value) >= 1
-              && confidence !== null;
-          });
-          if (!completeControls.length) throw new Error("at least one complete AI candidate required");
-          const corrections = completeControls.map(control => ({
-            moleculeIndex: completionTargetByModel.get(control.row).moleculeIndex,
-            field: control.row.field,
-            value: control.value.value,
-            resolutionStatus: "AI_PROVISIONAL",
-            confidence: Number(control.confidence.value),
-            provenance: {
-              source: control.provenance.value,
-              pdfLocator: {page: Number(control.page.value), figureLabel: control.figure.value},
-            },
-            reason: control.reason.value,
-            pdfLocator: {page: Number(control.page.value), figureLabel: control.figure.value},
-          }));
-          handlers?.onCompletionSave?.(
-            completionBatchRequest(
-              group.target.studyId,
-              group.target.versionToken,
-              corrections,
-              {...actor, actorLabel: actorInput.value},
-            ),
-            form,
-          );
-        } catch (error) {
-          handlers?.onValidationError?.(
-            error?.message === "at least one complete AI candidate required"
-              ? "请至少完整填写一项 AI candidate，并提供 confidence、provenance、PDF 页码与理由。"
-              : "AI candidate 未提交：请检查 SMILES、confidence、provenance 与 PDF locator。",
-          );
-        }
-      });
-      panel.append(form);
-    });
-    parent.append(panel);
-  }
-
   function renderCompletion(document, parent, rows, handlers, model) {
     parent.replaceChildren();
     appendText(document, parent, "h4", "Chemical Completion Queue");
@@ -1376,6 +1276,38 @@
         page.value = row.page ? String(row.page) : "";
         const figure = document.createElement("input");
         figure.autocomplete = "off";
+        const control = {row, value, reason, page, figure, selectedCandidate: null, rowIndex};
+        value.addEventListener("input", () => {
+          control.selectedCandidate = null;
+        });
+        if (row.candidateSuggestions.length) {
+          const suggestions = document.createElement("section");
+          suggestions.className = "dual-completion-agent-candidates";
+          appendText(document, suggestions, "strong", "Content Agent 候选（仅供研究者复核）");
+          appendText(document, suggestions, "p", "候选不会自动成为权威决定；请核对原始 PDF 后再保存 AI_PROVISIONAL。", "dual-completion-agent-candidate-note");
+          const list = document.createElement("ul");
+          row.candidateSuggestions.forEach(candidate => {
+            const item = document.createElement("li");
+            appendText(document, item, "span", `${candidate.value} · confidence ${candidate.confidence === null ? "未知" : candidate.confidence} · ${candidate.provenance}`);
+            appendText(document, item, "p", `${candidate.reason} · 第 ${candidate.page} 页${candidate.figureLabel ? ` · ${candidate.figureLabel}` : ""}`);
+            const use = document.createElement("button");
+            use.type = "button";
+            use.className = "dual-parse-secondary";
+            use.textContent = "采纳为 AI_PROVISIONAL（仍需核对）";
+            use.addEventListener("click", () => {
+              value.value = candidate.value;
+              reason.value = candidate.reason;
+              page.value = String(candidate.page);
+              figure.value = candidate.figureLabel;
+              control.selectedCandidate = candidate;
+              value.focus();
+            });
+            item.append(use);
+            list.append(item);
+          });
+          suggestions.append(list);
+          fieldset.append(suggestions);
+        }
         fieldset.append(
           labelledControl(document, `${row.fieldLabel} 补充值`, value),
           labelledControl(document, "PDF 核对理由", reason),
@@ -1383,7 +1315,7 @@
           labelledControl(document, "图、Scheme 或表号（可选）", figure),
         );
         form.append(fieldset);
-        controls.push({row, value, reason, page, figure, rowIndex});
+        controls.push(control);
       });
       const actor = safeActor(handlers);
       const actorInput = document.createElement("input");
@@ -1408,13 +1340,24 @@
           if (!completeControls.length) {
             throw new Error("at least one complete correction required");
           }
-          const corrections = completeControls.map(control => ({
-            moleculeIndex: completionTargetByModel.get(control.row).moleculeIndex,
-            field: control.row.field,
-            value: control.value.value,
-            reason: control.reason.value,
-            pdfLocator: {page: Number(control.page.value), figureLabel: control.figure.value},
-          }));
+          const corrections = completeControls.map(control => {
+            const correction = {
+              moleculeIndex: completionTargetByModel.get(control.row).moleculeIndex,
+              field: control.row.field,
+              value: control.value.value,
+              reason: control.reason.value,
+              pdfLocator: {page: Number(control.page.value), figureLabel: control.figure.value},
+            };
+            if (control.selectedCandidate) {
+              correction.resolutionStatus = "AI_PROVISIONAL";
+              correction.confidence = control.selectedCandidate.confidence;
+              correction.provenance = {
+                source: control.selectedCandidate.provenance,
+                pdfLocator: correction.pdfLocator,
+              };
+            }
+            return correction;
+          });
           handlers?.onCompletionSave?.(
             completionBatchRequest(
               group.target.studyId,
@@ -1434,7 +1377,6 @@
       });
       parent.append(form);
     });
-    if (model?.route === "honest_progressive") renderAICandidateForms(document, parent, rows, handlers);
     if (!groups.length) appendText(document, parent, "p", "当前没有缺失名称、局部标签或已解析 SMILES。", "dual-parse-empty");
   }
 

@@ -27,7 +27,9 @@ from review_writer.project.chemical_paper import (
 from review_writer.project.source_truth import (
     SourceTruthError,
     canonical_digest,
+    declared_study_ids,
     load_source_truth_bundle,
+    study_source_tier,
 )
 from review_writer.project.paper_evidence import (
     HONEST_PROGRESSIVE_ROUTE,
@@ -590,8 +592,26 @@ def apply_chemical_completion_http(project: Path, payload: object) -> dict[str, 
         raise _authority_error(exc, "CHEMICAL_COMPLETION_REQUEST_INVALID") from exc
     if not isinstance(result, dict):
         raise DualParseReleaseError("DUAL_PARSE_AUTHORITY_INVALID")
-    refresh_dual_parse_derived_state(root, study_id)
-    return result
+    refreshes: list[dict[str, Any]] = []
+    try:
+        study_ids = declared_study_ids(root)
+    except SourceTruthError as exc:
+        raise DualParseReleaseError(exc.code) from exc
+    for current_study_id in study_ids:
+        try:
+            if study_source_tier(root, current_study_id) != "core":
+                continue
+        except SourceTruthError as exc:
+            raise DualParseReleaseError(exc.code) from exc
+        refreshes.append({
+            "study_id": current_study_id,
+            **refresh_dual_parse_derived_state(root, current_study_id),
+        })
+    current_refresh = next(
+        (row for row in refreshes if row["study_id"] == study_id),
+        {"study_id": study_id, "status": "blocked", "stage": "reconciliation", "reason_code": "DERIVED_REFRESH_MISSING"},
+    )
+    return {**result, "derived_refresh": current_refresh, "derived_refreshes": refreshes}
 
 
 def _opaque_registry_token(value: str) -> str:

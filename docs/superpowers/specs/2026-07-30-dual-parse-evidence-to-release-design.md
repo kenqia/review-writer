@@ -481,6 +481,15 @@ Paper Evidence package 按 study 隔离，只允许包含：
 - 当前 reconciliation 决定；
 - 最小 study identity/binding manifest。
 
+当 Researcher 在 Chemical Completion 阶段请求补充候选时，Coordinator 使用独立
+`request_kind=chemical_completion_candidates` 的 candidate-only package。该 package
+只包含同一 study 的当前 PDF、Generic safe projection、Chemical safe projection 和
+Parse Quality safe projection；Reconciliation 尚未 current 时允许缺席。结果只写入
+hash/binding 校验的 candidate suggestion staging，不写 molecule correction、decision
+或 approval。Dashboard 将 suggestion 以“仅供研究者复核”显示；只有同一
+Simulated Researcher 在可见 PDF 下显式采用，才通过正常 Completion mutation 写入
+`AI_PROVISIONAL`。采用后旧 suggestion 因 gate/binding 变化自动失效。
+
 禁止包含：
 
 - raw Chemical JSON 或完整 MolBlock；
@@ -698,7 +707,11 @@ formal import 之后的产品内可见决定和 checkpoint 1–19。它不接收
 path/hash，不执行 importer；它的科学决定在本轮模拟流程中有效，但不等于真实
 用户最终接受。
 
-缺少候选内容时，Researcher Agent 发出 `CONTENT_AGENT_REQUEST` 并暂停。QA Coordinator 分派新的独立 Content Agent，验证并正式导入结果，然后让原 Researcher Agent 从原 checkpoint 继续。
+缺少候选内容时，Researcher Agent 发出 `CONTENT_AGENT_REQUEST` 并暂停。Chemical
+Completion 请求使用 `chemical_completion_candidates`，Paper Evidence/Synthesis/
+Section 仍分别使用既有 request kind。QA Coordinator 分派新的独立 Content Agent，
+验证并正式导入 candidate-only 结果，然后让原 Researcher Agent 从原 checkpoint
+继续；Content Agent 不能写 researcher decision 或 authoritative Completion。
 
 ### 16.3 Restart
 

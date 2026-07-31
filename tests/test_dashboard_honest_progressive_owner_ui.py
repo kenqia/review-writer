@@ -120,7 +120,7 @@ def test_owner_renderer_shows_counts_study_coverage_blocked_gap_and_actor_residu
     )
 
 
-def test_owner_ai_candidate_form_submits_provisional_metadata_and_pdf_locator() -> None:
+def test_owner_must_not_generate_ai_candidate_content_without_agent_suggestion() -> None:
     module_path = json.dumps(str(DUAL_SCRIPT))
     _run_node(
         "\n".join(
@@ -138,11 +138,35 @@ def test_owner_ai_candidate_form_submits_provisional_metadata_and_pdf_locator() 
                 "const model=ui.projectionModel({schema_version:'dual-parse-projection.v2',status:'ready',route:'honest_progressive',studies:[],completion_queue:[{study_id:'study-a',molecule_index:0,version_token:'v1',field:'resolved_smiles',resolved_smiles:null,resolved_smiles_status:'BLOCKED',gap_reason:'结构图不完整',actor_provenance_residual:'append-only residual'}]});",
                 "let saved=null;ui.render(document,mount,model,{actor:{actorType:'simulated_researcher_agent',actorLabel:'agent'},onCompletionSave:payload=>{saved=payload;}});",
                 "const all=[];const visit=node=>{all.push(node);for(const child of node.children||[])if(child&&typeof child==='object')visit(child);};visit(mount);",
-                "const form=all.find(node=>node.className==='dual-ai-candidate-form');if(!form)throw new Error('missing AI candidate form');",
-                "const value=all.find(node=>node.className==='dual-ai-candidate-value');const confidence=all.find(node=>node.className==='dual-ai-candidate-confidence');const provenance=all.find(node=>node.className==='dual-ai-candidate-provenance');const page=all.find(node=>node.className==='dual-ai-candidate-page');const reason=all.find(node=>node.className==='dual-ai-candidate-reason');",
-                "value.value='CCO';confidence.value='0.66';provenance.value='pdf';page.value='5';reason.value='PDF structure figure supports this candidate.';form.listeners.submit({preventDefault(){}});",
-                "const row=saved?.corrections?.[0];if(!row||row.resolution_status!=='AI_PROVISIONAL'||row.confidence!==0.66||row.provenance.source!=='pdf'||row.pdf_locator.page!==5||row.confirmed===true)throw new Error(JSON.stringify(saved));",
-                "if(row.gap_reason!==undefined)throw new Error(JSON.stringify(row));",
+                "if(all.some(node=>node.className==='dual-ai-candidate-form'||node.className==='dual-ai-candidate-value'))throw new Error('researcher candidate authoring surface is still exposed');",
+                "if(saved!==null)throw new Error(JSON.stringify(saved));",
+            ]
+        )
+    )
+
+
+def test_owner_can_only_adopt_a_visible_agent_suggestion_as_provisional() -> None:
+    module_path = json.dumps(str(DUAL_SCRIPT))
+    _run_node(
+        "\n".join(
+            [
+                f"const ui=require({module_path});",
+                "class Node {",
+                " constructor(tag,id=''){this.tag=tag;this.id=id;this.children=[];this.attributes={};this.className='';this.textContent='';this.listeners={};this.value='';this.type='';}",
+                " append(...nodes){this.children.push(...nodes);} replaceChildren(...nodes){this.children=[...nodes];}",
+                " setAttribute(name,value){this.attributes[name]=String(value);if(name==='id')this.id=String(value);}",
+                " addEventListener(name,handler){this.listeners[name]=handler;} focus(){}",
+                " querySelector(selector){const match=selector.startsWith('#')?['id',selector.slice(1)]:selector.startsWith('.')?['className',selector.slice(1)]:null;if(match&&this[match[0]]===match[1])return this;for(const child of this.children){if(child&&typeof child.querySelector==='function'){const found=child.querySelector(selector);if(found)return found;}}return null;}",
+                "}",
+                "const document={createElement:tag=>new Node(tag),createTextNode:value=>{const node=new Node('#text');node.textContent=String(value);return node;},body:new Node('body')};",
+                "const mount=new Node('main');for(const id of ['honest-progressive-summary','dual-study-status','chemical-import-preflight','chemical-completion-queue','reconciliation-list'])mount.append(new Node('section',id));",
+                "const model=ui.projectionModel({schema_version:'dual-parse-projection.v2',status:'ready',route:'honest_progressive',studies:[],completion_queue:[{study_id:'study-a',molecule_index:0,version_token:'v1',field:'resolved_smiles',resolved_smiles:null,resolved_smiles_status:'BLOCKED',gap_reason:'结构图不完整',candidate_suggestions:[{value:'CCO',confidence:0.66,provenance:{source:'original_pdf_structure'},pdf_locator:{page:2,figure_label:'Figure 1'},reason:'Visible structure candidate.'}]}]});",
+                "let saved=null;ui.render(document,mount,model,{actor:{actorType:'simulated_researcher_agent',actorLabel:'agent'},onCompletionSave:payload=>{saved=payload;}});",
+                "const all=[];const visit=node=>{all.push(node);for(const child of node.children||[])if(child&&typeof child==='object')visit(child);};visit(mount);",
+                "const adopt=all.find(node=>node.tag==='button'&&node.textContent.includes('采纳为 AI_PROVISIONAL'));if(!adopt)throw new Error('missing adoption control');",
+                "adopt.listeners.click();",
+                "const form=all.find(node=>node.className==='dual-completion-form');form.listeners.submit({preventDefault(){}});",
+                "const row=saved?.corrections?.[0];if(!row||row.value!=='CCO'||row.resolution_status!=='AI_PROVISIONAL'||row.confidence!==0.66||row.provenance.source!=='original_pdf_structure'||row.pdf_locator.page!==2)throw new Error(JSON.stringify(saved));",
             ]
         )
     )

@@ -88,6 +88,27 @@ def test_projection_model_exposes_safe_status_actor_freshness_and_one_next_actio
     )
 
 
+def test_projection_model_exposes_candidate_only_completion_suggestions() -> None:
+    module_path = json.dumps(str(DUAL_SCRIPT))
+    _run_node(
+        "\n".join(
+            [
+                f"const ui=require({module_path});",
+                "const model=ui.projectionModel({schema_version:'dual-parse-projection.v2',status:'ready',",
+                " completion_queue:[{study_id:'study-a',molecule_index:2,field:'resolved_smiles',",
+                "  resolved_smiles_status:'BLOCKED',page:2,version_token:'cpv2.safe',",
+                "  candidate_suggestions:[{value:'CO',confidence:0.82,provenance:{source:'original_pdf_structure'},",
+                "   pdf_locator:{page:2,figure_label:'Figure 2'},reason:'Visible structure candidate.'}],",
+                "  private_path:'/home/nope',source_pdf_sha256:'a'.repeat(64)}]});",
+                "const row=model.completionQueue[0];",
+                "if(!row || row.candidateSuggestions.length!==1 || row.candidateSuggestions[0].value!=='CO' || row.candidateSuggestions[0].page!==2) throw new Error(JSON.stringify(row));",
+                "const encoded=JSON.stringify(row).toLowerCase();",
+                "for(const forbidden of ['/home/','source_pdf_sha256','private_path']) if(encoded.includes(forbidden)) throw new Error(`leaked ${forbidden}`);",
+            ]
+        )
+    )
+
+
 def test_fresh_v2_fixture_renders_explicit_pdf_generic_and_fail_closed_later_gates() -> None:
     module_path = json.dumps(str(DUAL_SCRIPT))
     fixture_path = json.dumps(str(FRESH_V2_FIXTURE))

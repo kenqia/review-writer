@@ -231,9 +231,9 @@ pause immediately:
   "request_type": "CONTENT_AGENT_REQUEST",
   "round": "fresh-full-run-id",
   "project": "visible-project-name",
-  "request_kind": "paper_evidence|synthesis_claims|section_draft",
+  "request_kind": "chemical_completion_candidates|paper_evidence|synthesis_claims|section_draft",
   "study_id": "study-id-or-not-applicable",
-  "surface": "visible-evidence|synthesis|section-surface",
+  "surface": "chemical-completion|visible-evidence|synthesis|section-surface",
   "visible_gap": "candidate required for researcher review",
   "screenshot": "absolute non-overwriting screenshot path",
   "resume_checkpoint": 6
@@ -242,10 +242,13 @@ pause immediately:
 
 The request is a normal orchestration pause, not a product failure. The
 Coordinator creates a current, formally gated, study-local package and sends
-it to a fresh independent Content Agent. Each of the three Paper Evidence
-packages uses a different study-local Evidence Agent. Synthesis and section
-drafting use new agents and distinct request kinds. No Content Agent may
-approve its own output or reuse an old result.
+it to a fresh independent Content Agent. A Chemical Completion package is
+candidate-only and may omit pending Reconciliation; it writes only current,
+binding-checked suggestions. The Researcher must explicitly adopt a suggestion
+through the visible Completion control before it becomes `AI_PROVISIONAL`.
+Each of the three Paper Evidence packages uses a different study-local Evidence
+Agent. Synthesis and section drafting use new agents and distinct request kinds.
+No Content Agent may approve its own output or reuse an old result.
 
 After the Coordinator validates candidate-only scope, current bindings,
 study isolation, and formal importer success, it sends only a resume notice.

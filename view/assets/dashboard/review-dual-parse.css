@@ -433,8 +433,7 @@
   line-height: 1.45;
 }
 
-.dual-resolution-summary,
-.dual-ai-candidate-panel {
+.dual-resolution-summary {
   margin-top: 12px;
   padding: 10px;
   background: #f7f4ec;
@@ -445,58 +444,16 @@
   border-left-color: var(--review-danger, #9d412b);
 }
 
-.dual-resolution-summary strong,
-.dual-ai-candidate-panel h4 {
+.dual-resolution-summary strong {
   font-size: 11px;
 }
 
-.dual-resolution-summary p,
-.dual-ai-candidate-note {
+.dual-resolution-summary p {
   margin: 5px 0 0;
   color: var(--review-muted);
   font-size: 9px;
   line-height: 1.5;
   overflow-wrap: anywhere;
-}
-
-.dual-ai-candidate-panel {
-  margin-bottom: 12px;
-}
-
-.dual-ai-candidate-panel h4,
-.dual-ai-candidate-panel h5 {
-  margin: 0;
-}
-
-.dual-ai-candidate-panel h5 {
-  margin-top: 12px;
-  padding-top: 10px;
-  border-top: 1px solid var(--review-rule);
-  font: 700 14px/1.4 var(--rw-serif);
-}
-
-.dual-ai-candidate-form {
-  display: grid;
-  gap: 10px;
-  margin-top: 8px;
-}
-
-.dual-ai-candidate-form fieldset {
-  display: grid;
-  gap: 10px;
-  min-width: 0;
-  margin: 0;
-  padding: 12px;
-  border: 1px solid var(--review-rule);
-}
-
-.dual-ai-candidate-form legend {
-  max-width: 100%;
-  padding: 0 5px;
-  overflow-wrap: anywhere;
-  color: var(--review-green);
-  font-size: 10px;
-  font-weight: 900;
 }
 
 .dual-parse-import-form label,

@@ -75,6 +75,9 @@ from review_writer.project.credit_ledger import (  # noqa: E402
 from review_writer.project.chemical_completion import (  # noqa: E402
     project_chemical_completion_state,
 )
+from review_writer.project.chemical_completion_candidates import (  # noqa: E402
+    project_chemical_completion_candidates,
+)
 from review_writer.project.parse_quality import (  # noqa: E402
     HUMAN_ACTIONS,
     ParseQualityError,
@@ -585,6 +588,7 @@ def _honest_enrich_completion_queue(
     value: object,
     molecule_map: dict[tuple[str, int], dict[str, Any]],
     actor_provenance_residual: object,
+    candidate_suggestions: dict[tuple[str, int], list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
@@ -609,6 +613,17 @@ def _honest_enrich_completion_queue(
             safe_row.update(_honest_safe_resolution(source, fallback_locator=fallback_locator))
             if isinstance(actor_provenance_residual, bool):
                 safe_row["actor_provenance_residual"] = actor_provenance_residual
+            if isinstance(study_id, str) and isinstance(molecule_index, int):
+                safe_row["candidate_suggestions"] = [
+                    {
+                        "value": item["value"],
+                        "confidence": item["confidence"],
+                        "provenance": item["provenance"],
+                        "pdf_locator": item["pdf_locator"],
+                        "reason": item["reason"],
+                    }
+                    for item in candidate_suggestions.get((study_id, molecule_index), [])
+                ]
         result.append(safe_row)
     return result
 
@@ -837,6 +852,13 @@ def project_honest_progressive_dashboard_projection(
     result["paper_coverage"] = summary["paper_coverage"]
     result["credits_status"] = HONEST_CREDITS_STATUS
     if state_available:
+        candidate_suggestions: dict[tuple[str, int], list[dict[str, Any]]] = {}
+        for study in summary["paper_coverage"]:
+            study_id = study.get("study_id") if isinstance(study, dict) else None
+            if not isinstance(study_id, str):
+                continue
+            for molecule_index, candidates in project_chemical_completion_candidates(project, study_id).items():
+                candidate_suggestions[(study_id, molecule_index)] = candidates
         result["studies"] = _honest_augment_studies(
             result.get("studies"),
             summary["paper_coverage"],
@@ -846,6 +868,7 @@ def project_honest_progressive_dashboard_projection(
             result.get("completion_queue"),
             molecule_map,
             summary["actor_provenance_residual"],
+            candidate_suggestions,
         )
     return result
 

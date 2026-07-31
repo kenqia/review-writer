@@ -1171,7 +1171,7 @@ coverage `/309`、threshold `0.80` 和 `coverage_sufficient`，不得信任客�
 
 - [ ] **Step 5: 三个独立 Evidence Content Agents**
 
-每次 `CONTENT_AGENT_REQUEST` 后，由 Coordinator 建立该 study fresh package、派发新 Agent、验证 candidate-only/current/study-local、正式导入，再恢复原 Researcher。三篇不得共用一个 Evidence Agent。
+每次 `CONTENT_AGENT_REQUEST` 后，由 Coordinator 建立该 study fresh package、派发新 Agent、验证 candidate-only/current/study-local、正式导入，再恢复原 Researcher。Chemical Completion 阶段使用 `chemical_completion_candidates` package：允许在 Reconciliation current 之前生成安全候选，但只写 suggestion staging；Researcher 必须在可见 PDF 下显式采用后才写 `AI_PROVISIONAL`。三篇 Paper Evidence 不得共用一个 Evidence Agent，Chemical candidate Agent 也不得跨 study。
 
 - [ ] **Step 6: 新 Synthesis/Section Agents**
 

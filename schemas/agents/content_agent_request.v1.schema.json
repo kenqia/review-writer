@@ -7,7 +7,7 @@
   "required": ["schema_version", "request_kind", "project_id", "target_ids", "reason"],
   "properties": {
     "schema_version": {"const": "content-agent-request.v1"},
-    "request_kind": {"enum": ["paper_evidence", "synthesis_claims", "section_draft"]},
+    "request_kind": {"enum": ["paper_evidence", "chemical_completion_candidates", "synthesis_claims", "section_draft"]},
     "project_id": {"$ref": "#/$defs/id"},
     "target_ids": {
       "type": "array",
@@ -23,7 +23,7 @@
   },
   "allOf": [
     {
-      "if": {"properties": {"request_kind": {"const": "paper_evidence"}}},
+      "if": {"properties": {"request_kind": {"enum": ["paper_evidence", "chemical_completion_candidates"]}}},
       "else": {"properties": {"field_dependencies": {"maxItems": 0}}}
     }
   ],

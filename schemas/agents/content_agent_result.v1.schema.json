@@ -10,7 +10,7 @@
   ],
   "properties": {
     "schema_version": {"const": "content-agent-result.v1"},
-    "request_kind": {"enum": ["paper_evidence", "synthesis_claims", "section_draft"]},
+    "request_kind": {"enum": ["paper_evidence", "chemical_completion_candidates", "synthesis_claims", "section_draft"]},
     "project_id": {"$ref": "#/$defs/id"},
     "target_ids": {
       "type": "array", "minItems": 1, "uniqueItems": true,
@@ -23,6 +23,10 @@
       "additionalProperties": false,
       "properties": {
         "evidence_candidates": {"type": "array", "items": {"type": "object"}},
+        "chemical_completion_candidates": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/chemical_completion_candidate"}
+        },
         "source_figure_suggestions": {"type": "array", "items": {"type": "object"}},
         "comparison_protocol": {"type": ["object", "null"]},
         "coverage_map": {"type": ["object", "null"]},
@@ -37,6 +41,30 @@
     "id": {
       "type": "string", "minLength": 1, "maxLength": 240,
       "pattern": "^(?!\\.\\.?$)(?!.*[/\\\\\\u0000\\r\\n])[^\\s]+$"
+    },
+    "chemical_completion_candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["study_id", "molecule_index", "field", "value", "confidence", "provenance", "pdf_locator", "reason"],
+      "properties": {
+        "study_id": {"$ref": "#/$defs/id"},
+        "molecule_index": {"type": "integer", "minimum": 0},
+        "field": {"const": "resolved_smiles"},
+        "value": {"type": "string", "minLength": 1, "maxLength": 20000},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "provenance": {"type": "object", "minProperties": 1, "additionalProperties": {"type": ["string", "number", "boolean"]}},
+        "pdf_locator": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["page"],
+          "properties": {
+            "page": {"type": "integer", "minimum": 1},
+            "figure_label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "bbox": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number"}}
+          }
+        },
+        "reason": {"type": "string", "minLength": 1, "maxLength": 20000}
+      }
     }
   }
 }

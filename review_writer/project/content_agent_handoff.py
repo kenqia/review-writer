@@ -26,10 +26,13 @@ from .paper_evidence import (
     register_paper_evidence_candidates,
     register_manual_pdf_evidence,
 )
+from .chemical_completion import ChemicalCompletionError, chemical_completion_state
 from .chemical_paper import STATE_NAME as CHEMICAL_PAPER_STATE_NAME
 from .chemical_paper import STATE_ROOT as CHEMICAL_PAPER_STATE_ROOT
-from .chemical_paper import ChemicalPaperError, load_chemical_paper_state
+from .chemical_paper import ChemicalPaperError, _valid_resolved_smiles, load_chemical_paper_state
 from .chemical_paper import chemical_paper_projection
+from .chemical_completion_candidates import ChemicalCompletionCandidateError, write_candidate_set
+from .dual_source import DualSourceError, require_dual_source_ready
 from .parse_quality import ParseQualityError, parse_quality_state
 from .parse_reconciliation import (
     ParseReconciliationError,
@@ -51,7 +54,7 @@ from .synthesis import SynthesisError, register_comparison_protocol, register_co
 REQUEST_SCHEMA = REPO_ROOT / "schemas/agents/content_agent_request.v1.schema.json"
 RESULT_SCHEMA = REPO_ROOT / "schemas/agents/content_agent_result.v1.schema.json"
 ALLOWED_INPUTS = frozenset({"source_truth", "parse_quality", "paper_evidence", "chemical_paper", "reconciliation", "comparison_protocol", "section_contract"})
-REQUEST_KINDS = frozenset({"paper_evidence", "synthesis_claims", "section_draft"})
+REQUEST_KINDS = frozenset({"paper_evidence", "chemical_completion_candidates", "synthesis_claims", "section_draft"})
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _ID = re.compile(r"^(?!\.\.?$)(?!.*[/\\\x00\r\n])\S{1,240}$")
 _FORBIDDEN_TEXT = ("auth", "04_first_draft", "prompt")
@@ -133,11 +136,13 @@ def _normalize_request(project: Path, request: object) -> dict[str, Any]:
     except SourceTruthError as exc:
         raise ContentAgentError(exc.code) from exc
     targets = value["target_ids"]
-    if value["request_kind"] == "paper_evidence":
+    if value["request_kind"] in {"paper_evidence", "chemical_completion_candidates"}:
         if len(targets) != 1:
             raise ContentAgentError("REQUEST_STUDY_LOCAL_REQUIRED")
         if not set(targets) <= studies:
             raise ContentAgentError("REQUEST_TARGET_OUT_OF_SCOPE")
+        if value["request_kind"] == "chemical_completion_candidates" and value.get("field_dependencies"):
+            raise ContentAgentError("REQUEST_FIELD_DEPENDENCIES_INVALID")
     if value["request_kind"] == "synthesis_claims" and set(targets) != studies:
         raise ContentAgentError("REQUEST_TARGET_OUT_OF_SCOPE")
     return value
@@ -262,6 +267,81 @@ def _safe_chemical_projection(project: Path, study_id: str) -> dict[str, Any]:
     }
 
 
+def _safe_generic_projection(project: Path, study_id: str) -> dict[str, Any]:
+    """Expose bounded Generic/parse context to a Chemical candidate agent."""
+
+    try:
+        bundle = load_source_truth_bundle(project, study_id)
+        state = parse_quality_state(project, study_id)
+    except (SourceTruthError, ParseQualityError) as exc:
+        raise ContentAgentError(getattr(exc, "code", "GENERIC_PROJECTION_INVALID")) from exc
+    main = [
+        source for source in bundle["sources"]
+        if isinstance(source, dict) and source.get("document_role") == "MAIN"
+    ]
+    if len(main) != 1:
+        raise ContentAgentError("SOURCE_TRUTH_INVALID")
+    return {
+        "study_id": study_id,
+        "source_id": main[0]["source_id"],
+        "page_count": main[0]["page_count"],
+        "status": "current",
+        "parse_status": state["status"],
+        "parse_objects": [
+            {
+                "kind": row["kind"],
+                "status": row["status"],
+                "issues": row["issues"],
+            }
+            for row in state["objects"]
+        ],
+    }
+
+
+def _safe_chemical_candidate_projection(project: Path, study_id: str) -> dict[str, Any]:
+    """Expose only current BLOCKED rows; no prior history or resolved values."""
+
+    try:
+        projection = chemical_paper_projection(project)
+        gate = chemical_completion_state(project, study_id)
+    except (ChemicalPaperError, ChemicalCompletionError) as exc:
+        raise ContentAgentError(getattr(exc, "code", "CHEMICAL_PROJECTION_INVALID")) from exc
+    matches = [row for row in projection["studies"] if row["study_id"] == study_id]
+    if len(matches) != 1:
+        raise ContentAgentError("CHEMICAL_PAPER_NOT_IMPORTED")
+    source = matches[0]
+    blocked = {
+        row["molecule_index"]
+        for row in gate["molecules"]
+        if row.get("resolved_smiles_status") == "BLOCKED"
+    }
+    molecules = []
+    for molecule in source["molecules"]:
+        index = molecule["molecule_index"]
+        if index not in blocked:
+            continue
+        molecules.append({
+            "molecule_index": index,
+            "page": molecule["page"],
+            "bbox_normalized": molecule["bbox_normalized"],
+            "mol_idt": molecule["mol_idt"],
+            "smiles_candidates": molecule["smiles_candidates"],
+            "missing_fields": molecule["missing_fields"],
+            "candidate_elements": molecule["candidate_elements"],
+        })
+    return {
+        "study_id": study_id,
+        "status": source["status"],
+        "backend": source["backend"],
+        "version": source["version"],
+        "page_count": source["page_count"],
+        "molecule_count": source["molecule_count"],
+        "blocked_count": len(molecules),
+        "reaction_data_status": source["reaction_data_status"],
+        "molecules": molecules,
+    }
+
+
 def _safe_reconciliation_projection(project: Path, study_id: str) -> dict[str, Any]:
     try:
         registry = load_parse_reconciliation(project, study_id)
@@ -328,6 +408,58 @@ def _dual_source_artifacts(
             )
 
 
+def _chemical_completion_candidate_artifacts(
+    project: Path,
+    studies: Iterable[str],
+    out: dict[str, list[dict[str, Any]]],
+) -> None:
+    """Build candidate-only inputs before Reconciliation is researcher-current."""
+
+    for study_id in studies:
+        try:
+            require_dual_source_ready(project, study_id, requires_chemical=True)
+            from .chemical_completion import require_honest_progressive_projection
+
+            require_honest_progressive_projection(project, study_id, allow_provisional=True)
+            bundle = load_source_truth_bundle(project, study_id)
+        except (DualSourceError, SourceTruthError, ParseQualityError, ChemicalPaperError, ChemicalCompletionError) as exc:
+            raise ContentAgentError(getattr(exc, "code", "CANDIDATE_INPUT_INVALID")) from exc
+        main_sources = [
+            source for source in bundle["sources"]
+            if isinstance(source, dict) and source.get("document_role") == "MAIN"
+        ]
+        if len(main_sources) != 1:
+            raise ContentAgentError("SOURCE_TRUTH_INVALID")
+        descriptor = main_sources[0].get("pdf")
+        if not isinstance(descriptor, dict) or not isinstance(descriptor.get("path"), str):
+            raise ContentAgentError("SOURCE_TRUTH_INVALID")
+        # Chemical candidate agents receive only the original PDF plus bounded
+        # safe projections. Raw Generic Markdown/content-list inputs are not
+        # part of this role's contract.
+        _add_artifact(project, out, "source_truth", descriptor["path"], "source_asset:pdf")
+        _inline_artifact(
+            out,
+            "parse_quality",
+            package_path=f"inputs/safe/{study_id}/parse-quality.json",
+            kind="parse_quality_safe_projection",
+            content=_safe_parse_projection(project, study_id),
+        )
+        _inline_artifact(
+            out,
+            "chemical_paper",
+            package_path=f"inputs/safe/{study_id}/chemical-paper.json",
+            kind="chemical_completion_safe_projection",
+            content=_safe_chemical_candidate_projection(project, study_id),
+        )
+        _inline_artifact(
+            out,
+            "source_truth",
+            package_path=f"inputs/safe/{study_id}/generic-parse.json",
+            kind="generic_parse_safe_projection",
+            content=_safe_generic_projection(project, study_id),
+        )
+
+
 def _source_artifacts(project: Path, studies: Iterable[str], out: dict[str, list[dict[str, Any]]]) -> None:
     for study_id in studies:
         try:
@@ -390,14 +522,20 @@ def _chemical_paper_source_artifacts(
 
 def _collect_inputs(project: Path, request: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     inputs: dict[str, list[dict[str, Any]]] = {}
-    studies = request["target_ids"] if request["request_kind"] == "paper_evidence" else declared_study_ids(project)
-    if (project / "01_evidence/dual_source").exists():
+    studies = (
+        request["target_ids"]
+        if request["request_kind"] in {"paper_evidence", "chemical_completion_candidates"}
+        else declared_study_ids(project)
+    )
+    if request["request_kind"] == "chemical_completion_candidates":
+        _chemical_completion_candidate_artifacts(project, studies, inputs)
+    elif (project / "01_evidence/dual_source").exists():
         _dual_source_artifacts(project, studies, request, inputs)
     elif (project / CHEMICAL_PAPER_STATE_ROOT).exists():
         _chemical_paper_source_artifacts(project, studies, inputs)
     else:
         _source_artifacts(project, studies, inputs)
-    if request["request_kind"] != "paper_evidence":
+    if request["request_kind"] not in {"paper_evidence", "chemical_completion_candidates"}:
         evidence_projection = "01_evidence/paper_evidence_projection.jsonl"
         if _existing(project, evidence_projection):
             _add_artifact(project, inputs, "paper_evidence", evidence_projection, "paper_evidence_projection")
@@ -484,7 +622,11 @@ def build_content_task_package(project: Path, request: object, output_dir: Path 
     }
     studies = normalized["target_ids"] if normalized["request_kind"] == "paper_evidence" else declared_study_ids(root)
     bindings = _chemical_paper_bindings(root, studies)
-    if bindings and not (root / "01_evidence/dual_source").exists():
+    if (
+        bindings
+        and normalized["request_kind"] != "chemical_completion_candidates"
+        and not (root / "01_evidence/dual_source").exists()
+    ):
         package["chemical_paper_import_bindings"] = bindings
     package["task_package_digest"] = _package_digest(package)
     if _forbidden_in_package(package):
@@ -542,12 +684,15 @@ def _validate_result_shape(result: object) -> dict[str, Any]:
     kind = value["request_kind"]
     allowed = {
         "paper_evidence": {"evidence_candidates", "source_figure_suggestions"},
+        "chemical_completion_candidates": {"chemical_completion_candidates"},
         "synthesis_claims": {"comparison_protocol", "coverage_map", "synthesis_claims", "source_figure_suggestions"},
         "section_draft": {"section_contracts"},
     }[kind]
     if set(content) - allowed or not set(content) & allowed:
         raise ContentAgentError("RESULT_CONTENT_OUT_OF_SCOPE")
     if kind == "paper_evidence" and not isinstance(content.get("evidence_candidates"), list):
+        raise ContentAgentError("RESULT_CONTENT_INVALID")
+    if kind == "chemical_completion_candidates" and not isinstance(content.get("chemical_completion_candidates"), list):
         raise ContentAgentError("RESULT_CONTENT_INVALID")
     if kind == "synthesis_claims":
         if not any(
@@ -583,6 +728,9 @@ def _result_scope(root: Path, result: dict[str, Any]) -> None:
             raise ContentAgentError("RESULT_STUDY_LOCAL_REQUIRED")
         if not targets <= studies:
             raise ContentAgentError("RESULT_OUT_OF_SCOPE")
+    if result["request_kind"] == "chemical_completion_candidates":
+        if len(result["target_ids"]) != 1 or not targets <= studies:
+            raise ContentAgentError("RESULT_STUDY_LOCAL_REQUIRED")
     if result["request_kind"] == "synthesis_claims" and targets != studies:
         raise ContentAgentError("RESULT_OUT_OF_SCOPE")
     content = result["content"]
@@ -619,6 +767,48 @@ def _result_scope(root: Path, result: dict[str, Any]) -> None:
                 not isinstance(row["source_pdf_sha256"], str) or not _SHA256.fullmatch(row["source_pdf_sha256"])
             ):
                 raise ContentAgentError("RESULT_CONTENT_INVALID")
+    elif result["request_kind"] == "chemical_completion_candidates":
+        study_id = result["target_ids"][0]
+        try:
+            gate = chemical_completion_state(root, study_id)
+            state = load_chemical_paper_state(root, study_id)
+        except (ValueError, ChemicalPaperError) as exc:
+            raise ContentAgentError(getattr(exc, "code", "CANDIDATE_INPUT_INVALID")) from exc
+        page_count = state["imports"][state["current_import_digest"]]["page_count"]
+        current = {row["molecule_index"]: row for row in gate["molecules"]}
+        rows = content.get("chemical_completion_candidates", [])
+        if not rows:
+            raise ContentAgentError("RESULT_CONTENT_INVALID")
+        seen: set[int] = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ContentAgentError("RESULT_CONTENT_INVALID")
+            allowed_fields = {"study_id", "molecule_index", "field", "value", "confidence", "provenance", "pdf_locator", "reason"}
+            if set(row) != allowed_fields:
+                raise ContentAgentError("RESULT_CONTENT_OUT_OF_SCOPE")
+            if row.get("study_id") not in {None, study_id}:
+                raise ContentAgentError("RESULT_OUT_OF_SCOPE")
+            index = row.get("molecule_index")
+            if not isinstance(index, int) or isinstance(index, bool) or index in seen or index not in current:
+                raise ContentAgentError("RESULT_CONTENT_INVALID")
+            seen.add(index)
+            if current[index].get("resolved_smiles_status") != "BLOCKED":
+                raise ContentAgentError("CANDIDATE_TARGET_NOT_BLOCKED")
+            value = row.get("value")
+            if row.get("field") != "resolved_smiles" or not isinstance(value, str) or not _valid_resolved_smiles(value):
+                raise ContentAgentError("CANDIDATE_SMILES_INVALID")
+            confidence = row.get("confidence")
+            if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
+                raise ContentAgentError("CANDIDATE_CONFIDENCE_INVALID")
+            if not isinstance(row.get("provenance"), dict) or not row["provenance"]:
+                raise ContentAgentError("CANDIDATE_PROVENANCE_INVALID")
+            locator = row.get("pdf_locator")
+            if not isinstance(locator, dict) or not isinstance(locator.get("page"), int) or not 1 <= locator["page"] <= page_count:
+                raise ContentAgentError("CANDIDATE_LOCATOR_INVALID")
+            if not isinstance(row.get("reason"), str) or not row["reason"].strip():
+                raise ContentAgentError("CANDIDATE_REASON_REQUIRED")
+            if _forbidden_in_package(row):
+                raise ContentAgentError("RESULT_CONTENT_OUT_OF_SCOPE")
     elif result["request_kind"] == "section_draft":
         for row in content.get("section_contracts", []):
             if not isinstance(row, dict) or row.get("section_id") not in targets:
@@ -626,13 +816,16 @@ def _result_scope(root: Path, result: dict[str, Any]) -> None:
 
 
 def _expected_task_digest(root: Path, result: dict[str, Any]) -> str:
-    dependencies = sorted({
-        dependency
-        for row in result.get("content", {}).get("evidence_candidates", [])
-        if isinstance(row, dict)
-        for dependency in row.get("field_dependencies", [])
-        if isinstance(dependency, str)
-    }) if result["request_kind"] == "paper_evidence" else []
+    if result["request_kind"] == "chemical_completion_candidates":
+        dependencies = []
+    else:
+        dependencies = sorted({
+            dependency
+            for row in result.get("content", {}).get("evidence_candidates", [])
+            if isinstance(row, dict)
+            for dependency in row.get("field_dependencies", [])
+            if isinstance(dependency, str)
+        }) if result["request_kind"] == "paper_evidence" else []
     request = {
         "schema_version": "content-agent-request.v1",
         "request_kind": result["request_kind"],
@@ -701,6 +894,33 @@ def _apply_on_copy(root: Path, result: dict[str, Any]) -> None:
                     by_id[sid] = row
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("".join(json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n" for row in sorted(by_id.values(), key=lambda r: str(r.get("suggestion_id", "")))), encoding="utf-8")
+        elif result["request_kind"] == "chemical_completion_candidates":
+            study_id = result["target_ids"][0]
+            state = load_chemical_paper_state(root, study_id)
+            bundle = load_source_truth_bundle(root, study_id)
+            gate = chemical_completion_state(root, study_id)
+            blocked_indices = sorted(
+                row["molecule_index"]
+                for row in gate["molecules"]
+                if row.get("resolved_smiles_status") == "BLOCKED"
+            )
+            write_candidate_set(
+                root,
+                {
+                    "project_id": root.name,
+                    "study_id": study_id,
+                    "result_digest": result["result_digest"],
+                    "agent_label": result["agent_label"],
+                    "task_package_digest": result["task_package_digest"],
+                    "source_truth_bundle_digest": bundle["bundle_digest"],
+                    "chemical_import_digest": state["current_import_digest"],
+                    "blocked_molecule_indices_digest": canonical_digest({
+                        "study_id": study_id,
+                        "blocked_molecule_indices": blocked_indices,
+                    }),
+                    "candidates": content["chemical_completion_candidates"],
+                },
+            )
         elif result["request_kind"] == "synthesis_claims":
             protocol = content.get("comparison_protocol")
             if protocol is not None:
@@ -713,7 +933,7 @@ def _apply_on_copy(root: Path, result: dict[str, Any]) -> None:
                 register_synthesis_candidates(root, {"claims": claims})
         else:
             register_section_contracts(root, {"contracts": content["section_contracts"]})
-    except (PaperEvidenceError, SynthesisError, SectionContractError, PaperEvidenceStoreError) as exc:
+    except (PaperEvidenceError, SynthesisError, SectionContractError, PaperEvidenceStoreError, ChemicalCompletionCandidateError) as exc:
         code = getattr(exc, "code", str(exc))
         raise ContentAgentError(str(code)) from exc
 
