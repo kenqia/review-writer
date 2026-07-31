@@ -342,7 +342,7 @@ def test_completion_rows_expose_source_order_and_distinct_same_page_regions() ->
     )
 
 
-def test_completion_renderer_draws_keyboard_reachable_distinct_bbox_overlays() -> None:
+def test_completion_renderer_separates_visible_locator_from_truthful_source_link() -> None:
     module_path = json.dumps(str(DUAL_SCRIPT))
     _run_node(
         "\n".join(
@@ -365,12 +365,15 @@ def test_completion_renderer_draws_keyboard_reachable_distinct_bbox_overlays() -
                 "const all=[];const visit=node=>{all.push(node);for(const child of node.children||[])if(child&&typeof child==='object')visit(child);};visit(mount);",
                 "const locators=all.filter(node=>node.className==='dual-completion-locator');",
                 "const overlays=all.filter(node=>node.className==='dual-completion-bbox');",
-                "if(locators.length!==2 || overlays.length!==2) throw new Error(JSON.stringify({locators:locators.length,overlays:overlays.length}));",
-                "for(const [index,link] of locators.entries()){if(link.tag!=='a' || link.href!=='/api/project/case/pdf/study?page=4' || link.target!=='_blank' || !link.attributes['aria-label']?.includes(`分子条目 ${index===0?8:13}`)) throw new Error(JSON.stringify(link));}",
+                "const sourceLinks=all.filter(node=>node.className==='dual-completion-source-link');",
+                "if(locators.length!==2 || overlays.length!==2 || sourceLinks.length!==2) throw new Error(JSON.stringify({locators:locators.length,overlays:overlays.length,sourceLinks:sourceLinks.length}));",
+                "for(const locator of locators){if(locator.tag!=='figure' || locator.href || locator.target) throw new Error(JSON.stringify(locator));}",
+                "for(const link of sourceLinks){if(link.tag!=='a' || link.href!=='/api/project/case/pdf/study?page=4' || link.target!=='_blank' || link.textContent!=='另开原始整页（不含红框） ↗' || JSON.stringify(link).includes('高亮')) throw new Error(JSON.stringify(link));}",
                 "const firstStyle=JSON.stringify(overlays[0].style);const secondStyle=JSON.stringify(overlays[1].style);",
                 "if(firstStyle===secondStyle || overlays[0].style.left!=='10%' || overlays[0].style.top!=='20%' || overlays[0].style.width!=='20%' || overlays[0].style.height!=='20%') throw new Error(JSON.stringify(overlays.map(node=>node.style)));",
                 "const visible=node=>[node.textContent,...(node.children||[]).map(visible)].join(' ');const rendered=visible(mount);",
-                "for(const expected of ['分子条目 8','分子条目 13','区域 x 10–30% · y 20–40%','区域 x 55–80% · y 10–25%'])if(!rendered.includes(expected))throw new Error(rendered);",
+                "for(const expected of ['分子条目 8','分子条目 13','区域 x 10–30% · y 20–40%','区域 x 55–80% · y 10–25%','红框为当前结构区域','另开原始整页（不含红框）'])if(!rendered.includes(expected))throw new Error(rendered);",
+                "if(rendered.includes('打开带高亮定位'))throw new Error(rendered);",
                 "for(const forbidden of ['secret-study','opaque-version','molecule_index'])if(rendered.includes(forbidden))throw new Error(`leaked ${forbidden}`);",
             ]
         )
@@ -379,7 +382,52 @@ def test_completion_renderer_draws_keyboard_reachable_distinct_bbox_overlays() -
     css = DUAL_STYLE.read_text(encoding="utf-8")
     assert ".dual-completion-locator" in css
     assert ".dual-completion-bbox" in css
-    assert ".dual-completion-locator:focus-visible" in css
+    assert "width: min(100%, 420px)" in css
+    assert ".dual-completion-source-link:focus-visible" in css
+    assert ".dual-completion-crop summary:focus-visible" in css
+
+
+def test_completion_crop_is_keyboard_triggered_lazy_and_bounded_for_94_rows() -> None:
+    module_path = json.dumps(str(DUAL_SCRIPT))
+    _run_node(
+        "\n".join(
+            [
+                f"const ui=require({module_path});",
+                "class Node {",
+                " constructor(tag,id=''){",
+                "  this.tag=tag;this.id=id;this.children=[];this.attributes={};this.className='';this.textContent='';this.style={};this.listeners={};this.open=false;",
+                "  if(tag==='img'){this.naturalWidth=1000;this.naturalHeight=2000;this.complete=true;}",
+                "  if(tag==='canvas'){this.width=300;this.height=150;this.context={draws:[],imageSmoothingEnabled:false,drawImage(...args){this.draws.push(args);}};}",
+                " }",
+                " append(...nodes){this.children.push(...nodes);}",
+                " replaceChildren(...nodes){this.children=[...nodes];}",
+                " setAttribute(name,value){this.attributes[name]=String(value);if(name==='id')this.id=String(value);}",
+                " addEventListener(name,handler){if(!this.listeners[name])this.listeners[name]=[];this.listeners[name].push(handler);}",
+                " dispatch(name){for(const handler of this.listeners[name]||[])handler({currentTarget:this});}",
+                " getContext(kind){return this.tag==='canvas'&&kind==='2d'?this.context:null;}",
+                " querySelector(selector){const id=selector.startsWith('#')?selector.slice(1):'';if(id&&this.id===id)return this;for(const child of this.children){if(child&&typeof child.querySelector==='function'){const found=child.querySelector(selector);if(found)return found;}}return null;}",
+                "}",
+                "const document={createElement:tag=>new Node(tag),createTextNode:value=>{const node=new Node('#text');node.textContent=String(value);return node;},body:new Node('body')};",
+                "const mount=new Node('main');for(const id of ['dual-study-status','chemical-import-preflight','chemical-completion-queue','reconciliation-list'])mount.append(new Node('section',id));",
+                "const completion_queue=Array.from({length:94},(_,index)=>({study_id:'study',molecule_index:index,version_token:'version',field:'mol_idt',page:4,bbox_normalized:[0.1,0.2,0.3,0.4],pdf_page_url:'/api/project/case/pdf/study?page=4'}));",
+                "const model=ui.projectionModel({schema_version:'dual-parse-projection.v1',status:'ready',studies:[],completion_queue});",
+                "ui.render(document,mount,model,{});",
+                "const all=[];const visit=node=>{all.push(node);for(const child of node.children||[])if(child&&typeof child==='object')visit(child);};visit(mount);",
+                "const images=all.filter(node=>node.className==='dual-completion-page-image');",
+                "const crops=all.filter(node=>node.className==='dual-completion-crop-canvas');",
+                "const details=all.filter(node=>node.className==='dual-completion-crop');",
+                "const summaries=all.filter(node=>node.tag==='summary');",
+                "if(images.length!==94 || crops.length!==94 || details.length!==94 || summaries.length!==94) throw new Error(JSON.stringify({images:images.length,crops:crops.length,details:details.length,summaries:summaries.length}));",
+                "if(images.some(image=>image.loading!=='lazy' || image.decoding!=='async') || crops.some(canvas=>canvas.width!==1 || canvas.height!==1)) throw new Error('eager locator allocation');",
+                "if(crops.some(canvas=>canvas.context.draws.length)) throw new Error('crop drawn before researcher opens it');",
+                "details[0].open=true;details[0].dispatch('toggle');",
+                "if(crops[0].context.draws.length!==1 || crops[0].width<2 || crops[0].height<2 || crops[0].width>480 || crops[0].height>320) throw new Error(JSON.stringify({width:crops[0].width,height:crops[0].height,draws:crops[0].context.draws.length}));",
+                "if(crops.slice(1).some(canvas=>canvas.context.draws.length)) throw new Error('opening one crop drew another row');",
+                "const draw=crops[0].context.draws[0];if(draw[1]!==100 || draw[2]!==400 || draw[3]!==200 || draw[4]!==400) throw new Error(JSON.stringify(draw));",
+                "details[0].open=false;details[0].dispatch('toggle');details[0].open=true;details[0].dispatch('toggle');if(crops[0].context.draws.length!==1) throw new Error('crop redrawn');",
+            ]
+        )
+    )
 
 
 def test_completion_rejects_zero_area_bbox_without_claiming_or_drawing_location() -> None:

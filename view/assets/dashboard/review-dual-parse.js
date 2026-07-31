@@ -721,6 +721,99 @@
     return Array.from(groups.values());
   }
 
+  function drawCompletionCrop(image, canvas, bbox) {
+    if (!image.naturalWidth || !image.naturalHeight) return false;
+    const sourceLeft = bbox[0] * image.naturalWidth;
+    const sourceTop = bbox[1] * image.naturalHeight;
+    const sourceWidth = (bbox[2] * image.naturalWidth) - sourceLeft;
+    const sourceHeight = (bbox[3] * image.naturalHeight) - sourceTop;
+    if (sourceWidth <= 0 || sourceHeight <= 0) return false;
+    const scale = Math.min(480 / sourceWidth, 320 / sourceHeight);
+    canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+    canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+    const context = canvas.getContext("2d");
+    if (!context) return false;
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = "high";
+    context.drawImage(
+      image,
+      sourceLeft,
+      sourceTop,
+      sourceWidth,
+      sourceHeight,
+      0,
+      0,
+      canvas.width,
+      canvas.height,
+    );
+    return true;
+  }
+
+  function completionLocator(document, row) {
+    const locator = document.createElement("figure");
+    locator.className = "dual-completion-locator";
+    locator.setAttribute("aria-label", `${row.displayLabel} · ${row.locatorLabel} · 上下文定位`);
+    const preview = document.createElement("span");
+    preview.className = "dual-completion-page-preview";
+    const image = document.createElement("img");
+    image.className = "dual-completion-page-image";
+    image.src = row.pdfPageUrl;
+    image.alt = "";
+    image.loading = "lazy";
+    image.decoding = "async";
+    const overlay = document.createElement("span");
+    overlay.className = "dual-completion-bbox";
+    overlay.setAttribute("aria-hidden", "true");
+    overlay.style.left = `${percentValue(row.normalizedBbox[0])}%`;
+    overlay.style.top = `${percentValue(row.normalizedBbox[1])}%`;
+    overlay.style.width = `${percentValue(row.normalizedBbox[2] - row.normalizedBbox[0])}%`;
+    overlay.style.height = `${percentValue(row.normalizedBbox[3] - row.normalizedBbox[1])}%`;
+    preview.append(image, overlay);
+    const caption = document.createElement("figcaption");
+    caption.className = "dual-completion-locator-caption";
+    caption.textContent = `红框为当前结构区域 · ${row.locatorLabel}`;
+
+    const crop = document.createElement("details");
+    crop.className = "dual-completion-crop";
+    const summary = document.createElement("summary");
+    summary.textContent = "查看当前结构区域局部放大";
+    const canvas = document.createElement("canvas");
+    canvas.className = "dual-completion-crop-canvas";
+    canvas.width = 1;
+    canvas.height = 1;
+    canvas.setAttribute("role", "img");
+    canvas.setAttribute("aria-label", `${row.displayLabel} · 当前结构区域局部放大`);
+    const status = document.createElement("p");
+    status.className = "dual-completion-crop-status";
+    status.textContent = "展开后按需生成局部放大。";
+    let requested = false;
+    const renderCrop = () => {
+      if (drawCompletionCrop(image, canvas, row.normalizedBbox)) {
+        status.textContent = "局部放大已由红框区域生成；请结合原始整页核对。";
+      } else {
+        requested = false;
+        status.textContent = "局部放大暂不可用；请核对原始整页。";
+      }
+    };
+    crop.addEventListener("toggle", () => {
+      if (!crop.open || requested) return;
+      requested = true;
+      status.textContent = "正在生成局部放大…";
+      if (image.complete && image.naturalWidth) {
+        renderCrop();
+      } else {
+        image.addEventListener("load", renderCrop, {once: true});
+        image.addEventListener("error", () => {
+          requested = false;
+          status.textContent = "局部放大暂不可用；请核对原始整页。";
+        }, {once: true});
+      }
+    });
+    crop.append(summary, canvas, status);
+    locator.append(preview, caption, crop);
+    return locator;
+  }
+
   function renderCompletion(document, parent, rows, handlers) {
     parent.replaceChildren();
     appendText(document, parent, "h4", "Chemical Completion Queue");
@@ -736,36 +829,14 @@
         legend.textContent = `${row.displayLabel} · ${row.fieldLabel} · ${row.locatorLabel}`;
         fieldset.append(legend);
         if (row.pdfPageUrl) {
+          if (row.normalizedBbox) fieldset.append(completionLocator(document, row));
           const link = document.createElement("a");
+          link.className = "dual-completion-source-link";
           link.href = row.pdfPageUrl;
           link.target = "_blank";
           link.rel = "noopener";
-          link.setAttribute("aria-label", `${row.displayLabel} · ${row.locatorLabel} · 打开原始 PDF 页核对`);
-          if (row.normalizedBbox) {
-            link.className = "dual-completion-locator";
-            const preview = document.createElement("span");
-            preview.className = "dual-completion-page-preview";
-            const image = document.createElement("img");
-            image.className = "dual-completion-page-image";
-            image.src = row.pdfPageUrl;
-            image.alt = "";
-            image.loading = "lazy";
-            image.decoding = "async";
-            const overlay = document.createElement("span");
-            overlay.className = "dual-completion-bbox";
-            overlay.setAttribute("aria-hidden", "true");
-            overlay.style.left = `${percentValue(row.normalizedBbox[0])}%`;
-            overlay.style.top = `${percentValue(row.normalizedBbox[1])}%`;
-            overlay.style.width = `${percentValue(row.normalizedBbox[2] - row.normalizedBbox[0])}%`;
-            overlay.style.height = `${percentValue(row.normalizedBbox[3] - row.normalizedBbox[1])}%`;
-            preview.append(image, overlay);
-            const caption = document.createElement("span");
-            caption.className = "dual-completion-locator-caption";
-            caption.textContent = "打开带高亮定位的原始 PDF 页 ↗";
-            link.append(preview, caption);
-          } else {
-            link.textContent = "打开原始 PDF 页核对 ↗";
-          }
+          link.setAttribute("aria-label", `${row.displayLabel} · 另开原始整页，不含红框`);
+          link.textContent = "另开原始整页（不含红框） ↗";
           fieldset.append(link);
         }
         const value = document.createElement("input");

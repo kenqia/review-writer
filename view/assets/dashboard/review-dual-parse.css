@@ -194,10 +194,12 @@
 
 .dual-completion-locator {
   display: grid;
-  gap: 7px;
-  width: min(100%, 320px);
-  color: var(--review-green);
-  text-decoration: none;
+  gap: 9px;
+  width: min(100%, 420px);
+  margin: 4px 0;
+  padding: 10px;
+  background: #f5f1e7;
+  border: 1px solid var(--review-rule);
 }
 
 .dual-completion-page-preview {
@@ -226,9 +228,44 @@
 }
 
 .dual-completion-locator-caption {
+  color: var(--review-ink);
   font-size: 10px;
   font-weight: 800;
   line-height: 1.45;
+}
+
+.dual-completion-crop {
+  min-width: 0;
+}
+
+.dual-completion-crop summary {
+  color: var(--review-green);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.dual-completion-crop-canvas {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin-top: 9px;
+  background: var(--review-paper);
+  border: 1px solid var(--review-rule-dark);
+}
+
+.dual-completion-crop-status {
+  margin: 6px 0 0;
+  color: var(--review-muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.dual-completion-source-link {
+  display: inline-block;
+  width: fit-content;
+  font-size: 10px;
+  font-weight: 800;
 }
 
 .dual-parse-import-form label,
@@ -325,7 +362,8 @@
   outline-offset: 3px;
 }
 
-.dual-completion-locator:focus-visible {
+.dual-completion-source-link:focus-visible,
+.dual-completion-crop summary:focus-visible {
   outline: 3px solid var(--review-focus, #146c43);
   outline-offset: 3px;
 }
