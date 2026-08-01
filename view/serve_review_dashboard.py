@@ -124,6 +124,7 @@ from review_writer.project.source_truth import (  # noqa: E402
     SourceTruthAssetSnapshot,
     SourceTruthError,
     canonical_digest,
+    declared_study_ids,
     load_source_truth_bundle,
     project_source_binding,
     source_truth_asset_snapshot,
@@ -661,86 +662,137 @@ def _honest_augment_studies(
 
 
 def _honest_authoritative_molecules(
-    completion: dict[str, Any], chemical: dict[str, Any]
+    completion: dict[str, Any],
+    chemical: dict[str, Any],
+    *,
+    declared_ids: list[str] | None = None,
 ) -> list[tuple[str, dict[str, Any]]] | None:
-    """Return the complete, imported core cohort or fail closed as unknown."""
+    """Return the current imported cohort or fail closed as unknown.
 
-    if completion.get("coverage_denominator") != HONEST_CORE_MOLECULE_COUNT:
-        return None
+    A project with a current acquisition receipt supplies ``declared_ids`` and
+    is validated as a variable-N cohort.  When that declaration is unavailable
+    we retain the historical three-paper contract as a fail-closed compatibility
+    path for legacy callers that do not have a current project authority.
+    """
+
     aggregation = completion.get("compatibility_aggregation")
-    if not isinstance(aggregation, dict) or aggregation.get("mode") != "project_core_309":
+    if not isinstance(aggregation, dict) or not isinstance(aggregation.get("mode"), str):
         return None
-
     completion_studies = [
         row for row in completion.get("studies", []) if isinstance(row, dict)
     ]
     chemical_studies = [
         row for row in chemical.get("studies", []) if isinstance(row, dict)
     ]
-    if len(completion_studies) != 3 or len(chemical_studies) != 3:
-        return None
+    completion_by_study = {
+        row.get("study_id"): row
+        for row in completion_studies
+        if isinstance(row.get("study_id"), str)
+    }
     chemical_by_study = {
         row.get("study_id"): row
         for row in chemical_studies
         if isinstance(row.get("study_id"), str)
     }
-    if len(chemical_by_study) != 3:
+    if (
+        not completion_by_study
+        or len(completion_by_study) != len(completion_studies)
+        or len(chemical_by_study) != len(chemical_studies)
+    ):
         return None
-    expected_counts = ((6, 125), (11, 109), (11, 75))
-    ordered_ids = sorted(
-        row.get("study_id")
-        for row in completion_studies
-        if isinstance(row.get("study_id"), str)
-    )
-    if len(ordered_ids) != 3 or len(set(ordered_ids)) != 3:
+
+    legacy_compatibility = declared_ids is None
+    if declared_ids is None:
+        declared_ids = sorted(completion_by_study)
+        legacy_counts = ((6, 125), (11, 109), (11, 75))
+        if (
+            aggregation.get("mode") != "project_core_309"
+            or len(declared_ids) != len(legacy_counts)
+            or completion.get("coverage_denominator") != HONEST_CORE_MOLECULE_COUNT
+        ):
+            return None
+        expected_by_study = dict(zip(declared_ids, legacy_counts))
+    else:
+        if (
+            not declared_ids
+            or any(_honest_identifier(value) != value for value in declared_ids)
+            or len(declared_ids) != len(set(declared_ids))
+        ):
+            return None
+        expected_by_study = {}
+
+    if set(completion_by_study) != set(declared_ids) or set(chemical_by_study) != set(declared_ids):
         return None
+
     authoritative: list[tuple[str, dict[str, Any]]] = []
     seen: set[tuple[str, int]] = set()
-    for expected_id, (expected_pages, expected_molecules) in zip(
-        ordered_ids, expected_counts
-    ):
-        completion_row = next(
-            row for row in completion_studies if row.get("study_id") == expected_id
-        )
-        study_id = _honest_identifier(completion_row.get("study_id"))
+    denominator = 0
+    for study_id in declared_ids:
+        completion_row = completion_by_study[study_id]
+        chemical_row = chemical_by_study[study_id]
         molecules = completion_row.get("molecules")
-        if study_id is None or not isinstance(molecules, list) or not molecules:
+        chemical_molecules = chemical_row.get("molecules")
+        expected_pages, legacy_molecule_count = expected_by_study.get(study_id, (None, None))
+        raw_molecule_count = completion_row.get(
+            "study_molecule_count", completion_row.get("molecule_count")
+        )
+        molecule_count = (
+            raw_molecule_count
+            if isinstance(raw_molecule_count, int)
+            and not isinstance(raw_molecule_count, bool)
+            and raw_molecule_count > 0
+            else None
+        )
+        if molecule_count is None or (
+            legacy_compatibility and molecule_count != legacy_molecule_count
+        ):
             return None
-        chemical_row = chemical_by_study.get(study_id)
-        chemical_molecules = chemical_row.get("molecules") if isinstance(chemical_row, dict) else None
         if (
-            not isinstance(chemical_row, dict)
-            # A study row may be ``blocked`` while coverage is below 0.80;
-            # that is the Honest Progressive continuation state, not stale
-            # authority.  Currentness is established by the bound Chemical
-            # row and the exact three-paper contract below.
+            not isinstance(molecules, list)
+            or not molecules
+            or not isinstance(chemical_molecules, list)
+            or len(molecules) != molecule_count
+            or len(chemical_molecules) != molecule_count
+            or chemical_row.get("molecule_count") != molecule_count
+            or not isinstance(chemical_row.get("page_count"), int)
+            or isinstance(chemical_row.get("page_count"), bool)
+            or chemical_row.get("page_count") <= 0
+            or (
+                legacy_compatibility
+                and chemical_row.get("page_count") != expected_pages
+            )
             or completion_row.get("status") not in {"current", "blocked", "needs_review"}
             or chemical_row.get("status") not in HONEST_CHEMICAL_READY_STATUSES
             or chemical_row.get("pdf_binding_status") != "bound"
-            or chemical_row.get("page_count") != expected_pages
-            or chemical_row.get("molecule_count") != expected_molecules
-            or completion_row.get("study_molecule_count", completion_row.get("molecule_count"))
-            != expected_molecules
-            or not isinstance(chemical_molecules, list)
-            or len(chemical_molecules) != expected_molecules
-            or len(molecules) != expected_molecules
             or chemical_row.get("reaction_data_status") != "unavailable_not_provided"
             or completion_row.get("source_tier") not in {None, "core"}
             or chemical_row.get("source_tier") not in {None, "core"}
         ):
             return None
-        expected_indexes = set(range(expected_molecules))
+        expected_indexes = set(range(molecule_count))
         if {
             molecule.get("molecule_index")
             for molecule in chemical_molecules
             if isinstance(molecule, dict)
         } != expected_indexes:
             return None
+        completion_indexes = {
+            molecule.get("molecule_index")
+            for molecule in molecules
+            if isinstance(molecule, dict)
+        }
+        if completion_indexes != expected_indexes:
+            return None
+        denominator += molecule_count
         for molecule in molecules:
             if not isinstance(molecule, dict):
                 return None
             molecule_index = molecule.get("molecule_index")
-            if not isinstance(molecule_index, int) or isinstance(molecule_index, bool) or molecule_index < 0:
+            if (
+                not isinstance(molecule_index, int)
+                or isinstance(molecule_index, bool)
+                or molecule_index < 0
+            ):
                 return None
             status = molecule.get("resolved_smiles_status")
             if status not in HONEST_RESOLUTION_STATUSES:
@@ -751,13 +803,27 @@ def _honest_authoritative_molecules(
             seen.add(key)
             authoritative.append((study_id, molecule))
 
-    if len(authoritative) != HONEST_CORE_MOLECULE_COUNT or len(seen) != 309:
+    stored_denominator = completion.get("coverage_denominator")
+    if (
+        isinstance(stored_denominator, bool)
+        or not isinstance(stored_denominator, int)
+        or stored_denominator != denominator
+        or (
+            completion.get("core_molecule_count") is not None
+            and completion.get("core_molecule_count") != denominator
+        )
+        or len(authoritative) != denominator
+        or len(seen) != denominator
+    ):
         return None
     return authoritative
 
 
 def _honest_progressive_summary(
-    completion: object, chemical: object
+    completion: object,
+    chemical: object,
+    *,
+    declared_ids: list[str] | None = None,
 ) -> tuple[dict[str, Any], bool, dict[tuple[str, int], dict[str, Any]]]:
     if not isinstance(completion, dict) or not isinstance(chemical, dict):
         return _honest_unknown_summary(), False, {}
@@ -772,7 +838,11 @@ def _honest_progressive_summary(
     ):
         return _honest_unknown_summary(), False, {}
 
-    authoritative = _honest_authoritative_molecules(completion, chemical)
+    authoritative = _honest_authoritative_molecules(
+        completion,
+        chemical,
+        declared_ids=declared_ids,
+    )
     if authoritative is None:
         return _honest_unknown_summary(), False, {}
     counts = {status: 0 for status in HONEST_RESOLUTION_STATUSES}
@@ -781,9 +851,8 @@ def _honest_progressive_summary(
     confirmed_count = counts["CONFIRMED"]
     ai_provisional_count = counts["AI_PROVISIONAL"]
     blocked_count = counts["BLOCKED"]
-    coverage_ratio = (
-        confirmed_count + ai_provisional_count
-    ) / HONEST_CORE_MOLECULE_COUNT
+    denominator = len(authoritative)
+    coverage_ratio = (confirmed_count + ai_provisional_count) / denominator
     residual = completion.get("actor_provenance_residual")
     actor_provenance_residual = residual if isinstance(residual, bool) else None
 
@@ -804,10 +873,10 @@ def _honest_progressive_summary(
         "route": HONEST_PROGRESSIVE_ROUTE,
         "availability": "available",
         "status": "ready" if coverage_sufficient else "needs_more_traceable_candidates",
-        "availability_reason": "Chemical Paper 与 Chemical Completion authoritative core cohort 已可验证。",
+        "availability_reason": "当前项目声明的 Chemical Paper 与 Chemical Completion cohort 已可验证。",
         "gap_reason": None,
-        "core_molecule_count": HONEST_CORE_MOLECULE_COUNT,
-        "coverage_denominator": HONEST_CORE_MOLECULE_COUNT,
+        "core_molecule_count": denominator,
+        "coverage_denominator": denominator,
         "confirmed_count": confirmed_count,
         "ai_provisional_count": ai_provisional_count,
         "blocked_count": blocked_count,
@@ -840,8 +909,18 @@ def project_honest_progressive_dashboard_projection(
     try:
         completion = project_chemical_completion_state(project)
         chemical = chemical_paper_projection(project)
+        current_declared_ids: list[str] | None
+        try:
+            current_declared_ids = declared_study_ids(project)
+        except SourceTruthError:
+            # Legacy projects without an acquisition receipt remain safely
+            # unknown to the scaled route; direct legacy tests retain the
+            # historical fail-closed compatibility contract.
+            current_declared_ids = None
         summary, state_available, molecule_map = _honest_progressive_summary(
-            completion, chemical
+            completion,
+            chemical,
+            declared_ids=current_declared_ids,
         )
     except Exception:
         # A missing/stale authority is public unknown state, not zero coverage.
