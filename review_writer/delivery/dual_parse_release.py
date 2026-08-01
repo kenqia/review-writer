@@ -46,6 +46,23 @@ PREFLIGHT_TTL_SECONDS = 30 * 60
 PREFLIGHT_TOKEN_PREFIX = "cp-preflight-v1."
 CREDITS_STATUS = "NOT_APPLICABLE_BY_CURRENT_SCOPE"
 REACTION_UNAVAILABLE = "unavailable_not_provided"
+INPUT_COVERAGE_SCHEMA = "dashboard-input-coverage.v1"
+SOURCE_READY_STATUSES = frozenset({"DOWNLOADED", "IMPORTED", "VERIFIED_EXISTING"})
+FORMAL_INPUT_ARTIFACTS = (
+    "00_sources/input_provenance_manifest.json",
+    "00_sources/si_resource_registry.json",
+    "00_sources/source_coverage.json",
+)
+FORMAL_ROLE_ALIASES = {
+    "MAIN": "MAIN",
+    "MAIN_PDF": "MAIN",
+    "PDF": "MAIN",
+    "SI": "SI",
+    "SI_PDF": "SI",
+    "SUPPLEMENT": "SI",
+    "SUPPLEMENTARY": "SI",
+    "SUPPLEMENTARY_INFORMATION": "SI",
+}
 
 _TOKEN_RE = re.compile(r"^cp-preflight-v1\.[A-Za-z0-9_-]{32,128}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -734,6 +751,257 @@ def _study_rows(value: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _project_json(path: Path) -> object | None:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+
+
+def _formal_rows(payload: dict[str, Any], keys: tuple[str, ...]) -> list[dict[str, Any]] | None:
+    for key in keys:
+        rows = payload.get(key)
+        if isinstance(rows, list) and all(isinstance(row, dict) for row in rows):
+            return rows
+    return None
+
+
+def _formal_role(row: dict[str, Any]) -> str | None:
+    for key in ("document_role", "role", "input_role", "resource_role", "source_kind"):
+        value = row.get(key)
+        if isinstance(value, str):
+            role = FORMAL_ROLE_ALIASES.get(value.strip().upper())
+            if role is not None:
+                return role
+    return None
+
+
+def _formal_status(row: dict[str, Any]) -> str | None:
+    for key in ("status", "currentness", "availability", "state", "si_status"):
+        value = row.get(key)
+        if not isinstance(value, str):
+            continue
+        status = value.strip().upper()
+        if status in SOURCE_READY_STATUSES | {"ACQUIRED", "AVAILABLE", "CURRENT", "READY", "REGISTERED"}:
+            return "current"
+        if status in {"BLOCKED", "FAILED", "INCOMPLETE", "MISSING", "NOT_AVAILABLE", "NOT_READY", "STALE"}:
+            return "missing"
+        return "unknown"
+    return None
+
+
+def _formal_source_role_currentness(
+    project: Path, study_ids: list[str], role: str
+) -> dict[str, str] | None:
+    paths = [project / relative for relative in FORMAL_INPUT_ARTIFACTS]
+    present = [path.is_file() for path in paths]
+    if not any(present):
+        return None
+    if not all(present):
+        return {study_id: "unknown" for study_id in study_ids}
+    payloads = [_project_json(path) for path in paths]
+    if not all(isinstance(payload, dict) for payload in payloads):
+        return {study_id: "unknown" for study_id in study_ids}
+    manifest, registry, coverage = payloads
+    manifest_rows = _formal_rows(manifest, ("inputs", "sources", "records"))
+    registry_rows = _formal_rows(registry, ("resources", "records", "studies"))
+    coverage_rows = _formal_rows(coverage, ("studies", "coverage"))
+    if manifest_rows is None or coverage_rows is None or (role == "SI" and registry_rows is None):
+        return {study_id: "unknown" for study_id in study_ids}
+
+    normalized_role = role.strip().upper()
+    projected: dict[str, str] = {}
+    for study_id in study_ids:
+        manifest_matches = [
+            row for row in manifest_rows
+            if row.get("study_id") == study_id and _formal_role(row) == normalized_role
+        ]
+        registry_matches = [
+            row for row in registry_rows or []
+            if row.get("study_id") == study_id
+            and (_formal_role(row) == normalized_role or (normalized_role == "SI" and _formal_role(row) is None))
+        ]
+        coverage_matches = [row for row in coverage_rows if row.get("study_id") == study_id]
+        required_matches = [manifest_matches, coverage_matches]
+        if normalized_role == "SI":
+            required_matches.append(registry_matches)
+        if any(len(matches) != 1 for matches in required_matches):
+            projected[study_id] = "unknown" if any(len(matches) > 1 for matches in required_matches) else "missing"
+            continue
+
+        coverage_row = coverage_matches[0]
+        available_roles = coverage_row.get("available_roles")
+        has_role = isinstance(available_roles, list) and any(
+            isinstance(value, str)
+            and FORMAL_ROLE_ALIASES.get(value.strip().upper()) == normalized_role
+            for value in available_roles
+        )
+        study_status = str(coverage_row.get("study_status", "")).upper()
+        if not has_role or study_status in {"BLOCKED", "FAILED", "INCOMPLETE", "MISSING", "NOT_READY", "STALE"}:
+            projected[study_id] = "missing"
+            continue
+        rows = [manifest_matches[0], coverage_row]
+        if normalized_role == "SI":
+            rows.append(registry_matches[0])
+        states = [_formal_status(row) for row in rows]
+        projected[study_id] = (
+            "missing" if "missing" in states
+            else "unknown" if "unknown" in states
+            else "current"
+        )
+    return projected
+
+
+def _source_role_currentness(
+    project: Path, study_ids: list[str], role: str
+) -> dict[str, str]:
+    """Project only current/missing SI availability, never acquisition details."""
+
+    formal = _formal_source_role_currentness(project, study_ids, role)
+    if formal is not None:
+        return formal
+
+    manifest_path = project / "00_discovery/acquisition_manifest.json"
+    receipt_path = project / "00_sources/acquisition_receipt.json"
+    manifest = _project_json(manifest_path)
+    receipt = _project_json(receipt_path)
+    if manifest is not None or receipt is not None:
+        if not isinstance(manifest, dict) or not isinstance(receipt, dict):
+            return {study_id: "unknown" for study_id in study_ids}
+        downloads = manifest.get("downloads")
+        results = receipt.get("results")
+        if not isinstance(downloads, list) or not isinstance(results, list):
+            return {study_id: "unknown" for study_id in study_ids}
+        if not all(isinstance(row, dict) for row in [*downloads, *results]):
+            return {study_id: "unknown" for study_id in study_ids}
+        result_by_id = {
+            row.get("download_id"): row
+            for row in results
+            if isinstance(row.get("download_id"), str)
+        }
+        if len(result_by_id) != len(results):
+            return {study_id: "unknown" for study_id in study_ids}
+        projected: dict[str, str] = {}
+        for study_id in study_ids:
+            matches = [
+                row
+                for row in downloads
+                if row.get("study_id") == study_id
+                and str(row.get("document_role", "")).upper() == role
+            ]
+            if len(matches) != 1:
+                projected[study_id] = "unknown" if len(matches) > 1 else "missing"
+                continue
+            download_id = matches[0].get("download_id")
+            result = result_by_id.get(download_id)
+            status = str(result.get("status", "")).upper() if isinstance(result, dict) else ""
+            projected[study_id] = "current" if status in SOURCE_READY_STATUSES else "missing"
+        return projected
+
+    projected = {}
+    for study_id in study_ids:
+        try:
+            bundle = load_source_truth_bundle(project, study_id)
+        except SourceTruthError:
+            projected[study_id] = "unknown"
+            continue
+        sources = [
+            row
+            for row in bundle.get("sources", [])
+            if isinstance(row, dict)
+            and str(row.get("document_role", "")).upper() == role
+        ]
+        projected[study_id] = "current" if len(sources) == 1 else "unknown"
+    return projected
+
+
+def _coverage_lane(available: int, total: int | None) -> dict[str, Any]:
+    if total is None:
+        return {"available": None, "total": None, "status": "unknown"}
+    if total <= 0:
+        return {"available": None, "total": None, "status": "unknown"}
+    status = (
+        "current"
+        if available == total
+        else "missing"
+        if available == 0
+        else "needs_review"
+    )
+    return {"available": available, "total": total, "status": status}
+
+
+def _dashboard_input_coverage(project: Path, studies: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return the four researcher-visible hard inputs without raw provenance."""
+
+    core = [row for row in studies if row.get("source_tier") == "core"]
+    study_ids = [row["study_id"] for row in core if isinstance(row.get("study_id"), str)]
+    total = len(study_ids) or None
+    si_by_study = _source_role_currentness(project, study_ids, "SI")
+    currentness: list[dict[str, Any]] = []
+    for row in core:
+        study_id = row.get("study_id")
+        if not isinstance(study_id, str):
+            continue
+        chemical_status = (
+            "current"
+            if row.get("chemical_binding_status") == "bound"
+            else "missing"
+            if row.get("chemical_import_status") == "missing"
+            else "needs_review"
+        )
+        currentness.append(
+            {
+                "study_id": study_id,
+                "main_pdf_status": "current"
+                if row.get("pdf_status") == "verified"
+                else "unknown",
+                "si_status": si_by_study.get(study_id, "unknown"),
+                "chemical_zip_status": chemical_status,
+                "generic_parse_status": "current"
+                if row.get("generic_parse_status") == "current"
+                else "unknown",
+            }
+        )
+    lanes = {
+        "main_pdf": _coverage_lane(
+            sum(row["main_pdf_status"] == "current" for row in currentness), total
+        ),
+        "si": _coverage_lane(
+            sum(row["si_status"] == "current" for row in currentness), total
+        ),
+        "chemical_zip": _coverage_lane(
+            sum(row["chemical_zip_status"] == "current" for row in currentness), total
+        ),
+        "generic_parse": _coverage_lane(
+            sum(row["generic_parse_status"] == "current" for row in currentness), total
+        ),
+    }
+    parts = [
+        f"{lane['available']}/{lane['total']}"
+        if lane["available"] is not None and lane["total"] is not None
+        else "未知/未知"
+        for lane in lanes.values()
+    ]
+    gate_values = [
+        str(lane["available"]) if lane["available"] is not None else "未知"
+        for lane in lanes.values()
+    ]
+    return {
+        "schema_version": INPUT_COVERAGE_SCHEMA,
+        "hard_gate": "/".join(gate_values),
+        "hard_gate_label": " · ".join(
+            f"{label} {part}"
+            for label, part in zip(
+                ("主 PDF", "SI", "Chemical ZIP", "Generic Parse"), parts, strict=True
+            )
+        ),
+        "ready": bool(lanes) and all(lane["status"] == "current" for lane in lanes.values()),
+        "source_disclosure": "当前输入仅披露来源可用性与 currentness；原始 PDF 是科学仲裁来源。",
+        "lanes": lanes,
+        "studies": currentness,
+    }
+
+
 def _candidate_label(value: object) -> str | None:
     if not isinstance(value, dict):
         return value if isinstance(value, str) and value.strip() else None
@@ -752,7 +1020,7 @@ def _candidate_label(value: object) -> str | None:
 def _researcher_next_action(value: object) -> dict[str, str]:
     text = value.strip() if isinstance(value, str) else ""
     lowered = text.casefold()
-    if "import" in lowered and "chemical" in lowered:
+    if ("import" in lowered or "确认" in text) and "chemical" in lowered:
         label = "确认下一篇 Chemical Paper 导入"
     elif "completion" in lowered or "missing" in lowered:
         label = "补全下一项化学字段"
@@ -766,6 +1034,31 @@ def _researcher_next_action(value: object) -> dict[str, str]:
         "label": label,
         "description": "完成这一项并保存后，系统会重新计算 Evidence 门禁。",
     }
+
+
+def _input_gate_next_action(
+    raw_action: object, coverage: dict[str, Any]
+) -> tuple[str, str] | None:
+    """Make the first unmet hard input own the single visible next action."""
+
+    order = (
+        ("main_pdf", "补齐并核验主 PDF"),
+        ("si", "补齐并核验 SI"),
+        ("chemical_zip", "待 Chemical Paper 导入"),
+        ("generic_parse", "继续核对 Generic Parse"),
+    )
+    lanes = coverage.get("lanes", {})
+    for name, label in order:
+        lane = lanes.get(name, {})
+        if lane.get("status") == "current":
+            continue
+        if name == "chemical_zip":
+            text = raw_action.strip() if isinstance(raw_action, str) else ""
+            lowered = text.casefold()
+            if "confirm" in lowered or "确认" in text:
+                label = "确认第一份 Chemical Paper 导入"
+        return label, "先完成当前输入硬门；保存后系统会重新计算后续 Evidence 门禁。"
+    return None
 
 
 def _chemical_import_contract(
@@ -993,6 +1286,13 @@ def dual_parse_dashboard_projection(project: Path) -> dict[str, Any]:
     reconciliation_items.sort(key=lambda row: (str(row.get("study_id")), str(row.get("object_id"))))
     core = [row for row in studies if row.get("source_tier") == "core"]
     next_action = workflow.get("unique_next_action", workflow.get("next_action"))
+    input_coverage = _dashboard_input_coverage(_project(project), studies)
+    gate_action = _input_gate_next_action(next_action, input_coverage)
+    researcher_action = (
+        {"label": gate_action[0], "description": gate_action[1]}
+        if gate_action is not None
+        else _researcher_next_action(next_action)
+    )
     project_current = bool(studies) and all(
         row.get("generic_parse_status") == "current"
         and (
@@ -1008,7 +1308,7 @@ def dual_parse_dashboard_projection(project: Path) -> dict[str, Any]:
     return {
         "schema_version": "dual-parse-projection.v2",
         "status": "ready",
-        "next_action": _researcher_next_action(next_action),
+        "next_action": researcher_action,
         "project_status": "current" if project_current else "needs_review",
         "summary": {
             "core_studies": len(core),
@@ -1032,6 +1332,7 @@ def dual_parse_dashboard_projection(project: Path) -> dict[str, Any]:
             ),
         },
         "studies": studies,
+        "input_coverage": input_coverage,
         "import_preflight": None,
         "completion_queue": completion_queue,
         "reconciliation_items": reconciliation_items,

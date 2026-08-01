@@ -195,6 +195,64 @@
     };
   }
 
+  function inputCoverageLaneModel(value) {
+    const row = object(value);
+    const status = ["current", "needs_review", "missing", "unknown"].includes(row.status)
+      ? row.status : "unknown";
+    return {
+      available: nonNegativeInteger(row.available),
+      total: positiveInteger(row.total),
+      status,
+      statusLabel: ({
+        current: "当前有效",
+        needs_review: "待核验",
+        missing: "待补齐",
+        unknown: "未知",
+      })[status],
+    };
+  }
+
+  function inputCoverageModel(value) {
+    const row = object(value);
+    const lanes = object(row.lanes);
+    const laneModels = {
+      mainPdf: inputCoverageLaneModel(lanes.main_pdf),
+      si: inputCoverageLaneModel(lanes.si),
+      chemicalZip: inputCoverageLaneModel(lanes.chemical_zip),
+      genericParse: inputCoverageLaneModel(lanes.generic_parse),
+    };
+    const studies = array(row.studies).map(value => {
+      const study = object(value);
+      return {
+        studyId: text(study.study_id, ""),
+        siStatus: ["current", "needs_review", "missing", "unknown"].includes(study.si_status)
+          ? study.si_status : "unknown",
+        chemicalZipStatus: ["current", "needs_review", "missing", "unknown"].includes(study.chemical_zip_status)
+          ? study.chemical_zip_status : "unknown",
+      };
+    });
+    const hardGate = publicText(row.hard_gate, "未知/未知/未知/未知");
+    const hardGateLabel = publicText(
+      row.hard_gate_label,
+      `主 PDF ${laneModels.mainPdf.available ?? "未知"}/${laneModels.mainPdf.total ?? "未知"} · `
+        + `SI ${laneModels.si.available ?? "未知"}/${laneModels.si.total ?? "未知"} · `
+        + `Chemical ZIP ${laneModels.chemicalZip.available ?? "未知"}/${laneModels.chemicalZip.total ?? "未知"} · `
+        + `Generic Parse ${laneModels.genericParse.available ?? "未知"}/${laneModels.genericParse.total ?? "未知"}`,
+    );
+    return {
+      contractValid: row.schema_version === "dashboard-input-coverage.v1",
+      hardGate,
+      hardGateLabel,
+      ready: typeof row.ready === "boolean" ? row.ready : null,
+      sourceDisclosure: publicText(
+        row.source_disclosure,
+        "当前输入仅披露来源可用性与 currentness；原始 PDF 是科学仲裁来源。",
+      ),
+      lanes: laneModels,
+      studies,
+    };
+  }
+
   function safePdfUrl(value) {
     const candidate = text(value, "");
     if (!candidate.startsWith("/api/project/") || candidate.startsWith("//")) return "";
@@ -325,7 +383,10 @@
       updatedLabel: publicText(row.updated_at, "更新时间未提供"),
     };
     const studyId = text(row.study_id, "");
-    if (studyId) studyTargetByModel.set(model, {studyId});
+    if (studyId) {
+      studyTargetByModel.set(model, {studyId});
+      Object.defineProperty(model, "_studyId", {value: studyId, enumerable: false});
+    }
     return model;
   }
 
@@ -519,6 +580,7 @@
       completionQueue: [],
       reconciliationItems: [],
       honestProgressive: honestProgressiveModel({}),
+      inputCoverage: inputCoverageModel({}),
       summary: {
         coreStudies: null,
         genericCurrent: null,
@@ -535,10 +597,25 @@
       ? value.status : "unknown";
     const honestRoute = value.route === "honest_progressive";
     const honestProgressive = honestRoute ? honestProgressiveModel(value.honest_progressive) : null;
+    const inputCoverage = inputCoverageModel(value.input_coverage);
     const projectedStudies = array(value.studies).map(studyModel);
+    const currentnessByStudy = new Map(inputCoverage.studies.map(study => [study.studyId, study]));
+    const projectedWithInputCurrentness = inputCoverage.contractValid
+      ? projectedStudies.map(study => {
+        const currentness = currentnessByStudy.get(study._studyId);
+        if (!currentness) return study;
+        return {
+          ...study,
+          siStatus: currentness.siStatus,
+          siLabel: `SI ${stateLabel("generic", currentness.siStatus)}`,
+          chemicalZipStatus: currentness.chemicalZipStatus,
+          chemicalZipLabel: `Chemical ZIP ${stateLabel("chemical", currentness.chemicalZipStatus)}`,
+        };
+      })
+      : projectedStudies;
     const studies = !honestRoute || honestProgressive.availability === "available"
-      ? projectedStudies
-      : projectedStudies.map(study => ({
+      ? projectedWithInputCurrentness
+      : projectedWithInputCurrentness.map(study => ({
           ...study,
           chemicalLabel: "Chemical Paper 待导入；状态未知",
           chemicalFacts: ["待 Chemical Paper 导入；状态未知"],
@@ -573,6 +650,10 @@
       completionQueue: array(value.completion_queue).map(completionModel).filter(Boolean),
       reconciliationItems: array(value.reconciliation_items).map(reconciliationModel),
       honestProgressive: honestProgressive || honestProgressiveModel({}),
+      inputCoverage: {
+        ...inputCoverage,
+        studies: inputCoverage.studies.map(({studyId, ...study}) => study),
+      },
       summary: {
         coreStudies: nonNegativeInteger(summary.core_studies),
         genericCurrent: nonNegativeInteger(summary.generic_current),
@@ -951,6 +1032,43 @@
       `Actor provenance residual：${honest.actorProvenanceResidual}`,
       "honest-progressive-residual",
     );
+  }
+
+  function renderInputCoverage(document, parent, coverage) {
+    const input = coverage || inputCoverageModel({});
+    const section = document.createElement("section");
+    section.className = "dual-parse-input-coverage";
+    appendText(document, section, "h4", "输入硬门");
+    appendText(document, section, "strong", input.hardGate);
+    appendText(document, section, "p", input.sourceDisclosure);
+    const lanes = document.createElement("ul");
+    [
+      ["主 PDF", input.lanes.mainPdf],
+      ["SI", input.lanes.si],
+      ["Chemical ZIP", input.lanes.chemicalZip],
+      ["Generic Parse", input.lanes.genericParse],
+    ].forEach(([label, lane]) => {
+      appendText(document, lanes, "li", `${label} ${lane.available ?? "未知"}/${lane.total ?? "未知"} · ${lane.statusLabel}`);
+    });
+    section.append(lanes);
+    input.studies.forEach((study, index) => {
+      appendText(
+        document,
+        section,
+        "p",
+        `研究 ${index + 1} · SI ${studyStatusLabel(study.siStatus)} · Chemical ZIP ${studyStatusLabel(study.chemicalZipStatus)}`,
+      );
+    });
+    parent.append(section);
+  }
+
+  function studyStatusLabel(status) {
+    return ({
+      current: "当前有效",
+      needs_review: "待核验",
+      missing: "待补齐",
+      unknown: "状态未知",
+    })[status] || "状态未知";
   }
 
   function renderStatus(document, parent, model, handlers) {
@@ -1522,7 +1640,10 @@
         renderPreflight(document, preflightRoot, importPreflightModel(payload), wiredHandlers);
       },
     };
-    if (honestRoot) renderHonestProgressive(document, honestRoot, model);
+    if (honestRoot) {
+      renderHonestProgressive(document, honestRoot, model);
+      renderInputCoverage(document, honestRoot, model.inputCoverage);
+    }
     renderStatus(document, studyRoot, model, wiredHandlers);
     renderStudies(document, studyRoot, model, wiredHandlers);
     renderPreflight(document, preflightRoot, model.importPreflight, wiredHandlers);
