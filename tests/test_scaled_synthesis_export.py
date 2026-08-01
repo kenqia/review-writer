@@ -50,7 +50,13 @@ def _question_digest(question_id: str) -> str:
     )
 
 
-def _artifact(question_id: str, *, decision: bool = True) -> dict[str, object]:
+def _artifact(
+    question_id: str,
+    *,
+    decision: bool = True,
+    protocol_digest: str = PROTOCOL_DIGEST,
+    evidence_digest: str = EVIDENCE_DIGEST,
+) -> dict[str, object]:
     row: dict[str, object] = {
         "schema_version": "synthesis-claim.v1",
         "synthesis_id": f"synthesis-{question_id}",
@@ -67,8 +73,8 @@ def _artifact(question_id: str, *, decision: bool = True) -> dict[str, object]:
         "review_question_id": question_id,
         "review_question_digest": _question_digest(question_id),
         "review_questions_digest": FROZEN_REVIEW_QUESTIONS_DIGEST,
-        "paper_evidence_projection_digest": EVIDENCE_DIGEST,
-        "comparison_protocol_digest": PROTOCOL_DIGEST,
+        "paper_evidence_projection_digest": evidence_digest,
+        "comparison_protocol_digest": protocol_digest,
         "decision": None,
     }
     row["review_question_lineage_digest"] = canonical_digest(
@@ -125,6 +131,98 @@ def _authoritative_state_patches(monkeypatch: pytest.MonkeyPatch) -> None:
         "review_writer.project.synthesis.paper_evidence_state",
         lambda _: {"projection_digest": EVIDENCE_DIGEST, "rows": []},
     )
+
+
+def _real_authoritative_question_project(tmp_path: Path) -> Path:
+    """Build a real new-route project whose only closed-chain defect is RQ5 missing."""
+
+    from test_source_truth import _source_truth_project
+
+    from review_writer.project.paper_evidence import (
+        apply_paper_evidence_decision,
+        paper_evidence_state,
+        register_paper_evidence_candidates,
+    )
+    from review_writer.project.parse_quality import (
+        apply_parse_quality_decision,
+        write_parse_quality_gate,
+    )
+    from review_writer.project.source_truth import write_source_truth_bundle
+    from review_writer.project.synthesis import apply_comparison_protocol_decision
+
+    project = _source_truth_project(tmp_path)
+    write_source_truth_bundle(project, "scholarly-a")
+    parse_gate = write_parse_quality_gate(project, "scholarly-a")
+    for parse_object in parse_gate["objects"]:
+        if parse_object["status"] == "usable":
+            continue
+        parse_gate = apply_parse_quality_decision(
+            project,
+            "scholarly-a",
+            {
+                "object_id": parse_object["object_id"],
+                "object_digest": parse_object["object_digest"],
+                "gate_digest": parse_gate["gate_digest"],
+                "action": "approve_candidate_extraction",
+                "note": "Compared with the original PDF.",
+            },
+        )
+
+    candidate = {
+        "evidence_id": "EVIDENCE-REAL-001",
+        "source_id": "stud-a",
+        "epistemic_type": "experimental_observation",
+        "statement": "The reported intervention produced the measured outcome.",
+        "locator": {
+            "source_mode": "parsed_candidate",
+            "page": 1,
+            "section_or_item": "Results",
+            "figure_or_table": None,
+            "exact_quote": "The measured outcome was observed.",
+        },
+        "reported_conditions": ["Synthetic condition"],
+        "quantitative_results": ["Synthetic result"],
+        "limitations": ["Single-study observation"],
+        "mechanism_grade": "not_applicable",
+        "risk_classes": [],
+    }
+    evidence_row = register_paper_evidence_candidates(
+        project, "scholarly-a", candidate
+    )["candidates"][0]
+    apply_paper_evidence_decision(
+        project,
+        {
+            "evidence_id": evidence_row["evidence_id"],
+            "candidate_digest": evidence_row["candidate_digest"],
+            "bound_parse_object_digests": evidence_row[
+                "bound_parse_object_digests"
+            ],
+            "source_pdf_sha256": evidence_row["source_pdf_sha256"],
+            "action": "approve",
+            "reason": "Checked against the cited source.",
+        },
+    )
+
+    protocol = register_comparison_protocol(
+        project, {**_protocol(), "review_questions": FROZEN_QUESTIONS}
+    )
+    apply_comparison_protocol_decision(
+        project,
+        {
+            "action": "approve",
+            "reason": "Explicit bounded comparison protocol disposition.",
+        },
+    )
+    rows = [
+        _artifact(
+            question_id,
+            protocol_digest=str(protocol["protocol_digest"]),
+            evidence_digest=str(paper_evidence_state(project)["projection_digest"]),
+        )
+        for question_id in QUESTION_IDS[:-1]
+    ]
+    _write_artifacts(project, rows)
+    return project
 
 
 def test_authoritative_synthesis_and_release_require_the_five_frozen_questions(
@@ -197,6 +295,26 @@ def test_authoritative_synthesis_requires_current_one_to_one_five_question_chain
         row["review_question_id"]
         for row in authoritative_synthesis_question_bindings(state)
     ] == QUESTION_IDS
+
+
+def test_build_project_release_surfaces_missing_question_before_workflow_not_ready(
+    tmp_path: Path,
+) -> None:
+    from review_writer.delivery.project_release import (
+        ProjectReleaseError,
+        build_project_release,
+    )
+    from review_writer.project.workflow_projection import workflow_state
+
+    project = _real_authoritative_question_project(tmp_path)
+    workflow = workflow_state(project)
+    assert workflow["route"] == "evidence-to-release.v1"
+    assert workflow["internal_draft_export_ready"] is False
+
+    with pytest.raises(ProjectReleaseError) as error:
+        build_project_release(project, release_level="SELF_REVIEWED_DRAFT")
+
+    assert error.value.code == "SYNTHESIS_REVIEW_QUESTION_MISSING"
 
 
 def test_authoritative_registration_persists_question_digest_and_lineage(

@@ -1205,13 +1205,14 @@ def _new_route_release(
         raise ProjectReleaseError(
             "PARSE_QUALITY_NOT_READY", "source-truth parse review must close before release"
         )
+    # Run the question-specific gate before the aggregate workflow readiness
+    # check so a missing, duplicate, stale, or undispositioned question is
+    # reported precisely.
+    _authoritative_review_question_binding(project, None)
     if not workflow.get("internal_draft_export_ready"):
         raise ProjectReleaseError(
             "REVIEW_WORKFLOW_NOT_READY", "evidence-to-release review must close before release"
         )
-    # Run the question-specific gate before manuscript_state so a missing,
-    # duplicate, stale, or undispositioned question is reported precisely.
-    _authoritative_review_question_binding(project, None)
     authoritative = manuscript_state(project)
     if not isinstance(authoritative, dict) or authoritative.get("workflow_can_continue") is not True:
         reason = authoritative.get("reason_code") if isinstance(authoritative, dict) else "MANUSCRIPT_INVALID"
