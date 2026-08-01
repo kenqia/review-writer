@@ -97,11 +97,11 @@ def test_projection_model_exposes_candidate_only_completion_suggestions() -> Non
                 "const model=ui.projectionModel({schema_version:'dual-parse-projection.v2',status:'ready',",
                 " completion_queue:[{study_id:'study-a',molecule_index:2,field:'resolved_smiles',",
                 "  resolved_smiles_status:'BLOCKED',page:2,version_token:'cpv2.safe',",
-                "  candidate_suggestions:[{value:'CO',confidence:0.82,provenance:{source:'original_pdf_structure'},",
+                "  candidate_suggestions:[{value:'CO',confidence:0.82,provenance:{source:'original_pdf_structure',evidence:'Figure 2',pdf_locator:{page:99}},",
                 "   pdf_locator:{page:2,figure_label:'Figure 2'},reason:'Visible structure candidate.'}],",
                 "  private_path:'/home/nope',source_pdf_sha256:'a'.repeat(64)}]});",
                 "const row=model.completionQueue[0];",
-                "if(!row || row.candidateSuggestions.length!==1 || row.candidateSuggestions[0].value!=='CO' || row.candidateSuggestions[0].page!==2) throw new Error(JSON.stringify(row));",
+                "if(!row || row.candidateSuggestions.length!==1 || row.candidateSuggestions[0].value!=='CO' || row.candidateSuggestions[0].page!==2 || row.candidateSuggestions[0].provenance.source!=='original_pdf_structure' || row.candidateSuggestions[0].provenance.evidence!=='Figure 2' || row.candidateSuggestions[0].provenance.pdf_locator!==undefined) throw new Error(JSON.stringify(row));",
                 "const encoded=JSON.stringify(row).toLowerCase();",
                 "for(const forbidden of ['/home/','source_pdf_sha256','private_path']) if(encoded.includes(forbidden)) throw new Error(`leaked ${forbidden}`);",
             ]

@@ -349,14 +349,31 @@
       const candidate = object(candidateValue);
       const locator = object(candidate.pdf_locator || candidate.pdfLocator);
       const page = positiveInteger(locator.page);
-      const provenance = object(candidate.provenance);
+      const rawProvenance = object(candidate.provenance);
+      const provenance = {};
+      Object.entries(rawProvenance).forEach(([key, item]) => {
+        // The authoritative writer accepts only flat scalar provenance.  The
+        // locator remains a separate field; never carry a nested locator into
+        // the write payload.
+        if (key === "pdf_locator" || key === "pdfLocator") return;
+        if (!/^[A-Za-z][A-Za-z0-9_]{0,99}$/.test(key)) return;
+        if (typeof item === "string") {
+          const safe = publicText(item, "");
+          if (safe) provenance[key] = safe;
+        } else if (item === null || typeof item === "boolean") {
+          provenance[key] = item;
+        } else if (typeof item === "number" && Number.isFinite(item)) {
+          provenance[key] = item;
+        }
+      });
       const valueText = publicChemicalText(candidate.value);
       const reason = publicText(candidate.reason, "候选理由未提供");
       if (!valueText || page === null) return null;
       return {
         value: valueText,
         confidence: ratioValue(candidate.confidence),
-        provenance: publicText(provenance.source, "候选来源未提供"),
+        provenance,
+        provenanceLabel: publicText(provenance.source || provenance.kind, "候选来源未提供"),
         page,
         figureLabel: publicText(locator.figure_label || locator.figureLabel, ""),
         reason,
@@ -683,10 +700,23 @@
 
   function provenancePayload(input, pdfLocator) {
     const value = object(input);
-    return {
-      source: requiredPublic(value.source, "provenance source"),
-      pdf_locator: pdfLocatorPayload(value.pdfLocator || value.pdf_locator || pdfLocator),
-    };
+    const result = {};
+    Object.entries(value).forEach(([key, item]) => {
+      if (key === "pdf_locator" || key === "pdfLocator") return;
+      if (!/^[A-Za-z][A-Za-z0-9_]{0,99}$/.test(key)) return;
+      if (typeof item === "string") {
+        result[key] = requiredPublic(item, `provenance ${key}`);
+      } else if (item === null || typeof item === "boolean") {
+        result[key] = item;
+      } else if (typeof item === "number" && Number.isFinite(item)) {
+        result[key] = item;
+      }
+    });
+    result.source = requiredPublic(result.source || result.kind, "provenance source");
+    // Keep the PDF locator at the correction boundary.  Nested objects are
+    // rejected by the authoritative chemical-paper provenance contract.
+    pdfLocatorPayload(value.pdfLocator || value.pdf_locator || pdfLocator);
+    return result;
   }
 
   function completionBatchRequest(studyId, versionToken, rows, actor) {
@@ -1288,7 +1318,7 @@
           const list = document.createElement("ul");
           row.candidateSuggestions.forEach(candidate => {
             const item = document.createElement("li");
-            appendText(document, item, "span", `${candidate.value} · confidence ${candidate.confidence === null ? "未知" : candidate.confidence} · ${candidate.provenance}`);
+            appendText(document, item, "span", `${candidate.value} · confidence ${candidate.confidence === null ? "未知" : candidate.confidence} · ${candidate.provenanceLabel}`);
             appendText(document, item, "p", `${candidate.reason} · 第 ${candidate.page} 页${candidate.figureLabel ? ` · ${candidate.figureLabel}` : ""}`);
             const use = document.createElement("button");
             use.type = "button";
@@ -1352,8 +1382,7 @@
               correction.resolutionStatus = "AI_PROVISIONAL";
               correction.confidence = control.selectedCandidate.confidence;
               correction.provenance = {
-                source: control.selectedCandidate.provenance,
-                pdfLocator: correction.pdfLocator,
+                ...control.selectedCandidate.provenance,
               };
             }
             return correction;

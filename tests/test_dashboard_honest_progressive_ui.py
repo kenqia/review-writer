@@ -114,9 +114,9 @@ def test_completion_batch_request_serializes_ai_provisional_metadata_without_fak
         "\n".join(
             [
                 f"const ui=require({module_path});",
-                "const request=ui.completionBatchRequest('study-a','v1',[{moleculeIndex:4,field:'resolved_smiles',value:'CCO',resolutionStatus:'AI_PROVISIONAL',confidence:0.66,provenance:{source:'pdf',pdfLocator:{page:5}},reason:'PDF structure figure supports this candidate.',pdfLocator:{page:5}}],{actorType:'simulated_researcher_agent',actorLabel:'simulated_researcher_agent'});",
+                "const request=ui.completionBatchRequest('study-a','v1',[{moleculeIndex:4,field:'resolved_smiles',value:'CCO',resolutionStatus:'AI_PROVISIONAL',confidence:0.66,provenance:{source:'pdf',evidence:'visible structure',pdfLocator:{page:5}},reason:'PDF structure figure supports this candidate.',pdfLocator:{page:5}}],{actorType:'simulated_researcher_agent',actorLabel:'simulated_researcher_agent'});",
                 "const row=request.corrections[0];",
-                "if(row.resolution_status!=='AI_PROVISIONAL' || row.confidence!==0.66 || row.provenance.source!=='pdf' || row.provenance.pdf_locator.page!==5) throw new Error(JSON.stringify(request));",
+                "if(row.resolution_status!=='AI_PROVISIONAL' || row.confidence!==0.66 || row.provenance.source!=='pdf' || row.provenance.evidence!=='visible structure' || row.provenance.pdf_locator!==undefined || row.pdf_locator.page!==5) throw new Error(JSON.stringify(request));",
                 "if(row.confirmed===true || row.gap_reason!==undefined) throw new Error(JSON.stringify(request));",
             ]
         )
