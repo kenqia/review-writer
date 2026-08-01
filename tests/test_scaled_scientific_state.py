@@ -3,10 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from jsonschema import Draft202012Validator
 
+from review_writer.project import chemical_completion
 from review_writer.project.chemical_completion import (
     ChemicalCompletionError,
     _validate_gate,
@@ -178,6 +180,7 @@ def test_current_variable_n_declared_count_out_of_range_fails_closed(
 )
 def test_batch_marker_rejection_is_zero_write(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     marker_mutation,
     error_code: str,
 ) -> None:
@@ -186,11 +189,17 @@ def test_batch_marker_rejection_is_zero_write(
     state_path = project / "01_evidence/chemical_paper/study-1/state.json"
     before = state_path.read_bytes()
     before_hash = hashlib.sha256(before).hexdigest()
+    before_state = json.loads(before)
+    before_digest = before_state["state_digest"]
+    before_version = gate["version_token"]
+    before_field_corrections = before_state["field_corrections"]
 
     receipt_path = project / "00_sources/acquisition_final_receipt.json"
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     marker_mutation(receipt)
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    atomic_json_spy = Mock(wraps=chemical_completion._atomic_json)
+    monkeypatch.setattr(chemical_completion, "_atomic_json", atomic_json_spy)
 
     with pytest.raises(ChemicalCompletionError, match=error_code):
         apply_chemical_completion_batch(
@@ -213,8 +222,14 @@ def test_batch_marker_rejection_is_zero_write(
         )
 
     after = state_path.read_bytes()
+    after_state = json.loads(after)
+    atomic_json_spy.assert_not_called()
+    assert after_state == before_state
     assert hashlib.sha256(after).hexdigest() == before_hash
     assert after == before
+    assert after_state["state_digest"] == before_digest
+    assert chemical_completion._version_token(after_state) == before_version
+    assert after_state["field_corrections"] == before_field_corrections
 
 
 def test_current_gate_schema_mismatch_fails_closed(tmp_path: Path) -> None:
