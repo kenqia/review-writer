@@ -449,8 +449,9 @@ def require_honest_progressive_projection(
 ) -> str:
     """Require a current, structurally valid tri-state projection.
 
-    ``allow_provisional`` controls only the project coverage threshold.  It
-    never relaxes the authoritative-row or per-state value requirements.
+    ``allow_provisional`` controls whether an exact downstream consumer may
+    use the projection.  BLOCKED rows remain valid limitation disclosures, but
+    AI_PROVISIONAL rows never satisfy an exact consumer.
     """
 
     gate = chemical_completion_state(project, study_id)
@@ -490,6 +491,8 @@ def require_honest_progressive_projection(
             or not row["gap_reason"].strip()
         ):
             raise ChemicalCompletionError("HONEST_PROGRESSIVE_GAP_REQUIRED")
+    if not allow_provisional and gate.get("ai_provisional_count", 0):
+        raise ChemicalCompletionError("CHEMICAL_COMPLETION_INCOMPLETE")
     if not allow_provisional and not gate["workflow_can_continue"]:
         raise ChemicalCompletionError("CHEMICAL_COMPLETION_INCOMPLETE")
     return str(gate["gate_digest"])

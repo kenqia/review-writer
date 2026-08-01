@@ -1683,6 +1683,13 @@ def append_chemical_field_correction(
             state = load_chemical_paper_state(root, study_id)
             molecule = _molecule(state, molecule_id)
             _require_mutation_binding(state, expected_version_token, bound_import_digest, molecule, bound_molecule_digest)
+            current_resolution = _current_resolved_smiles_event(state, molecule)
+            if (
+                field == "resolved_smiles"
+                and current_resolution is not None
+                and current_resolution.get("resolution_status") == "CONFIRMED"
+            ):
+                raise ChemicalPaperError("CONFIRMED_FIELD_IMMUTABLE")
             locator = _correction_locator(
                 pdf_locator,
                 state["imports"][state["current_import_digest"]]["page_count"],
@@ -2235,10 +2242,29 @@ def chemical_paper_dependency_currentness(
                         and event["field"] == field
                         for event in state["field_corrections"]
                     )
-                    field_status = "corrected" if corrected else ("resolved" if value is not None else "unresolved")
+                    if field == "resolved_smiles":
+                        resolution_status = _resolved_smiles_resolution(
+                            state, molecule
+                        )["resolved_smiles_status"]
+                        if resolution_status == "AI_PROVISIONAL":
+                            field_status = "unresolved"
+                            blocking.append(
+                                f"{claim_id}:resolved_smiles:provisional_not_confirmed"
+                            )
+                        elif resolution_status != "CONFIRMED":
+                            field_status = "unresolved"
+                        else:
+                            field_status = "corrected" if corrected else "resolved"
+                    else:
+                        field_status = "corrected" if corrected else ("resolved" if value is not None else "unresolved")
                     required_statuses[field] = field_status
-                    if field_status == "unresolved":
-                        blocking.append(f"{claim_id}:{field}:unresolved")
+                    if field_status == "unresolved" and not (
+                        field == "resolved_smiles"
+                        and resolution_status == "AI_PROVISIONAL"
+                    ):
+                        unresolved_reason = f"{claim_id}:{field}:unresolved"
+                        if unresolved_reason not in blocking:
+                            blocking.append(unresolved_reason)
                 element_state, _, _ = _current_element_review(state, molecule)
                 if dependency["requires_element_review"] and element_state == "not_reviewed":
                     blocking.append(f"{claim_id}:elements:not_reviewed")
@@ -2282,7 +2308,14 @@ def chemical_paper_dependency_currentness(
 def _resolution_digest(state: dict[str, Any]) -> str:
     rows = []
     for molecule in state["molecules"]:
-        rows.append({"molecule_id": molecule["molecule_id"], **{field: _current_value(state, molecule, field) for field in FIELD_NAMES}})
+        row = {
+            "molecule_id": molecule["molecule_id"],
+            **{field: _current_value(state, molecule, field) for field in FIELD_NAMES},
+        }
+        row["resolved_smiles_status"] = _resolved_smiles_resolution(
+            state, molecule
+        )["resolved_smiles_status"]
+        rows.append(row)
     return canonical_digest(rows)
 
 
@@ -2315,9 +2348,24 @@ def chemical_dependency_state(project: Path, evidence_id: str, dependencies: obj
             raise ChemicalPaperError("CHEMICAL_DEPENDENCY_INVALID")
         status = "ready"
         for field in required:
-            if field in FIELD_NAMES and _current_value(state, molecule, field) is None:
-                gaps.append(f"{state['study_id']}/{molecule['molecule_id']}:{field}:unresolved")
-                status = "blocked_unresolved"
+            if field in FIELD_NAMES:
+                if field == "resolved_smiles":
+                    resolution_status = _resolved_smiles_resolution(
+                        state, molecule
+                    )["resolved_smiles_status"]
+                    if resolution_status == "AI_PROVISIONAL":
+                        gaps.append(
+                            f"{state['study_id']}/{molecule['molecule_id']}:resolved_smiles:provisional_not_confirmed"
+                        )
+                        status = "blocked_unresolved"
+                    elif resolution_status != "CONFIRMED":
+                        gaps.append(
+                            f"{state['study_id']}/{molecule['molecule_id']}:{field}:unresolved"
+                        )
+                        status = "blocked_unresolved"
+                elif _current_value(state, molecule, field) is None:
+                    gaps.append(f"{state['study_id']}/{molecule['molecule_id']}:{field}:unresolved")
+                    status = "blocked_unresolved"
         review_state, _, review_digest = _current_element_review(state, molecule)
         if "elements" in required and review_state == "not_reviewed":
             gaps.append(f"{state['study_id']}/{molecule['molecule_id']}:elements:not_reviewed")

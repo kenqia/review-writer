@@ -850,7 +850,7 @@ def test_history_chain_order_not_dict_or_list_order(tmp_path: Path) -> None:
     assert projected["gap_reason"] == "legacy_resolution_status_missing"
 
 
-def test_currentness_and_impact_bind_only_resolved_smiles(tmp_path: Path) -> None:
+def test_currentness_and_impact_require_confirmed_resolved_smiles(tmp_path: Path) -> None:
     project = _project_with_molecules(
         tmp_path, [_molecule("mol-a", expanded="CO", unexpanded="CN")]
     )
@@ -867,8 +867,11 @@ def test_currentness_and_impact_bind_only_resolved_smiles(tmp_path: Path) -> Non
     ]
 
     impact = chemical_dependency_state(project, "evidence-a", dependencies)
-    assert impact["dependency_status"] == "ready"
+    assert impact["dependency_status"] == "blocked_unresolved"
     assert impact["dependencies"][0]["required_fields"] == ["resolved_smiles"]
+    assert impact["gaps"] == [
+        "scholarly-a/mol-a:resolved_smiles:provisional_not_confirmed"
+    ]
 
     bindings = chemical_paper_manuscript_bindings(project)
     currentness = chemical_paper_dependency_currentness(
@@ -888,7 +891,11 @@ def test_currentness_and_impact_bind_only_resolved_smiles(tmp_path: Path) -> Non
     assert currentness["schema_version"] == "chemical-paper-dependency-currentness.v2"
     assert currentness["claims"][0]["dependencies"][0][
         "required_field_statuses"
-    ] == {"resolved_smiles": "resolved"}
+    ] == {"resolved_smiles": "unresolved"}
+    assert currentness["claims"][0]["status"] == "needs_review"
+    assert currentness["claims"][0]["blocking_reasons"] == [
+        "claim-a:resolved_smiles:provisional_not_confirmed"
+    ]
 
     dependencies[0]["required_fields"] = ["smiles_expanded"]
     with pytest.raises(ChemicalPaperError, match="CHEMICAL_DEPENDENCY_INVALID"):
