@@ -42,6 +42,7 @@ from review_writer.project.source_truth import (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA = REPO_ROOT / "schemas/evidence/chemical_completion_gate.v2.schema.json"
 ACTOR_TYPES = frozenset({"human_researcher", "simulated_researcher_agent"})
+CURRENT_CORE_AGGREGATION_MODE = "project_core_current"
 
 
 class ChemicalCompletionError(ValueError):
@@ -55,6 +56,23 @@ def _validate_gate(value: dict[str, Any]) -> dict[str, Any]:
         schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ChemicalCompletionError("CHEMICAL_COMPLETION_SCHEMA_INVALID") from exc
+    compatibility = value.get("compatibility_aggregation")
+    if (
+        isinstance(compatibility, dict)
+        and compatibility.get("mode") == CURRENT_CORE_AGGREGATION_MODE
+    ):
+        # The checked-in v2 schema predates variable-N projects and still
+        # carries the historical 309 constant.  Keep its shape validation,
+        # while allowing this explicitly current-core projection to carry its
+        # actual denominator without changing the schema outside this owner.
+        schema = copy.deepcopy(schema)
+        schema["properties"]["core_molecule_count"] = {
+            "type": "integer",
+            "minimum": 1,
+        }
+        schema["$defs"]["compatibility_aggregation"]["properties"]["mode"][
+            "enum"
+        ].append(CURRENT_CORE_AGGREGATION_MODE)
     if list(Draft202012Validator(schema).iter_errors(value)):
         raise ChemicalCompletionError("CHEMICAL_COMPLETION_STATE_INVALID")
     body = {key: item for key, item in value.items() if key != "gate_digest"}
@@ -76,6 +94,20 @@ def _core_study_scope(root: Path, study_ids: list[str]) -> tuple[list[str], bool
         except SourceTruthError as exc:
             raise ChemicalCompletionError(exc.code) from exc
     return core_study_ids, True
+
+
+def _legacy_fixed_core_denominator(
+    aggregate_molecule_count: int,
+    core_study_ids: list[str],
+    declared_study_ids: list[str],
+    explicit_tiering: bool,
+) -> bool:
+    """Recognize only the historical one-core 309/background projections."""
+
+    return explicit_tiering and len(core_study_ids) == 1 and (
+        aggregate_molecule_count == CORE_MOLECULE_COUNT
+        or len(core_study_ids) < len(declared_study_ids)
+    )
 
 
 def _state_resolution_counts(state: dict[str, Any]) -> dict[str, int | bool]:
@@ -249,18 +281,19 @@ def chemical_completion_state(project: Path, study_id: str) -> dict[str, object]
         ),
     }
     aggregate_molecule_count = sum(len(item["molecules"]) for item in aggregate_states)
-    # Explicitly tiered projects use the fixed 309 core-molecule denominator;
-    # tiny un-tiered historical fixtures retain subset compatibility for old callers.
-    fixed_core_denominator = (
-        aggregate_molecule_count >= CORE_MOLECULE_COUNT
-        or (explicit_tiering and len(core_study_ids) < len(declared))
+    current_core_aggregation = explicit_tiering and len(core_study_ids) > 1
+    fixed_core_denominator = _legacy_fixed_core_denominator(
+        aggregate_molecule_count,
+        core_study_ids,
+        declared,
+        explicit_tiering,
     )
     coverage_denominator = (
         CORE_MOLECULE_COUNT if fixed_core_denominator else aggregate_molecule_count
     )
     legacy_compatibility_count = (
         int(aggregate_counts["legacy_unclassified_count"])
-        if not fixed_core_denominator
+        if not fixed_core_denominator and not current_core_aggregation
         else 0
     )
     confirmed_count = int(aggregate_counts["confirmed_count"])
@@ -269,10 +302,23 @@ def chemical_completion_state(project: Path, study_id: str) -> dict[str, object]
     actor_provenance_residual = bool(aggregate_counts["actor_provenance_residual"])
     covered_count = confirmed_count + ai_provisional_count + legacy_compatibility_count
     coverage_ratio = covered_count / coverage_denominator if coverage_denominator else 0.0
+    core_molecule_count = (
+        coverage_denominator
+        if current_core_aggregation
+        else CORE_MOLECULE_COUNT
+    )
     compatibility_aggregation = {
-        "mode": "project_core_309" if fixed_core_denominator else "legacy_subset",
+        "mode": (
+            CURRENT_CORE_AGGREGATION_MODE
+            if current_core_aggregation
+            else "project_core_309"
+            if fixed_core_denominator
+            else "legacy_subset"
+        ),
         "source": (
-            "Explicit core/background tiering; background studies are excluded from the 309 core gate."
+            "Current imported core Chemical Paper states; background studies are excluded from the denominator."
+            if current_core_aggregation
+            else "Explicit core/background tiering; background studies are excluded from the 309 core gate."
             if fixed_core_denominator
             else "Legacy subset fixture without a complete 309-molecule core cohort; ratio is compatibility-only."
         ),
@@ -288,7 +334,7 @@ def chemical_completion_state(project: Path, study_id: str) -> dict[str, object]
         "version_token": _version_token(state),
         "workflow_can_continue": coverage_ratio >= CORE_COVERAGE_THRESHOLD,
         "route": "honest_progressive",
-        "core_molecule_count": CORE_MOLECULE_COUNT,
+        "core_molecule_count": core_molecule_count,
         "coverage_denominator": coverage_denominator,
         "covered_count": covered_count,
         "confirmed_count": confirmed_count,
@@ -306,7 +352,10 @@ def chemical_completion_state(project: Path, study_id: str) -> dict[str, object]
         "study_ai_provisional_count": study_ai_provisional_count,
         "study_blocked_count": study_blocked_count,
         "coverage_aggregation": (
-            "Project-level fixed denominator of 309 core molecules; "
+            "Project-level denominator derived from current imported core Chemical Paper states; "
+            "background studies are excluded and this study is an explanatory slice."
+            if current_core_aggregation
+            else "Project-level fixed denominator of 309 core molecules; "
             "only core-tier studies contribute and this study is an explanatory slice."
             if fixed_core_denominator
             else "Legacy subset compatibility: no complete 309-molecule core cohort is present."
@@ -545,8 +594,8 @@ def project_chemical_completion_state(project: Path) -> dict[str, object]:
     ai_provisional_count = int(source.get("ai_provisional_count", 0))
     blocked_count = int(source.get("blocked_count", 0))
     fixed_core_gate = (
-        source.get("coverage_denominator") == CORE_MOLECULE_COUNT
-        or (explicit_tiering and len(core_study_ids) < len(study_ids))
+        isinstance(source.get("compatibility_aggregation"), dict)
+        and source["compatibility_aggregation"].get("mode") == "project_core_309"
     )
     if fixed_core_gate:
         covered_count = confirmed_count + ai_provisional_count
@@ -594,7 +643,7 @@ def project_chemical_completion_state(project: Path) -> dict[str, object]:
         "route": "honest_progressive",
         "studies": rows,
         "workflow_can_continue": ready,
-        "core_molecule_count": CORE_MOLECULE_COUNT,
+        "core_molecule_count": coverage_denominator,
         "confirmed_count": confirmed_count,
         "ai_provisional_count": ai_provisional_count,
         "blocked_count": blocked_count,
