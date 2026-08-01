@@ -26,6 +26,7 @@ SHA256 = re.compile(r"^[0-9a-f]{64}$")
 PROTOCOL_PATH = Path("02_synthesis/comparison_protocol.json")
 COVERAGE_PATH = Path("02_synthesis/coverage_map.json")
 CLAIM_PATH = Path("02_synthesis/synthesis_claim_projection.jsonl")
+EXACT_CHEMICAL_FIELD_DEPENDENCIES = frozenset({"molecule", "smiles", "molblock"})
 
 
 class SynthesisError(ValueError):
@@ -205,8 +206,32 @@ def _approved_evidence(project: Path) -> dict[str, dict[str, Any]]:
     }
 
 
-def _require_exact_chemical_coverage(project: Path) -> None:
+def _candidate_requires_exact_chemical_coverage(
+    candidate: dict[str, Any], evidence: dict[str, dict[str, Any]]
+) -> bool:
+    supporting = candidate.get("supporting_evidence_ids", [])
+    if not isinstance(supporting, list):
+        return False
+    return any(
+        EXACT_CHEMICAL_FIELD_DEPENDENCIES.intersection(
+            evidence.get(evidence_id, {}).get("field_dependencies", [])
+        )
+        for evidence_id in supporting
+    )
+
+
+def _require_exact_chemical_coverage(
+    project: Path,
+    candidates: list[dict[str, Any]],
+    evidence: dict[str, dict[str, Any]],
+) -> None:
     """Keep exact synthesis candidate registration behind the 80% gate."""
+
+    if not any(
+        _candidate_requires_exact_chemical_coverage(candidate, evidence)
+        for candidate in candidates
+    ):
+        return
 
     if not (project / "01_evidence/dual_source").is_dir():
         return
@@ -276,11 +301,11 @@ def partition_honest_progressive_evidence(rows: object) -> dict[str, Any]:
 def register_synthesis_candidates(project: Path, payload: object) -> dict[str, Any]:
     project = _root(project); protocol = comparison_protocol_state(project)
     if not protocol.get("workflow_can_continue"): raise SynthesisError("COMPARISON_PROTOCOL_NOT_APPROVED")
-    _require_exact_chemical_coverage(project)
     if not isinstance(payload, dict): raise SynthesisError("SYNTHESIS_INVALID")
     raw = payload.get("claims", [payload])
     if not isinstance(raw, list): raise SynthesisError("SYNTHESIS_INVALID")
     evidence = _approved_evidence(project)
+    _require_exact_chemical_coverage(project, raw, evidence)
     current_digest = paper_evidence_state(project).get("projection_digest")
     rows = _read_jsonl(project, CLAIM_PATH); existing = {r.get("synthesis_id"): r for r in rows}
     out = []

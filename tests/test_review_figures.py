@@ -76,6 +76,18 @@ def test_source_figure_binds_asset_caption_page_and_pdf(tmp_path: Path) -> None:
     assert registry["figure_budget"]["gaps"]
 
 
+def test_manuscript_figure_digest_uses_current_registry_binding(tmp_path: Path) -> None:
+    project = _new_route_project(tmp_path)
+    registry = build_source_figure_registry(project)
+
+    from review_writer.project.manuscript_v2 import _figure_digests
+
+    registry_digest, placeholder_digest = _figure_digests(project)
+
+    assert registry_digest == registry["registry_digest"]
+    assert placeholder_digest is None
+
+
 def test_source_figure_prefers_v2_caption_over_v1(tmp_path: Path) -> None:
     project = _new_route_project(tmp_path)
     v1 = (

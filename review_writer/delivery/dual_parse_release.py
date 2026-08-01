@@ -91,6 +91,7 @@ _LEGACY_COMPLETION_COUNTERS = frozenset(
         "missing_smiles_unexpanded_count",
     }
 )
+EXACT_CHEMICAL_FIELD_DEPENDENCIES = frozenset({"molecule", "smiles", "molblock"})
 
 
 def honest_progressive_release_projection(
@@ -790,6 +791,33 @@ def _formal_status(row: dict[str, Any]) -> str | None:
     return None
 
 
+def _formal_status_for_role(
+    row: dict[str, Any], role: str, *, artifact_status: str | None = None
+) -> str | None:
+    status = _formal_status(row)
+    if status is not None:
+        return status
+    nested_key = "main_pdf" if role == "MAIN" else "si" if role == "SI" else None
+    nested = row.get(nested_key) if nested_key is not None else None
+    if isinstance(nested, dict):
+        nested_status = _formal_status(nested)
+        if nested_status is not None:
+            return nested_status
+        if role == "MAIN" and artifact_status is not None:
+            return artifact_status
+    return None
+
+
+def _formal_manifest_matches(row: dict[str, Any], role: str) -> bool:
+    if _formal_role(row) == role:
+        return True
+    if role == "MAIN":
+        return isinstance(row.get("main_pdf"), dict)
+    if role == "SI":
+        return isinstance(row.get("si"), dict)
+    return False
+
+
 def _formal_source_role_currentness(
     project: Path, study_ids: list[str], role: str
 ) -> dict[str, str] | None:
@@ -803,18 +831,20 @@ def _formal_source_role_currentness(
     if not all(isinstance(payload, dict) for payload in payloads):
         return {study_id: "unknown" for study_id in study_ids}
     manifest, registry, coverage = payloads
-    manifest_rows = _formal_rows(manifest, ("inputs", "sources", "records"))
+    manifest_rows = _formal_rows(manifest, ("inputs", "sources", "records", "studies"))
     registry_rows = _formal_rows(registry, ("resources", "records", "studies"))
     coverage_rows = _formal_rows(coverage, ("studies", "coverage"))
     if manifest_rows is None or coverage_rows is None or (role == "SI" and registry_rows is None):
         return {study_id: "unknown" for study_id in study_ids}
 
     normalized_role = role.strip().upper()
+    manifest_status = _formal_status(manifest)
     projected: dict[str, str] = {}
     for study_id in study_ids:
         manifest_matches = [
             row for row in manifest_rows
-            if row.get("study_id") == study_id and _formal_role(row) == normalized_role
+            if row.get("study_id") == study_id
+            and _formal_manifest_matches(row, normalized_role)
         ]
         registry_matches = [
             row for row in registry_rows or []
@@ -843,7 +873,14 @@ def _formal_source_role_currentness(
         rows = [manifest_matches[0], coverage_row]
         if normalized_role == "SI":
             rows.append(registry_matches[0])
-        states = [_formal_status(row) for row in rows]
+        states = [
+            _formal_status_for_role(
+                row,
+                normalized_role,
+                artifact_status=manifest_status if row is manifest_matches[0] else None,
+            )
+            for row in rows
+        ]
         projected[study_id] = (
             "missing" if "missing" in states
             else "unknown" if "unknown" in states
@@ -1656,7 +1693,10 @@ def dual_parse_release_bindings(project: Path) -> dict[str, Any]:
 
 
 def _hard_fails_for_row(
-    current: dict[str, Any] | None, frozen: dict[str, Any]
+    current: dict[str, Any] | None,
+    frozen: dict[str, Any],
+    *,
+    allow_non_exact: bool = False,
 ) -> set[str]:
     hard_fails: set[str] = set()
     core = frozen["source_tier"] == "core"
@@ -1690,7 +1730,13 @@ def _hard_fails_for_row(
     except DualParseReleaseError:
         hard_fails.add("CHEMICAL_COMPLETION_INCOMPLETE")
     else:
-        if counters["missing_name_count"] or counters["missing_resolved_smiles_count"]:
+        if (
+            not allow_non_exact
+            and (
+                counters["missing_name_count"]
+                or counters["missing_resolved_smiles_count"]
+            )
+        ):
             hard_fails.add("CHEMICAL_COMPLETION_INCOMPLETE")
         if counters["ai_authored_smiles_count"]:
             hard_fails.add("AI_AUTHORED_SMILES")
@@ -1700,9 +1746,12 @@ def _hard_fails_for_row(
                 hard_fails.add("CORE_CHEMICAL_IMPORT_MISSING_OR_STALE")
             hard_fails.add("DUAL_PARSE_STALE")
         if (
+            not allow_non_exact
+            and (
             current.get("chemical_completion_status") != "current"
             or current.get("chemical_completion_digest")
             != frozen["chemical_completion_digest"]
+            )
         ):
             hard_fails.update({"CHEMICAL_COMPLETION_INCOMPLETE", "DUAL_PARSE_STALE"})
         if (
@@ -1720,7 +1769,10 @@ def _hard_fails_for_row(
 
 
 def validate_dual_parse_release_bindings(
-    project: Path, bindings: object
+    project: Path,
+    bindings: object,
+    *,
+    allow_non_exact: bool = False,
 ) -> dict[str, Any]:
     root = _project(project)
     if not isinstance(bindings, dict) or set(bindings) not in (
@@ -1753,13 +1805,77 @@ def validate_dual_parse_release_bindings(
     }
     hard_fails: set[str] = set()
     for row in frozen:
-        hard_fails.update(_hard_fails_for_row(current_by_id.get(row["study_id"]), row))
+        hard_fails.update(
+            _hard_fails_for_row(
+                current_by_id.get(row["study_id"]),
+                row,
+                allow_non_exact=allow_non_exact,
+            )
+        )
     return {
         "status": "current" if not hard_fails else "stale",
         "workflow_can_continue": not hard_fails,
         "hard_fails": sorted(hard_fails),
         "dual_parse_bindings": frozen,
     }
+
+
+def _non_exact_manuscript_release_allowed(
+    project: Path, lineage: dict[str, Any]
+) -> bool:
+    """Return true only when every manuscript-bound Evidence dependency is non-exact."""
+
+    claim_bindings = lineage.get("claim_bindings")
+    if not isinstance(claim_bindings, list) or not claim_bindings:
+        return False
+    try:
+        from review_writer.project.paper_evidence import paper_evidence_state
+        from review_writer.project.synthesis import synthesis_state
+
+        evidence_rows = paper_evidence_state(project).get("rows", [])
+        synthesis_rows = synthesis_state(project).get("rows", [])
+    except (OSError, PaperEvidenceError, ValueError, KeyError, TypeError):
+        return False
+    evidence_by_id = {
+        row.get("evidence_id"): row
+        for row in evidence_rows
+        if isinstance(row, dict) and isinstance(row.get("evidence_id"), str)
+    }
+    synthesis_by_id = {
+        row.get("synthesis_id"): row
+        for row in synthesis_rows
+        if isinstance(row, dict) and isinstance(row.get("synthesis_id"), str)
+    }
+    referenced_evidence: set[str] = set()
+    for binding in claim_bindings:
+        if not isinstance(binding, dict):
+            return False
+        direct = binding.get("paper_evidence_ids", [])
+        if not isinstance(direct, list) or not all(isinstance(item, str) for item in direct):
+            return False
+        referenced_evidence.update(direct)
+        synthesis_ids = binding.get("synthesis_ids", [])
+        if not isinstance(synthesis_ids, list) or not all(isinstance(item, str) for item in synthesis_ids):
+            return False
+        for synthesis_id in synthesis_ids:
+            claim = synthesis_by_id.get(synthesis_id)
+            if not isinstance(claim, dict):
+                return False
+            for key in ("supporting_evidence_ids", "counter_evidence_ids"):
+                values = claim.get(key, [])
+                if not isinstance(values, list) or not all(isinstance(item, str) for item in values):
+                    return False
+                referenced_evidence.update(values)
+    if not referenced_evidence:
+        return False
+    for evidence_id in referenced_evidence:
+        row = evidence_by_id.get(evidence_id)
+        dependencies = row.get("field_dependencies") if isinstance(row, dict) else None
+        if not isinstance(dependencies, list):
+            return False
+        if EXACT_CHEMICAL_FIELD_DEPENDENCIES.intersection(dependencies):
+            return False
+    return True
 
 
 def _awaiting_human_figure(project: Path) -> bool:
@@ -1896,10 +2012,17 @@ def dual_parse_release_state(project: Path) -> dict[str, Any]:
             "reaction_count": None,
             "credits_status": CREDITS_STATUS,
         }
+    allow_non_exact = _non_exact_manuscript_release_allowed(root, lineage)
     try:
-        validation = validate_dual_parse_release_bindings(
-            root, {"dual_parse_bindings": lineage["dual_parse_bindings"]}
-        )
+        binding_payload = {"dual_parse_bindings": lineage["dual_parse_bindings"]}
+        if allow_non_exact:
+            validation = validate_dual_parse_release_bindings(
+                root, binding_payload, allow_non_exact=True
+            )
+        else:
+            # Preserve the original two-argument call for existing test and
+            # integration doubles that implement the strict validator shape.
+            validation = validate_dual_parse_release_bindings(root, binding_payload)
         current_rows = _current_authority_rows(root)
     except DualParseReleaseError:
         return {
@@ -1923,7 +2046,7 @@ def dual_parse_release_state(project: Path) -> dict[str, Any]:
             hard_fails.difference_update(
                 {"CHEMICAL_COMPLETION_INCOMPLETE", "AI_AUTHORED_SMILES"}
             )
-        else:
+        elif not allow_non_exact:
             hard_fails.add("HONEST_PROGRESSIVE_COVERAGE_BELOW_THRESHOLD")
     reaction_statuses = {
         row.get("reaction_data_status", REACTION_UNAVAILABLE)
@@ -1965,6 +2088,7 @@ def dual_parse_release_state(project: Path) -> dict[str, Any]:
         "reaction_data_status": reaction_status,
         "reaction_count": reaction_count,
         "credits_status": CREDITS_STATUS,
+        "non_exact_release_allowed": allow_non_exact,
     }
     if honest_summary is not None:
         result.update(honest_summary)

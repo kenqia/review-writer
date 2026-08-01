@@ -31,6 +31,7 @@ from review_writer.project.parse_quality import write_parse_quality_gate
 from review_writer.project.parse_reconciliation import write_parse_reconciliation
 from review_writer.project.source_truth import canonical_digest, load_source_truth_bundle
 from review_writer.project.synthesis import SynthesisError, register_synthesis_candidates
+from review_writer.project.workflow_projection import workflow_state
 from test_chemical_completion import _large_completion_project
 from test_content_agent_handoff import _project as content_agent_project
 from test_parse_quality import _decide_all
@@ -62,18 +63,28 @@ def _incomplete_dual_project(tmp_path: Path) -> Path:
     return project
 
 
-def _paper_request(project: Path, *, targets: list[str] | None = None) -> dict[str, object]:
+def _paper_request(
+    project: Path,
+    *,
+    targets: list[str] | None = None,
+    field_dependencies: list[str] | None = None,
+) -> dict[str, object]:
     return {
         "schema_version": "content-agent-request.v1",
         "request_kind": "paper_evidence",
         "project_id": project.name,
         "target_ids": targets or ["scholarly-a"],
-        "field_dependencies": ["smiles"],
+        "field_dependencies": ["smiles"] if field_dependencies is None else field_dependencies,
         "reason": "Generate study-local candidate Evidence from current safe inputs.",
     }
 
 
-def _candidate(project: Path, evidence_id: str = "EVIDENCE-PROGRESSIVE-001") -> dict[str, object]:
+def _candidate(
+    project: Path,
+    evidence_id: str = "EVIDENCE-PROGRESSIVE-001",
+    *,
+    field_dependencies: list[str] | None = None,
+) -> dict[str, object]:
     bundle = load_source_truth_bundle(project, "scholarly-a")
     source_id = next(row["source_id"] for row in bundle["sources"] if row["document_role"] == "MAIN")
     return {
@@ -93,11 +104,16 @@ def _candidate(project: Path, evidence_id: str = "EVIDENCE-PROGRESSIVE-001") -> 
         "limitations": ["Candidate requires researcher decision."],
         "mechanism_grade": "not_applicable",
         "risk_classes": ["MECHANISM_CAUSALITY"],
-        "field_dependencies": ["smiles"],
+        "field_dependencies": ["smiles"] if field_dependencies is None else field_dependencies,
     }
 
 
-def _result(project: Path, package: dict[str, object]) -> dict[str, object]:
+def _result(
+    project: Path,
+    package: dict[str, object],
+    *,
+    field_dependencies: list[str] | None = None,
+) -> dict[str, object]:
     value: dict[str, object] = {
         "schema_version": "content-agent-result.v1",
         "request_kind": package["request_kind"],
@@ -105,7 +121,11 @@ def _result(project: Path, package: dict[str, object]) -> dict[str, object]:
         "target_ids": package["target_ids"],
         "task_package_digest": package["task_package_digest"],
         "agent_label": "content-agent-progressive-test",
-        "content": {"evidence_candidates": [_candidate(project)]},
+        "content": {
+            "evidence_candidates": [
+                _candidate(project, field_dependencies=field_dependencies)
+            ]
+        },
     }
     value["result_digest"] = canonical_digest(value)
     return value
@@ -163,6 +183,46 @@ def test_incomplete_exact_evidence_decision_is_stale_and_zero_write(tmp_path: Pa
 
     assert _snapshot(project) == before
     assert not (project / "01_evidence/paper_evidence_decisions.jsonl").exists()
+
+
+def test_incomplete_nonexact_evidence_decision_is_approved(tmp_path: Path) -> None:
+    project = _incomplete_dual_project(tmp_path)
+    package = build_content_task_package(
+        project,
+        _paper_request(project, field_dependencies=[]),
+    )
+    import_content_agent_result(
+        project,
+        _result(project, package, field_dependencies=[]),
+    )
+    row = paper_evidence_state(project)["rows"][0]
+
+    approved = apply_paper_evidence_decision(project, _decision(row))
+
+    assert approved["status"] == "approved"
+    assert approved["field_dependencies"] == []
+    assert paper_evidence_state(project)["workflow_can_continue"] is True
+
+
+def test_incomplete_nonexact_candidates_open_the_evidence_workflow(
+    tmp_path: Path,
+) -> None:
+    project = _incomplete_dual_project(tmp_path)
+    package = build_content_task_package(
+        project,
+        _paper_request(project, field_dependencies=[]),
+    )
+    import_content_agent_result(
+        project,
+        _result(project, package, field_dependencies=[]),
+    )
+
+    workflow = workflow_state(project)
+
+    assert workflow["chemical_completion_ready"] is False
+    assert workflow["reconciliation_ready"] is True
+    assert workflow["active_stage"] == "evidence"
+    assert workflow["blockers"] == ["PAPER_EVIDENCE_NOT_APPROVED"]
 
 
 def test_honest_progressive_digest_stales_old_candidate_and_import_zero_writes(
@@ -246,6 +306,54 @@ def test_synthesis_candidate_registration_requires_80_percent_coverage(
                 "single_study": True,
             },
         )
+
+
+def test_nonexact_synthesis_candidate_registration_bypasses_exact_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _incomplete_dual_project(tmp_path)
+    monkeypatch.setattr(
+        "review_writer.project.synthesis.comparison_protocol_state",
+        lambda _: {"workflow_can_continue": True, "protocol_digest": "a" * 64},
+    )
+    monkeypatch.setattr(
+        "review_writer.project.synthesis.paper_evidence_state",
+        lambda _: {
+            "projection_digest": "b" * 64,
+            "rows": [
+                {
+                    "evidence_id": "e1",
+                    "study_id": "scholarly-a",
+                    "status": "approved",
+                    "field_dependencies": [],
+                },
+                {
+                    "evidence_id": "e2",
+                    "study_id": "scholarly-b",
+                    "status": "approved",
+                    "field_dependencies": [],
+                },
+            ],
+        },
+    )
+
+    result = register_synthesis_candidates(
+        project,
+        {
+            "synthesis_id": "s-nonexact",
+            "proposition": "The reported outcomes differ under the bounded comparison protocol.",
+            "comparison_axis": "reported outcome",
+            "supporting_evidence_ids": ["e1", "e2"],
+            "applicability_boundary": "Only the cited study observations are compared.",
+            "mechanism_evidence_grade": "low",
+            "uncertainty": "The comparison does not establish a structure-specific mechanism.",
+            "risk_class": "scope",
+            "single_study": False,
+        },
+    )
+
+    assert result["status"] == "needs_review"
+    assert result["claims"][0]["synthesis_id"] == "s-nonexact"
 
 
 def test_release_projection_remains_blocked_at_210_of_309() -> None:

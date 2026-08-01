@@ -310,6 +310,21 @@ def test_new_route_internal_release_reads_only_manuscript_v2_and_writes_release_
     )
 
 
+def test_new_route_source_figures_do_not_require_placeholder_state(
+    new_route_project: Path,
+) -> None:
+    from review_writer.delivery.project_release import build_project_release
+
+    (new_route_project / "03_figures/synthesis_figure_placeholders.json").unlink()
+
+    result = build_project_release(
+        new_route_project, release_level="SELF_REVIEWED_DRAFT"
+    )
+
+    assert result["status"] == "SELF_REVIEWED_DRAFT"
+    assert result["placeholder_count"] == 0
+
+
 def test_internal_docx_binds_chemical_lineage_and_adds_explicit_limitations(
     new_route_project: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

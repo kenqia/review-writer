@@ -63,6 +63,7 @@ HONEST_PROGRESSIVE_STATUSES = frozenset(
 )
 HONEST_PROGRESSIVE_COVERAGE_THRESHOLD = 0.8
 HONEST_PROGRESSIVE_PROJECT_CORE_MOLECULE_COUNT = 309
+EXACT_CHEMICAL_FIELD_DEPENDENCIES = frozenset({"molecule", "smiles", "molblock"})
 
 _SENSITIVE_TEXT_MARKERS = (
     "path",
@@ -1050,6 +1051,11 @@ def _field_dependencies(value: object) -> list[str]:
     return sorted(rows)
 
 
+def _requires_exact_chemical_fields(row: dict[str, Any]) -> bool:
+    dependencies = row.get("field_dependencies", [])
+    return bool(EXACT_CHEMICAL_FIELD_DEPENDENCIES.intersection(dependencies))
+
+
 def require_dual_evidence_ready(
     project: Path,
     study_id: str,
@@ -1584,7 +1590,11 @@ def apply_paper_evidence_decision(project: Path, payload: object) -> dict[str, A
         if not freshness:
             raise PaperEvidenceError("PAPER_EVIDENCE_STALE")
         bindings = candidate.get("dual_parse_bindings")
-        if isinstance(bindings, dict) and bindings.get("honest_progressive_digest"):
+        if (
+            isinstance(bindings, dict)
+            and bindings.get("honest_progressive_digest")
+            and _requires_exact_chemical_fields(candidate)
+        ):
             try:
                 require_honest_progressive_projection(
                     project,

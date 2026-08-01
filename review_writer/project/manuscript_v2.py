@@ -24,6 +24,7 @@ from .workflow_projection import NEW_ROUTE, workflow_state
 from .chemical_paper import chemical_paper_manuscript_bindings
 from review_writer.delivery.dual_parse_release import (
     DualParseReleaseError,
+    _non_exact_manuscript_release_allowed,
     dual_parse_manuscript_bindings,
     validate_dual_parse_release_bindings,
 )
@@ -602,6 +603,9 @@ def manuscript_state(project: Path) -> dict[str, Any]:
                 dual_currentness = validate_dual_parse_release_bindings(
                     root,
                     {"dual_parse_bindings": lineage.get("dual_parse_bindings")},
+                    allow_non_exact=_non_exact_manuscript_release_allowed(
+                        root, {"claim_bindings": expected_claims}
+                    ),
                 )
             except DualParseReleaseError as exc:
                 raise ManuscriptV2Error("MANUSCRIPT_DUAL_PARSE_STALE") from exc
@@ -655,12 +659,19 @@ def _figure_digests(project: Path) -> tuple[str | None, str | None]:
     registry_digest: str | None = None
     registry_path = project / SOURCE_FIGURE_PATH
     if registry_path.exists():
-        registry = _read_json(registry_path, "SOURCE_FIGURE_REGISTRY_INVALID")
-        if not isinstance(registry, dict) or not isinstance(registry.get("figures"), list):
-            raise ManuscriptV2Error("SOURCE_FIGURE_REGISTRY_INVALID")
-        registry_digest = _digest(registry.get("registry_digest"), "SOURCE_FIGURE_REGISTRY_INVALID")
-        if registry_digest != canonical_digest(registry["figures"]):
-            raise ManuscriptV2Error("SOURCE_FIGURE_REGISTRY_STALE")
+        try:
+            # Source Figure registry digests bind the current Source Truth,
+            # content_list_v2, Chemical Paper imports, figures, and locator
+            # gaps.  Reuse the formal loader so manuscript lineage cannot
+            # silently accept the older figures-only digest contract.
+            from .review_figures import ReviewFigureError, load_source_figure_registry
+
+            registry = load_source_figure_registry(project)
+        except ReviewFigureError as exc:
+            raise ManuscriptV2Error(exc.code) from exc
+        registry_digest = _digest(
+            registry.get("registry_digest"), "SOURCE_FIGURE_REGISTRY_INVALID"
+        )
     placeholder_digest: str | None = None
     placeholder_path = project / PLACEHOLDER_PATH
     if placeholder_path.exists():

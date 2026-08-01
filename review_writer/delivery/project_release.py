@@ -1052,13 +1052,21 @@ def _new_route_figure_state(
     registry_path = validate_project_file_path(
         project, Path("03_figures/source_figure_registry.json"), "FIGURE_POLICY_INVALID"
     )
-    placeholder_path = validate_project_file_path(
-        project,
-        Path("03_figures/synthesis_figure_placeholders.json"),
-        "FIGURE_POLICY_INVALID",
+    placeholder_relative = Path("03_figures/synthesis_figure_placeholders.json")
+    # A project with only selected source figures has no synthesis placeholder
+    # state.  Missing state means an empty placeholder set; malformed or
+    # symlinked state remains fail-closed through the normal path validator.
+    placeholder_path = (
+        validate_project_file_path(project, placeholder_relative, "FIGURE_POLICY_INVALID")
+        if os.path.lexists(project / placeholder_relative)
+        else None
     )
     registry = _read_json(registry_path, "FIGURE_POLICY_INVALID")
-    placeholder_state = _read_json(placeholder_path, "FIGURE_POLICY_INVALID")
+    placeholder_state = (
+        _read_json(placeholder_path, "FIGURE_POLICY_INVALID")
+        if placeholder_path is not None
+        else {"placeholders": []}
+    )
     placeholders = (
         placeholder_state.get("placeholders")
         if isinstance(placeholder_state, dict)

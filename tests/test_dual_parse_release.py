@@ -131,6 +131,32 @@ def test_internal_release_requires_current_dual_bindings(
     assert "CORE_GENERIC_PARSE_MISSING_OR_STALE" in stale["hard_fails"]
 
 
+def test_nonexact_release_binding_can_disclose_incomplete_chemical_coverage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from review_writer.delivery import dual_parse_release as release
+
+    rows = _authority_rows()
+    bindings = release.build_dual_parse_manuscript_bindings(rows, {"study-a"})
+    project = _project(tmp_path, bindings)
+    rows[0]["missing_resolved_smiles_count"] = 1
+    rows[0]["chemical_completion_status"] = "blocked"
+    monkeypatch.setattr(release, "_current_authority_rows", lambda _: copy.deepcopy(rows))
+
+    strict = release.validate_dual_parse_release_bindings(
+        project, {"dual_parse_bindings": bindings}
+    )
+    nonexact = release.validate_dual_parse_release_bindings(
+        project,
+        {"dual_parse_bindings": bindings},
+        allow_non_exact=True,
+    )
+
+    assert strict["workflow_can_continue"] is False
+    assert nonexact["workflow_can_continue"] is True
+    assert "CHEMICAL_COMPLETION_INCOMPLETE" not in nonexact["hard_fails"]
+
+
 def test_reaction_absence_is_unknown_not_zero_or_global_hard_fail(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

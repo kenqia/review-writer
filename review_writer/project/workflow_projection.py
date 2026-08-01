@@ -95,6 +95,19 @@ def _read_jsonl(project: Path, relative: str) -> list[dict[str, Any]] | None:
     return rows
 
 
+def _non_exact_evidence_route_allowed(value: dict[str, Any]) -> bool:
+    """Allow low-coverage projects to review only explicitly non-exact Evidence."""
+
+    rows = value.get("rows")
+    if not isinstance(rows, list) or not rows:
+        return False
+    return all(
+        isinstance(row, dict)
+        and not set(row.get("field_dependencies", []))
+        for row in rows
+    )
+
+
 def _finalize(state: dict[str, Any]) -> dict[str, Any]:
     state["workflow_digest"] = canonical_digest(state)
     return state
@@ -256,6 +269,7 @@ def _new_route_state(
 
     paper_evidence_ready = False
     paper_evidence_error = False
+    non_exact_evidence_allowed = False
     tiered_dual_route = False
     if source_ready and declared:
         try:
@@ -299,16 +313,25 @@ def _new_route_state(
             if not chemical_completion_ready:
                 blocked = next((row for row in completion_state["studies"] if not row.get("workflow_can_continue")), {})
                 dual_blocker = str(blocked.get("reason_code") or "CHEMICAL_COMPLETION_INCOMPLETE")
-        if chemical_completion_ready:
+        if dual_source_ready:
             reconciliation_state = project_reconciliation_state(project)
             reconciliation_ready = bool(reconciliation_state.get("workflow_can_continue"))
-            if not reconciliation_ready:
+            # Chemical completion remains the first actionable blocker until
+            # that gate is closed.  Reconciliation is still evaluated here so
+            # an explicitly non-exact Evidence route can use an already
+            # current reconciliation state, but it must not overwrite the
+            # earlier Chemical Completion reason when both are incomplete.
+            if not reconciliation_ready and chemical_completion_ready:
                 blocked = next((row for row in reconciliation_state["studies"] if row["status"] == "blocked"), {})
                 dual_blocker = str(blocked.get("reason_code") or "PARSE_RECONCILIATION_UNRESOLVED")
 
-    if parse_ready and dual_source_ready and chemical_completion_ready and reconciliation_ready:
+    if parse_ready and dual_source_ready and reconciliation_ready:
         try:
             evidence_state = paper_evidence_state(project)
+            non_exact_evidence_allowed = (
+                not chemical_completion_ready
+                and _non_exact_evidence_route_allowed(evidence_state)
+            )
             paper_evidence_ready = bool(evidence_state.get("workflow_can_continue"))
         except (PaperEvidenceError, OSError, ValueError, KeyError, TypeError):
             paper_evidence_error = True
@@ -354,7 +377,11 @@ def _new_route_state(
     elif dual_route and not dual_source_ready:
         active_stage = "chemical_import"
         blockers.append(dual_blocker or "DUAL_SOURCE_NOT_READY")
-    elif dual_route and not chemical_completion_ready:
+    elif (
+        dual_route
+        and not chemical_completion_ready
+        and not non_exact_evidence_allowed
+    ):
         active_stage = "chemical_completion"
         blockers.append(dual_blocker or "CHEMICAL_COMPLETION_INCOMPLETE")
     elif dual_route and not reconciliation_ready:
@@ -404,6 +431,7 @@ def _new_route_state(
             "parse_ready": parse_ready,
             "dual_source_ready": dual_source_ready,
             "chemical_completion_ready": chemical_completion_ready,
+            "non_exact_evidence_allowed": non_exact_evidence_allowed,
             "reconciliation_ready": reconciliation_ready,
             "paper_evidence_ready": paper_evidence_ready,
             "synthesis_ready": synthesis_ready,

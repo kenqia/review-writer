@@ -4592,6 +4592,9 @@ def write_project_workspace_decision(review_root: Path, project_id: str, kind: s
             {
                 "source_truth_digest": registry.get("source_truth_digest"),
                 "content_list_v2_digest": registry.get("content_list_v2_digest"),
+                "chemical_paper_project_binding_digest": registry.get(
+                    "chemical_paper_project_binding_digest"
+                ),
                 "figures": registry.get("figures", []),
                 "locator_gaps": registry.get("locator_gaps", []),
             }

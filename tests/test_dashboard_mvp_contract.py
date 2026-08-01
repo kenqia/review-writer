@@ -135,6 +135,51 @@ def _write_formal_source_inputs(project: Path) -> None:
     )
 
 
+def _write_input_provenance_studies(project: Path) -> None:
+    study_ids = ["study-a", "study-b", "study-c"]
+    _write_json(
+        project / "00_sources/input_provenance_manifest.json",
+        {
+            "schema_version": "input-provenance-manifest.v1",
+            "status": "CURRENT",
+            "studies": [
+                {
+                    "study_id": study_id,
+                    "source_id": f"source-{study_id}",
+                    "main_pdf": {"sha256": "a" * 64, "page_count": 1},
+                    "si": {"status": "current", "sha256": "b" * 64, "page_count": 1},
+                }
+                for study_id in study_ids
+            ],
+        },
+    )
+    _write_json(
+        project / "00_sources/si_resource_registry.json",
+        {
+            "schema_version": "si-resource-registry.v1",
+            "resources": [
+                {"study_id": study_id, "document_role": "SI", "status": "CURRENT"}
+                for study_id in study_ids
+            ],
+        },
+    )
+    _write_json(
+        project / "00_sources/source_coverage.json",
+        {
+            "schema_version": "source-coverage.v1",
+            "studies": [
+                {
+                    "study_id": study_id,
+                    "available_roles": ["MAIN", "SI"],
+                    "si_policy": "REQUIRED",
+                    "study_status": "READY",
+                }
+                for study_id in study_ids
+            ],
+        },
+    )
+
+
 def test_formal_source_artifacts_drive_si_currentness_without_private_fields(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -173,6 +218,31 @@ def test_formal_source_artifacts_drive_si_currentness_without_private_fields(
         "raw-coverage-sha256-",
     ):
         assert private_value not in serialized
+
+
+def test_input_provenance_studies_manifest_drives_si_currentness(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from review_writer.delivery import dual_parse_release
+
+    project = tmp_path / "project"
+    project.mkdir()
+    _write_input_provenance_studies(project)
+    monkeypatch.setattr(
+        dual_parse_release,
+        "_dashboard_authority_payloads",
+        lambda _: _authority_payloads(
+            chemical_bound=True,
+            next_action="继续补充可追溯候选",
+        ),
+    )
+
+    projection = dual_parse_release.dual_parse_dashboard_projection(project)
+    coverage = projection["input_coverage"]
+
+    assert coverage["hard_gate"] == "3/3/3/3"
+    assert coverage["ready"] is True
+    assert all(row["si_status"] == "current" for row in coverage["studies"])
 
 
 def test_projection_exposes_four_input_hard_gate_and_per_study_currentness(
