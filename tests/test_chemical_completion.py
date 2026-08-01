@@ -353,11 +353,21 @@ def test_new_batch_resolved_smiles_requires_explicit_resolution_status(
     assert snapshot(project) == before
 
 
-def test_project_completion_filters_background_and_keeps_309_denominator(
+def test_legacy_three_paper_completion_filters_background_and_keeps_309_denominator(
     tmp_path: Path,
 ) -> None:
     project = source_truth_project(tmp_path, pages=2)
-    study_ids = expand_source_truth_studies(project, 2)
+    study_ids = expand_source_truth_studies(project, 3)
+    receipt_path = project / "00_sources/acquisition_final_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt.update(
+        {
+            "corpus_kind": "legacy_three_paper",
+            "variable_n": False,
+            "study_count": 3,
+        }
+    )
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     (project / "00_discovery").mkdir(parents=True, exist_ok=True)
     (project / "00_discovery/candidate_pool.json").write_text(
         json.dumps(
@@ -366,6 +376,7 @@ def test_project_completion_filters_background_and_keeps_309_denominator(
                 "candidates": [
                     {"candidate_id": study_ids[0], "study_id": study_ids[0], "tier": "core"},
                     {"candidate_id": study_ids[1], "study_id": study_ids[1], "tier": "background"},
+                    {"candidate_id": study_ids[2], "study_id": study_ids[2], "tier": "background"},
                 ],
             }
         ),

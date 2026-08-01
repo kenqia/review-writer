@@ -43,6 +43,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA = REPO_ROOT / "schemas/evidence/chemical_completion_gate.v2.schema.json"
 ACTOR_TYPES = frozenset({"human_researcher", "simulated_researcher_agent"})
 CURRENT_CORE_AGGREGATION_MODE = "project_core_current"
+AUTHORITATIVE_VARIABLE_N = "authoritative_variable_n"
+LEGACY_THREE_PAPER = "legacy_three_paper"
+MIN_VARIABLE_N_STUDIES = 20
+MAX_VARIABLE_N_STUDIES = 40
+LEGACY_STUDY_COUNT = 3
 
 
 class ChemicalCompletionError(ValueError):
@@ -56,29 +61,56 @@ def _validate_gate(value: dict[str, Any]) -> dict[str, Any]:
         schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ChemicalCompletionError("CHEMICAL_COMPLETION_SCHEMA_INVALID") from exc
-    compatibility = value.get("compatibility_aggregation")
-    if (
-        isinstance(compatibility, dict)
-        and compatibility.get("mode") == CURRENT_CORE_AGGREGATION_MODE
-    ):
-        # The checked-in v2 schema predates variable-N projects and still
-        # carries the historical 309 constant.  Keep its shape validation,
-        # while allowing this explicitly current-core projection to carry its
-        # actual denominator without changing the schema outside this owner.
-        schema = copy.deepcopy(schema)
-        schema["properties"]["core_molecule_count"] = {
-            "type": "integer",
-            "minimum": 1,
-        }
-        schema["$defs"]["compatibility_aggregation"]["properties"]["mode"][
-            "enum"
-        ].append(CURRENT_CORE_AGGREGATION_MODE)
     if list(Draft202012Validator(schema).iter_errors(value)):
         raise ChemicalCompletionError("CHEMICAL_COMPLETION_STATE_INVALID")
     body = {key: item for key, item in value.items() if key != "gate_digest"}
     if canonical_digest(body) != value["gate_digest"]:
         raise ChemicalCompletionError("CHEMICAL_COMPLETION_STATE_INVALID")
     return value
+
+
+def _project_aggregation_mode(root: Path, declared_count: int) -> str | None:
+    """Read the authoritative current/legacy project marker from the receipt."""
+
+    receipt_path = root / "00_sources/acquisition_final_receipt.json"
+    if receipt_path.is_symlink() or not receipt_path.is_file():
+        raise ChemicalCompletionError("CHEMICAL_COMPLETION_PROJECT_MARKER_INVALID")
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ChemicalCompletionError(
+            "CHEMICAL_COMPLETION_PROJECT_MARKER_INVALID"
+        ) from exc
+    if not isinstance(receipt, dict):
+        raise ChemicalCompletionError("CHEMICAL_COMPLETION_PROJECT_MARKER_INVALID")
+
+    marker_keys = {"corpus_kind", "variable_n", "study_count"}
+    present_keys = marker_keys.intersection(receipt)
+    if not present_keys:
+        return None
+    if present_keys != marker_keys:
+        raise ChemicalCompletionError("CHEMICAL_COMPLETION_PROJECT_MARKER_INVALID")
+    studies = receipt.get("studies")
+    study_count = receipt.get("study_count")
+    if (
+        not isinstance(studies, list)
+        or study_count != len(studies)
+        or study_count != declared_count
+        or isinstance(study_count, bool)
+    ):
+        raise ChemicalCompletionError("CHEMICAL_COMPLETION_PROJECT_MARKER_INVALID")
+
+    corpus_kind = receipt["corpus_kind"]
+    variable_n = receipt["variable_n"]
+    if corpus_kind == AUTHORITATIVE_VARIABLE_N and variable_n is True:
+        if not MIN_VARIABLE_N_STUDIES <= study_count <= MAX_VARIABLE_N_STUDIES:
+            raise ChemicalCompletionError("CHEMICAL_COMPLETION_PROJECT_MARKER_INVALID")
+        return CURRENT_CORE_AGGREGATION_MODE
+    if corpus_kind == LEGACY_THREE_PAPER and variable_n is False:
+        if study_count != LEGACY_STUDY_COUNT:
+            raise ChemicalCompletionError("CHEMICAL_COMPLETION_PROJECT_MARKER_INVALID")
+        return "project_core_309"
+    raise ChemicalCompletionError("CHEMICAL_COMPLETION_PROJECT_MARKER_INVALID")
 
 
 def _core_study_scope(root: Path, study_ids: list[str]) -> tuple[list[str], bool]:
@@ -94,20 +126,6 @@ def _core_study_scope(root: Path, study_ids: list[str]) -> tuple[list[str], bool
         except SourceTruthError as exc:
             raise ChemicalCompletionError(exc.code) from exc
     return core_study_ids, True
-
-
-def _legacy_fixed_core_denominator(
-    aggregate_molecule_count: int,
-    core_study_ids: list[str],
-    declared_study_ids: list[str],
-    explicit_tiering: bool,
-) -> bool:
-    """Recognize only the historical one-core 309/background projections."""
-
-    return explicit_tiering and len(core_study_ids) == 1 and (
-        aggregate_molecule_count == CORE_MOLECULE_COUNT
-        or len(core_study_ids) < len(declared_study_ids)
-    )
 
 
 def _state_resolution_counts(state: dict[str, Any]) -> dict[str, int | bool]:
@@ -152,7 +170,10 @@ def chemical_completion_state(project: Path, study_id: str) -> dict[str, object]
         declared = declared_study_ids(root)
     except SourceTruthError as exc:
         raise ChemicalCompletionError(exc.code) from exc
-    core_study_ids, explicit_tiering = _core_study_scope(root, declared)
+    core_study_ids, _ = _core_study_scope(root, declared)
+    aggregation_mode = _project_aggregation_mode(root, len(declared))
+    if aggregation_mode is None and len(declared) > 1:
+        raise ChemicalCompletionError("CHEMICAL_COMPLETION_PROJECT_MARKER_REQUIRED")
     aggregate_states: list[dict[str, Any]] = []
     for other_study_id in core_study_ids:
         if other_study_id == study_id:
@@ -281,13 +302,8 @@ def chemical_completion_state(project: Path, study_id: str) -> dict[str, object]
         ),
     }
     aggregate_molecule_count = sum(len(item["molecules"]) for item in aggregate_states)
-    current_core_aggregation = explicit_tiering and len(core_study_ids) > 1
-    fixed_core_denominator = _legacy_fixed_core_denominator(
-        aggregate_molecule_count,
-        core_study_ids,
-        declared,
-        explicit_tiering,
-    )
+    current_core_aggregation = aggregation_mode == CURRENT_CORE_AGGREGATION_MODE
+    fixed_core_denominator = aggregation_mode == "project_core_309"
     coverage_denominator = (
         CORE_MOLECULE_COUNT if fixed_core_denominator else aggregate_molecule_count
     )
@@ -308,13 +324,7 @@ def chemical_completion_state(project: Path, study_id: str) -> dict[str, object]
         else CORE_MOLECULE_COUNT
     )
     compatibility_aggregation = {
-        "mode": (
-            CURRENT_CORE_AGGREGATION_MODE
-            if current_core_aggregation
-            else "project_core_309"
-            if fixed_core_denominator
-            else "legacy_subset"
-        ),
+        "mode": aggregation_mode or "legacy_subset",
         "source": (
             "Current imported core Chemical Paper states; background studies are excluded from the denominator."
             if current_core_aggregation

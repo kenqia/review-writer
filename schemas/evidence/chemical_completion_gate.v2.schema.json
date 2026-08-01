@@ -56,7 +56,7 @@
     "gate_digest": {"$ref": "#/$defs/sha256"},
     "workflow_can_continue": {"type": "boolean"},
     "route": {"const": "honest_progressive"},
-    "core_molecule_count": {"const": 309},
+    "core_molecule_count": {"type": "integer", "minimum": 1},
     "coverage_denominator": {"type": "integer", "minimum": 1},
     "covered_count": {"type": "integer", "minimum": 0},
     "confirmed_count": {"type": "integer", "minimum": 0},
@@ -100,6 +100,56 @@
           "legacy_unclassified_registry"
         ]
       }
+    },
+    {
+      "if": {
+        "required": ["compatibility_aggregation"],
+        "properties": {
+          "compatibility_aggregation": {
+            "required": ["mode"],
+            "properties": {"mode": {"const": "project_core_current"}}
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "core_molecule_count": {"type": "integer", "minimum": 1},
+          "coverage_denominator": {"type": "integer", "minimum": 1}
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["compatibility_aggregation"],
+        "properties": {
+          "compatibility_aggregation": {
+            "required": ["mode"],
+            "properties": {"mode": {"const": "project_core_309"}}
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "core_molecule_count": {"const": 309}
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["compatibility_aggregation"],
+        "properties": {
+          "compatibility_aggregation": {
+            "required": ["mode"],
+            "properties": {"mode": {"const": "legacy_subset"}}
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "core_molecule_count": {"const": 309},
+          "coverage_denominator": {"type": "integer", "minimum": 1}
+        }
+      }
     }
   ],
   "$defs": {
@@ -117,7 +167,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["mode", "source"],
       "properties": {
-        "mode": {"enum": ["project_core_309", "legacy_subset"]},
+        "mode": {"enum": ["project_core_309", "project_core_current", "legacy_subset"]},
         "source": {"type": "string", "minLength": 1}
       }
     },
