@@ -572,6 +572,7 @@ release-readiness-check:
 .PHONY: agent-orchestration-check provider-qualification-check
 agent-orchestration-check:
 	$(PYTHON) tests/test_agent_orchestration.py
+	$(PYTHON) -m pytest -q tests/test_scheduler_takeover_contract.py
 	$(PYTHON) -m compileall -q scripts/agent-orchestration
 	$(PYTHON) scripts/agent-orchestration/validate_task_package.py docs/agent-tasks/ORCH-001
 	$(PYTHON) scripts/agent-orchestration/validate_policy.py
