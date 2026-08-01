@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from jsonschema import Draft202012Validator
 from review_writer.project.chemical_completion import (
     ChemicalCompletionError,
     _validate_gate,
+    apply_chemical_completion_batch,
     chemical_completion_state,
     project_chemical_completion_state,
 )
@@ -36,7 +38,12 @@ def _mark_receipt(project: Path, *, corpus_kind: str, variable_n: bool) -> None:
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
 
 
-def _scaled_core_project(tmp_path: Path, *, core_count: int = 2) -> Path:
+def _scaled_core_project(
+    tmp_path: Path,
+    *,
+    core_count: int = 2,
+    missing_fields: bool = False,
+) -> Path:
     project = source_truth_project(tmp_path, pages=1)
     study_ids = expand_source_truth_studies(project, 20)
     (project / "00_discovery").mkdir(parents=True, exist_ok=True)
@@ -66,9 +73,9 @@ def _scaled_core_project(tmp_path: Path, *, core_count: int = 2) -> Path:
                     "mol_id": f"mol-{index}",
                     "page_idx": 0,
                     "bbox_normalized": [0.1, 0.2, 0.3, 0.4],
-                    "smiles_expanded": "CO",
+                    "smiles_expanded": "" if missing_fields else "CO",
                     "smiles_unexpanded": "",
-                    "mol_idt": f"compound-{index}",
+                    "mol_idt": "" if missing_fields else f"compound-{index}",
                     "mol_block": v2000(),
                 }
             ],
@@ -151,6 +158,63 @@ def test_current_variable_n_declared_count_out_of_range_fails_closed(
         match="CHEMICAL_COMPLETION_PROJECT_MARKER_INVALID",
     ):
         chemical_completion_state(project, "study-1")
+
+
+@pytest.mark.parametrize(
+    ("marker_mutation", "error_code"),
+    [
+        (
+            lambda receipt: [
+                receipt.pop(key)
+                for key in ("corpus_kind", "variable_n", "study_count")
+            ],
+            "CHEMICAL_COMPLETION_PROJECT_MARKER_REQUIRED",
+        ),
+        (
+            lambda receipt: receipt.update({"study_count": 19}),
+            "CHEMICAL_COMPLETION_PROJECT_MARKER_INVALID",
+        ),
+    ],
+)
+def test_batch_marker_rejection_is_zero_write(
+    tmp_path: Path,
+    marker_mutation,
+    error_code: str,
+) -> None:
+    project = _scaled_core_project(tmp_path, core_count=1, missing_fields=True)
+    gate = chemical_completion_state(project, "study-1")
+    state_path = project / "01_evidence/chemical_paper/study-1/state.json"
+    before = state_path.read_bytes()
+    before_hash = hashlib.sha256(before).hexdigest()
+
+    receipt_path = project / "00_sources/acquisition_final_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    marker_mutation(receipt)
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    with pytest.raises(ChemicalCompletionError, match=error_code):
+        apply_chemical_completion_batch(
+            project,
+            "study-1",
+            {
+                "version_token": gate["version_token"],
+                "actor_type": "human_researcher",
+                "actor_label": "researcher",
+                "corrections": [
+                    {
+                        "molecule_index": 0,
+                        "field": "mol_idt",
+                        "value": "compound-0",
+                        "reason": "Label visible in Scheme 2.",
+                        "pdf_locator": {"page": 1},
+                    }
+                ],
+            },
+        )
+
+    after = state_path.read_bytes()
+    assert hashlib.sha256(after).hexdigest() == before_hash
+    assert after == before
 
 
 def test_current_gate_schema_mismatch_fails_closed(tmp_path: Path) -> None:

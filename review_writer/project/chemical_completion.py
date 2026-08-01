@@ -475,6 +475,8 @@ def apply_chemical_completion_batch(project: Path, study_id: str, payload: objec
                     gap_reason,
                 )
                 normalized.append((molecule, field, normalized_value, reason, _locator(row.get("pdf_locator"), active["page_count"]), resolution_metadata))
+            # Complete the read-only current-project preflight before mutating state.
+            chemical_completion_state(root, study_id)
             updated = copy.deepcopy(state)
             for molecule, field, value, reason, locator, resolution_metadata in normalized:
                 event = {
