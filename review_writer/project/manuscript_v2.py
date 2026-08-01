@@ -19,7 +19,11 @@ from .paper_evidence_store import PaperEvidenceStoreError, project_write_lock
 from .parse_quality import project_parse_quality_state
 from .section_contract import SectionContractError, section_contract_state
 from .source_truth import REPO_ROOT, canonical_digest
-from .synthesis import SynthesisError, synthesis_state
+from .synthesis import (
+    SynthesisError,
+    synthesis_state,
+    validate_authoritative_review_questions,
+)
 from .workflow_projection import NEW_ROUTE, workflow_state
 from .chemical_paper import chemical_paper_manuscript_bindings
 from review_writer.delivery.dual_parse_release import (
@@ -554,6 +558,19 @@ def manuscript_state(project: Path) -> dict[str, Any]:
             or lineage.get("parse_object_digests") != _parse_object_digests(root)
         ):
             raise ManuscriptV2Error("MANUSCRIPT_LINEAGE_STALE")
+        if synthesis.get("authoritative_run") is True:
+            try:
+                question_binding = validate_authoritative_review_questions(
+                    {
+                        "authoritative_run": synthesis.get("authoritative_run"),
+                        "review_questions": synthesis.get("review_questions"),
+                        "review_questions_digest": synthesis.get("review_questions_digest"),
+                    }
+                )
+            except SynthesisError as exc:
+                raise ManuscriptV2Error(exc.code) from exc
+            if any(lineage.get(key) != value for key, value in question_binding.items()):
+                raise ManuscriptV2Error("MANUSCRIPT_LINEAGE_STALE")
         registry_digest, placeholder_digest = _figure_digests(root)
         if (
             lineage.get("source_figure_registry_digest") != registry_digest
@@ -897,6 +914,19 @@ def merge_authoritative_manuscript(project: Path) -> dict[str, Any]:
         "claim_bindings": claim_bindings,
         "manuscript_sha256": hashlib.sha256(manuscript_bytes).hexdigest(),
     }
+    if synthesis.get("authoritative_run") is True:
+        try:
+            lineage.update(
+                validate_authoritative_review_questions(
+                    {
+                        "authoritative_run": synthesis.get("authoritative_run"),
+                        "review_questions": synthesis.get("review_questions"),
+                        "review_questions_digest": synthesis.get("review_questions_digest"),
+                    }
+                )
+            )
+        except SynthesisError as exc:
+            raise ManuscriptV2Error(exc.code) from exc
     dual_source_root = root / "01_evidence/dual_source"
     if dual_source_root.exists():
         if dual_source_root.is_symlink() or not dual_source_root.is_dir():

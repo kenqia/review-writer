@@ -43,6 +43,10 @@ from review_writer.project.paper_evidence import (
 )
 from review_writer.project.manuscript_v2 import manuscript_state
 from review_writer.project.source_truth import canonical_digest
+from review_writer.project.synthesis import (
+    SynthesisError,
+    validate_authoritative_review_questions as _validate_authoritative_review_questions,
+)
 from review_writer.project.vertical_review import VerticalReviewError, benchmark_metrics
 from review_writer.project.workflow_projection import NEW_ROUTE, workflow_state
 
@@ -69,6 +73,45 @@ class ProjectReleaseError(ValueError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(f"{code}: {message}")
         self.code = code
+
+
+def validate_authoritative_review_questions(value: object) -> dict[str, Any]:
+    """Expose the synthesis question gate to release validation callers."""
+    try:
+        return _validate_authoritative_review_questions(value)
+    except SynthesisError as exc:
+        raise ProjectReleaseError(exc.code, "authoritative Review Questions are invalid") from exc
+
+
+def _authoritative_review_question_binding(
+    project: Path, lineage: object
+) -> dict[str, Any] | None:
+    lineage_authoritative = isinstance(lineage, dict) and lineage.get("authoritative_run") is True
+    protocol_path = project / "02_synthesis/comparison_protocol.json"
+    if not protocol_path.exists():
+        if lineage_authoritative:
+            raise ProjectReleaseError(
+                "REVIEW_QUESTIONS_REQUIRED",
+                "authoritative manuscript has no comparison protocol",
+            )
+        return None
+    protocol = _read_json(protocol_path, "SYNTHESIS_PROTOCOL_INVALID")
+    protocol_authoritative = isinstance(protocol, dict) and protocol.get("authoritative_run") is True
+    if not (lineage_authoritative or protocol_authoritative):
+        return None
+    if not isinstance(protocol, dict):
+        raise ProjectReleaseError("SYNTHESIS_PROTOCOL_INVALID", "comparison protocol is not an object")
+    if lineage_authoritative and not protocol_authoritative:
+        protocol = {**protocol, "authoritative_run": True}
+    binding = validate_authoritative_review_questions(protocol)
+    if isinstance(lineage, dict):
+        for key in ("authoritative_run", "review_questions", "review_questions_digest"):
+            if lineage.get(key) != binding.get(key):
+                raise ProjectReleaseError(
+                    "MANUSCRIPT_LINEAGE_STALE",
+                    "authoritative Review Questions are not bound by manuscript lineage",
+                )
+    return binding
 
 
 def honest_progressive_release_fields(summary: object) -> dict[str, Any]:
@@ -1164,6 +1207,7 @@ def _new_route_release(
     except (OSError, UnicodeDecodeError) as exc:
         raise ProjectReleaseError("MANUSCRIPT_INVALID", "authoritative manuscript must be UTF-8") from exc
     lineage = _read_json(lineage_path, "MANUSCRIPT_LINEAGE_INVALID")
+    _authoritative_review_question_binding(project, lineage)
     workflow_digest = workflow.get("workflow_digest")
     lineage_digest = lineage.get("lineage_digest") if isinstance(lineage, dict) else None
     manuscript_sha256 = _sha256_bytes(manuscript_bytes)

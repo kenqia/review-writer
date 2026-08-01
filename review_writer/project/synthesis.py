@@ -27,11 +27,89 @@ PROTOCOL_PATH = Path("02_synthesis/comparison_protocol.json")
 COVERAGE_PATH = Path("02_synthesis/coverage_map.json")
 CLAIM_PATH = Path("02_synthesis/synthesis_claim_projection.jsonl")
 EXACT_CHEMICAL_FIELD_DEPENDENCIES = frozenset({"molecule", "smiles", "molblock"})
+FROZEN_REVIEW_QUESTIONS = (
+    "主要键组合、反应模式及活化策略是什么？",
+    "条件如何影响表现，哪些结果不可直接比较？",
+    "底物范围、耐受性、选择性和局限是什么？",
+    "机制证据处于什么层级，作者解释之间有哪些冲突？",
+    "通用性、选择性、放大、资源效率和机制确定性还存在哪些缺口？",
+)
+FROZEN_REVIEW_QUESTIONS_DIGEST = canonical_digest(list(FROZEN_REVIEW_QUESTIONS))
 
 
 class SynthesisError(ValueError):
     def __init__(self, code: str):
         super().__init__(code); self.code = code
+
+
+def _normalize_authoritative_marker(value: dict[str, Any]) -> None:
+    """Accept old callers while normalizing the one authoritative marker."""
+    aliases = [key for key in ("authoritative", "run_mode") if key in value]
+    if not aliases:
+        return
+    if "authoritative_run" in value:
+        raise SynthesisError("AUTHORITATIVE_RUN_INVALID")
+    if len(aliases) > 1:
+        first, second = (value[key] for key in aliases)
+        if first != second:
+            raise SynthesisError("AUTHORITATIVE_RUN_INVALID")
+    alias = aliases[0]
+    value["authoritative_run"] = (
+        value[alias] is True
+        if alias == "authoritative"
+        else value[alias] == "authoritative"
+    )
+    value.pop(alias, None)
+
+
+def validate_authoritative_review_questions(value: object) -> dict[str, Any]:
+    """Validate the frozen question contract without changing the input."""
+    if not isinstance(value, dict):
+        raise SynthesisError("REVIEW_QUESTIONS_INVALID")
+    authoritative = value.get("authoritative_run", False)
+    if not isinstance(authoritative, bool):
+        raise SynthesisError("AUTHORITATIVE_RUN_INVALID")
+    if not authoritative:
+        return {"authoritative_run": False}
+    questions = value.get("review_questions")
+    if questions is None:
+        raise SynthesisError("REVIEW_QUESTIONS_REQUIRED")
+    if questions != list(FROZEN_REVIEW_QUESTIONS):
+        raise SynthesisError("REVIEW_QUESTIONS_INVALID")
+    digest = value.get("review_questions_digest")
+    if digest is not None and digest != FROZEN_REVIEW_QUESTIONS_DIGEST:
+        raise SynthesisError("REVIEW_QUESTIONS_STALE")
+    if digest is None:
+        raise SynthesisError("REVIEW_QUESTIONS_REQUIRED")
+    return {
+        "authoritative_run": True,
+        "review_questions": list(FROZEN_REVIEW_QUESTIONS),
+        "review_questions_digest": FROZEN_REVIEW_QUESTIONS_DIGEST,
+    }
+
+
+def _prepare_authoritative_questions(value: dict[str, Any]) -> dict[str, Any]:
+    """Validate input questions before computing a protocol digest."""
+    _normalize_authoritative_marker(value)
+    value.setdefault("authoritative_run", False)
+    if value["authoritative_run"] is not True:
+        if not isinstance(value["authoritative_run"], bool):
+            raise SynthesisError("AUTHORITATIVE_RUN_INVALID")
+        return {"authoritative_run": False}
+    questions = validate_authoritative_review_questions(
+        {**value, "review_questions_digest": value.get("review_questions_digest")}
+        if "review_questions_digest" in value
+        else {**value, "review_questions_digest": FROZEN_REVIEW_QUESTIONS_DIGEST}
+    )
+    supplied_digest = value.get("review_questions_digest")
+    if supplied_digest is not None and supplied_digest != FROZEN_REVIEW_QUESTIONS_DIGEST:
+        raise SynthesisError("REVIEW_QUESTIONS_STALE")
+    value.update(questions)
+    return questions
+
+
+def _protocol_authoritative(value: object) -> bool:
+    return isinstance(value, dict) and value.get("authoritative_run") is True
 
 
 def _root(project: Path) -> Path:
@@ -132,6 +210,7 @@ def register_comparison_protocol(project: Path, payload: object) -> dict[str, An
     if not isinstance(payload, dict): raise SynthesisError("COMPARISON_PROTOCOL_INVALID")
     value = copy.deepcopy(payload); value.setdefault("schema_version", "comparison-protocol.v1")
     value.setdefault("decision", None)
+    _prepare_authoritative_questions(value)
     required = {"comparison_id", "comparison_objects", "axes", "normalization_rules", "missing_value_policy", "incomparability_rules", "counterevidence_rules", "claim_strength"}
     if not required.issubset(value): raise SynthesisError("COMPARISON_PROTOCOL_INVALID")
     try:
@@ -159,7 +238,9 @@ def apply_comparison_protocol_decision(project: Path, payload: object) -> dict[s
 def comparison_protocol_state(project: Path) -> dict[str, Any]:
     value = _read_json(_root(project), PROTOCOL_PATH)
     if not isinstance(value, dict): return {"status": "needs_review", "workflow_can_continue": False, "reason_code": "COMPARISON_PROTOCOL_NOT_APPROVED"}
-    try: _validate(value, "comparison_protocol.v1.schema.json", "COMPARISON_PROTOCOL_INVALID")
+    try:
+        questions = validate_authoritative_review_questions(value) if _protocol_authoritative(value) else {"authoritative_run": False}
+        _validate(value, "comparison_protocol.v1.schema.json", "COMPARISON_PROTOCOL_INVALID")
     except SynthesisError as exc: return {"status": "needs_review", "workflow_can_continue": False, "reason_code": exc.code}
     digest = value.get("protocol_digest")
     unsigned = _unsigned(value, "protocol_digest")
@@ -167,7 +248,16 @@ def comparison_protocol_state(project: Path) -> dict[str, Any]:
         return {"status": "needs_review", "workflow_can_continue": False, "reason_code": "COMPARISON_PROTOCOL_STALE"}
     decision = value.get("decision") or {}
     ok = _valid_decision(decision, digest) and decision.get("action") == "approve" and value.get("paper_evidence_projection_digest") == paper_evidence_state(_root(project)).get("projection_digest")
-    return {"status": "approved" if ok else "needs_review", "workflow_can_continue": ok, "reason_code": "COMPARISON_PROTOCOL_APPROVED" if ok else "COMPARISON_PROTOCOL_NOT_APPROVED", "protocol_digest": value.get("protocol_digest"), "value": value}
+    return {
+        "status": "approved" if ok else "needs_review",
+        "workflow_can_continue": ok,
+        "reason_code": "COMPARISON_PROTOCOL_APPROVED" if ok else "COMPARISON_PROTOCOL_NOT_APPROVED",
+        "protocol_digest": value.get("protocol_digest"),
+        "authoritative_run": questions.get("authoritative_run", False),
+        "review_questions": questions.get("review_questions"),
+        "review_questions_digest": questions.get("review_questions_digest"),
+        "value": value,
+    }
 
 
 def register_coverage_map(project: Path, payload: object) -> dict[str, Any]:
@@ -301,6 +391,8 @@ def partition_honest_progressive_evidence(rows: object) -> dict[str, Any]:
 def register_synthesis_candidates(project: Path, payload: object) -> dict[str, Any]:
     project = _root(project); protocol = comparison_protocol_state(project)
     if not protocol.get("workflow_can_continue"): raise SynthesisError("COMPARISON_PROTOCOL_NOT_APPROVED")
+    if protocol.get("authoritative_run") is True:
+        validate_authoritative_review_questions(protocol.get("value") or protocol)
     if not isinstance(payload, dict): raise SynthesisError("SYNTHESIS_INVALID")
     raw = payload.get("claims", [payload])
     if not isinstance(raw, list): raise SynthesisError("SYNTHESIS_INVALID")
