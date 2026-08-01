@@ -139,6 +139,58 @@ def test_timeout_uses_fixed_43200_second_budget_and_report(tmp_path: Path) -> No
     assert report.path.is_file()
 
 
+def test_caller_elapsed_cannot_earn_timeout_before_persisted_t0_budget(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "scheduler-ledger.json"
+    session = _start_session(ledger_path)
+    session.record_t0(
+        input_ready=True,
+        code_freeze_ready=True,
+        runtime_ready=True,
+        at=START,
+    )
+
+    with pytest.raises(SchedulerContractError):
+        session.terminate(
+            reason_code="TIME_BUDGET_EXCEEDED",
+            blockers=["caller supplied an early timeout"],
+            affected_objects=["CONTENT-001"],
+            completed_independent_work=["none"],
+            unique_recovery_action="wait for the fixed budget",
+            at=START + timedelta(seconds=1),
+            elapsed_seconds=TIME_BUDGET_SECONDS,
+        )
+
+    assert session.read()["termination_report_artifact"] is None
+
+
+def test_persisted_t0_budget_overrides_underreported_elapsed_and_reason(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "scheduler-ledger.json"
+    session = _start_session(ledger_path)
+    session.record_t0(
+        input_ready=True,
+        code_freeze_ready=True,
+        runtime_ready=True,
+        at=START,
+    )
+
+    report = session.terminate(
+        reason_code="ORCHESTRATION_BLOCKED",
+        blockers=["caller underreported elapsed time"],
+        affected_objects=["CONTENT-001"],
+        completed_independent_work=["none"],
+        unique_recovery_action="start a fresh scheduler session from the ledger",
+        at=START + timedelta(seconds=TIME_BUDGET_SECONDS + 1),
+        elapsed_seconds=1,
+    )
+
+    assert report.fields["REASON_CODE"] == "TIME_BUDGET_EXCEEDED"
+    assert report.fields["ELAPSED_SECONDS"] == TIME_BUDGET_SECONDS + 1
+
+
 def test_blocker_writes_exact_spec_termination_report_with_precise_reason(
     tmp_path: Path,
 ) -> None:

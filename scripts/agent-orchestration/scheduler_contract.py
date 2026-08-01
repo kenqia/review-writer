@@ -560,7 +560,6 @@ class SchedulerSession:
             completed_independent_work=["persistent scheduler ledger replay"],
             unique_recovery_action="start a fresh scheduler session from the ledger",
             at=at,
-            elapsed_seconds=elapsed,
         )
 
     def terminate(
@@ -592,9 +591,12 @@ class SchedulerSession:
             raise SchedulerContractError("time-budget termination requires recorded T0")
         self._require_current_session(state)
         terminated_at = _timestamp(at)
-        elapsed = elapsed_seconds if elapsed_seconds is not None else self._elapsed_seconds(state, at)
-        if elapsed < 0:
-            raise ValueError("elapsed_seconds cannot be negative")
+        # Keep the legacy keyword for callers, but never trust it for the
+        # budget or report.  The persisted T0 and the termination timestamp
+        # are the only authoritative elapsed-time inputs.
+        elapsed = self._elapsed_seconds(state, at)
+        if elapsed >= TIME_BUDGET_SECONDS:
+            reason_code = "TIME_BUDGET_EXCEEDED"
         if reason_code == "TIME_BUDGET_EXCEEDED" and elapsed < TIME_BUDGET_SECONDS:
             raise SchedulerContractError("TIME_BUDGET_EXCEEDED requires the full fixed budget")
         fields: dict[str, Any] = {key: "" for key in TERMINATION_REPORT_FIELDS}
