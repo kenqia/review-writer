@@ -128,6 +128,7 @@ from review_writer.project.source_truth import (  # noqa: E402
     load_source_truth_bundle,
     project_source_binding,
     source_truth_asset_snapshot,
+    study_source_tier,
 )
 from review_writer.project.chemical_paper import (  # noqa: E402
     ChemicalPaperError,
@@ -425,12 +426,17 @@ def _honest_unknown_summary() -> dict[str, Any]:
 
 
 def _honest_uncertainty_statement(
-    confirmed_count: int | None, ai_provisional_count: int | None, blocked_count: int | None
+    confirmed_count: int | None,
+    ai_provisional_count: int | None,
+    blocked_count: int | None,
+    denominator: int | None = None,
 ) -> str:
     if confirmed_count is None or ai_provisional_count is None or blocked_count is None:
         return _honest_unknown_summary()["uncertainty_statement"]
+    if denominator is None:
+        denominator = HONEST_CORE_MOLECULE_COUNT
     return (
-        f"项目级 {HONEST_CORE_MOLECULE_COUNT} 个 core molecules："
+        f"项目级 {denominator} 个 core molecules："
         f"CONFIRMED {confirmed_count}、AI_PROVISIONAL {ai_provisional_count}、"
         f"BLOCKED {blocked_count}。AI_PROVISIONAL 仅用于内部候选、分组和趋势；"
         "BLOCKED 的 value=null，并仅进入可追踪 gap registry。"
@@ -442,6 +448,7 @@ def _honest_paper_uncertainty_statement(
     confirmed_count: int | None,
     ai_provisional_count: int | None,
     blocked_count: int | None,
+    source_tier: str | None = None,
 ) -> str:
     if (
         molecule_count is None
@@ -450,15 +457,21 @@ def _honest_paper_uncertainty_statement(
         or blocked_count is None
     ):
         return "该论文覆盖与不确定性统计待核验。"
+    scope = {
+        "core": "core",
+        "background": "background",
+    }.get(source_tier, "declared")
     return (
-        f"该论文 {molecule_count} 个 core molecules："
+        f"该论文 {molecule_count} 个 {scope} molecules："
         f"CONFIRMED {confirmed_count}、AI_PROVISIONAL {ai_provisional_count}、"
         f"BLOCKED {blocked_count}。AI_PROVISIONAL 仅用于内部候选、分组和趋势；"
         "BLOCKED 的 value=null，并仅进入可追踪 gap registry。"
     )
 
 
-def _honest_paper_coverage(completion: dict[str, Any]) -> list[dict[str, Any]]:
+def _honest_paper_coverage(
+    completion: dict[str, Any], *, core_ids: set[str] | None = None
+) -> list[dict[str, Any]]:
     rows = completion.get("studies")
     if not isinstance(rows, list):
         return []
@@ -491,27 +504,35 @@ def _honest_paper_coverage(completion: dict[str, Any]) -> list[dict[str, Any]]:
             and confirmed_count + ai_provisional_count <= molecule_count
         ):
             ratio = (confirmed_count + ai_provisional_count) / molecule_count
-        result.append(
-            {
-                "study_id": study_id,
-                "molecule_count": molecule_count,
-                "coverage_denominator": molecule_count,
-                "confirmed_count": confirmed_count,
-                "ai_provisional_count": ai_provisional_count,
-                "blocked_count": blocked_count,
-                "coverage_ratio": ratio,
-                "coverage_threshold": HONEST_COVERAGE_THRESHOLD,
-                "coverage_sufficient": ratio >= HONEST_COVERAGE_THRESHOLD if ratio is not None else None,
-                "uncertainty_statement": _honest_paper_uncertainty_statement(
-                    molecule_count, confirmed_count, ai_provisional_count, blocked_count
-                ),
-                "actor_provenance_residual": (
-                    row.get("actor_provenance_residual")
-                    if isinstance(row.get("actor_provenance_residual"), bool)
-                    else None
-                ),
-            }
-        )
+        source_tier = None
+        if core_ids is not None:
+            source_tier = "core" if study_id in core_ids else "background"
+        coverage_row: dict[str, Any] = {
+            "study_id": study_id,
+            "molecule_count": molecule_count,
+            "coverage_denominator": molecule_count,
+            "confirmed_count": confirmed_count,
+            "ai_provisional_count": ai_provisional_count,
+            "blocked_count": blocked_count,
+            "coverage_ratio": ratio,
+            "coverage_threshold": HONEST_COVERAGE_THRESHOLD,
+            "coverage_sufficient": ratio >= HONEST_COVERAGE_THRESHOLD if ratio is not None else None,
+            "uncertainty_statement": _honest_paper_uncertainty_statement(
+                molecule_count,
+                confirmed_count,
+                ai_provisional_count,
+                blocked_count,
+                source_tier,
+            ),
+            "actor_provenance_residual": (
+                row.get("actor_provenance_residual")
+                if isinstance(row.get("actor_provenance_residual"), bool)
+                else None
+            ),
+        }
+        if source_tier is not None:
+            coverage_row["source_tier"] = source_tier
+        result.append(coverage_row)
     return result
 
 
@@ -590,6 +611,7 @@ def _honest_enrich_completion_queue(
     molecule_map: dict[tuple[str, int], dict[str, Any]],
     actor_provenance_residual: object,
     candidate_suggestions: dict[tuple[str, int], list[dict[str, Any]]],
+    allowed_study_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
@@ -598,6 +620,11 @@ def _honest_enrich_completion_queue(
         if not isinstance(row, dict):
             continue
         safe_row = _honest_safe_existing_queue_row(row)
+        if (
+            allowed_study_ids is not None
+            and safe_row.get("study_id") not in allowed_study_ids
+        ):
+            continue
         if row.get("field") == "resolved_smiles":
             study_id = safe_row.get("study_id")
             molecule_index = safe_row.get("molecule_index")
@@ -666,6 +693,7 @@ def _honest_authoritative_molecules(
     chemical: dict[str, Any],
     *,
     declared_ids: list[str] | None = None,
+    core_ids: list[str] | None = None,
 ) -> list[tuple[str, dict[str, Any]]] | None:
     """Return the current imported cohort or fail closed as unknown.
 
@@ -704,6 +732,7 @@ def _honest_authoritative_molecules(
     legacy_compatibility = declared_ids is None
     if declared_ids is None:
         declared_ids = sorted(completion_by_study)
+        authoritative_ids = declared_ids
         legacy_counts = ((6, 125), (11, 109), (11, 75))
         if (
             aggregation.get("mode") != "project_core_309"
@@ -719,15 +748,32 @@ def _honest_authoritative_molecules(
             or len(declared_ids) != len(set(declared_ids))
         ):
             return None
+        if core_ids is None:
+            core_ids = list(declared_ids)
+        if (
+            not core_ids
+            or any(_honest_identifier(value) != value for value in core_ids)
+            or len(core_ids) != len(set(core_ids))
+            or not set(core_ids).issubset(set(declared_ids))
+            or not set(completion_by_study).issubset(set(declared_ids))
+            or not set(chemical_by_study).issubset(set(declared_ids))
+            or not set(core_ids).issubset(set(completion_by_study))
+            or not set(core_ids).issubset(set(chemical_by_study))
+        ):
+            return None
+        authoritative_ids = core_ids
         expected_by_study = {}
 
-    if set(completion_by_study) != set(declared_ids) or set(chemical_by_study) != set(declared_ids):
+    if legacy_compatibility and (
+        set(completion_by_study) != set(declared_ids)
+        or set(chemical_by_study) != set(declared_ids)
+    ):
         return None
 
     authoritative: list[tuple[str, dict[str, Any]]] = []
     seen: set[tuple[str, int]] = set()
     denominator = 0
-    for study_id in declared_ids:
+    for study_id in authoritative_ids:
         completion_row = completion_by_study[study_id]
         chemical_row = chemical_by_study[study_id]
         molecules = completion_row.get("molecules")
@@ -824,6 +870,7 @@ def _honest_progressive_summary(
     chemical: object,
     *,
     declared_ids: list[str] | None = None,
+    core_ids: list[str] | None = None,
 ) -> tuple[dict[str, Any], bool, dict[tuple[str, int], dict[str, Any]]]:
     if not isinstance(completion, dict) or not isinstance(chemical, dict):
         return _honest_unknown_summary(), False, {}
@@ -842,6 +889,7 @@ def _honest_progressive_summary(
         completion,
         chemical,
         declared_ids=declared_ids,
+        core_ids=core_ids,
     )
     if authoritative is None:
         return _honest_unknown_summary(), False, {}
@@ -867,7 +915,10 @@ def _honest_progressive_summary(
     gap_registry = [
         safe_gap for value in gap_values if (safe_gap := _honest_safe_gap(value)) is not None
     ]
-    paper_coverage = _honest_paper_coverage(completion)
+    paper_coverage = _honest_paper_coverage(
+        completion,
+        core_ids=set(core_ids) if core_ids is not None else None,
+    )
     coverage_sufficient = coverage_ratio >= HONEST_COVERAGE_THRESHOLD
     summary = {
         "route": HONEST_PROGRESSIVE_ROUTE,
@@ -886,7 +937,10 @@ def _honest_progressive_summary(
         "workflow_can_continue": coverage_sufficient,
         "paper_coverage": paper_coverage,
         "uncertainty_statement": _honest_uncertainty_statement(
-            confirmed_count, ai_provisional_count, blocked_count
+            confirmed_count,
+            ai_provisional_count,
+            blocked_count,
+            denominator,
         ),
         "gap_registry": gap_registry,
         "actor_provenance_residual": actor_provenance_residual,
@@ -910,6 +964,7 @@ def project_honest_progressive_dashboard_projection(
         completion = project_chemical_completion_state(project)
         chemical = chemical_paper_projection(project)
         current_declared_ids: list[str] | None
+        current_core_ids: list[str] | None
         try:
             current_declared_ids = declared_study_ids(project)
         except SourceTruthError:
@@ -917,10 +972,29 @@ def project_honest_progressive_dashboard_projection(
             # unknown to the scaled route; direct legacy tests retain the
             # historical fail-closed compatibility contract.
             current_declared_ids = None
+            current_core_ids = None
+        else:
+            tier_manifest = project / "00_discovery/candidate_pool.json"
+            if not tier_manifest.is_file():
+                # Un-tiered declared cohorts retain variable-N compatibility;
+                # no legacy fixed denominator is used on this path.
+                current_core_ids = list(current_declared_ids)
+            else:
+                try:
+                    current_core_ids = [
+                        study_id
+                        for study_id in current_declared_ids
+                        if study_source_tier(project, study_id) == "core"
+                    ]
+                except SourceTruthError:
+                    # A current tiered declaration without a valid tier map must
+                    # not fall back to the historical fixed three-paper path.
+                    current_core_ids = []
         summary, state_available, molecule_map = _honest_progressive_summary(
             completion,
             chemical,
             declared_ids=current_declared_ids,
+            core_ids=current_core_ids,
         )
     except Exception:
         # A missing/stale authority is public unknown state, not zero coverage.
@@ -932,9 +1006,12 @@ def project_honest_progressive_dashboard_projection(
     result["credits_status"] = HONEST_CREDITS_STATUS
     if state_available:
         candidate_suggestions: dict[tuple[str, int], list[dict[str, Any]]] = {}
+        core_scope = set(current_core_ids) if current_core_ids is not None else None
         for study in summary["paper_coverage"]:
             study_id = study.get("study_id") if isinstance(study, dict) else None
             if not isinstance(study_id, str):
+                continue
+            if core_scope is not None and study_id not in core_scope:
                 continue
             for molecule_index, candidates in project_chemical_completion_candidates(project, study_id).items():
                 candidate_suggestions[(study_id, molecule_index)] = candidates
@@ -948,6 +1025,7 @@ def project_honest_progressive_dashboard_projection(
             molecule_map,
             summary["actor_provenance_residual"],
             candidate_suggestions,
+            core_scope,
         )
     return result
 
