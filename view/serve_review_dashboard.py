@@ -215,6 +215,10 @@ HONEST_COVERAGE_THRESHOLD = 0.8
 HONEST_RESOLUTION_STATUSES = frozenset({"CONFIRMED", "AI_PROVISIONAL", "BLOCKED"})
 HONEST_CHEMICAL_READY_STATUSES = frozenset({"ready", "needs_review"})
 HONEST_CREDITS_STATUS = "NOT_APPLICABLE_BY_CURRENT_SCOPE"
+HONEST_CURRENT_CORPUS_KIND = "authoritative_variable_n"
+HONEST_LEGACY_CORPUS_KIND = "legacy_three_paper"
+HONEST_LEGACY_STUDY_COUNT = 3
+HONEST_INVALID_CORPUS_MARKER = "invalid"
 
 
 def _honest_count(value: object, *, maximum: int = HONEST_CORE_MOLECULE_COUNT) -> int | None:
@@ -242,6 +246,39 @@ def _honest_public_text(value: object, fallback: str | None = None) -> str | Non
     ):
         return fallback
     return candidate
+
+
+def _honest_project_corpus_marker(project: Path, declared_ids: list[str]) -> str | None:
+    """Classify an explicitly marked project without inferring legacy from absence."""
+
+    receipt = read_json_if_exists(project / "00_sources/acquisition_final_receipt.json")
+    if receipt is None:
+        return None
+    if not isinstance(receipt, dict):
+        return HONEST_INVALID_CORPUS_MARKER
+    marker_fields = {"corpus_kind", "variable_n", "study_count"}
+    if not marker_fields.intersection(receipt):
+        return None
+    corpus_kind = receipt.get("corpus_kind")
+    variable_n = receipt.get("variable_n")
+    study_count = receipt.get("study_count")
+    if (
+        not isinstance(corpus_kind, str)
+        or not isinstance(variable_n, bool)
+        or isinstance(study_count, bool)
+        or not isinstance(study_count, int)
+        or study_count != len(declared_ids)
+    ):
+        return HONEST_INVALID_CORPUS_MARKER
+    if corpus_kind == HONEST_CURRENT_CORPUS_KIND and variable_n is True:
+        return HONEST_CURRENT_CORPUS_KIND
+    if (
+        corpus_kind == HONEST_LEGACY_CORPUS_KIND
+        and variable_n is False
+        and study_count == HONEST_LEGACY_STUDY_COUNT
+    ):
+        return HONEST_LEGACY_CORPUS_KIND
+    return HONEST_INVALID_CORPUS_MARKER
 
 
 def _honest_identifier(value: object) -> str | None:
@@ -975,11 +1012,15 @@ def project_honest_progressive_dashboard_projection(
             current_core_ids = None
         else:
             tier_manifest = project / "00_discovery/candidate_pool.json"
-            if not tier_manifest.is_file():
-                # Un-tiered declared cohorts retain variable-N compatibility;
-                # no legacy fixed denominator is used on this path.
+            corpus_marker = _honest_project_corpus_marker(
+                project, current_declared_ids
+            )
+            if corpus_marker == HONEST_LEGACY_CORPUS_KIND:
+                # Only the explicit legacy marker authorizes an un-tiered cohort.
                 current_core_ids = list(current_declared_ids)
-            else:
+            elif corpus_marker == HONEST_INVALID_CORPUS_MARKER:
+                current_core_ids = []
+            elif corpus_marker == HONEST_CURRENT_CORPUS_KIND or tier_manifest.is_file():
                 try:
                     current_core_ids = [
                         study_id
@@ -990,6 +1031,9 @@ def project_honest_progressive_dashboard_projection(
                     # A current tiered declaration without a valid tier map must
                     # not fall back to the historical fixed three-paper path.
                     current_core_ids = []
+            else:
+                # An unmarked receipt with no tier authority is not legacy.
+                current_core_ids = []
         summary, state_available, molecule_map = _honest_progressive_summary(
             completion,
             chemical,

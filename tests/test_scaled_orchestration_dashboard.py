@@ -197,7 +197,7 @@ def test_dashboard_projection_uses_declared_studies_and_hides_internal_values(
     from view import serve_review_dashboard as dashboard
 
     study_ids = ["study-a", "study-b", "study-c", "study-d"]
-    project = _declared_project(tmp_path, study_ids)
+    project = _tiered_project(tmp_path, [(study_id, "core") for study_id in study_ids])
     monkeypatch.setattr(
         dashboard,
         "project_chemical_completion_state",
@@ -376,3 +376,113 @@ def test_dashboard_projection_uses_only_core_rows_for_variable_n_tiered_denomina
         row["study_id"]: row["coverage_denominator"]
         for row in honest["paper_coverage"]
     } == {"core-a": 2, "core-b": 3, "background-a": 4}
+
+
+def test_dashboard_projection_fails_closed_for_current_variable_n_without_tier_map(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    study_ids = ["study-a", "study-b", "study-c", "study-d"]
+    project = _declared_project(tmp_path, study_ids)
+    receipt_path = project / "00_sources/acquisition_final_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt.update(
+        {
+            "corpus_kind": "authoritative_variable_n",
+            "variable_n": True,
+            "study_count": len(study_ids),
+        }
+    )
+    receipt_path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        dashboard,
+        "project_chemical_completion_state",
+        lambda _project: _scaled_completion(study_ids),
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "chemical_paper_projection",
+        lambda _project: _scaled_chemical(study_ids),
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "project_chemical_completion_candidates",
+        lambda _project, _study_id: {},
+    )
+
+    payload = dashboard.project_honest_progressive_dashboard_projection(
+        project,
+        {
+            "schema_version": "dual-parse-projection.v2",
+            "status": "ready",
+            "studies": [],
+            "completion_queue": [],
+        },
+    )
+
+    honest = payload["honest_progressive"]
+    assert honest["availability"] == "unknown"
+    assert honest["status"] == "unknown"
+    assert honest["core_molecule_count"] is None
+    assert honest["coverage_denominator"] is None
+    assert honest["confirmed_count"] is None
+    assert honest["ai_provisional_count"] is None
+    assert honest["blocked_count"] is None
+    assert honest["coverage_sufficient"] is None
+    assert honest["workflow_can_continue"] is None
+    assert honest["paper_coverage"] == []
+    assert payload["completion_queue"] == []
+
+
+def test_dashboard_projection_keeps_explicit_legacy_compatibility_without_tier_map(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    study_ids = ["legacy-a", "legacy-b", "legacy-c"]
+    project = _declared_project(tmp_path, study_ids)
+    receipt_path = project / "00_sources/acquisition_final_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt.update(
+        {
+            "corpus_kind": "legacy_three_paper",
+            "variable_n": False,
+            "study_count": len(study_ids),
+        }
+    )
+    receipt_path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        dashboard,
+        "project_chemical_completion_state",
+        lambda _project: _scaled_completion(study_ids),
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "chemical_paper_projection",
+        lambda _project: _scaled_chemical(study_ids),
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "project_chemical_completion_candidates",
+        lambda _project, _study_id: {},
+    )
+
+    payload = dashboard.project_honest_progressive_dashboard_projection(
+        project,
+        {
+            "schema_version": "dual-parse-projection.v2",
+            "status": "ready",
+            "studies": [],
+            "completion_queue": [],
+        },
+    )
+
+    honest = payload["honest_progressive"]
+    assert honest["availability"] == "available"
+    assert honest["coverage_denominator"] == 6
+    assert honest["core_molecule_count"] == 6
+    assert honest["confirmed_count"] == 0
+    assert honest["blocked_count"] == 6
