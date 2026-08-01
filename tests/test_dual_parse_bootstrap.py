@@ -106,6 +106,24 @@ def test_bootstrap_creates_only_brief_discovery_and_bound_pdfs(tmp_path: Path) -
     )
 
 
+def test_bootstrap_requires_si_for_core_studies(tmp_path: Path) -> None:
+    project = bootstrap_dual_parse_project(
+        tmp_path / "review-projects", source_request(tmp_path)
+    )
+
+    coverage = json.loads(
+        (project / "00_sources/source_coverage.json").read_text(encoding="utf-8")
+    )
+
+    assert all(row["si_policy"] == "REQUIRED" for row in coverage["studies"])
+    assert all(row["study_status"] == "PARTIAL" for row in coverage["studies"])
+    assert all(
+        row["blocking_reasons"] == ["SI_REQUIRED_FOR_DECLARED_CLAIMS"]
+        for row in coverage["studies"]
+    )
+    assert all(row["blocked_claim_ids"] == [] for row in coverage["studies"])
+
+
 def test_hash_mismatch_is_zero_write(tmp_path: Path) -> None:
     request = source_request(tmp_path)
     request["sources"][0]["expected_pdf_sha256"] = "0" * 64

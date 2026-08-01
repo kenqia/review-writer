@@ -153,8 +153,15 @@ def bootstrap_dual_parse_project(review_root: Path, request: object) -> Path:
             "studies": [
                 {
                     "study_id": row["study_id"], "available_roles": ["MAIN"],
-                    "main_policy": "REQUIRED", "si_policy": "NOT_REQUIRED",
-                    "study_status": "READY",
+                    "main_policy": "REQUIRED",
+                    "si_policy": "REQUIRED" if row["tier"] == "core" else "NOT_REQUIRED",
+                    "study_status": "PARTIAL" if row["tier"] == "core" else "READY",
+                    "blocked_claim_ids": [],
+                    "blocking_reasons": (
+                        ["SI_REQUIRED_FOR_DECLARED_CLAIMS"]
+                        if row["tier"] == "core" else []
+                    ),
+                    "limitations": [],
                 }
                 for row in sources
             ],
