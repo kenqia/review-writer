@@ -45,6 +45,7 @@ from review_writer.project.manuscript_v2 import manuscript_state
 from review_writer.project.source_truth import canonical_digest
 from review_writer.project.synthesis import (
     SynthesisError,
+    synthesis_state,
     validate_authoritative_review_questions as _validate_authoritative_review_questions,
 )
 from review_writer.project.vertical_review import VerticalReviewError, benchmark_metrics
@@ -111,6 +112,25 @@ def _authoritative_review_question_binding(
                     "MANUSCRIPT_LINEAGE_STALE",
                     "authoritative Review Questions are not bound by manuscript lineage",
                 )
+    try:
+        synthesis = synthesis_state(project)
+    except (SynthesisError, PaperEvidenceError) as exc:
+        raise ProjectReleaseError(exc.code, "authoritative synthesis question chain is invalid") from exc
+    question_gate = synthesis.get("question_gate") if isinstance(synthesis, dict) else None
+    if not isinstance(question_gate, dict) or question_gate.get("workflow_can_continue") is not True:
+        code = (
+            question_gate.get("reason_code")
+            if isinstance(question_gate, dict)
+            else "SYNTHESIS_REVIEW_QUESTION_MISSING"
+        )
+        raise ProjectReleaseError(
+            str(code), "authoritative synthesis must cover five current Review Questions"
+        )
+    if synthesis.get("workflow_can_continue") is not True:
+        raise ProjectReleaseError(
+            str(synthesis.get("reason_code", "SYNTHESIS_NOT_APPROVED")),
+            "authoritative synthesis is not current and dispositioned",
+        )
     return binding
 
 
@@ -1189,6 +1209,9 @@ def _new_route_release(
         raise ProjectReleaseError(
             "REVIEW_WORKFLOW_NOT_READY", "evidence-to-release review must close before release"
         )
+    # Run the question-specific gate before manuscript_state so a missing,
+    # duplicate, stale, or undispositioned question is reported precisely.
+    _authoritative_review_question_binding(project, None)
     authoritative = manuscript_state(project)
     if not isinstance(authoritative, dict) or authoritative.get("workflow_can_continue") is not True:
         reason = authoritative.get("reason_code") if isinstance(authoritative, dict) else "MANUSCRIPT_INVALID"

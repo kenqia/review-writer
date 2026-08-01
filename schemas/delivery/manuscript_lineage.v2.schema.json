@@ -40,6 +40,13 @@
       "items": false
     },
     "review_questions_digest": {"$ref": "#/$defs/sha256"},
+    "synthesis_question_bindings": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/synthesis_question_binding"}
+    },
     "section_contract_digests": {
       "type": "object", "minProperties": 1,
       "propertyNames": {"$ref": "#/$defs/id"},
@@ -83,7 +90,10 @@
         "required": ["authoritative_run"]
       },
       "then": {
-        "required": ["review_questions", "review_questions_digest"]
+        "required": [
+          "review_questions", "review_questions_digest",
+          "synthesis_question_bindings"
+        ]
       }
     }
   ],
@@ -110,6 +120,29 @@
         "upstream_digest": {"$ref": "#/$defs/sha256"},
         "original_expression": {"type": "string"},
         "edited_expression": {"type": "string"}
+      }
+    },
+    "synthesis_question_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "review_question_id", "review_question_digest",
+        "review_questions_digest", "synthesis_id", "synthesis_digest",
+        "review_question_lineage_digest", "current", "disposition"
+      ],
+      "properties": {
+        "review_question_id": {
+          "enum": ["RQ1", "RQ2", "RQ3", "RQ4", "RQ5"]
+        },
+        "review_question_digest": {"$ref": "#/$defs/sha256"},
+        "review_questions_digest": {"$ref": "#/$defs/sha256"},
+        "synthesis_id": {"$ref": "#/$defs/id"},
+        "synthesis_digest": {"$ref": "#/$defs/sha256"},
+        "review_question_lineage_digest": {"$ref": "#/$defs/sha256"},
+        "current": {"const": true},
+        "disposition": {
+          "enum": ["approve", "revise_and_approve", "reject"]
+        }
       }
     },
     "section": {

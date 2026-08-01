@@ -21,6 +21,7 @@ from .section_contract import SectionContractError, section_contract_state
 from .source_truth import REPO_ROOT, canonical_digest
 from .synthesis import (
     SynthesisError,
+    authoritative_synthesis_question_bindings,
     synthesis_state,
     validate_authoritative_review_questions,
 )
@@ -571,6 +572,14 @@ def manuscript_state(project: Path) -> dict[str, Any]:
                 raise ManuscriptV2Error(exc.code) from exc
             if any(lineage.get(key) != value for key, value in question_binding.items()):
                 raise ManuscriptV2Error("MANUSCRIPT_LINEAGE_STALE")
+            try:
+                expected_question_artifacts = authoritative_synthesis_question_bindings(
+                    synthesis
+                )
+            except SynthesisError as exc:
+                raise ManuscriptV2Error(exc.code) from exc
+            if lineage.get("synthesis_question_bindings") != expected_question_artifacts:
+                raise ManuscriptV2Error("MANUSCRIPT_LINEAGE_STALE")
         registry_digest, placeholder_digest = _figure_digests(root)
         if (
             lineage.get("source_figure_registry_digest") != registry_digest
@@ -924,6 +933,9 @@ def merge_authoritative_manuscript(project: Path) -> dict[str, Any]:
                         "review_questions_digest": synthesis.get("review_questions_digest"),
                     }
                 )
+            )
+            lineage["synthesis_question_bindings"] = authoritative_synthesis_question_bindings(
+                synthesis
             )
         except SynthesisError as exc:
             raise ManuscriptV2Error(exc.code) from exc
