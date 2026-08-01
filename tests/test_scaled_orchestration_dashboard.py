@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 
 def _declared_project(tmp_path: Path, study_ids: list[str]) -> Path:
     project = tmp_path / "review-projects" / "synthetic-scaled"
@@ -187,6 +189,43 @@ def _scaled_chemical(study_ids: list[str]) -> dict[str, object]:
                 ],
             }
             for study_id in study_ids
+        ],
+    }
+
+
+def _legacy_authoritative_completion() -> dict[str, object]:
+    study_specs = [
+        ("study-a", "core", ["CONFIRMED"] * 125),
+        ("study-b", "core", ["CONFIRMED"] * 109),
+        ("study-c", "core", ["CONFIRMED"] * 75),
+    ]
+    completion = _tiered_completion(study_specs)
+    completion["compatibility_aggregation"] = {"mode": "project_core_309"}
+    return completion
+
+
+def _legacy_authoritative_chemical() -> dict[str, object]:
+    study_specs = (
+        ("study-a", 125, 6),
+        ("study-b", 109, 11),
+        ("study-c", 75, 11),
+    )
+    return {
+        "schema_version": "chemical-paper-projection.v2",
+        "studies": [
+            {
+                "study_id": study_id,
+                "status": "ready",
+                "pdf_binding_status": "bound",
+                "page_count": page_count,
+                "molecule_count": molecule_count,
+                "reaction_data_status": "unavailable_not_provided",
+                "molecules": [
+                    {"molecule_index": index}
+                    for index in range(molecule_count)
+                ],
+            }
+            for study_id, molecule_count, page_count in study_specs
         ],
     }
 
@@ -376,6 +415,92 @@ def test_dashboard_projection_uses_only_core_rows_for_variable_n_tiered_denomina
         row["study_id"]: row["coverage_denominator"]
         for row in honest["paper_coverage"]
     } == {"core-a": 2, "core-b": 3, "background-a": 4}
+
+
+@pytest.mark.parametrize("invalid_authority", ("receipt", "tier"))
+def test_dashboard_projection_fails_closed_for_invalid_current_authority(
+    tmp_path: Path, monkeypatch, invalid_authority: str
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    study_ids = ["study-a", "study-b", "study-c"]
+    project = _declared_project(tmp_path, study_ids)
+    receipt_path = project / "00_sources/acquisition_final_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    if invalid_authority == "receipt":
+        receipt["studies"] = [
+            {"study_id": "study-a"},
+            {"study_id": "study-a"},
+            {"study_id": "study-c"},
+        ]
+    else:
+        receipt.update(
+            {
+                "corpus_kind": "authoritative_variable_n",
+                "variable_n": True,
+                "study_count": len(study_ids),
+            }
+        )
+        discovery = project / "00_discovery"
+        discovery.mkdir()
+        (discovery / "candidate_pool.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "candidate-pool.v1",
+                    "candidates": [
+                        {
+                            "candidate_id": study_id,
+                            "study_id": study_id,
+                            "tier": "not-a-tier" if index == 0 else "core",
+                        }
+                        for index, study_id in enumerate(study_ids)
+                    ],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    receipt_path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        dashboard,
+        "project_chemical_completion_state",
+        lambda _project: _legacy_authoritative_completion(),
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "chemical_paper_projection",
+        lambda _project: _legacy_authoritative_chemical(),
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "project_chemical_completion_candidates",
+        lambda _project, _study_id: {},
+    )
+
+    payload = dashboard.project_honest_progressive_dashboard_projection(
+        project,
+        {
+            "schema_version": "dual-parse-projection.v2",
+            "status": "ready",
+            "studies": [],
+            "completion_queue": [],
+        },
+    )
+
+    honest = payload["honest_progressive"]
+    assert honest["availability"] == "unknown"
+    assert honest["status"] == "unknown"
+    assert honest["core_molecule_count"] is None
+    assert honest["coverage_denominator"] is None
+    assert honest["confirmed_count"] is None
+    assert honest["ai_provisional_count"] is None
+    assert honest["blocked_count"] is None
+    assert honest["coverage_ratio"] is None
+    assert honest["coverage_sufficient"] is None
+    assert honest["workflow_can_continue"] is None
+    assert honest["paper_coverage"] == []
+    assert payload["completion_queue"] == []
 
 
 def test_dashboard_projection_fails_closed_for_current_variable_n_without_tier_map(

@@ -1002,15 +1002,14 @@ def project_honest_progressive_dashboard_projection(
         chemical = chemical_paper_projection(project)
         current_declared_ids: list[str] | None
         current_core_ids: list[str] | None
-        try:
-            current_declared_ids = declared_study_ids(project)
-        except SourceTruthError:
-            # Legacy projects without an acquisition receipt remain safely
-            # unknown to the scaled route; direct legacy tests retain the
-            # historical fail-closed compatibility contract.
+        receipt_path = project / "00_sources/acquisition_final_receipt.json"
+        if not os.path.lexists(receipt_path):
+            # Missing current authority is the only legacy entry condition.
+            # A present receipt is current authority, even when validation fails.
             current_declared_ids = None
             current_core_ids = None
         else:
+            current_declared_ids = declared_study_ids(project)
             tier_manifest = project / "00_discovery/candidate_pool.json"
             corpus_marker = _honest_project_corpus_marker(
                 project, current_declared_ids
