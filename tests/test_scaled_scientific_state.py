@@ -40,6 +40,16 @@ def _mark_receipt(project: Path, *, corpus_kind: str, variable_n: bool) -> None:
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
 
 
+def _invalidate_candidate_tier(project: Path, study_id: str = "study-1") -> None:
+    candidate_pool_path = project / "00_discovery/candidate_pool.json"
+    candidate_pool = json.loads(candidate_pool_path.read_text(encoding="utf-8"))
+    candidate = next(
+        row for row in candidate_pool["candidates"] if row["study_id"] == study_id
+    )
+    candidate["tier"] = "invalid"
+    candidate_pool_path.write_text(json.dumps(candidate_pool), encoding="utf-8")
+
+
 def _scaled_core_project(
     tmp_path: Path,
     *,
@@ -137,6 +147,7 @@ def test_current_variable_n_marker_missing_fails_closed(tmp_path: Path) -> None:
     for key in ("corpus_kind", "variable_n", "study_count"):
         receipt.pop(key)
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    _invalidate_candidate_tier(project)
 
     with pytest.raises(
         ChemicalCompletionError,
@@ -154,11 +165,22 @@ def test_current_variable_n_declared_count_out_of_range_fails_closed(
     receipt["studies"] = receipt["studies"][:-1]
     receipt["study_count"] = 19
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    _invalidate_candidate_tier(project)
 
     with pytest.raises(
         ChemicalCompletionError,
         match="CHEMICAL_COMPLETION_PROJECT_MARKER_INVALID",
     ):
+        chemical_completion_state(project, "study-1")
+
+
+def test_source_tier_invalid_remains_fail_closed_with_valid_current_marker(
+    tmp_path: Path,
+) -> None:
+    project = _scaled_core_project(tmp_path)
+    _invalidate_candidate_tier(project)
+
+    with pytest.raises(ChemicalCompletionError, match="SOURCE_TIER_INVALID"):
         chemical_completion_state(project, "study-1")
 
 
