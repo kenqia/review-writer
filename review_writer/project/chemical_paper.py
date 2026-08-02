@@ -2264,6 +2264,7 @@ def chemical_paper_dependency_currentness(
             except ChemicalPaperError:
                 status = "missing"
             else:
+                resolved_smiles_confirmed = False
                 for field in dependency["required_fields"]:
                     value = _current_value(state, molecule, field)
                     corrected = any(
@@ -2284,6 +2285,7 @@ def chemical_paper_dependency_currentness(
                         elif resolution_status != "CONFIRMED":
                             field_status = "unresolved"
                         else:
+                            resolved_smiles_confirmed = True
                             field_status = "corrected" if corrected else "resolved"
                     else:
                         field_status = "corrected" if corrected else ("resolved" if value is not None else "unresolved")
