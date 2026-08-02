@@ -78,6 +78,7 @@ def generic_output(root: Path, request: dict[str, object]) -> Path:
         completed.append({
             "pdf_name": Path(source["pdf_input_path"]).name,
             "relative_pdf_path": f"{source['source_id']}.pdf",
+            "source_pdf_sha256": source["expected_pdf_sha256"],
             "slug": slug,
             "data_id": f"{index:03d}-{slug}",
             "state": "done",
@@ -241,6 +242,48 @@ def test_generic_binding_builds_all_current_source_truth_and_parse_gates(tmp_pat
     assert len(list((project / "01_evidence/source_truth").glob("*/bundle.json"))) == 3
     assert len(list((project / "01_evidence/source_truth").glob("*/parse_quality.json"))) == 3
     assert (project / "01_evidence/text_layers/text_layers.manifest.json").is_file()
+    expected_hashes = [source["expected_pdf_sha256"] for source in request["sources"]]
+    for manifest_name in ("mineru/manifest.json", "parses/manifest.json"):
+        bound_manifest = json.loads(
+            (project / "01_evidence" / manifest_name).read_text(encoding="utf-8")
+        )
+        assert [row["source_pdf_sha256"] for row in bound_manifest["completed"]] == expected_hashes
+
+
+@pytest.mark.parametrize(
+    ("mutation", "code"),
+    [
+        ("missing", "GENERIC_SOURCE_BINDING_INVALID"),
+        ("invalid_format", "GENERIC_SOURCE_BINDING_INVALID"),
+        ("conflict", "GENERIC_SOURCE_BINDING_INVALID"),
+        ("mismatch", "GENERIC_SOURCE_PDF_HASH_MISMATCH"),
+    ],
+)
+def test_generic_binding_rejects_completed_source_provenance_zero_write(
+    tmp_path: Path, mutation: str, code: str,
+) -> None:
+    request = source_request(tmp_path)
+    project = bootstrap_dual_parse_project(tmp_path / "review-projects", request)
+    output = generic_output(tmp_path / "generic-output", request)
+    manifest_path = output / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    row = manifest["completed"][0]
+    if mutation == "missing":
+        row.pop("source_pdf_sha256")
+    elif mutation == "invalid_format":
+        row["source_pdf_sha256"] = "g" * 64
+    elif mutation == "conflict":
+        row["pdf_sha256"] = "0" * 64
+    else:
+        row["source_pdf_sha256"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    before = snapshot(project)
+
+    with pytest.raises(DualParseBootstrapError, match=code):
+        bind_generic_parse_outputs(project, output)
+
+    assert snapshot(project) == before
+    assert not (project / "01_evidence").exists()
 
 
 @pytest.mark.parametrize(

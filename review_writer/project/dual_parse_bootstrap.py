@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -27,6 +28,10 @@ class DualParseBootstrapError(ValueError):
         self.code = code
 
 
+GENERIC_SOURCE_DIGEST_KEYS = ("source_pdf_sha256", "pdf_sha256")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
 def _json_bytes(value: object) -> bytes:
     return (json.dumps(value, ensure_ascii=False, allow_nan=False, indent=2, sort_keys=True) + "\n").encode()
 
@@ -37,6 +42,20 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _generic_source_pdf_sha256(row: dict[str, Any]) -> str:
+    values = [row[key] for key in GENERIC_SOURCE_DIGEST_KEYS if key in row]
+    if (
+        not values
+        or any(
+            not isinstance(value, str) or SHA256_RE.fullmatch(value) is None
+            for value in values
+        )
+        or len(set(values)) != 1
+    ):
+        raise DualParseBootstrapError("GENERIC_SOURCE_BINDING_INVALID")
+    return values[0]
 
 
 def _regular_input(path: Path) -> bool:
@@ -268,6 +287,7 @@ def bind_generic_parse_outputs(project: Path, mineru_output: Path) -> dict[str, 
         slug = row.get("slug")
         if not isinstance(relative, str) or not isinstance(slug, str) or not slug or "/" in slug or "\\" in slug:
             raise DualParseBootstrapError("GENERIC_MANIFEST_INVALID")
+        _generic_source_pdf_sha256(row)
         key = Path(relative).name
         if key in by_pdf:
             raise DualParseBootstrapError("GENERIC_BINDING_AMBIGUOUS")
@@ -303,6 +323,8 @@ def bind_generic_parse_outputs(project: Path, mineru_output: Path) -> dict[str, 
             row = by_pdf.get(Path(relative_pdf).name)
             if row is None:
                 raise DualParseBootstrapError("GENERIC_BINDING_MISSING")
+            if _generic_source_pdf_sha256(row) != expected_hash:
+                raise DualParseBootstrapError("GENERIC_SOURCE_PDF_HASH_MISMATCH")
             slug = row["slug"]
             source_extracted = output / "extracted" / slug
             source_markdown = output / "markdown" / f"{slug}.md"
@@ -351,6 +373,7 @@ def bind_generic_parse_outputs(project: Path, mineru_output: Path) -> dict[str, 
             common = {
                 "data_id": row.get("data_id"), "slug": slug, "state": "done",
                 "relative_pdf_path": relative_pdf,
+                "source_pdf_sha256": expected_hash,
                 "markdown_copy": f"markdown/{slug}.md",
             }
             mineru_rows.append(common)
