@@ -503,6 +503,95 @@ def test_dashboard_projection_fails_closed_for_invalid_current_authority(
     assert payload["completion_queue"] == []
 
 
+@pytest.mark.parametrize(
+    "invalid_tier_map",
+    ("extra_stale", "missing", "duplicate", "wrong_binding"),
+)
+def test_dashboard_projection_fails_closed_for_non_exact_current_tier_map(
+    tmp_path: Path, monkeypatch, invalid_tier_map: str
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    study_ids = ["study-a", "study-b", "study-c"]
+    study_specs = [(study_id, "core", ["BLOCKED"]) for study_id in study_ids]
+    project = _tiered_project(
+        tmp_path, [(study_id, "core") for study_id in study_ids]
+    )
+    tier_manifest = project / "00_discovery/candidate_pool.json"
+    tier_payload = json.loads(tier_manifest.read_text(encoding="utf-8"))
+    candidates = tier_payload["candidates"]
+    if invalid_tier_map == "extra_stale":
+        candidates.append(
+            {
+                "candidate_id": "stale-study",
+                "study_id": "stale-study",
+                "tier": "core",
+            }
+        )
+    elif invalid_tier_map == "missing":
+        candidates.pop()
+    elif invalid_tier_map == "duplicate":
+        candidates.extend(
+            [
+                {
+                    "candidate_id": "stale-study",
+                    "study_id": "stale-study",
+                    "tier": "core",
+                },
+                {
+                    "candidate_id": "stale-study",
+                    "study_id": "stale-study",
+                    "tier": "background",
+                },
+            ]
+        )
+    else:
+        candidates[0]["study_id"] = "stale-study"
+    tier_manifest.write_text(
+        json.dumps(tier_payload) + "\n", encoding="utf-8"
+    )
+
+    monkeypatch.setattr(
+        dashboard,
+        "project_chemical_completion_state",
+        lambda _project: _tiered_completion(study_specs),
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "chemical_paper_projection",
+        lambda _project: _tiered_chemical(study_specs),
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "project_chemical_completion_candidates",
+        lambda _project, _study_id: {},
+    )
+
+    payload = dashboard.project_honest_progressive_dashboard_projection(
+        project,
+        {
+            "schema_version": "dual-parse-projection.v2",
+            "status": "ready",
+            "studies": [],
+            "completion_queue": [],
+        },
+    )
+
+    honest = payload["honest_progressive"]
+    assert honest["availability"] == "unknown"
+    assert honest["status"] == "unknown"
+    assert honest["core_molecule_count"] is None
+    assert honest["coverage_denominator"] is None
+    assert honest["confirmed_count"] is None
+    assert honest["ai_provisional_count"] is None
+    assert honest["blocked_count"] is None
+    assert honest["coverage_ratio"] is None
+    assert honest["coverage_sufficient"] is None
+    assert honest["workflow_can_continue"] is None
+    assert honest["paper_coverage"] == []
+    assert payload["completion_queue"] == []
+
+
 def test_dashboard_projection_fails_closed_for_current_variable_n_without_tier_map(
     tmp_path: Path, monkeypatch
 ) -> None:
