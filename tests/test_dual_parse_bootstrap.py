@@ -114,6 +114,105 @@ def test_bootstrap_creates_only_brief_discovery_and_bound_pdfs(tmp_path: Path) -
     )
 
 
+def test_bootstrap_writes_external_anchor_for_complete_canonical_receipt(
+    tmp_path: Path,
+) -> None:
+    request = source_request(tmp_path)
+    project = bootstrap_dual_parse_project(tmp_path / "review-projects", request)
+    receipt = json.loads(
+        (project / "00_sources/acquisition_final_receipt.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    anchor_path = project.parent / ".dual_parse_authority" / f"{project.name}.json"
+    anchor = json.loads(anchor_path.read_text(encoding="utf-8"))
+    canonical_receipt = json.dumps(
+        receipt, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+    assert anchor["project_id"] == project.name
+    assert anchor["project_relative_path"] == project.name
+    assert anchor["receipt_relative_path"] == "00_sources/acquisition_final_receipt.json"
+    assert anchor["receipt"] == receipt
+    assert anchor["receipt_sha256"] == hashlib.sha256(canonical_receipt).hexdigest()
+    assert str(tmp_path) not in anchor_path.read_text(encoding="utf-8")
+
+
+def test_generic_binding_requires_external_canonical_anchor(tmp_path: Path) -> None:
+    request = source_request(tmp_path)
+    project = bootstrap_dual_parse_project(tmp_path / "review-projects", request)
+    output = generic_output(tmp_path / "generic-output", request)
+    (project.parent / ".dual_parse_authority" / f"{project.name}.json").unlink()
+    before = snapshot(project)
+
+    with pytest.raises(DualParseBootstrapError, match="ACQUISITION_FINAL_RECEIPT_INVALID"):
+        bind_generic_parse_outputs(project, output)
+
+    assert snapshot(project) == before
+    assert not (project / "01_evidence").exists()
+
+
+def test_generic_binding_rejects_tampered_external_anchor_before_write(
+    tmp_path: Path,
+) -> None:
+    request = source_request(tmp_path)
+    project = bootstrap_dual_parse_project(tmp_path / "review-projects", request)
+    output = generic_output(tmp_path / "generic-output", request)
+    anchor_path = project.parent / ".dual_parse_authority" / f"{project.name}.json"
+    anchor = json.loads(anchor_path.read_text(encoding="utf-8"))
+    anchor["receipt"]["studies"][0]["title"] = "Tampered external title"
+    anchor_path.write_text(json.dumps(anchor), encoding="utf-8")
+    before = snapshot(project)
+
+    with pytest.raises(DualParseBootstrapError, match="ACQUISITION_FINAL_RECEIPT_INVALID"):
+        bind_generic_parse_outputs(project, output)
+
+    assert snapshot(project) == before
+    assert not (project / "01_evidence").exists()
+
+
+def test_bootstrap_rejects_symlinked_external_anchor_directory_zero_write(
+    tmp_path: Path,
+) -> None:
+    review_root = tmp_path / "review-projects"
+    review_root.mkdir()
+    anchor_target = tmp_path / "anchor-target"
+    anchor_target.mkdir()
+    symlink_or_skip(
+        review_root / ".dual_parse_authority",
+        anchor_target,
+        target_is_directory=True,
+    )
+    before = snapshot(review_root)
+
+    with pytest.raises(DualParseBootstrapError, match="BOOTSTRAP_WRITE_FAILED"):
+        bootstrap_dual_parse_project(review_root, source_request(tmp_path))
+
+    assert snapshot(review_root) == before
+    assert not (review_root / "dual-fresh").exists()
+    assert list(anchor_target.iterdir()) == []
+
+
+def test_generic_binding_rejects_symlinked_external_anchor_directory_zero_write(
+    tmp_path: Path,
+) -> None:
+    request = source_request(tmp_path)
+    project = bootstrap_dual_parse_project(tmp_path / "review-projects", request)
+    output = generic_output(tmp_path / "generic-output", request)
+    anchor_dir = project.parent / ".dual_parse_authority"
+    anchor_dir.rename(project.parent / ".dual_parse_authority.current")
+    anchor_target = tmp_path / "anchor-target"
+    anchor_target.mkdir()
+    symlink_or_skip(anchor_dir, anchor_target, target_is_directory=True)
+    before = snapshot(project)
+
+    with pytest.raises(DualParseBootstrapError, match="ACQUISITION_FINAL_RECEIPT_INVALID"):
+        bind_generic_parse_outputs(project, output)
+
+    assert snapshot(project) == before
+    assert not (project / "01_evidence").exists()
+
+
 def test_bootstrap_requires_si_for_core_studies(tmp_path: Path) -> None:
     project = bootstrap_dual_parse_project(
         tmp_path / "review-projects", source_request(tmp_path)
@@ -248,6 +347,35 @@ def test_generic_binding_builds_all_current_source_truth_and_parse_gates(tmp_pat
             (project / "01_evidence" / manifest_name).read_text(encoding="utf-8")
         )
         assert [row["source_pdf_sha256"] for row in bound_manifest["completed"]] == expected_hashes
+
+
+def test_generic_binding_rejects_tampered_receipt_metadata_before_write(
+    tmp_path: Path,
+) -> None:
+    request = source_request(tmp_path)
+    project = bootstrap_dual_parse_project(tmp_path / "review-projects", request)
+    output = generic_output(tmp_path / "generic-output", request)
+    receipt_path = project / "00_sources/acquisition_final_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["studies"][0]["title"] = "Tampered title"
+    receipt_body = {key: value for key, value in receipt.items() if key != "receipt_digest"}
+    receipt["receipt_digest"] = hashlib.sha256(
+        json.dumps(
+            receipt_body,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    before = snapshot(project)
+
+    with pytest.raises(DualParseBootstrapError, match="ACQUISITION_FINAL_RECEIPT_INVALID"):
+        bind_generic_parse_outputs(project, output)
+
+    assert snapshot(project) == before
+    assert not (project / "01_evidence").exists()
 
 
 @pytest.mark.parametrize(

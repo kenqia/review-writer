@@ -29,6 +29,20 @@ class DualParseBootstrapError(ValueError):
 
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+CANONICAL_ANCHOR_DIRECTORY = ".dual_parse_authority"
+CANONICAL_ANCHOR_SCHEMA_VERSION = "dual-parse-canonical-anchor.v1"
+ACQUISITION_RECEIPT_RELATIVE_PATH = "00_sources/acquisition_final_receipt.json"
+CANONICAL_ANCHOR_KEYS = frozenset(
+    {
+        "schema_version",
+        "project_id",
+        "project_relative_path",
+        "receipt_relative_path",
+        "receipt",
+        "receipt_sha256",
+        "anchor_digest",
+    }
+)
 
 
 def _json_bytes(value: object) -> bytes:
@@ -41,6 +55,157 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _canonical_digest(value: object) -> str:
+    payload = json.dumps(
+        value,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _lexical_absolute(path: Path) -> Path:
+    """Return an absolute path without resolving any symlink component."""
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def _safe_existing_path(path: Path, code: str, *, directory: bool) -> Path:
+    lexical = _lexical_absolute(path)
+    current = Path(lexical.anchor)
+    for part in lexical.parts[1:]:
+        current /= part
+        try:
+            mode = current.lstat().st_mode
+        except OSError as exc:
+            raise DualParseBootstrapError(code) from exc
+        if stat.S_ISLNK(mode):
+            raise DualParseBootstrapError(code)
+        if current != lexical and not stat.S_ISDIR(mode):
+            raise DualParseBootstrapError(code)
+    try:
+        mode = lexical.lstat().st_mode
+    except OSError as exc:
+        raise DualParseBootstrapError(code) from exc
+    if directory and not stat.S_ISDIR(mode):
+        raise DualParseBootstrapError(code)
+    if not directory and not stat.S_ISREG(mode):
+        raise DualParseBootstrapError(code)
+    return lexical
+
+
+def _ensure_safe_directory(path: Path, code: str) -> Path:
+    lexical = _lexical_absolute(path)
+    current = Path(lexical.anchor)
+    for part in lexical.parts[1:]:
+        current /= part
+        try:
+            mode = current.lstat().st_mode
+        except FileNotFoundError:
+            try:
+                current.mkdir()
+            except OSError as exc:
+                raise DualParseBootstrapError(code) from exc
+            mode = current.lstat().st_mode
+        except OSError as exc:
+            raise DualParseBootstrapError(code) from exc
+        if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+            raise DualParseBootstrapError(code)
+    return lexical
+
+
+def _safe_project_path(
+    project: Path, relative: Path, code: str, *, directory: bool
+) -> Path:
+    if relative.is_absolute() or not relative.parts or any(
+        part in {"", ".", ".."} for part in relative.parts
+    ):
+        raise DualParseBootstrapError(code)
+    root = _safe_existing_path(project, code, directory=True)
+    return _safe_existing_path(root.joinpath(*relative.parts), code, directory=directory)
+
+
+def _canonical_anchor_path(project: Path) -> Path:
+    return project.parent / CANONICAL_ANCHOR_DIRECTORY / f"{project.name}.json"
+
+
+def _canonical_anchor_body(project: Path, receipt: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": CANONICAL_ANCHOR_SCHEMA_VERSION,
+        "project_id": project.name,
+        "project_relative_path": project.name,
+        "receipt_relative_path": ACQUISITION_RECEIPT_RELATIVE_PATH,
+        "receipt": receipt,
+        "receipt_sha256": _canonical_digest(receipt),
+    }
+
+
+def _write_json_exclusive(path: Path, value: object, code: str) -> None:
+    try:
+        with path.open("xb") as handle:
+            handle.write(_json_bytes(value))
+    except OSError as exc:
+        raise DualParseBootstrapError(code) from exc
+
+
+def _read_canonical_anchor(project: Path) -> dict[str, Any]:
+    path = _safe_existing_path(
+        _canonical_anchor_path(project),
+        "ACQUISITION_FINAL_RECEIPT_INVALID",
+        directory=False,
+    )
+    try:
+        anchor = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise DualParseBootstrapError("ACQUISITION_FINAL_RECEIPT_INVALID") from exc
+    if (
+        not isinstance(anchor, dict)
+        or set(anchor) != CANONICAL_ANCHOR_KEYS
+        or anchor.get("schema_version") != CANONICAL_ANCHOR_SCHEMA_VERSION
+        or anchor.get("project_id") != project.name
+        or anchor.get("project_relative_path") != project.name
+        or anchor.get("receipt_relative_path") != ACQUISITION_RECEIPT_RELATIVE_PATH
+        or not isinstance(anchor.get("receipt"), dict)
+        or not isinstance(anchor.get("receipt_sha256"), str)
+        or SHA256_RE.fullmatch(anchor["receipt_sha256"]) is None
+        or not isinstance(anchor.get("anchor_digest"), str)
+        or SHA256_RE.fullmatch(anchor["anchor_digest"]) is None
+    ):
+        raise DualParseBootstrapError("ACQUISITION_FINAL_RECEIPT_INVALID")
+    body = {key: value for key, value in anchor.items() if key != "anchor_digest"}
+    if (
+        anchor["receipt_sha256"] != _canonical_digest(anchor["receipt"])
+        or anchor["anchor_digest"] != _canonical_digest(body)
+    ):
+        raise DualParseBootstrapError("ACQUISITION_FINAL_RECEIPT_INVALID")
+    return anchor
+
+
+def _read_bound_receipt(project: Path) -> dict[str, Any]:
+    receipt_path = _safe_project_path(
+        project,
+        Path(ACQUISITION_RECEIPT_RELATIVE_PATH),
+        "ACQUISITION_FINAL_RECEIPT_INVALID",
+        directory=False,
+    )
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise DualParseBootstrapError("ACQUISITION_FINAL_RECEIPT_INVALID") from exc
+    if not isinstance(receipt, dict):
+        raise DualParseBootstrapError("ACQUISITION_FINAL_RECEIPT_INVALID")
+    return receipt
+
+
+def _validate_bound_receipt(receipt: dict[str, Any], anchor: dict[str, Any]) -> None:
+    if (
+        receipt != anchor["receipt"]
+        or _canonical_digest(receipt) != anchor["receipt_sha256"]
+    ):
+        raise DualParseBootstrapError("ACQUISITION_FINAL_RECEIPT_INVALID")
 
 
 def _generic_source_pdf_sha256(row: dict[str, Any]) -> str:
@@ -60,6 +225,37 @@ def _generic_source_pdf_sha256(row: dict[str, Any]) -> str:
     ):
         raise DualParseBootstrapError("GENERIC_SOURCE_BINDING_INVALID")
     return source_pdf_sha256
+
+
+def _validate_generic_source_bindings(
+    project: Path,
+    studies: list[dict[str, Any]],
+    by_pdf: dict[str, dict[str, Any]],
+) -> None:
+    """Validate current project PDFs and Generic provenance before staging."""
+    for study in studies:
+        descriptor = study.get("main_pdf") if isinstance(study, dict) else None
+        source_id = study.get("source_id") if isinstance(study, dict) else None
+        study_id = study.get("study_id") if isinstance(study, dict) else None
+        if not isinstance(descriptor, dict) or not isinstance(source_id, str) or not isinstance(study_id, str):
+            raise DualParseBootstrapError("ACQUISITION_FINAL_RECEIPT_INVALID")
+        relative_pdf = descriptor.get("path")
+        expected_hash = descriptor.get("sha256")
+        if not isinstance(relative_pdf, str) or not isinstance(expected_hash, str):
+            raise DualParseBootstrapError("ACQUISITION_FINAL_RECEIPT_INVALID")
+        pdf = _safe_project_path(
+            project,
+            Path("00_sources") / relative_pdf,
+            "ACQUISITION_FINAL_RECEIPT_INVALID",
+            directory=False,
+        )
+        if _sha256(pdf) != expected_hash:
+            raise DualParseBootstrapError("SOURCE_PDF_HASH_MISMATCH")
+        row = by_pdf.get(Path(relative_pdf).name)
+        if row is None:
+            raise DualParseBootstrapError("GENERIC_BINDING_MISSING")
+        if _generic_source_pdf_sha256(row) != expected_hash:
+            raise DualParseBootstrapError("GENERIC_SOURCE_PDF_HASH_MISMATCH")
 
 
 def _regular_input(path: Path) -> bool:
@@ -164,6 +360,8 @@ def bootstrap_dual_parse_project(review_root: Path, request: object) -> Path:
     review_root.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.", dir=review_root))
     published = False
+    anchor_path = _canonical_anchor_path(target)
+    anchor_written = False
     try:
         studies: list[dict[str, Any]] = []
         candidates: list[dict[str, Any]] = []
@@ -209,9 +407,10 @@ def bootstrap_dual_parse_project(review_root: Path, request: object) -> Path:
         _write_json(staging / "00_discovery/candidate_pool.json", {
             "schema_version": "candidate-pool.v1", "candidates": candidates,
         })
-        _write_json(staging / "00_sources/acquisition_final_receipt.json", {
+        receipt = {
             "schema_version": "acquisition-final-receipt.v1", "studies": studies,
-        })
+        }
+        _write_json(staging / ACQUISITION_RECEIPT_RELATIVE_PATH, receipt)
         _write_json(staging / "00_sources/source_identity_audit.json", {
             "schema_version": "source-identity-audit.v1", "results": identities,
         })
@@ -234,6 +433,16 @@ def bootstrap_dual_parse_project(review_root: Path, request: object) -> Path:
                 for row in sources
             ],
         })
+        _ensure_safe_directory(anchor_path.parent, "BOOTSTRAP_WRITE_FAILED")
+        if os.path.lexists(anchor_path):
+            raise DualParseBootstrapError("TARGET_EXISTS")
+        anchor_body = _canonical_anchor_body(target, receipt)
+        _write_json_exclusive(
+            anchor_path,
+            {**anchor_body, "anchor_digest": _canonical_digest(anchor_body)},
+            "BOOTSTRAP_WRITE_FAILED",
+        )
+        anchor_written = True
         os.replace(staging, target)
         published = True
         return target
@@ -244,14 +453,26 @@ def bootstrap_dual_parse_project(review_root: Path, request: object) -> Path:
     finally:
         if not published:
             shutil.rmtree(staging, ignore_errors=True)
+            if anchor_written:
+                try:
+                    anchor_path.unlink()
+                except OSError:
+                    pass
 
 
 def bind_generic_parse_outputs(project: Path, mineru_output: Path) -> dict[str, object]:
     """Bind only fresh Generic MinerU output matching current project PDF bytes."""
-    project = Path(project).resolve(strict=True)
+    project = _safe_existing_path(
+        Path(project), "ACQUISITION_FINAL_RECEIPT_INVALID", directory=True
+    )
     output = Path(mineru_output).resolve(strict=True)
     if os.path.lexists(project / "01_evidence"):
         raise DualParseBootstrapError("GENERIC_BINDING_TARGET_EXISTS")
+    anchor = _read_canonical_anchor(project)
+    receipt = _read_bound_receipt(project)
+    studies = receipt.get("studies")
+    if not isinstance(studies, list) or len(studies) != 3:
+        raise DualParseBootstrapError("ACQUISITION_FINAL_RECEIPT_INVALID")
     try:
         manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -276,13 +497,6 @@ def bind_generic_parse_outputs(project: Path, mineru_output: Path) -> dict[str, 
     if settings.get("ocr") is not False:
         raise DualParseBootstrapError("GENERIC_SETTINGS_INVALID")
 
-    try:
-        receipt = json.loads((project / "00_sources/acquisition_final_receipt.json").read_text(encoding="utf-8"))
-        studies = receipt["studies"]
-    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
-        raise DualParseBootstrapError("ACQUISITION_FINAL_RECEIPT_INVALID") from exc
-    if not isinstance(studies, list) or len(studies) != 3:
-        raise DualParseBootstrapError("ACQUISITION_FINAL_RECEIPT_INVALID")
     by_pdf = {}
     for row in completed:
         if not isinstance(row, dict) or row.get("state") != "done":
@@ -296,6 +510,9 @@ def bind_generic_parse_outputs(project: Path, mineru_output: Path) -> dict[str, 
         if key in by_pdf:
             raise DualParseBootstrapError("GENERIC_BINDING_AMBIGUOUS")
         by_pdf[key] = row
+
+    _validate_generic_source_bindings(project, studies, by_pdf)
+    _validate_bound_receipt(receipt, anchor)
 
     staging_parent = Path(
         tempfile.mkdtemp(prefix=f".{project.name}.generic.", dir=project.parent)
@@ -321,7 +538,12 @@ def bind_generic_parse_outputs(project: Path, mineru_output: Path) -> dict[str, 
             expected_hash = descriptor.get("sha256")
             if not isinstance(relative_pdf, str) or not isinstance(expected_hash, str):
                 raise DualParseBootstrapError("ACQUISITION_FINAL_RECEIPT_INVALID")
-            pdf = project / "00_sources" / relative_pdf
+            pdf = _safe_project_path(
+                project,
+                Path("00_sources") / relative_pdf,
+                "ACQUISITION_FINAL_RECEIPT_INVALID",
+                directory=False,
+            )
             if _sha256(pdf) != expected_hash:
                 raise DualParseBootstrapError("SOURCE_PDF_HASH_MISMATCH")
             row = by_pdf.get(Path(relative_pdf).name)
