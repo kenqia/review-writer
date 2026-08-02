@@ -704,6 +704,50 @@ def test_dashboard_projection_fails_closed_for_current_variable_n_without_tier_m
     assert payload["completion_queue"] == []
 
 
+def test_dashboard_projection_fails_closed_when_receipt_is_missing_even_for_legacy_shaped_state(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    study_ids = ["study-a", "study-b", "study-c"]
+    project = _declared_project(tmp_path, study_ids)
+    (project / "00_sources/acquisition_final_receipt.json").unlink()
+
+    monkeypatch.setattr(
+        dashboard,
+        "project_chemical_completion_state",
+        lambda _project: _legacy_authoritative_completion(),
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "chemical_paper_projection",
+        lambda _project: _legacy_authoritative_chemical(),
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "project_chemical_completion_candidates",
+        lambda _project, _study_id: {},
+    )
+
+    payload = dashboard.project_honest_progressive_dashboard_projection(
+        project,
+        {
+            "schema_version": "dual-parse-projection.v2",
+            "status": "ready",
+            "studies": [],
+            "completion_queue": [],
+        },
+    )
+
+    honest = payload["honest_progressive"]
+    assert honest["availability"] == "unknown"
+    assert honest["status"] == "unknown"
+    assert honest["core_molecule_count"] is None
+    assert honest["coverage_denominator"] is None
+    assert honest["paper_coverage"] == []
+    assert payload["completion_queue"] == []
+
+
 def test_dashboard_projection_keeps_explicit_legacy_compatibility_without_tier_map(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -754,3 +798,77 @@ def test_dashboard_projection_keeps_explicit_legacy_compatibility_without_tier_m
     assert honest["core_molecule_count"] == 6
     assert honest["confirmed_count"] == 0
     assert honest["blocked_count"] == 6
+
+
+def test_dashboard_projection_keeps_explicit_legacy_309_compatibility(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    study_ids = ["study-a", "study-b", "study-c"]
+    project = _declared_project(tmp_path, study_ids)
+    receipt_path = project / "00_sources/acquisition_final_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt.update(
+        {
+            "corpus_kind": "legacy_three_paper",
+            "variable_n": False,
+            "study_count": len(study_ids),
+        }
+    )
+    receipt_path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+    monkeypatch.setattr(
+        dashboard,
+        "project_chemical_completion_state",
+        lambda _project: _legacy_authoritative_completion(),
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "chemical_paper_projection",
+        lambda _project: _legacy_authoritative_chemical(),
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "project_chemical_completion_candidates",
+        lambda _project, _study_id: {},
+    )
+
+    payload = dashboard.project_honest_progressive_dashboard_projection(
+        project,
+        {
+            "schema_version": "dual-parse-projection.v2",
+            "status": "ready",
+            "studies": [],
+            "completion_queue": [],
+        },
+    )
+
+    honest = payload["honest_progressive"]
+    assert honest["availability"] == "available"
+    assert honest["core_molecule_count"] == 309
+    assert honest["coverage_denominator"] == 309
+    assert honest["confirmed_count"] == 309
+    assert honest["ai_provisional_count"] == 0
+    assert honest["blocked_count"] == 0
+    assert {row["study_id"]: row["molecule_count"] for row in honest["paper_coverage"]} == {
+        "study-a": 125,
+        "study-b": 109,
+        "study-c": 75,
+    }
+
+
+def test_honest_summary_requires_explicit_legacy_discriminator_for_309_compatibility() -> None:
+    from view import serve_review_dashboard as dashboard
+
+    summary, state_available, _ = dashboard._honest_progressive_summary(
+        _legacy_authoritative_completion(),
+        _legacy_authoritative_chemical(),
+        legacy_discriminator=dashboard.HONEST_LEGACY_CORPUS_KIND,
+    )
+
+    assert state_available is True
+    assert summary["availability"] == "available"
+    assert summary["core_molecule_count"] == 309
+    assert summary["coverage_denominator"] == 309
+    assert summary["confirmed_count"] == 309
+    assert summary["blocked_count"] == 0

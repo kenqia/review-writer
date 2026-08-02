@@ -731,15 +731,17 @@ def _honest_authoritative_molecules(
     *,
     declared_ids: list[str] | None = None,
     core_ids: list[str] | None = None,
+    legacy_discriminator: str | None = None,
 ) -> list[tuple[str, dict[str, Any]]] | None:
     """Return the current imported cohort or fail closed as unknown.
 
     A project with a current acquisition receipt supplies ``declared_ids`` and
-    is validated as a variable-N cohort.  When that declaration is unavailable
-    we retain the historical three-paper contract as a fail-closed compatibility
-    path for legacy callers that do not have a current project authority.
+    is validated as a variable-N cohort.  The historical three-paper contract
+    is available only when the caller supplies the explicit legacy discriminator.
     """
 
+    if legacy_discriminator not in {None, HONEST_LEGACY_CORPUS_KIND}:
+        return None
     aggregation = completion.get("compatibility_aggregation")
     if not isinstance(aggregation, dict) or not isinstance(aggregation.get("mode"), str):
         return None
@@ -766,9 +768,18 @@ def _honest_authoritative_molecules(
     ):
         return None
 
-    legacy_compatibility = declared_ids is None
-    if declared_ids is None:
-        declared_ids = sorted(completion_by_study)
+    legacy_compatibility = (
+        legacy_discriminator == HONEST_LEGACY_CORPUS_KIND and declared_ids is None
+    )
+    if legacy_compatibility:
+        if declared_ids is None:
+            declared_ids = sorted(completion_by_study)
+        if (
+            not declared_ids
+            or any(_honest_identifier(value) != value for value in declared_ids)
+            or len(declared_ids) != len(set(declared_ids))
+        ):
+            return None
         authoritative_ids = declared_ids
         legacy_counts = ((6, 125), (11, 109), (11, 75))
         if (
@@ -780,7 +791,8 @@ def _honest_authoritative_molecules(
         expected_by_study = dict(zip(declared_ids, legacy_counts))
     else:
         if (
-            not declared_ids
+            declared_ids is None
+            or not declared_ids
             or any(_honest_identifier(value) != value for value in declared_ids)
             or len(declared_ids) != len(set(declared_ids))
         ):
@@ -908,6 +920,7 @@ def _honest_progressive_summary(
     *,
     declared_ids: list[str] | None = None,
     core_ids: list[str] | None = None,
+    legacy_discriminator: str | None = None,
 ) -> tuple[dict[str, Any], bool, dict[tuple[str, int], dict[str, Any]]]:
     if not isinstance(completion, dict) or not isinstance(chemical, dict):
         return _honest_unknown_summary(), False, {}
@@ -927,6 +940,7 @@ def _honest_progressive_summary(
         chemical,
         declared_ids=declared_ids,
         core_ids=core_ids,
+        legacy_discriminator=legacy_discriminator,
     )
     if authoritative is None:
         return _honest_unknown_summary(), False, {}
@@ -955,6 +969,11 @@ def _honest_progressive_summary(
     paper_coverage = _honest_paper_coverage(
         completion,
         core_ids=set(core_ids) if core_ids is not None else None,
+        maximum=(
+            HONEST_CORE_MOLECULE_COUNT
+            if legacy_discriminator == HONEST_LEGACY_CORPUS_KIND
+            else None
+        ),
     )
     coverage_sufficient = coverage_ratio >= HONEST_COVERAGE_THRESHOLD
     summary = {
@@ -997,6 +1016,7 @@ def project_honest_progressive_dashboard_projection(
     summary = _honest_unknown_summary()
     state_available = False
     molecule_map: dict[tuple[str, int], dict[str, Any]] = {}
+    legacy_discriminator: str | None = None
     try:
         completion = project_chemical_completion_state(project)
         chemical = chemical_paper_projection(project)
@@ -1004,10 +1024,9 @@ def project_honest_progressive_dashboard_projection(
         current_core_ids: list[str] | None
         receipt_path = project / "00_sources/acquisition_final_receipt.json"
         if not os.path.lexists(receipt_path):
-            # Missing current authority is the only legacy entry condition.
-            # A present receipt is current authority, even when validation fails.
-            current_declared_ids = None
-            current_core_ids = None
+            # Missing current authority must not enter the legacy compatibility path.
+            current_declared_ids = []
+            current_core_ids = []
         else:
             current_declared_ids = declared_study_ids(project)
             tier_manifest = project / "00_discovery/candidate_pool.json"
@@ -1016,6 +1035,7 @@ def project_honest_progressive_dashboard_projection(
             )
             if corpus_marker == HONEST_LEGACY_CORPUS_KIND:
                 # Only the explicit legacy marker authorizes an un-tiered cohort.
+                legacy_discriminator = corpus_marker
                 current_core_ids = list(current_declared_ids)
             elif corpus_marker == HONEST_INVALID_CORPUS_MARKER:
                 current_core_ids = []
@@ -1039,6 +1059,7 @@ def project_honest_progressive_dashboard_projection(
             chemical,
             declared_ids=current_declared_ids,
             core_ids=current_core_ids,
+            legacy_discriminator=legacy_discriminator,
         )
     except Exception:
         # A missing/stale authority is public unknown state, not zero coverage.
