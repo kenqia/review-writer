@@ -420,7 +420,24 @@ def test_dual_parse_api_projects_server_calculated_honest_progressive_summary(
     from view import serve_review_dashboard as dashboard
 
     review_root = tmp_path / "review-root"
-    (review_root / "review-projects" / "project").mkdir(parents=True)
+    project = review_root / "review-projects" / "project"
+    project.mkdir(parents=True)
+    study_ids = ("study-a", "study-b", "study-c")
+    sources = project / "00_sources"
+    sources.mkdir()
+    (sources / "acquisition_final_receipt.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "synthetic-acquisition-receipt.v1",
+                "corpus_kind": dashboard.HONEST_LEGACY_CORPUS_KIND,
+                "variable_n": False,
+                "study_count": len(study_ids),
+                "studies": [{"study_id": study_id} for study_id in study_ids],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     monkeypatch.setattr(dashboard, "dual_parse_dashboard_projection", lambda _: _base_projection())
     monkeypatch.setattr(
         dashboard,
@@ -536,7 +553,9 @@ def test_honest_authority_keeps_low_coverage_rows_available_when_study_blocked()
         row["status"] = "blocked"
 
     summary, state_available, _ = dashboard._honest_progressive_summary(
-        completion, chemical
+        completion,
+        chemical,
+        legacy_discriminator=dashboard.HONEST_LEGACY_CORPUS_KIND,
     )
 
     assert state_available is True
