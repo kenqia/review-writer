@@ -452,10 +452,17 @@ def bootstrap_dual_parse_project(review_root: Path, request: object) -> Path:
                 if not _regular_external_input(row["input"]):
                     raise DualParseBootstrapError("SOURCE_PDF_INVALID") from exc
                 raise
+            try:
+                copied_sha256 = _sha256(destination)
+                copied_size_bytes = destination.stat().st_size
+            except OSError as exc:
+                raise DualParseBootstrapError("BOOTSTRAP_WRITE_FAILED") from exc
+            if copied_sha256 != row["sha256"] or copied_size_bytes != row["size_bytes"]:
+                raise DualParseBootstrapError("SOURCE_PDF_HASH_MISMATCH")
             descriptor = {
                 "path": relative_pdf,
-                "sha256": row["sha256"],
-                "size_bytes": row["size_bytes"],
+                "sha256": copied_sha256,
+                "size_bytes": copied_size_bytes,
             }
             studies.append({
                 "study_id": row["study_id"], "source_id": row["source_id"],

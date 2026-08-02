@@ -152,6 +152,72 @@ def test_bootstrap_writes_external_anchor_for_complete_canonical_receipt(
     assert str(tmp_path) not in anchor_path.read_text(encoding="utf-8")
 
 
+def test_bootstrap_receipt_hashes_match_published_pdf_bytes(tmp_path: Path) -> None:
+    request = source_request(tmp_path)
+    project = bootstrap_dual_parse_project(tmp_path / "review-projects", request)
+    receipt = json.loads(
+        (project / "00_sources/acquisition_final_receipt.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    anchor_path = project.parent / ".dual_parse_authority" / f"{project.name}.json"
+    anchor = json.loads(anchor_path.read_text(encoding="utf-8"))
+
+    for study in receipt["studies"]:
+        descriptor = study["main_pdf"]
+        pdf = project / "00_sources" / descriptor["path"]
+        assert descriptor["sha256"] == hashlib.sha256(pdf.read_bytes()).hexdigest()
+        assert descriptor["size_bytes"] == pdf.stat().st_size
+
+    assert anchor["receipt"] == receipt
+    canonical_receipt = json.dumps(
+        receipt, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    assert anchor["receipt_sha256"] == hashlib.sha256(canonical_receipt).hexdigest()
+
+
+def test_bootstrap_rejects_destination_pdf_mutation_after_copy_and_cleans_up(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    review_root = tmp_path / "review-projects"
+    request = source_request(tmp_path)
+    target = review_root / request["project_id"]
+    authority_root = review_root / ".dual_parse_authority"
+    anchor_path = authority_root / f"{target.name}.json"
+    original_copy2 = dual_parse_bootstrap.shutil.copy2
+    mutated = False
+
+    def mutate_destination_after_copy(
+        source: object, destination: object, *args: object, **kwargs: object
+    ) -> object:
+        nonlocal mutated
+        result = original_copy2(source, destination, *args, **kwargs)
+        if Path(destination).suffix == ".pdf" and not mutated:
+            mutated = True
+            copied = Path(destination)
+            copied.write_bytes(copied.read_bytes() + b"post-copy mutation")
+        return result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            dual_parse_bootstrap.shutil,
+            "copy2",
+            mutate_destination_after_copy,
+        )
+        with pytest.raises(
+            DualParseBootstrapError,
+            match="SOURCE_PDF_HASH_MISMATCH|BOOTSTRAP_WRITE_FAILED",
+        ):
+            bootstrap_dual_parse_project(review_root, request)
+
+    assert mutated
+    assert not target.exists()
+    assert not anchor_path.exists()
+    assert not authority_root.exists()
+    assert list(review_root.iterdir()) == []
+
+
 @pytest.mark.parametrize("preexisting_authority", [False, True])
 def test_bootstrap_write_failure_rolls_back_anchor_and_retry_is_safe(
     tmp_path: Path,
