@@ -16,6 +16,7 @@ from scheduler_contract import (  # noqa: E402
     SPEC_FAILURE_CODES,
     TERMINATION_REPORT_FIELDS,
     TIME_BUDGET_SECONDS,
+    UNKNOWN,
     ImmutableTaskChanged,
     PostT0UserActionRejected,
     SchedulerContractError,
@@ -389,6 +390,75 @@ def test_missing_authority_and_absolute_artifact_are_unknown_and_blocked(
     rendered = report.path.read_text(encoding="utf-8")
     assert "/private/project/manifest.json" not in rendered
     assert "/home/" not in rendered
+
+
+@pytest.mark.parametrize(
+    "invalid_reference",
+    [
+        True,
+        False,
+        "OK",
+        "BLOCKED",
+        "NOT_READY",
+        "READY",
+        "PASS",
+        "FAILED",
+        "true",
+        "false",
+        "captured-by-orchestrator",
+        "opaque-session-marker",
+        "/private/project/manifest.json",
+        "/home/private/project/manifest.json",
+    ],
+    ids=lambda value: str(value).replace("/", "-").replace(" ", "-"),
+)
+def test_artifact_reference_contract_rejects_pseudo_references(
+    tmp_path: Path,
+    invalid_reference: object,
+) -> None:
+    ledger_path = tmp_path / "scheduler-ledger.json"
+    run_state_path = tmp_path / "run-state.json"
+    run_state_path.write_text(
+        json.dumps(
+            {
+                "artifacts": {"ARTIFACT_MANIFEST": invalid_reference},
+                "PAPER_EVIDENCE_DISPOSITIONED": "OK",
+            }
+        ),
+        encoding="utf-8",
+    )
+    session = SchedulerSession.open(
+        ledger_path,
+        session_label="fresh-session-0",
+        run_id="run-001",
+        run_state_path=run_state_path,
+    )
+    session.start_attempt(task_id="CONTENT-001", task_digest=_task_digest(), at=START)
+
+    report = session.terminate(
+        reason_code="ORCHESTRATION_BLOCKED",
+        blockers=["artifact reference is not authoritative"],
+        affected_objects=["CONTENT-001"],
+        completed_independent_work=["ledger replay"],
+        unique_recovery_action="record a stable artifact reference",
+        at=START + timedelta(minutes=1),
+    )
+
+    assert report.fields["ARTIFACT_MANIFEST"] == UNKNOWN
+    assert report.fields["PAPER_EVIDENCE_DISPOSITIONED"] == "OK"
+    assert "ARTIFACT_REFERENCE_INVALID" in report.fields["BLOCKERS"]
+    assert "ARTIFACT_MANIFEST=UNKNOWN" in report.path.read_text(encoding="utf-8")
+
+    reopened = SchedulerSession.open(ledger_path, session_label="fresh-session-1")
+    replayed = reopened.terminate(
+        reason_code="ORCHESTRATION_BLOCKED",
+        blockers=["replay must not promote a pseudo-reference"],
+        affected_objects=["CONTENT-001"],
+        completed_independent_work=["ledger replay"],
+        unique_recovery_action="record a stable artifact reference",
+        at=START + timedelta(minutes=2),
+    )
+    assert replayed.fields["ARTIFACT_MANIFEST"] == UNKNOWN
 
 
 def test_t0_rejects_user_action_and_keeps_fixed_zero(tmp_path: Path) -> None:

@@ -108,6 +108,24 @@ _ARTIFACT_REF = re.compile(r"^[A-Za-z0-9._/-]+$")
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _CODE_HEAD = re.compile(r"^[0-9a-f]{40,64}$")
 _DIGEST_REF = re.compile(r"^sha256:[0-9a-f]{64}$")
+_ARTIFACT_STATUS_WORDS = frozenset(
+    {
+        "ok",
+        "blocked",
+        "not_ready",
+        "ready",
+        "pass",
+        "passed",
+        "fail",
+        "failed",
+        "partial",
+        "true",
+        "false",
+    }
+)
+_SESSION_REFERENCE = re.compile(
+    r"(?i)^(?:captured-by-[a-z0-9-]+|opaque[-_]?(?:session|thread|turn)(?:[-_.][a-z0-9._-]+)*|(?:session|thread|turn)[-_][a-z0-9._-]+)$"
+)
 _PRIVATE_PATH = re.compile(r"(?:^|[\s=(])(?:/|[A-Za-z]:[\\/])")
 _SECRET_ASSIGNMENT = re.compile(
     r"(?i)(?:api[_ -]?key|access[_ -]?token|secret|password|cookie|authorization)\s*="
@@ -401,13 +419,16 @@ def _safe_artifact_ref(value: Any, *, issues: list[str]) -> str:
         _add_issue(issues, "ARTIFACT_REFERENCE_INVALID")
         return UNKNOWN
     if isinstance(value, bool):
-        return "true" if value else "false"
+        _add_issue(issues, "ARTIFACT_REFERENCE_INVALID")
+        return UNKNOWN
     if not isinstance(value, str):
         _add_issue(issues, "ARTIFACT_REFERENCE_INVALID")
         return UNKNOWN
     candidate = value.strip()
-    if candidate in {"OK", "BLOCKED", "NOT_READY", "true", "false"}:
-        return candidate
+    normalized = candidate.replace(" ", "_").casefold()
+    if normalized in _ARTIFACT_STATUS_WORDS or _SESSION_REFERENCE.fullmatch(candidate):
+        _add_issue(issues, "ARTIFACT_REFERENCE_INVALID")
+        return UNKNOWN
     if _DIGEST_REF.fullmatch(candidate.lower()):
         return candidate.lower()
     parts = candidate.split("/")
@@ -418,6 +439,7 @@ def _safe_artifact_ref(value: Any, *, issues: list[str]) -> str:
         or _private_value(candidate)
         or not _ARTIFACT_REF.fullmatch(candidate)
         or any(part in {"", ".", ".."} for part in parts)
+        or ("/" not in candidate and not _SAFE_IDENTIFIER.fullmatch(candidate))
     ):
         _add_issue(issues, "ARTIFACT_REFERENCE_INVALID")
         return UNKNOWN
