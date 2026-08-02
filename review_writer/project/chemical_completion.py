@@ -572,10 +572,10 @@ def project_chemical_completion_state(project: Path) -> dict[str, object]:
         study_ids = declared_study_ids(root)
     except SourceTruthError as exc:
         raise ChemicalCompletionError(exc.code) from exc
-    core_study_ids, explicit_tiering = _core_study_scope(root, study_ids)
     aggregation_mode = _project_aggregation_mode(root, len(study_ids))
     if aggregation_mode is None and len(study_ids) > 1:
         raise ChemicalCompletionError("CHEMICAL_COMPLETION_PROJECT_MARKER_REQUIRED")
+    core_study_ids, explicit_tiering = _core_study_scope(root, study_ids)
     rows = []
     for study_id in study_ids:
         try:

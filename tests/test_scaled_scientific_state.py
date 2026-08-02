@@ -195,6 +195,33 @@ def test_current_variable_n_project_marker_rejection_does_not_project_legacy(
     assert exc_info.value.code == error_code
 
 
+def test_project_marker_preflight_precedes_invalid_source_tier_zero_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _scaled_core_project(tmp_path, core_count=1)
+    _invalidate_candidate_tier(project)
+    receipt_path = project / "00_sources/acquisition_final_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    for key in ("corpus_kind", "variable_n", "study_count"):
+        receipt.pop(key)
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    source_tier_spy = Mock(wraps=chemical_completion.study_source_tier)
+    atomic_json_spy = Mock(wraps=chemical_completion._atomic_json)
+    monkeypatch.setattr(chemical_completion, "study_source_tier", source_tier_spy)
+    monkeypatch.setattr(chemical_completion, "_atomic_json", atomic_json_spy)
+
+    with pytest.raises(
+        ChemicalCompletionError,
+        match="CHEMICAL_COMPLETION_PROJECT_MARKER_REQUIRED",
+    ):
+        project_chemical_completion_state(project)
+
+    source_tier_spy.assert_not_called()
+    atomic_json_spy.assert_not_called()
+
+
 @pytest.mark.parametrize(
     ("marker_mutation", "error_code"),
     [
