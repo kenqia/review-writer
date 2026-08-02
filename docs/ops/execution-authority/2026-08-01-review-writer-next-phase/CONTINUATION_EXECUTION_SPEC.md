@@ -6,6 +6,15 @@ Approved: 2026-08-02
 
 Spec ID: `review-writer-next-phase-continuation-2026-08-02`
 
+> **2026-08-03 priority notice.** This addendum remains a hash-bound record of
+> prior constraints and evidence, but its inherited stage order, sole-next
+> action, finding inventory, and recursive Reviewer/Repair route are superseded
+> for active work by
+> [docs/product/DELIVERABLE_FIRST_CORE_CONTRACT.md](../../../product/DELIVERABLE_FIRST_CORE_CONTRACT.md).
+> A legacy item is PARKED_REFERENCE_ONLY unless it passes that contract's
+> GOLD_DELTA or TRACE_DELTA admission gate. The immutable Approved Spec's
+> scientific and safety constraints remain non-amendable.
+
 ## 1. Purpose and non-amendment rule
 
 This document restores bounded, file-governed execution after the first

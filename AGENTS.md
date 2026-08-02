@@ -6,6 +6,26 @@ This repo contains the review-writer workflow source, QoderWork skill source, lo
 
 Generated paper libraries, MinerU outputs, project outputs, real PDFs, API tokens, and local metadata are external data and should not be committed.
 
+## Deliverable-First Core Contract
+
+The active execution priority is
+[docs/product/DELIVERABLE_FIRST_CORE_CONTRACT.md](docs/product/DELIVERABLE_FIRST_CORE_CONTRACT.md).
+Every new session, recovery after context compaction, Owner, Reviewer, and
+Coordinator must, before starting a task or treating an inherited finding as
+active:
+
+1. verify the hash-bound core manifest;
+2. read this file and the Deliverable-First Core Contract;
+3. read the immutable Approved Spec for any scientific, source-integrity, or
+   safety constraint affected by the task; and
+4. state a concrete GOLD_DELTA and/or TRACE_DELTA for the bounded task.
+
+If both deltas are NONE, the task is prohibited. An inherited continuation,
+inventory, repair branch, or platform idea is reference-only unless it passes
+that gate. The Core Contract may reprioritize old execution mechanics, but it
+does not permit lowering an immutable scientific or safety constraint, guessing
+scientific facts, fabricating a researcher decision, or fabricating READY.
+
 ## Safety
 
 - Do not read, print, copy, commit, or upload real API keys, tokens, cookies, sessions, or private auth files.
