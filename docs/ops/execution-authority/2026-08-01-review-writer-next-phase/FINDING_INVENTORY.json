@@ -2,10 +2,10 @@
   "schema_version": "review-writer-next-phase-finding-inventory.v1",
   "spec_id": "review-writer-next-phase-2026-08-01",
   "continuation_spec_id": "review-writer-next-phase-continuation-2026-08-02",
-  "recorded_against_code_head": "9c0d0811dc69334f39f672e0102ca319f88ef27d",
-  "inventory_status": "PENDING_INDEPENDENT_REVIEW_ATTEMPT_1",
+  "recorded_against_code_head": "0d7395402cd052956d959e39091912fecc0d991e",
+  "inventory_status": "READY_FOR_CURRENT_HEAD_READ_ONLY_DISPOSITION",
   "new_finding_policy": "Only an Approved-Spec P0/P1 with current evidence, one stop line, affected paths, acceptance evidence, one Owner, one fresh Reviewer, and at most two attempts may be added; everything else is MVP_BACKLOG.",
-  "sole_next_action_id": "NP-CAN-RECEIPT-001",
+  "sole_next_action_id": "NP-INP-001",
   "parallel_read_only_action_ids": [],
   "closed_findings": [
     {
@@ -123,6 +123,47 @@
       "next_action": "Closed after independent Reviewer ACCEPT and current-tree integration; no further review or repair for this finding."
     },
     {
+      "finding_id": "NP-CAN-RECEIPT-001",
+      "approved_spec_class": "mandatory input hash binding/currentness",
+      "severity": "P1",
+      "title": "Bind receipt hash to the PDF bytes actually published inside the project",
+      "status": "INTEGRATED_ACCEPTED",
+      "write_group": "dual_parse_bootstrap",
+      "source_review": "NP-CAN-001-REVIEW",
+      "candidate_tip": "8a7502eaec7a2e7ea881a5a7de8adeff6d784694",
+      "review_attempt": 1,
+      "attempts_used": 1,
+      "max_attempts": 2,
+      "reviewed_base": "59a730b7bee7c457ff10eb2bf765149dec255fcf",
+      "reviewed_tip": "0285883b1ab629bd6aa224a07b5994d10fd78e20",
+      "reviewer": "fresh read-only Luna 5.6 max Reviewer",
+      "reviewer_disposition": "ACCEPT",
+      "reviewer_reported_evidence": "ACCEPT; successful receipt descriptor sha/size equal the project PDF; anchor receipt_sha256 matches; after copy2 mutation returns SOURCE_PDF_HASH_MISMATCH with no target, anchor, staging, or quarantine residue; zero writes.",
+      "reviewer_reported_focused_test": "31 passed",
+      "source_commit": "0285883b1ab629bd6aa224a07b5994d10fd78e20",
+      "source_parent": "59a730b7bee7c457ff10eb2bf765149dec255fcf",
+      "integration_commit": "0d7395402cd052956d959e39091912fecc0d991e",
+      "integration_parent": "b5e305d6deba2ec62be69c8143923ddbcbdf413a",
+      "source_to_integration": [
+        {
+          "source": "0285883b1ab629bd6aa224a07b5994d10fd78e20",
+          "integration": "0d7395402cd052956d959e39091912fecc0d991e"
+        }
+      ],
+      "integration_base": "b5e305d6deba2ec62be69c8143923ddbcbdf413a",
+      "integration_code_head": "0d7395402cd052956d959e39091912fecc0d991e",
+      "integration_fresh_test_command": "TMPDIR=/tmp PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider tests/test_dual_parse_bootstrap.py",
+      "integration_fresh_test": "31 passed in 0.64s",
+      "affected_paths": [
+        "review_writer/project/dual_parse_bootstrap.py",
+        "tests/test_dual_parse_bootstrap.py"
+      ],
+      "stop_line": "post-copy destination-byte hash/size validation, descriptor/receipt bind to verified destination bytes, zero-write cleanup",
+      "acceptance_test": "After copy2, mutate the destination; bootstrap must return SOURCE_PDF_HASH_MISMATCH or BOOTSTRAP_WRITE_FAILED and clean target, anchor, staging, and quarantine; on success the receipt/anchor hash must equal the actual PDF bytes inside the project.",
+      "candidate_tip_integrated": false,
+      "next_action": "Closed after independent Reviewer ACCEPT and current-tree integration; no further review or repair for this finding."
+    },
+    {
       "finding_id": "NP-ORCH-DISPOSITION-001",
       "approved_spec_class": "scheduler takeover and bounded termination",
       "severity": "P1",
@@ -155,66 +196,29 @@
   ],
   "active_findings": [
     {
-      "finding_id": "NP-CAN-RECEIPT-001",
-      "approved_spec_class": "mandatory input hash binding/currentness",
-      "severity": "P1",
-      "title": "Bind receipt hash to the PDF bytes actually published inside the project",
-      "status": "PENDING_INDEPENDENT_REVIEW_ATTEMPT_1",
-      "write_group": "dual_parse_bootstrap",
-      "source_review": "NP-CAN-001-REVIEW",
-      "candidate_tip": "8a7502eaec7a2e7ea881a5a7de8adeff6d784694",
-      "evidence": "dual_parse_bootstrap.py lines 331-361, 393-405, and 456-465 retain the pre-copy source hash without validating the destination bytes; reported fault injection BOOTSTRAP_RETURNED=dual-copy-mutated and RECEIPT_HASH_MATCHES_COPIED_BYTES=False.",
-      "affected_paths": [
-        "review_writer/project/dual_parse_bootstrap.py",
-        "tests/test_dual_parse_bootstrap.py"
-      ],
-      "owner": "a later fresh Repair Owner from the integration HEAD that contains the accepted NP-CAN-PUBLISH-001 repair",
-      "reviewer": "one fresh read-only Luna 5.6 max Reviewer",
-      "attempts_used": 1,
-      "max_attempts": 2,
-      "attempt_1": {
-        "attempt": "1/2",
-        "status_at_owner_handoff": "PENDING_INDEPENDENT_REVIEW_ATTEMPT_1",
-        "repair_commit": "0285883b1ab629bd6aa224a07b5994d10fd78e20",
-        "repair_parent": "59a730b7bee7c457ff10eb2bf765149dec255fcf",
-        "owner_red": "1 failed, 30 passed; DID NOT RAISE",
-        "owner_green": "31 passed",
-        "leader_fresh_focused": "31 passed in 0.47s",
-        "changed_paths": [
-          "review_writer/project/dual_parse_bootstrap.py",
-          "tests/test_dual_parse_bootstrap.py"
-        ],
-        "stop_line": "post-copy destination-byte hash/size validation, descriptor/receipt bind to verified destination bytes, zero-write cleanup",
-        "acceptance_test": "After copy2, mutate the destination; bootstrap must return SOURCE_PDF_HASH_MISMATCH or BOOTSTRAP_WRITE_FAILED and clean target, anchor, staging, and quarantine; on success the receipt/anchor hash must equal the actual PDF bytes inside the project.",
-        "review_contract": {
-          "reviewer": "fresh read-only Luna 5.6 max Reviewer",
-          "review_base": "59a730b7bee7c457ff10eb2bf765149dec255fcf",
-          "review_tip": "0285883b1ab629bd6aa224a07b5994d10fd78e20",
-          "immutable_delta": "59a730b7bee7c457ff10eb2bf765149dec255fcf..0285883b1ab629bd6aa224a07b5994d10fd78e20",
-          "review_paths": [
-            "review_writer/project/dual_parse_bootstrap.py",
-            "tests/test_dual_parse_bootstrap.py"
-          ],
-          "review_stop_line": "post-copy destination-byte hash/size validation, descriptor/receipt bind to verified destination bytes, zero-write cleanup",
-          "write_permission": "NONE"
-        }
-      },
-      "stop_line": "post-copy destination-byte hash/size validation, descriptor/receipt bind to verified destination bytes, zero-write cleanup",
-      "acceptance_test": "After copy2, mutate the destination; bootstrap must return SOURCE_PDF_HASH_MISMATCH or BOOTSTRAP_WRITE_FAILED and clean target, anchor, staging, and quarantine; on success the receipt/anchor hash must equal the actual PDF bytes inside the project.",
-      "ready_from_code_head": "9c0d0811dc69334f39f672e0102ca319f88ef27d",
-      "sole_next_action": true,
-      "next_action": "One fresh read-only Luna 5.6 max Reviewer must inspect only the immutable delta 59a730b7bee7c457ff10eb2bf765149dec255fcf..0285883b1ab629bd6aa224a07b5994d10fd78e20, limited to review_writer/project/dual_parse_bootstrap.py and tests/test_dual_parse_bootstrap.py and the post-copy destination-byte hash/size validation, descriptor/receipt bind to verified destination bytes, and zero-write cleanup stop line; Reviewer write permission is NONE."
-    },
-    {
       "finding_id": "NP-INP-001",
       "approved_spec_class": "mandatory Generic SI binding/currentness",
       "severity": "P1",
       "title": "Bind real Generic SI artifacts per study instead of deriving readiness from study count",
-      "status": "OPEN_AFTER_CANONICAL_REVIEW",
+      "status": "READY_FOR_CURRENT_HEAD_READ_ONLY_DISPOSITION",
       "write_group": "dual_parse_bootstrap",
       "source_attempt": "23813a2ebe7e4d9587c5ec34a2a1b69e6b89df86",
       "source_attempt_policy": "REFERENCE_ONLY_DO_NOT_CHERRY_PICK",
-      "stop_line": "Generic SI artifact identity, hash, and current binding"
+      "stop_line": "Generic SI artifact identity, hash, and current binding",
+      "attempts_used": 0,
+      "max_attempts": 2,
+      "ready_from_code_head": "0d7395402cd052956d959e39091912fecc0d991e",
+      "current_head_disposition": {
+        "status": "PENDING",
+        "reviewer": "fresh read-only Luna 5.6 max Reviewer",
+        "write_permission": "NONE",
+        "scope": "仅确认 Generic SI readiness 是否仍由 study count 推导而没有真实 per-study Generic SI artifact identity/hash/current binding",
+        "historical_reference": "23813a2ebe7e4d9587c5ec34a2a1b69e6b89df86",
+        "historical_reference_policy": "REFERENCE_ONLY_DO_NOT_CHERRY_PICK",
+        "attempts_used": 0
+      },
+      "sole_next_action": true,
+      "next_action": "One fresh read-only Luna 5.6 max Reviewer must inspect the current code HEAD 0d7395402cd052956d959e39091912fecc0d991e only to disposition whether Generic SI readiness is still derived from study count without real per-study Generic SI artifact identity/hash/current binding; no implementation, no cherry-pick, and historical 23813a2ebe7e4d9587c5ec34a2a1b69e6b89df86 remains REFERENCE_ONLY_DO_NOT_CHERRY_PICK."
     },
     {
       "finding_id": "NP-INP-002",
@@ -277,7 +281,8 @@
     },
     {
       "commit": "23813a2ebe7e4d9587c5ec34a2a1b69e6b89df86",
-      "reason": "broad variable-N attempt reviewed HOLD; use only as evidence for the five bounded Input findings"
+      "reason": "broad variable-N attempt reviewed HOLD; use only as evidence for the five bounded Input findings; REFERENCE_ONLY_DO_NOT_CHERRY_PICK",
+      "policy": "REFERENCE_ONLY_DO_NOT_CHERRY_PICK"
     }
   ],
   "safety_flags": {
