@@ -254,6 +254,7 @@ def test_generic_binding_builds_all_current_source_truth_and_parse_gates(tmp_pat
     ("mutation", "code"),
     [
         ("missing", "GENERIC_SOURCE_BINDING_INVALID"),
+        ("alias_only", "GENERIC_SOURCE_BINDING_INVALID"),
         ("invalid_format", "GENERIC_SOURCE_BINDING_INVALID"),
         ("conflict", "GENERIC_SOURCE_BINDING_INVALID"),
         ("mismatch", "GENERIC_SOURCE_PDF_HASH_MISMATCH"),
@@ -270,6 +271,8 @@ def test_generic_binding_rejects_completed_source_provenance_zero_write(
     row = manifest["completed"][0]
     if mutation == "missing":
         row.pop("source_pdf_sha256")
+    elif mutation == "alias_only":
+        row["pdf_sha256"] = row.pop("source_pdf_sha256")
     elif mutation == "invalid_format":
         row["source_pdf_sha256"] = "g" * 64
     elif mutation == "conflict":

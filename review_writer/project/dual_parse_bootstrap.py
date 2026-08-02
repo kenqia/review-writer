@@ -28,7 +28,6 @@ class DualParseBootstrapError(ValueError):
         self.code = code
 
 
-GENERIC_SOURCE_DIGEST_KEYS = ("source_pdf_sha256", "pdf_sha256")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -45,17 +44,22 @@ def _sha256(path: Path) -> str:
 
 
 def _generic_source_pdf_sha256(row: dict[str, Any]) -> str:
-    values = [row[key] for key in GENERIC_SOURCE_DIGEST_KEYS if key in row]
+    source_pdf_sha256 = row.get("source_pdf_sha256")
+    pdf_sha256 = row.get("pdf_sha256")
     if (
-        not values
-        or any(
-            not isinstance(value, str) or SHA256_RE.fullmatch(value) is None
-            for value in values
+        not isinstance(source_pdf_sha256, str)
+        or SHA256_RE.fullmatch(source_pdf_sha256) is None
+        or (
+            "pdf_sha256" in row
+            and (
+                not isinstance(pdf_sha256, str)
+                or SHA256_RE.fullmatch(pdf_sha256) is None
+                or pdf_sha256 != source_pdf_sha256
+            )
         )
-        or len(set(values)) != 1
     ):
         raise DualParseBootstrapError("GENERIC_SOURCE_BINDING_INVALID")
-    return values[0]
+    return source_pdf_sha256
 
 
 def _regular_input(path: Path) -> bool:
