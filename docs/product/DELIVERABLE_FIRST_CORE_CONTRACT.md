@@ -151,6 +151,37 @@ counter-evidence, outliers, heterogeneity/comparability conditions, mechanism
 evidence level, and applicability boundary. It must not collapse absence,
 conflict, or non-comparability into a positive aggregate conclusion.
 
+Each of the five matrices must disposition every study in the frozen Source
+Manifest exactly once for that Review Question. NOT_APPLICABLE requires a
+recorded reason. The examined set is the complete frozen study-ID set, and every
+reported denominator is mechanically derived from those complete dispositions,
+never entered as an unsupported manual count. When the examined set contains
+no counter-evidence, record NONE_FOUND_IN_BOUNDED_CORPUS together with the exact
+examined_set; never write an unbounded claim that no counter-evidence exists.
+
+Every material claim also records one executable epistemic level and uses only
+the corresponding language:
+
+1. EXPERIMENTAL_OBSERVATION: a directly reported result under named conditions.
+   Allowed language is limited to reports, observes, or measured under those
+   conditions.
+2. AUTHOR_INTERPRETATION_OR_PROPOSED_MECHANISM: the source authors' explanation
+   without sufficient direct support. Attribute it explicitly with propose,
+   suggest, or interpret; never restate it as an established mechanism.
+3. EXPERIMENTALLY_SUPPORTED_MECHANISM: named experiments support a mechanism
+   with recorded alternatives and limitations. Use supports or is consistent
+   with under the tested conditions, not proved or universally causal.
+4. CROSS_STUDY_SYNTHESIS_OR_UNRESOLVED: a synthesis over the explicitly
+   comparable examined set. Use converges across the examined set only when
+   support and counter-evidence are dispositioned; otherwise state mixed,
+   heterogeneous, non-comparable, or unresolved.
+
+The words proved, causal, general, superior, and consensus are prohibited unless
+the claim has a comparable multi-study set, complete counter-evidence
+disposition, and a current real-researcher decision authorizing that exact
+language. Without all three, the claim must use the qualified/provisional
+language above or remain BLOCKED.
+
 Claim strength must never exceed evidence strength. The claim/source audit
 reports evidence-strength mismatches, and the required mismatch count is zero.
 
