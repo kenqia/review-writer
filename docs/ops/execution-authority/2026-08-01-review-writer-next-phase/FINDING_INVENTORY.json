@@ -3,9 +3,9 @@
   "spec_id": "review-writer-next-phase-2026-08-01",
   "continuation_spec_id": "review-writer-next-phase-continuation-2026-08-02",
   "recorded_against_code_head": "24625585d066fd7e8a96c2e2701bd77d19c0077a",
-  "inventory_status": "FROZEN_PRE_CODE_FREEZE",
+  "inventory_status": "CANONICAL_REVIEW_HOLD",
   "new_finding_policy": "Only an Approved-Spec P0/P1 with current evidence, one stop line, affected paths, acceptance evidence, one Owner, one fresh Reviewer, and at most two attempts may be added; everything else is MVP_BACKLOG.",
-  "sole_next_action_id": "NP-CAN-001-REVIEW",
+  "sole_next_action_id": "NP-CAN-PUBLISH-001",
   "closed_findings": [
     {
       "finding_id": "NP-SAFE-001",
@@ -40,16 +40,11 @@
       "title": "Fail closed persisted variable-N corpus count",
       "status": "INTEGRATED_ACCEPTED",
       "integration_commit": "24625585d066fd7e8a96c2e2701bd77d19c0077a"
-    }
-  ],
-  "active_findings": [
+    },
     {
       "finding_id": "NP-CAN-001-REVIEW",
-      "approved_spec_class": "mandatory input binding/currentness and fresh-project isolation",
-      "severity": "P1",
       "title": "Independently review canonical anchor transactional publication chain",
-      "status": "PENDING_INDEPENDENT_REVIEW",
-      "write_group": "dual_parse_bootstrap",
+      "status": "REVIEW_COMPLETED_HOLD",
       "candidate_chain": {
         "base": "acc550df8727665d94df496a0532ffc9089a6102",
         "ordered_commits": [
@@ -58,13 +53,58 @@
         ],
         "tip": "8a7502eaec7a2e7ea881a5a7de8adeff6d784694"
       },
+      "reviewer": "fresh read-only Luna 5.6 max",
+      "reviewer_reported_checks": "MANIFEST 7/7 OK; candidate TIP focused tests 27 passed",
+      "hold_finding_ids": [
+        "NP-CAN-PUBLISH-001",
+        "NP-CAN-RECEIPT-001"
+      ]
+    }
+  ],
+  "active_findings": [
+    {
+      "finding_id": "NP-CAN-PUBLISH-001",
+      "approved_spec_class": "mandatory input binding/currentness and fresh-project isolation",
+      "severity": "P1",
+      "title": "Publish canonical anchor without TOCTOU overwrite or competing-anchor cleanup",
+      "status": "READY_FOR_REPAIR_OWNER_ATTEMPT_1",
+      "write_group": "dual_parse_bootstrap",
+      "source_review": "NP-CAN-001-REVIEW",
+      "candidate_tip": "8a7502eaec7a2e7ea881a5a7de8adeff6d784694",
+      "candidate_chain_policy": "May be transplanted only inside the isolated repair branch based on the latest integration HEAD; never integrate the HOLD tip unchanged.",
+      "evidence": "dual_parse_bootstrap.py lines 146-160, 456-465, and 473-484 use unconditional os.replace after a precheck and cleanup based only on the startup snapshot; reported fault injection COMPETING_ANCHOR_RETAINED=False.",
       "affected_paths": [
         "review_writer/project/dual_parse_bootstrap.py",
         "tests/test_dual_parse_bootstrap.py"
       ],
-      "reviewer": "fresh read-only Luna 5.6 max",
-      "stop_line": "canonical external anchor, receipt binding, and transactional publication only",
-      "next_action": "Review BASE..TIP as an immutable two-commit chain; do not compare current integration HEAD..TIP as a replacement tree."
+      "owner": "one fresh Repair Owner from the latest verified integration HEAD",
+      "reviewer": "one later fresh read-only Luna 5.6 max Reviewer",
+      "attempts_used": 0,
+      "max_attempts": 2,
+      "stop_line": "exclusive canonical-anchor reservation, ownership-aware rollback, and paired target/anchor publication only",
+      "acceptance_test": "Run concurrent bootstrap or inject an anchor after the precheck: at most one bootstrap succeeds; a competing anchor is never overwritten or deleted; target and the winning anchor are published as a pair or neither remains.",
+      "next_action": "Create one isolated repair worktree from the current integration HEAD, reproduce RED, make the minimal P1-1 repair, run focused GREEN, and commit locally for independent review."
+    },
+    {
+      "finding_id": "NP-CAN-RECEIPT-001",
+      "approved_spec_class": "mandatory input hash binding/currentness",
+      "severity": "P1",
+      "title": "Bind receipt hash to the PDF bytes actually published inside the project",
+      "status": "SERIALIZED_AFTER_NP-CAN-PUBLISH-001",
+      "write_group": "dual_parse_bootstrap",
+      "source_review": "NP-CAN-001-REVIEW",
+      "candidate_tip": "8a7502eaec7a2e7ea881a5a7de8adeff6d784694",
+      "evidence": "dual_parse_bootstrap.py lines 331-361, 393-405, and 456-465 retain the pre-copy source hash without validating the destination bytes; reported fault injection BOOTSTRAP_RETURNED=dual-copy-mutated and RECEIPT_HASH_MATCHES_COPIED_BYTES=False.",
+      "affected_paths": [
+        "review_writer/project/dual_parse_bootstrap.py",
+        "tests/test_dual_parse_bootstrap.py"
+      ],
+      "owner": "a later fresh Repair Owner from the integration HEAD that contains the accepted NP-CAN-PUBLISH-001 repair",
+      "reviewer": "one later fresh read-only Luna 5.6 max Reviewer",
+      "attempts_used": 0,
+      "max_attempts": 2,
+      "stop_line": "post-copy destination-byte hash validation and zero-write rollback only",
+      "acceptance_test": "If a PDF changes during copy, bootstrap returns hash mismatch or write failure and removes target, anchor, and staging; on success every receipt hash equals the corresponding PDF bytes inside the published project."
     },
     {
       "finding_id": "NP-INP-001",

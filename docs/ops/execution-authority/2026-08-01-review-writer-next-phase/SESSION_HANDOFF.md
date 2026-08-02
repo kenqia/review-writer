@@ -1,19 +1,19 @@
 # Review-Writer Next Phase Session Handoff
 
-Status: `READY_FOR_FRESH_SESSION`
+Status: `READY_FOR_FRESH_REPAIR_OWNER`
 
-Session epoch: `1`
+Session epoch: `2`
 
-Role: `Continuation Authority Persistence`
+Role: `C1 Canonical Review HOLD Disposition`
 
-Context compactions in this persistence session: `0`
+Context compactions in this Coordinator session: `0`
 
 ## Start and authority state
 
 ```text
-STARTED_FROM_HEAD=24625585d066fd7e8a96c2e2701bd77d19c0077a
+STARTED_FROM_HEAD=54dbef846aaf7a621e72572cc7f21ffda0c6d223
 CODE_HEAD=24625585d066fd7e8a96c2e2701bd77d19c0077a
-HANDOFF_HEAD_POLICY=use the current descendant docs-only HEAD after MANIFEST verification; code tree must match CODE_HEAD
+HANDOFF_HEAD_POLICY=use the current descendant docs-only HOLD-disposition HEAD after MANIFEST verification; code tree must still match CODE_HEAD
 INTEGRATION_BRANCH=codex/review-writer-next-phase-integration
 INTEGRATION_WORKTREE=/home/kenqia/my_folder/review-writer/.worktrees/review-writer-next-phase-integration
 WORKTREE_CLEAN_AT_START=true
@@ -27,9 +27,9 @@ USER_INPUT_REQUESTED=false
 USER_ACTIONS_AFTER_T0=0
 ```
 
-The new docs-only continuation commit changes Git HEAD but not the code tree. A
-receiver must verify that current HEAD descends from `CODE_HEAD`, the manifest
-passes, and no later code commit exists without a matching handoff update.
+The HOLD-disposition commit changes Git HEAD but not the code tree. A receiver
+must verify that current HEAD descends from `CODE_HEAD`, the manifest passes, and
+no later code commit exists without a matching handoff update.
 
 ## Integrated at the code head
 
@@ -41,22 +41,25 @@ SCHEDULER_LINEAGE_INTEGRATION=fa5cef88b151a78bab266df5f9ee6422c1334d8b
 CORPUS_COUNT_INTEGRATION=24625585d066fd7e8a96c2e2701bd77d19c0077a
 ```
 
-## Reported checks tied to the stopped Coordinator
-
-These results came from the stopped Coordinator report and must not be presented
-as fresh for a later code HEAD without rerun:
+## C1 Reviewer result and evidence boundary
 
 ```text
-FOCUSED_TESTS_REPORTED=19 passed, 1 warning
-SCHEDULER_TESTS_REPORTED=44 passed
-AGENT_ORCHESTRATION_CHECK_REPORTED=PASS
-SMOKE_REPORTED=PASS
-QUALITY_CHECK_REPORTED=PASS
+REVIEW_RESULT=HOLD
+REVIEWED_BASE=acc550df8727665d94df496a0532ffc9089a6102
+REVIEWED_TIP=8a7502eaec7a2e7ea881a5a7de8adeff6d784694
+REVIEWER_MANIFEST_REPORTED=7/7 OK
+REVIEWER_TIP_FOCUSED_TESTS_REPORTED=27 passed
+COORDINATOR_MANIFEST_AT_START=7/7 OK
+INTEGRATION_CODE_CHANGED=false
 ```
+
+The Reviewer test count is reported evidence tied to the rejected candidate TIP,
+not fresh evidence for a future repair. The Coordinator independently inspected
+the cited code and confirmed both findings are technically present.
 
 ## Pending state
 
-Immediate immutable candidate chain:
+The immutable candidate chain is `HOLD` and must not be integrated unchanged:
 
 ```text
 CANDIDATE_BASE=acc550df8727665d94df496a0532ffc9089a6102
@@ -64,7 +67,20 @@ CANDIDATE_COMMIT_1=f754f07065b7cf65dd7fcf75925105933fd23616
 CANDIDATE_COMMIT_2=8a7502eaec7a2e7ea881a5a7de8adeff6d784694
 CANDIDATE_TIP=8a7502eaec7a2e7ea881a5a7de8adeff6d784694
 CANDIDATE_PATHS=review_writer/project/dual_parse_bootstrap.py,tests/test_dual_parse_bootstrap.py
-REVIEW_STATUS=PENDING_INDEPENDENT_READ_ONLY_REVIEW
+REVIEW_STATUS=HOLD
+CANDIDATE_DIRECT_INTEGRATION=FORBIDDEN
+```
+
+Frozen repair order:
+
+```text
+SOLE_NEXT_ACTION_ID=NP-CAN-PUBLISH-001
+P1_1_STATUS=READY_FOR_REPAIR_OWNER_ATTEMPT_1
+P1_1_STOP_LINE=exclusive anchor reservation, ownership-aware rollback, paired target/anchor publication
+P1_2_ID=NP-CAN-RECEIPT-001
+P1_2_STATUS=SERIALIZED_AFTER_NP-CAN-PUBLISH-001
+WRITE_GROUP=dual_parse_bootstrap
+OWNED_PATHS=review_writer/project/dual_parse_bootstrap.py,tests/test_dual_parse_bootstrap.py
 ```
 
 Reference-only or pending-disposition commits, never direct cherry-pick targets:
@@ -82,14 +98,15 @@ Active finding IDs and their stop lines are authoritative only in
 
 ## Sole next action
 
-Launch exactly one fresh, independent, read-only Luna 5.6 max code Reviewer for
-`acc550df8727665d94df496a0532ffc9089a6102..8a7502eaec7a2e7ea881a5a7de8adeff6d784694`.
-The Reviewer evaluates only canonical external-anchor binding and transactional
-publication in the two owned files. It must not compare current integration
-`HEAD..TIP` as a replacement tree and must make zero writes.
+Launch exactly one fresh Repair Owner for `NP-CAN-PUBLISH-001`. The Owner creates
+an isolated worktree and branch from the latest verified integration HEAD; the
+integration worktree remains untouched. The rejected candidate chain may be
+transplanted only inside that repair branch as implementation context and must be
+followed by a RED test and the minimal P1-1 repair.
 
-Expected result: `ACCEPT` or numbered `HOLD` P0/P1 findings with evidence,
-affected paths, and acceptance tests.
+The Owner must not fix, suppress, or claim closure of `NP-CAN-RECEIPT-001`. It
+returns one local commit chain, exact parent, focused RED/GREEN evidence, clean
+status, and a bounded handoff for one later fresh read-only Luna Reviewer.
 
 ## Required receiver startup
 
@@ -99,12 +116,18 @@ affected paths, and acceptance tests.
    `FINDING_INVENTORY.json`, and this handoff.
 4. Verify current HEAD, ancestry from `CODE_HEAD`, clean status, and no active Git
    operation or competing integration writer.
-5. State the sole next action and stop line before dispatch.
+5. Create a new repair worktree from that exact integration HEAD; do not edit the
+   integration worktree.
+6. State `NP-CAN-PUBLISH-001` and its stop line, reproduce RED, then repair only
+   that finding.
 
 ## Forbidden next actions
 
-- no implementation, cherry-pick, code review expansion, or new repair branch
-  before the canonical Reviewer result;
+- no writes in the integration worktree and no direct integration of the rejected
+  candidate TIP;
+- no repair of `NP-CAN-RECEIPT-001` in the P1-1 Owner session;
+- no second repair attempt or new finding without a fresh independent Reviewer
+  result and Coordinator disposition;
 - no corpus request, T0, project bootstrap, Dashboard/runtime claim, or Playwright;
 - no direct integration of any reference-only candidate;
 - no push, deploy, remote write, issue filing, external sync, worktree cleanup,
