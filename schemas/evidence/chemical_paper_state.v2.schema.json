@@ -104,7 +104,7 @@
     "element_review": {
       "type": "object", "additionalProperties": false,
       "required": ["molecule_id", "prior_state", "state", "prior_counts", "reviewed_counts", "actor", "reason", "recorded_at", "bound_import_digest", "bound_molecule_digest", "prior_event_digest", "event_digest"],
-      "properties": {"molecule_id": {"$ref": "#/$defs/id"}, "prior_state": {"enum": ["not_reviewed", "confirmed", "corrected", "not_applicable"]}, "state": {"enum": ["confirmed", "corrected", "not_applicable"]}, "prior_counts": {"$ref": "#/$defs/counts"}, "reviewed_counts": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/counts"}]}, "actor": {"$ref": "#/$defs/actor"}, "reason": {"type": "string", "minLength": 1}, "recorded_at": {"type": "string", "minLength": 1}, "bound_import_digest": {"$ref": "#/$defs/sha256"}, "bound_molecule_digest": {"$ref": "#/$defs/sha256"}, "prior_event_digest": {"$ref": "#/$defs/nullable_sha256"}, "event_digest": {"$ref": "#/$defs/sha256"}}
+      "properties": {"molecule_id": {"$ref": "#/$defs/id"}, "prior_state": {"enum": ["not_reviewed", "confirmed", "corrected", "not_applicable"]}, "state": {"enum": ["confirmed", "corrected", "not_applicable"]}, "prior_counts": {"$ref": "#/$defs/counts"}, "reviewed_counts": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/counts"}]}, "actor": {"$ref": "#/$defs/actor"}, "reason": {"type": "string", "minLength": 1}, "recorded_at": {"type": "string", "minLength": 1}, "bound_import_digest": {"$ref": "#/$defs/sha256"}, "bound_molecule_digest": {"$ref": "#/$defs/sha256"}, "bound_resolution_event_digest": {"$ref": "#/$defs/nullable_sha256"}, "prior_event_digest": {"$ref": "#/$defs/nullable_sha256"}, "event_digest": {"$ref": "#/$defs/sha256"}}
     }
   }
 }
