@@ -1,0 +1,169 @@
+{
+  "schema_version": "review-writer-next-phase-finding-inventory.v1",
+  "spec_id": "review-writer-next-phase-2026-08-01",
+  "continuation_spec_id": "review-writer-next-phase-continuation-2026-08-02",
+  "recorded_against_code_head": "24625585d066fd7e8a96c2e2701bd77d19c0077a",
+  "inventory_status": "FROZEN_PRE_CODE_FREEZE",
+  "new_finding_policy": "Only an Approved-Spec P0/P1 with current evidence, one stop line, affected paths, acceptance evidence, one Owner, one fresh Reviewer, and at most two attempts may be added; everything else is MVP_BACKLOG.",
+  "sole_next_action_id": "NP-CAN-001-REVIEW",
+  "closed_findings": [
+    {
+      "finding_id": "NP-SAFE-001",
+      "title": "Reject symlinked external PDF path components",
+      "status": "INTEGRATED_ACCEPTED",
+      "source_commit": "24c85348450a1a43b4feae4b748f950a4c16cf0c",
+      "integration_commit": "7fa882d2600647f7613dd23a22e4698c373d6f8d"
+    },
+    {
+      "finding_id": "NP-GENERIC-001",
+      "title": "Bind Generic rows to mandatory source PDF provenance",
+      "status": "INTEGRATED_ACCEPTED",
+      "source_commits": [
+        "11e25165b7c1b81e53d45f99f3888fef73376eae",
+        "69303eecf8a7d8adb562828b69375cce2e4c0e77"
+      ],
+      "integration_commits": [
+        "1c573a17b01aa4e43345b0f486cbdaa49f9ad621",
+        "acc550df8727665d94df496a0532ffc9089a6102"
+      ]
+    },
+    {
+      "finding_id": "NP-ORCH-001",
+      "title": "Persist scheduler source lineage safely",
+      "status": "INTEGRATED_ACCEPTED",
+      "source_commit": "ee85fab388c70d5c82b82181edefe81bb42868d5",
+      "integration_commit": "fa5cef88b151a78bab266df5f9ee6422c1334d8b",
+      "stable_patch_id": "fe2459b62e1ec4c0dce3be92732bc1e1f3cf610c"
+    },
+    {
+      "finding_id": "NP-ORCH-COUNT-001",
+      "title": "Fail closed persisted variable-N corpus count",
+      "status": "INTEGRATED_ACCEPTED",
+      "integration_commit": "24625585d066fd7e8a96c2e2701bd77d19c0077a"
+    }
+  ],
+  "active_findings": [
+    {
+      "finding_id": "NP-CAN-001-REVIEW",
+      "approved_spec_class": "mandatory input binding/currentness and fresh-project isolation",
+      "severity": "P1",
+      "title": "Independently review canonical anchor transactional publication chain",
+      "status": "PENDING_INDEPENDENT_REVIEW",
+      "write_group": "dual_parse_bootstrap",
+      "candidate_chain": {
+        "base": "acc550df8727665d94df496a0532ffc9089a6102",
+        "ordered_commits": [
+          "f754f07065b7cf65dd7fcf75925105933fd23616",
+          "8a7502eaec7a2e7ea881a5a7de8adeff6d784694"
+        ],
+        "tip": "8a7502eaec7a2e7ea881a5a7de8adeff6d784694"
+      },
+      "affected_paths": [
+        "review_writer/project/dual_parse_bootstrap.py",
+        "tests/test_dual_parse_bootstrap.py"
+      ],
+      "reviewer": "fresh read-only Luna 5.6 max",
+      "stop_line": "canonical external anchor, receipt binding, and transactional publication only",
+      "next_action": "Review BASE..TIP as an immutable two-commit chain; do not compare current integration HEAD..TIP as a replacement tree."
+    },
+    {
+      "finding_id": "NP-INP-001",
+      "approved_spec_class": "mandatory Generic SI binding/currentness",
+      "severity": "P1",
+      "title": "Bind real Generic SI artifacts per study instead of deriving readiness from study count",
+      "status": "OPEN_AFTER_CANONICAL_REVIEW",
+      "write_group": "dual_parse_bootstrap",
+      "source_attempt": "23813a2ebe7e4d9587c5ec34a2a1b69e6b89df86",
+      "source_attempt_policy": "REFERENCE_ONLY_DO_NOT_CHERRY_PICK",
+      "stop_line": "Generic SI artifact identity, hash, and current binding"
+    },
+    {
+      "finding_id": "NP-INP-002",
+      "approved_spec_class": "mandatory input binding/currentness",
+      "severity": "P1",
+      "title": "Freeze CORE_STUDY_IDS and K inside the authoritative manifest digest",
+      "status": "OPEN_AFTER_CANONICAL_REVIEW",
+      "write_group": "input_provenance",
+      "source_attempt": "23813a2ebe7e4d9587c5ec34a2a1b69e6b89df86",
+      "source_attempt_policy": "REFERENCE_ONLY_DO_NOT_CHERRY_PICK",
+      "stop_line": "core-study identity, count, digest, and receipt consistency"
+    },
+    {
+      "finding_id": "NP-INP-003",
+      "approved_spec_class": "sensitive path and mandatory input safety",
+      "severity": "P1",
+      "title": "Reject traversal and symlink-parent input paths with zero authoritative writes",
+      "status": "OPEN_AFTER_CANONICAL_REVIEW",
+      "write_group": "input_provenance",
+      "source_attempt": "23813a2ebe7e4d9587c5ec34a2a1b69e6b89df86",
+      "source_attempt_policy": "REFERENCE_ONLY_DO_NOT_CHERRY_PICK",
+      "stop_line": "formal corpus input path containment and zero-write failure"
+    },
+    {
+      "finding_id": "NP-INP-004",
+      "approved_spec_class": "cross-study input reuse and hash mismatch",
+      "severity": "P1",
+      "title": "Reject cross-study SI and Chemical byte reuse, not only duplicate paths",
+      "status": "OPEN_AFTER_CANONICAL_REVIEW",
+      "write_group": "input_provenance",
+      "source_attempt": "23813a2ebe7e4d9587c5ec34a2a1b69e6b89df86",
+      "source_attempt_policy": "REFERENCE_ONLY_DO_NOT_CHERRY_PICK",
+      "stop_line": "per-study SI and Chemical path plus digest uniqueness"
+    },
+    {
+      "finding_id": "NP-INP-005",
+      "approved_spec_class": "mandatory input zero-write failure",
+      "severity": "P1",
+      "title": "Remove Chemical preflight staging after every exception path",
+      "status": "OPEN_AFTER_CANONICAL_REVIEW",
+      "write_group": "input_provenance",
+      "source_attempt": "23813a2ebe7e4d9587c5ec34a2a1b69e6b89df86",
+      "source_attempt_policy": "REFERENCE_ONLY_DO_NOT_CHERRY_PICK",
+      "stop_line": "Chemical preflight staging cleanup without authoritative state mutation"
+    },
+    {
+      "finding_id": "NP-CAN-002",
+      "approved_spec_class": "fresh project isolation",
+      "severity": "P1",
+      "title": "Prove fresh bootstrap excludes old downstream state and binds the full receipt digest",
+      "status": "OPEN_AFTER_CANONICAL_REVIEW",
+      "write_group": "dual_parse_bootstrap",
+      "stop_line": "source-only fresh project publication and full receipt anchor"
+    },
+    {
+      "finding_id": "NP-ORCH-DISPOSITION-001",
+      "approved_spec_class": "scheduler takeover and bounded termination",
+      "severity": "P1",
+      "title": "Disposition stale scheduler alternatives against the current lineage implementation",
+      "status": "PENDING_READ_ONLY_DISPOSITION_AFTER_CANONICAL_REVIEW",
+      "write_group": "scheduler_contract",
+      "candidate_commits": [
+        "404650de5c77aa13ae05c638708c3b762716c45b",
+        "32d74ffee3d818f3b224023785fb714dcbf0a529",
+        "e3a0ac82324e52757aa960bd2e17b77981d0917f"
+      ],
+      "candidate_policy": "DO_NOT_CHERRY_PICK_OLD_PARENT; compare each bounded finding to current integration and close as superseded or create one current-head repair",
+      "stop_line": "persisted source resolution and bounded corpus-count parsing only"
+    }
+  ],
+  "reference_only_candidates": [
+    {
+      "commit": "7c4f3023155d92bb303b04320e44f88a3922270b",
+      "reason": "historical canonical-anchor alternative on an old scientific branch; not the immediate review target"
+    },
+    {
+      "commit": "23813a2ebe7e4d9587c5ec34a2a1b69e6b89df86",
+      "reason": "broad variable-N attempt reviewed HOLD; use only as evidence for the five bounded Input findings"
+    }
+  ],
+  "safety_flags": {
+    "pushed": false,
+    "deployed": false,
+    "remote_write": false,
+    "plan_checkbox_changed": false,
+    "old_worktree_cleanup_authorized": false,
+    "reset_or_checkout_discard_authorized": false,
+    "corpus_requested": false,
+    "t0_recorded": false
+  }
+}

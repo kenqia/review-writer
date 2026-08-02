@@ -3,6 +3,24 @@
 Status: `PRE_T0_PENDING_INPUT`
 Authority anchor: the local docs-only commit containing this record and the approved Spec copy.
 
+## Approved continuation control
+
+The Approved Spec remains immutable. The following process-only addendum was
+approved after the prior Coordinator stopped at a clean integration revision:
+
+```text
+CONTINUATION_STATUS=APPROVED_EXECUTION_CONTINUATION
+CONTINUATION_SPEC_PATH=docs/ops/execution-authority/2026-08-01-review-writer-next-phase/CONTINUATION_EXECUTION_SPEC.md
+CONTINUATION_BASE_CODE_HEAD=24625585d066fd7e8a96c2e2701bd77d19c0077a
+FINDING_INVENTORY_PATH=docs/ops/execution-authority/2026-08-01-review-writer-next-phase/FINDING_INVENTORY.json
+SESSION_HANDOFF_PATH=docs/ops/execution-authority/2026-08-01-review-writer-next-phase/SESSION_HANDOFF.md
+CORE_MANIFEST_PATH=docs/ops/execution-authority/2026-08-01-review-writer-next-phase/MANIFEST.sha256
+```
+
+The addendum may constrain session length, parallel execution, review shape, and
+handoff evidence. It cannot weaken, reinterpret, or expand any product, input,
+scientific, runtime, release, model, or safety requirement in the Approved Spec.
+
 ## Frozen Spec and revision facts
 
 ```text
@@ -73,7 +91,8 @@ OWNER_5_BOUNDARY=integrate four independently reviewed minimal commits, unified 
 OWNER_5_FORBIDDEN=new feature development, self-approval
 
 INDEPENDENT_REVIEWER=REQUIRED_SEPARATE_AGENT_SESSION
-INDEPENDENT_REVIEWER_MODEL=Sol 5.6 max
+CODE_CONTRACT_REVIEWER_MODEL=Luna 5.6 max
+PLAYWRIGHT_SCIENCE_BENCHMARK_REVIEWER_MODEL=Sol 5.6 max
 INDEPENDENT_REVIEWER_WRITE_PERMISSION=NONE
 REPAIR_OWNER_POLICY=only a new owner for one P0/P1 finding, with disjoint scope
 ```
@@ -81,6 +100,10 @@ REPAIR_OWNER_POLICY=only a new owner for one P0/P1 finding, with disjoint scope
 Each Owner must report its own bounded diff and fresh verification. The Reviewer is
 read-only and cannot approve its own work. The Coordinator integrates only after the
 Reviewer result is available.
+
+Session rotation, core-file verification, current-parent review, and concurrency
+rules are binding through `CONTINUATION_EXECUTION_SPEC.md`. A chat summary or a
+historical branch cannot override those persisted rules.
 
 ## Baseline evidence and immutable safety flags
 

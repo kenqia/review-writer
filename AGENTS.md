@@ -75,6 +75,16 @@ If a check cannot run because project data has not been created yet, report that
 - Parallel writing requires approved worktrees and a dedicated Integration Owner.
 - Read `docs/agent-orchestration/AGENT_OPERATING_MODEL.md` before launching orchestration work.
 
+## Session Health And Durable Handoff
+
+- A long-running Coordinator session owns one bounded phase, reserves time for verification and handoff, and must stop no later than 90 minutes. Prefer a fresh session before context compaction.
+- If context is compacted once, do not start new implementation, review dimensions, agents, or branches. Re-read the task's hash-bound core files, finish only the current atomic operation, persist a handoff, and stop. Continuing after a second compaction is prohibited.
+- Conversation summaries, branch names, historical handoffs, and Worker claims are not execution authority. At every new session and after compaction, verify the current Git HEAD, clean/dirty state, in-progress Git operations, core-file manifest, execution authority, finding inventory, and latest handoff before any write.
+- Only one Integration Coordinator may write the integration worktree. Only one named actor may write a mutable project. Parallel sessions require disjoint worktrees and disjoint path ownership; overlapping paths are serialized.
+- Total concurrency may not exceed the active task contract. Reviewers are fresh and read-only, and review immutable commits or explicitly bounded commit chains. They must not review a stale branch as if it were the current integrated tree.
+- Every accepted repair is integrated or explicitly parked with a reason during the same Coordinator session. New repairs start from the latest verified integration HEAD; recursive repair branches from historical parents are prohibited.
+- A handoff must name the exact code HEAD, commits and parents, checks run, unresolved finding IDs, sole next action, and forbidden actions. If an atomic clean handoff cannot be produced, stop as `DIRTY_HANDOFF_BLOCKED` without reset, checkout, discard, or cleanup.
+
 ## Mainline And Scope-Freeze Discipline
 
 - Keep the active acceptance objective on the critical path: code freeze, one fresh non-overwriting project, one complete independent browser run, then final artifact audit.

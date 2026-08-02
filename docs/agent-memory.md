@@ -41,3 +41,30 @@ Parallel session policy for future complete-loop work:
 - Fan out to the highest number of independent slots the host exposes, but do not parallelize two writers over the same worktree or the same mutable project. Reviewers remain read-only; only the named Owner writes its worktree.
 - Use `codex_app__wait_threads`/thread status for new sessions and collect each session's commit, parent, clean status, test counts, and READY/BLOCKED handoff before integration.
 - Model choice and parallelism never change the mainline stop rule: stabilize the contract, integrate once, run the prescribed gates once, then create a fresh project and fresh browser run.
+
+## 2026-08-02 — Rotate sessions before context compaction becomes authority drift
+
+The next-phase preparation expanded from four bounded Owner lanes into dozens of
+repair worktrees after long Coordinator sessions repeatedly reviewed historical
+parents and carried ACCEPT/HOLD state only in conversation context. Two context
+compactions were enough for the execution order and finding stop line to become
+unreliable even though the safety and scientific gates remained fail-closed.
+
+Reusable operating rule:
+
+1. Keep the Approved Spec immutable and place task-specific continuation rules,
+   finding status, and the sole next action in a small hash-bound core-file set.
+2. Give a Coordinator 75 minutes of active work plus 15 minutes for fresh checks
+   and handoff. Rotate earlier at a natural phase boundary.
+3. The first context compaction ends implementation for that session: re-read the
+   core files, complete only the current atomic operation, persist handoff, stop.
+   Never continue through a second compaction.
+4. Use at most the task-authorized concurrency, with one integration writer and
+   disjoint Owner paths. Parallelism is for independent lanes, not recursive
+   branches from stale parents.
+5. Review immutable deltas against their actual parent. After an ACCEPT, integrate
+   promptly and re-check the resulting current tree; do not treat a candidate's
+   missing sibling commits as defects in its bounded delta.
+6. Persist every unresolved P0/P1 in a frozen inventory. A new observation without
+   a Spec-authorized severity, failing evidence, stop line, and unique ID goes to
+   backlog rather than opening another repair tree.
