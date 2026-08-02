@@ -178,6 +178,39 @@ def test_current_variable_n_declared_count_out_of_range_fails_closed(
         ),
     ],
 )
+def test_current_variable_n_project_marker_rejection_does_not_project_legacy(
+    tmp_path: Path,
+    marker_mutation,
+    error_code: str,
+) -> None:
+    project = _scaled_core_project(tmp_path, core_count=1)
+    receipt_path = project / "00_sources/acquisition_final_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    marker_mutation(receipt)
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    with pytest.raises(ChemicalCompletionError) as exc_info:
+        project_chemical_completion_state(project)
+
+    assert exc_info.value.code == error_code
+
+
+@pytest.mark.parametrize(
+    ("marker_mutation", "error_code"),
+    [
+        (
+            lambda receipt: [
+                receipt.pop(key)
+                for key in ("corpus_kind", "variable_n", "study_count")
+            ],
+            "CHEMICAL_COMPLETION_PROJECT_MARKER_REQUIRED",
+        ),
+        (
+            lambda receipt: receipt.update({"study_count": 19}),
+            "CHEMICAL_COMPLETION_PROJECT_MARKER_INVALID",
+        ),
+    ],
+)
 def test_batch_marker_rejection_is_zero_write(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
