@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -22,6 +23,7 @@ from scheduler_contract import (  # noqa: E402
     SchedulerContractError,
     SchedulerSession,
     AttemptLimitExceeded,
+    LedgerCorrupt,
     immutable_task_digest,
 )
 
@@ -44,6 +46,215 @@ def _start_session(path: Path, label: str = "fresh-session-0") -> SchedulerSessi
         at=START,
     )
     return session
+
+
+def _write_source_bundle(root: Path) -> tuple[Path, Path]:
+    authority_path = root / "authority.txt"
+    authority_path.write_text(
+        "\n".join(
+            (
+                "SPEC_ID=review-writer-next-phase-2026-08-01",
+                "FROZEN_CODE_HEAD=" + "a" * 40,
+                "AUTHORITATIVE_PROJECT_ID=source-bound-project",
+                "CORPUS_STUDY_COUNT=24",
+                "CORE_STUDY_COUNT=3",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    run_state_path = root / "run-state.json"
+    run_state_path.write_text(
+        json.dumps(
+            {
+                "gates": {"SCALED_CODE_READY": "OK"},
+                "counts": {"CONFIRMED_COUNT": 17},
+                "artifacts": {"ARTIFACT_MANIFEST": "release/source-bound.json"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return authority_path, run_state_path
+
+
+def _seed_source_lineage(
+    ledger_path: Path,
+    authority_path: Path,
+    run_state_path: Path,
+    *,
+    authority_relative_path: str = "authority.txt",
+) -> None:
+    state = json.loads(ledger_path.read_text(encoding="utf-8"))
+    state["source_lineage"] = {
+        "authority": {
+            "relative_path": authority_relative_path,
+            "sha256": hashlib.sha256(authority_path.read_bytes()).hexdigest(),
+        },
+        "run_state": {
+            "relative_path": "run-state.json",
+            "sha256": hashlib.sha256(run_state_path.read_bytes()).hexdigest(),
+        },
+    }
+    ledger_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+
+
+def test_existing_ledger_invalid_persisted_source_is_zero_write(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "scheduler-ledger.json"
+    authority_path, run_state_path = _write_source_bundle(tmp_path)
+    _start_session(ledger_path)
+    _seed_source_lineage(ledger_path, authority_path, run_state_path)
+
+    state = json.loads(ledger_path.read_text(encoding="utf-8"))
+    state["source_lineage"]["authority"]["relative_path"] = "missing/authority.txt"
+    ledger_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    before = ledger_path.read_bytes()
+
+    with pytest.raises(LedgerCorrupt, match="source"):
+        SchedulerSession.open(ledger_path, session_label="fresh-session-1")
+
+    assert ledger_path.read_bytes() == before
+    assert not (tmp_path / "termination-report.txt").exists()
+    assert not (tmp_path / "handoffs").exists()
+
+
+def test_existing_ledger_configured_source_mismatch_is_zero_write(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "scheduler-ledger.json"
+    authority_path, run_state_path = _write_source_bundle(tmp_path)
+    configured_authority = tmp_path / "other-authority.txt"
+    configured_authority.write_bytes(authority_path.read_bytes())
+    _start_session(ledger_path)
+    _seed_source_lineage(ledger_path, authority_path, run_state_path)
+    before = ledger_path.read_bytes()
+
+    with pytest.raises(LedgerCorrupt, match="source"):
+        SchedulerSession.open(
+            ledger_path,
+            session_label="fresh-session-1",
+            authority_path=configured_authority,
+            run_state_path=run_state_path,
+        )
+
+    assert ledger_path.read_bytes() == before
+    assert not (tmp_path / "termination-report.txt").exists()
+    assert not (tmp_path / "handoffs").exists()
+
+
+def test_takeover_rejects_tampered_source_before_any_artifact_write(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "scheduler-ledger.json"
+    authority_path, run_state_path = _write_source_bundle(tmp_path)
+    _start_session(ledger_path)
+    _seed_source_lineage(ledger_path, authority_path, run_state_path)
+    fresh = SchedulerSession.open(ledger_path, session_label="fresh-session-1")
+
+    authority_path.write_text("tampered source\n", encoding="utf-8")
+    before = ledger_path.read_bytes()
+    before_artifacts = sorted(
+        path.relative_to(tmp_path).as_posix()
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    )
+
+    with pytest.raises(LedgerCorrupt, match="source"):
+        fresh.takeover(at=START + timedelta(minutes=1))
+
+    assert ledger_path.read_bytes() == before
+    assert sorted(
+        path.relative_to(tmp_path).as_posix()
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    ) == before_artifacts
+
+
+def test_nested_ledger_source_lineage_resolves_relative_to_ledger_root_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger_root = tmp_path / "state"
+    source_dir = ledger_root / "sources"
+    source_dir.mkdir(parents=True)
+    authority_path, run_state_path = _write_source_bundle(source_dir)
+    monkeypatch.chdir(tmp_path)
+
+    ledger_path = Path("state/scheduler-ledger.json")
+    session = SchedulerSession.open(
+        ledger_path,
+        session_label="fresh-session-0",
+        run_id="run-001",
+        authority_path=authority_path,
+        run_state_path=run_state_path,
+    )
+    assert session.read().get("source_lineage") == {
+        "authority": {
+            "relative_path": "sources/authority.txt",
+            "sha256": hashlib.sha256(authority_path.read_bytes()).hexdigest(),
+        },
+        "run_state": {
+            "relative_path": "sources/run-state.json",
+            "sha256": hashlib.sha256(run_state_path.read_bytes()).hexdigest(),
+        },
+    }
+
+    session.start_attempt(task_id="CONTENT-001", task_digest=_task_digest(), at=START)
+    restarted = SchedulerSession.open(ledger_path, session_label="fresh-session-1")
+    restarted.takeover(at=START + timedelta(minutes=1))
+    report = restarted.terminate(
+        reason_code="INPUT_BLOCKED",
+        blockers=["nested source replay"],
+        affected_objects=["CONTENT-001"],
+        completed_independent_work=["single source resolution"],
+        unique_recovery_action="reuse the persisted source lineage",
+        at=START + timedelta(minutes=2),
+    )
+
+    assert report.fields["AUTHORITATIVE_PROJECT_ID"] == "source-bound-project"
+    assert report.fields["SCALED_CODE_READY"] == "OK"
+
+
+def test_report_uses_persisted_source_bytes_over_caller_mappings(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "scheduler-ledger.json"
+    authority_path, run_state_path = _write_source_bundle(tmp_path)
+    session = SchedulerSession.open(
+        ledger_path,
+        session_label="fresh-session-0",
+        run_id="run-001",
+        authority_path=authority_path,
+        run_state_path=run_state_path,
+    )
+    session.start_attempt(task_id="CONTENT-001", task_digest=_task_digest(), at=START)
+
+    report = session.terminate(
+        reason_code="INPUT_BLOCKED",
+        blockers=["persisted source is authoritative"],
+        affected_objects=["CONTENT-001"],
+        completed_independent_work=["source lineage replay"],
+        unique_recovery_action="reuse the persisted source descriptor",
+        authority={
+            "FROZEN_CODE_HEAD": "b" * 40,
+            "AUTHORITATIVE_PROJECT_ID": "caller-mapping-must-not-win",
+            "CORPUS_STUDY_COUNT": 999,
+        },
+        run_state={
+            "gates": {"SCALED_CODE_READY": "FAILED"},
+            "counts": {"CONFIRMED_COUNT": 999},
+        },
+        at=START + timedelta(minutes=1),
+    )
+
+    assert report.fields["FROZEN_CODE_HEAD"] == "a" * 40
+    assert report.fields["AUTHORITATIVE_PROJECT_ID"] == "source-bound-project"
+    assert report.fields["CORPUS_STUDY_COUNT"] == 24
+    assert report.fields["SCALED_CODE_READY"] == "OK"
+    assert report.fields["CONFIRMED_COUNT"] == 17
+    assert report.lineage["FROZEN_CODE_HEAD"] == "authority:FROZEN_CODE_HEAD"
+    assert report.lineage["SCALED_CODE_READY"] == "run_state:gates.SCALED_CODE_READY"
 
 
 def test_two_fresh_sessions_take_over_from_persistent_ledger(tmp_path: Path) -> None:

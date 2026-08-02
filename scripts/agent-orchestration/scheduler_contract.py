@@ -108,6 +108,8 @@ _ARTIFACT_REF = re.compile(r"^[A-Za-z0-9._/-]+$")
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _CODE_HEAD = re.compile(r"^[0-9a-f]{40,64}$")
 _DIGEST_REF = re.compile(r"^sha256:[0-9a-f]{64}$")
+_SOURCE_KINDS = ("authority", "run_state")
+_SOURCE_LINEAGE_FIELDS = frozenset({"relative_path", "sha256"})
 _ARTIFACT_STATUS_WORDS = frozenset(
     {
         "ok",
@@ -321,6 +323,36 @@ def _validate_artifact_ref(value: str, kind: str) -> None:
         raise LedgerCorrupt(f"invalid relative {kind} artifact reference")
 
 
+def _validate_source_relative_path(value: Any, kind: str) -> str:
+    parts = value.split("/") if isinstance(value, str) else []
+    if (
+        not isinstance(value, str)
+        or not value
+        or value.startswith("/")
+        or "\\" in value
+        or not _ARTIFACT_REF.fullmatch(value)
+        or any(part in {"", ".", ".."} for part in parts)
+    ):
+        raise LedgerCorrupt(f"invalid relative {kind} source path")
+    return value
+
+
+def _read_bound_source(
+    path: Path,
+    *,
+    kind: str,
+    expected_sha256: str | None = None,
+) -> bytes:
+    try:
+        content = path.read_bytes()
+    except OSError as error:
+        raise LedgerCorrupt(f"{kind} source is missing or unreadable") from error
+    actual_sha256 = hashlib.sha256(content).hexdigest()
+    if expected_sha256 is not None and actual_sha256 != expected_sha256:
+        raise LedgerCorrupt(f"{kind} source digest differs from ledger")
+    return content
+
+
 def _key_variants(key: str) -> tuple[str, ...]:
     snake = key.lower()
     return (key, snake, snake.replace("_", "-"))
@@ -510,12 +542,16 @@ def _coerce_status_or_text(value: Any, *, issues: list[str]) -> str:
     return _safe_text(value, issues=issues, issue="RUN_STATE_VALUE_INVALID")
 
 
-def _load_authority(path: Path | None) -> tuple[dict[str, Any], list[str]]:
-    if path is None:
+def _load_authority(
+    path: Path | None,
+    *,
+    content: bytes | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    if path is None and content is None:
         return {}, ["AUTHORITY_UNKNOWN"]
     try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError:
+        raw = (content if content is not None else path.read_bytes()).decode("utf-8")
+    except (OSError, UnicodeDecodeError):
         return {}, ["AUTHORITY_UNKNOWN"]
     parsed: Any = _MISSING
     if raw.lstrip().startswith("{"):
@@ -541,12 +577,18 @@ def _load_authority(path: Path | None) -> tuple[dict[str, Any], list[str]]:
     return values, []
 
 
-def _load_run_state(path: Path | None) -> tuple[dict[str, Any], list[str]]:
-    if path is None:
+def _load_run_state(
+    path: Path | None,
+    *,
+    content: bytes | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    if path is None and content is None:
         return {}, ["RUN_STATE_UNKNOWN"]
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        payload = json.loads(
+            (content if content is not None else path.read_bytes()).decode("utf-8")
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return {}, ["RUN_STATE_UNKNOWN"]
     if not isinstance(payload, dict):
         return {}, ["RUN_STATE_UNKNOWN"]
@@ -641,6 +683,10 @@ def _new_state(run_id: str) -> dict[str, Any]:
             "RUNTIME_READY": "NOT_READY",
         },
         "user_actions_after_t0": 0,
+        "source_lineage": {
+            "authority": None,
+            "run_state": None,
+        },
         "termination_report_artifact": None,
         "termination_report_sha256": None,
         "termination_report_lineage": None,
@@ -664,6 +710,7 @@ def _validate_state(state: Mapping[str, Any]) -> None:
         "t0",
         "t0_gates",
         "user_actions_after_t0",
+        "source_lineage",
         "termination_report_artifact",
     }
     missing = required - set(state)
@@ -692,6 +739,18 @@ def _validate_state(state: Mapping[str, Any]) -> None:
         raise LedgerCorrupt("takeover count does not match takeover records")
     if not isinstance(state["user_actions_after_t0"], int) or state["user_actions_after_t0"] != 0:
         raise LedgerCorrupt("USER_ACTIONS_AFTER_T0 must remain zero")
+    source_lineage = state["source_lineage"]
+    if not isinstance(source_lineage, dict) or set(source_lineage) != set(_SOURCE_KINDS):
+        raise LedgerCorrupt("scheduler source lineage must contain authority and run_state")
+    for kind in _SOURCE_KINDS:
+        descriptor = source_lineage[kind]
+        if descriptor is None:
+            continue
+        if not isinstance(descriptor, dict) or set(descriptor) != _SOURCE_LINEAGE_FIELDS:
+            raise LedgerCorrupt(f"{kind} source lineage is invalid")
+        _validate_source_relative_path(descriptor["relative_path"], kind)
+        if not isinstance(descriptor["sha256"], str) or not _SHA256.fullmatch(descriptor["sha256"]):
+            raise LedgerCorrupt(f"{kind} source digest is invalid")
     if state["task_id"] is None:
         if state["task_digest"] is not None or state["attempt_count"] != 0:
             raise LedgerCorrupt("unstarted ledger has task state")
@@ -755,25 +814,36 @@ class SchedulerSession:
         path = Path(ledger_path)
         label = _validate_label(session_label, "scheduler session label")
         if path.exists():
-            state = cls(
+            session = cls(
                 path,
                 label,
                 authority_path=authority_path,
                 run_state_path=run_state_path,
-            ).read()
+            )
+            state = session.read()
             if run_id is not None and run_id != state["run_id"]:
                 raise SchedulerContractError("run_id differs from persistent ledger")
+            return session
         else:
             if run_id is None:
                 raise SchedulerContractError("a new ledger requires an explicit run_id")
             _validate_label(run_id, "run_id")
-            _atomic_json(path, _new_state(run_id))
-        return cls(
-            path,
-            label,
-            authority_path=authority_path,
-            run_state_path=run_state_path,
-        )
+            session = cls(
+                path,
+                label,
+                authority_path=authority_path,
+                run_state_path=run_state_path,
+            )
+            state = _new_state(run_id)
+            # Validate every supplied source before creating the first ledger.
+            # _bind_source_lineage mutates state only after all descriptors pass.
+            session._bind_source_lineage(
+                state,
+                authority_path=authority_path,
+                run_state_path=run_state_path,
+            )
+            session._write(state)
+            return session
 
     def read(self) -> dict[str, Any]:
         try:
@@ -784,7 +854,170 @@ class SchedulerSession:
             raise LedgerCorrupt("scheduler ledger must be a JSON object")
         _validate_state(state)
         self._validate_artifacts(state)
+        self._validate_source_lineage(state)
         return copy.deepcopy(state)
+
+    def _ledger_root(self) -> Path:
+        return self.ledger_path.parent.resolve()
+
+    def _controlled_source_path(
+        self,
+        path: Path,
+        kind: str,
+    ) -> tuple[str, Path]:
+        root = self._ledger_root()
+        candidate = Path(path)
+        if candidate.is_absolute():
+            # Absolute configured paths are accepted only when their lexical
+            # location is already inside the ledger root.  This prevents an
+            # outside symlink from resolving back into the root.
+            candidate = Path(os.path.abspath(candidate))
+            try:
+                lexical_relative = candidate.relative_to(root)
+            except ValueError as error:
+                raise LedgerCorrupt(
+                    f"{kind} source path is outside the ledger directory"
+                ) from error
+        else:
+            relative = _validate_source_relative_path(candidate.as_posix(), kind)
+            parts = relative.split("/")
+            if len(parts) >= 2 and parts[0] == root.name and parts[1] == root.name:
+                raise LedgerCorrupt(f"{kind} source path repeats the ledger root")
+            lexical_relative = Path(relative)
+            candidate = root / relative
+
+        current = root
+        for part in lexical_relative.parts:
+            current /= part
+            if current.is_symlink():
+                raise LedgerCorrupt(f"{kind} source path uses a symlink")
+
+        try:
+            resolved = candidate.resolve(strict=True)
+        except (OSError, RuntimeError) as error:
+            raise LedgerCorrupt(f"{kind} source is missing or unreadable") from error
+        if not resolved.is_file():
+            raise LedgerCorrupt(f"{kind} source path is not a regular file")
+        try:
+            relative = resolved.relative_to(root)
+        except ValueError as error:
+            raise LedgerCorrupt(
+                f"{kind} source path is outside the ledger directory"
+            ) from error
+        relative_path = _validate_source_relative_path(relative.as_posix(), kind)
+        return relative_path, resolved
+
+    def _source_descriptor(
+        self,
+        path: Path,
+        kind: str,
+    ) -> tuple[dict[str, str], Path]:
+        relative_path, resolved = self._controlled_source_path(path, kind)
+        content = _read_bound_source(resolved, kind=kind)
+        return {
+            "relative_path": relative_path,
+            "sha256": hashlib.sha256(content).hexdigest(),
+        }, resolved
+
+    def _validate_source_lineage(
+        self,
+        state: Mapping[str, Any],
+    ) -> dict[str, bytes | None]:
+        contents: dict[str, bytes | None] = {}
+        for kind, attribute in (
+            ("authority", "authority_path"),
+            ("run_state", "run_state_path"),
+        ):
+            descriptor = state["source_lineage"][kind]
+            configured_path = getattr(self, attribute)
+            if descriptor is None:
+                if configured_path is not None:
+                    _, resolved = self._source_descriptor(configured_path, kind)
+                    setattr(self, attribute, resolved)
+                contents[kind] = None
+                continue
+
+            # The descriptor is already relative to the ledger root.  Pass it
+            # directly to the resolver so a nested ledger is never prefixed
+            # with its parent twice (for example, state/state/...).
+            persisted_relative, resolved = self._controlled_source_path(
+                Path(descriptor["relative_path"]),
+                kind,
+            )
+            if persisted_relative != descriptor["relative_path"]:
+                raise LedgerCorrupt(f"{kind} source path differs from ledger")
+            if configured_path is not None:
+                configured_relative, configured_resolved = self._controlled_source_path(
+                    configured_path,
+                    kind,
+                )
+                if configured_relative != descriptor["relative_path"]:
+                    raise LedgerCorrupt(f"{kind} source path differs from ledger")
+                resolved = configured_resolved
+            contents[kind] = _read_bound_source(
+                resolved,
+                kind=kind,
+                expected_sha256=descriptor["sha256"],
+            )
+            setattr(self, attribute, resolved)
+        return contents
+
+    def _validate_source_candidates(
+        self,
+        state: Mapping[str, Any],
+        *,
+        authority_path: Path | None,
+        run_state_path: Path | None,
+    ) -> None:
+        for kind, descriptor, candidate in (
+            ("authority", state["source_lineage"]["authority"], authority_path),
+            ("run_state", state["source_lineage"]["run_state"], run_state_path),
+        ):
+            if candidate is None:
+                continue
+            if descriptor is None:
+                self._source_descriptor(candidate, kind)
+                continue
+            relative_path, resolved = self._controlled_source_path(candidate, kind)
+            if relative_path != descriptor["relative_path"]:
+                raise LedgerCorrupt(f"{kind} source path differs from ledger")
+            _read_bound_source(
+                resolved,
+                kind=kind,
+                expected_sha256=descriptor["sha256"],
+            )
+
+    def _bind_source_lineage(
+        self,
+        state: dict[str, Any],
+        *,
+        authority_path: Path | None,
+        run_state_path: Path | None,
+    ) -> bool:
+        proposed = copy.deepcopy(state["source_lineage"])
+        resolved_paths: dict[str, Path] = {}
+        for kind, attribute, supplied_path in (
+            ("authority", "authority_path", authority_path),
+            ("run_state", "run_state_path", run_state_path),
+        ):
+            if supplied_path is None:
+                continue
+            descriptor, resolved = self._source_descriptor(supplied_path, kind)
+            recorded = proposed[kind]
+            if recorded is None:
+                proposed[kind] = descriptor
+            elif recorded != descriptor:
+                raise LedgerCorrupt(f"{kind} source lineage differs from ledger")
+            resolved_paths[attribute] = resolved
+
+        proposed_state = dict(state)
+        proposed_state["source_lineage"] = proposed
+        _validate_state(proposed_state)
+        changed = proposed != state["source_lineage"]
+        state["source_lineage"] = proposed
+        for attribute, resolved in resolved_paths.items():
+            setattr(self, attribute, resolved)
+        return changed
 
     def _write(self, state: Mapping[str, Any]) -> None:
         _validate_state(state)
@@ -965,28 +1198,22 @@ class SchedulerSession:
         run_state_path: Path | None,
     ) -> tuple[dict[str, Any], dict[str, str]]:
         issues: list[str] = []
-        if authority is None:
-            authority, source_issues = _load_authority(authority_path or self.authority_path)
-            for issue in source_issues:
-                _add_issue(issues, issue)
-        else:
-            authority = {
-                str(key).upper().replace("-", "_"): value
-                for key, value in authority.items()
-                if str(key).upper().replace("-", "_") in _AUTHORITY_KEYS
-            }
-            if not authority:
-                _add_issue(issues, "AUTHORITY_UNKNOWN")
-            if authority.get("SPEC_ID") not in {None, SPEC_ID}:
-                authority = {}
-                _add_issue(issues, "AUTHORITY_UNKNOWN")
-        if run_state is None:
-            run_state, source_issues = _load_run_state(run_state_path or self.run_state_path)
-            for issue in source_issues:
-                _add_issue(issues, issue)
-        elif not isinstance(run_state, Mapping):
-            run_state = {}
-            _add_issue(issues, "RUN_STATE_UNKNOWN")
+        # Keep the legacy mapping/path parameters for API compatibility, but
+        # never treat caller-owned mappings as semantic authority.  A fresh
+        # process must replay the bytes bound in the persistent lineage.
+        source_contents = self._validate_source_lineage(state)
+        authority, source_issues = _load_authority(
+            self.authority_path,
+            content=source_contents["authority"],
+        )
+        for issue in source_issues:
+            _add_issue(issues, issue)
+        run_state, source_issues = _load_run_state(
+            self.run_state_path,
+            content=source_contents["run_state"],
+        )
+        for issue in source_issues:
+            _add_issue(issues, issue)
 
         fields: dict[str, Any] = {key: UNKNOWN for key in TERMINATION_REPORT_FIELDS}
         lineage: dict[str, str] = {
@@ -1210,6 +1437,20 @@ class SchedulerSession:
         if unique_recovery_action is not None and (not isinstance(unique_recovery_action, str) or not unique_recovery_action.strip()):
             raise ValueError("unique_recovery_action must be a non-empty string")
         state = self.read()
+        effective_authority_path = (
+            authority_path if authority_path is not None else self.authority_path
+        )
+        effective_run_state_path = (
+            run_state_path if run_state_path is not None else self.run_state_path
+        )
+        # Validate caller-configured paths before any terminal replay, ledger
+        # write, or report write.  Binding, when allowed below, is atomic at
+        # the descriptor level and never uses the caller-owned mappings.
+        self._validate_source_candidates(
+            state,
+            authority_path=effective_authority_path,
+            run_state_path=effective_run_state_path,
+        )
         existing_artifact = state["termination_report_artifact"]
         if existing_artifact:
             return self._read_report(
@@ -1228,6 +1469,12 @@ class SchedulerSession:
             reason_code = "TIME_BUDGET_EXCEEDED"
         if reason_code == "TIME_BUDGET_EXCEEDED" and elapsed < TIME_BUDGET_SECONDS:
             raise SchedulerContractError("TIME_BUDGET_EXCEEDED requires the full fixed budget")
+        if self._bind_source_lineage(
+            state,
+            authority_path=effective_authority_path,
+            run_state_path=effective_run_state_path,
+        ):
+            self._write(state)
         fields, lineage = self._build_semantic_report(
             state,
             blockers=blockers,
@@ -1236,9 +1483,9 @@ class SchedulerSession:
             unique_recovery_action=unique_recovery_action,
             reason_code=reason_code,
             authority=authority,
-            authority_path=authority_path,
+            authority_path=effective_authority_path,
             run_state=run_state,
-            run_state_path=run_state_path,
+            run_state_path=effective_run_state_path,
         )
         fields["REASON_CODE"] = reason_code
         fields["TERMINATED_AT"] = terminated_at
