@@ -108,6 +108,7 @@ _ARTIFACT_REF = re.compile(r"^[A-Za-z0-9._/-]+$")
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _CODE_HEAD = re.compile(r"^[0-9a-f]{40,64}$")
 _DIGEST_REF = re.compile(r"^sha256:[0-9a-f]{64}$")
+_CORPUS_STUDY_COUNT = re.compile(r"^[0-9]+$")
 _SOURCE_KINDS = ("authority", "run_state")
 _SOURCE_LINEAGE_FIELDS = frozenset({"relative_path", "sha256"})
 _ARTIFACT_STATUS_WORDS = frozenset(
@@ -423,6 +424,29 @@ def _safe_count(value: Any, *, issues: list[str], issue: str) -> int | str:
     return candidate
 
 
+def _safe_corpus_study_count(value: Any, *, issues: list[str]) -> int | str:
+    if _is_unknown_marker(value):
+        return UNKNOWN
+    if isinstance(value, bool):
+        _add_issue(issues, "AUTHORITY_UNKNOWN")
+        return UNKNOWN
+    if isinstance(value, int):
+        candidate = value
+    elif isinstance(value, str) and _CORPUS_STUDY_COUNT.fullmatch(value.strip()):
+        try:
+            candidate = int(value.strip())
+        except (TypeError, ValueError):
+            _add_issue(issues, "AUTHORITY_UNKNOWN")
+            return UNKNOWN
+    else:
+        _add_issue(issues, "AUTHORITY_UNKNOWN")
+        return UNKNOWN
+    if not 20 <= candidate <= 40:
+        _add_issue(issues, "AUTHORITY_UNKNOWN")
+        return UNKNOWN
+    return candidate
+
+
 def _safe_score(value: Any, *, issues: list[str]) -> int | float | str:
     if _is_unknown_marker(value):
         return UNKNOWN
@@ -557,7 +581,7 @@ def _load_authority(
     if raw.lstrip().startswith("{"):
         try:
             parsed = json.loads(raw)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError):
             parsed = _MISSING
     values: dict[str, Any] = {}
     if isinstance(parsed, Mapping):
@@ -1257,7 +1281,7 @@ class SchedulerSession:
         fields["AUTHORITATIVE_PROJECT_ID"] = _safe_identifier(raw, issues=issues) if raw is not _MISSING else UNKNOWN
         lineage["AUTHORITATIVE_PROJECT_ID"] = location or "unknown:authority"
         raw, location = _lookup_authority(authority, "CORPUS_STUDY_COUNT")
-        fields["CORPUS_STUDY_COUNT"] = _safe_count(raw, issues=issues, issue="AUTHORITY_UNKNOWN") if raw is not _MISSING else UNKNOWN
+        fields["CORPUS_STUDY_COUNT"] = _safe_corpus_study_count(raw, issues=issues) if raw is not _MISSING else UNKNOWN
         lineage["CORPUS_STUDY_COUNT"] = location or "unknown:authority"
         raw, location = _lookup_authority(authority, "CORE_STUDY_COUNT")
         if raw is not _MISSING:

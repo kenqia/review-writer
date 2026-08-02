@@ -77,6 +77,155 @@ def _write_source_bundle(root: Path) -> tuple[Path, Path]:
     return authority_path, run_state_path
 
 
+@pytest.mark.parametrize(
+    ("record_format", "raw_count", "expected_count"),
+    [
+        ("text", "19", UNKNOWN),
+        ("text", "20", 20),
+        ("text", "40", 40),
+        ("text", "41", UNKNOWN),
+        ("text", "3", UNKNOWN),
+        ("text", "309", UNKNOWN),
+        ("json", 20, 20),
+        ("json", True, UNKNOWN),
+        ("json", 20.0, UNKNOWN),
+        ("text", "unknown", UNKNOWN),
+        ("text", "9" * 5000, UNKNOWN),
+        ("missing", None, UNKNOWN),
+    ],
+    ids=[
+        "below-lower-bound",
+        "lower-bound",
+        "upper-bound",
+        "above-upper-bound",
+        "legacy-three",
+        "legacy-309",
+        "json-integer",
+        "boolean-true",
+        "non-integer-float",
+        "unknown-marker",
+        "oversized-digit-string",
+        "missing",
+    ],
+)
+def test_persisted_corpus_count_requires_strict_integer_20_to_40(
+    tmp_path: Path,
+    record_format: str,
+    raw_count: object,
+    expected_count: int | str,
+) -> None:
+    ledger_path = tmp_path / "scheduler-ledger.json"
+    authority_path = tmp_path / "authority"
+    authority_fields: dict[str, object] = {
+        "SPEC_ID": "review-writer-next-phase-2026-08-01",
+        "FROZEN_CODE_HEAD": "a" * 40,
+        "AUTHORITATIVE_PROJECT_ID": "bounded-corpus-project",
+        "CORE_STUDY_COUNT": 3,
+    }
+    if record_format == "json":
+        authority_fields["CORPUS_STUDY_COUNT"] = raw_count
+        authority_path.write_text(json.dumps(authority_fields), encoding="utf-8")
+    else:
+        lines = [f"{key}={value}" for key, value in authority_fields.items()]
+        if record_format != "missing":
+            lines.append(f"CORPUS_STUDY_COUNT={raw_count}")
+        authority_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    run_state_path = tmp_path / "run-state.json"
+    run_state_path.write_text("{}", encoding="utf-8")
+
+    session = SchedulerSession.open(
+        ledger_path,
+        session_label="fresh-session-0",
+        run_id="run-001",
+        authority_path=authority_path,
+        run_state_path=run_state_path,
+    )
+    session.start_attempt(task_id="CONTENT-001", task_digest=_task_digest(), at=START)
+    report = session.terminate(
+        reason_code="ORCHESTRATION_BLOCKED",
+        blockers=["corpus authority validation"],
+        affected_objects=["CONTENT-001"],
+        completed_independent_work=["persisted authority replay"],
+        unique_recovery_action="record a corpus count between 20 and 40",
+        at=START + timedelta(minutes=1),
+    )
+
+    assert report.fields["CORPUS_STUDY_COUNT"] == expected_count
+    assert report.fields["BLOCKERS"] == (
+        ["corpus authority validation"]
+        if expected_count != UNKNOWN
+        else ["corpus authority validation", "AUTHORITY_UNKNOWN"]
+    )
+    assert report.fields["REASON_CODE"] == "ORCHESTRATION_BLOCKED"
+    assert tuple(report.fields) == TERMINATION_REPORT_FIELDS
+    assert report.path.is_file()
+    assert report.path.read_text(encoding="utf-8").splitlines() == [
+        f"{key}={report.render_value(report.fields[key])}"
+        for key in TERMINATION_REPORT_FIELDS
+    ]
+
+    reopened = SchedulerSession.open(ledger_path, session_label="fresh-session-1")
+    replayed = reopened.terminate(
+        reason_code="ORCHESTRATION_BLOCKED",
+        blockers=["replay must preserve persisted corpus authority"],
+        affected_objects=["CONTENT-001"],
+        completed_independent_work=["termination report replay"],
+        unique_recovery_action="use the persisted blocker and correct the authority record",
+        at=START + timedelta(minutes=2),
+    )
+    assert replayed.fields == report.fields
+    assert replayed.lineage == report.lineage
+
+
+def test_oversized_persisted_json_corpus_number_fails_closed_with_report(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "scheduler-ledger.json"
+    authority_path = tmp_path / "authority.json"
+    authority_path.write_text(
+        "{"
+        + json.dumps(
+            {
+                "SPEC_ID": "review-writer-next-phase-2026-08-01",
+                "FROZEN_CODE_HEAD": "a" * 40,
+                "AUTHORITATIVE_PROJECT_ID": "bounded-corpus-project",
+                "CORE_STUDY_COUNT": 3,
+            }
+        )[1:-1]
+        + ',"CORPUS_STUDY_COUNT":'
+        + ("9" * 5000)
+        + "}\n",
+        encoding="utf-8",
+    )
+    run_state_path = tmp_path / "run-state.json"
+    run_state_path.write_text("{}", encoding="utf-8")
+
+    session = SchedulerSession.open(
+        ledger_path,
+        session_label="fresh-session-0",
+        run_id="run-001",
+        authority_path=authority_path,
+        run_state_path=run_state_path,
+    )
+    session.start_attempt(task_id="CONTENT-001", task_digest=_task_digest(), at=START)
+    report = session.terminate(
+        reason_code="ORCHESTRATION_BLOCKED",
+        blockers=["oversized persisted corpus authority"],
+        affected_objects=["CONTENT-001"],
+        completed_independent_work=["persisted authority replay"],
+        unique_recovery_action="record a corpus count between 20 and 40",
+        at=START + timedelta(minutes=1),
+    )
+
+    assert report.fields["CORPUS_STUDY_COUNT"] == UNKNOWN
+    assert report.fields["BLOCKERS"] == [
+        "oversized persisted corpus authority",
+        "AUTHORITY_UNKNOWN",
+    ]
+    assert report.path.is_file()
+    assert tuple(report.fields) == TERMINATION_REPORT_FIELDS
+
+
 def _seed_source_lineage(
     ledger_path: Path,
     authority_path: Path,
