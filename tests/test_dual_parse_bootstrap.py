@@ -48,6 +48,13 @@ def snapshot(root: Path) -> dict[str, bytes]:
     }
 
 
+def symlink_or_skip(link: Path, target: Path, *, target_is_directory: bool = False) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=target_is_directory)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink unsupported: {exc}")
+
+
 def generic_output(root: Path, request: dict[str, object]) -> Path:
     completed = []
     for index, source in enumerate(request["sources"]):
@@ -178,10 +185,13 @@ def test_bootstrap_rejects_symlink_non_pdf_and_duplicate_bytes(tmp_path: Path) -
     request = source_request(tmp_path)
     real = Path(request["sources"][0]["pdf_input_path"])
     linked = tmp_path / "inputs" / "linked.pdf"
-    linked.symlink_to(real)
+    symlink_or_skip(linked, real)
     request["sources"][0]["pdf_input_path"] = str(linked)
+    review_root = tmp_path / "review-projects"
     with pytest.raises(DualParseBootstrapError, match="SOURCE_PDF_INVALID"):
-        bootstrap_dual_parse_project(tmp_path / "review-projects", request)
+        bootstrap_dual_parse_project(review_root, request)
+    assert snapshot(review_root) == {}
+    assert not review_root.exists()
 
     request = source_request(tmp_path)
     invalid = Path(request["sources"][0]["pdf_input_path"])
@@ -197,6 +207,21 @@ def test_bootstrap_rejects_symlink_non_pdf_and_duplicate_bytes(tmp_path: Path) -
     request["sources"][1]["expected_pdf_sha256"] = request["sources"][0]["expected_pdf_sha256"]
     with pytest.raises(DualParseBootstrapError, match="DUPLICATE_SOURCE_PDF"):
         bootstrap_dual_parse_project(tmp_path / "review-projects", request)
+
+
+def test_bootstrap_rejects_symlinked_parent_component_zero_write(tmp_path: Path) -> None:
+    request = source_request(tmp_path)
+    real = Path(request["sources"][0]["pdf_input_path"])
+    linked_parent = tmp_path / "linked-inputs"
+    symlink_or_skip(linked_parent, real.parent, target_is_directory=True)
+    request["sources"][0]["pdf_input_path"] = str(linked_parent / real.name)
+    review_root = tmp_path / "review-projects"
+
+    with pytest.raises(DualParseBootstrapError, match="SOURCE_PDF_INVALID"):
+        bootstrap_dual_parse_project(review_root, request)
+
+    assert snapshot(review_root) == {}
+    assert not review_root.exists()
 
 
 def test_generic_binding_builds_all_current_source_truth_and_parse_gates(tmp_path: Path) -> None:

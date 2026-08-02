@@ -47,6 +47,34 @@ def _regular_input(path: Path) -> bool:
     return stat.S_ISREG(mode) and not path.is_symlink()
 
 
+def _regular_external_input(path: Path) -> bool:
+    """Reject symlinks and non-regular components in an external PDF path."""
+    try:
+        if path.is_absolute():
+            current = Path(path.anchor)
+            components = path.parts[1:]
+        else:
+            current = Path.cwd()
+            components = path.parts
+        if not components:
+            return False
+        root_mode = current.lstat().st_mode
+        if stat.S_ISLNK(root_mode) or not stat.S_ISDIR(root_mode):
+            return False
+        for index, component in enumerate(components):
+            current /= component
+            mode = current.lstat().st_mode
+            if stat.S_ISLNK(mode):
+                return False
+            if index == len(components) - 1:
+                return stat.S_ISREG(mode) and os.access(current, os.R_OK)
+            if not stat.S_ISDIR(mode):
+                return False
+    except (OSError, ValueError):
+        return False
+    return False
+
+
 def _validate_request(request: object) -> dict[str, Any]:
     try:
         schema = json.loads(REQUEST_SCHEMA.read_text(encoding="utf-8"))
@@ -68,11 +96,21 @@ def _validated_sources(request: dict[str, Any]) -> list[dict[str, Any]]:
     seen_hashes: set[str] = set()
     for row in request["sources"]:
         path = Path(row["pdf_input_path"])
-        if not _regular_input(path):
+        if not _regular_external_input(path):
             raise DualParseBootstrapError("SOURCE_PDF_INVALID")
         try:
             prefix = path.read_bytes()[:5]
+        except OSError as exc:
+            raise DualParseBootstrapError("SOURCE_PDF_INVALID") from exc
+        if not _regular_external_input(path):
+            raise DualParseBootstrapError("SOURCE_PDF_INVALID")
+        try:
             observed = _sha256(path)
+        except OSError as exc:
+            raise DualParseBootstrapError("SOURCE_PDF_INVALID") from exc
+        if not _regular_external_input(path):
+            raise DualParseBootstrapError("SOURCE_PDF_INVALID")
+        try:
             size = path.stat().st_size
         except OSError as exc:
             raise DualParseBootstrapError("SOURCE_PDF_INVALID") from exc
@@ -111,7 +149,14 @@ def bootstrap_dual_parse_project(review_root: Path, request: object) -> Path:
             relative_pdf = f"papers/{row['source_id']}.pdf"
             destination = staging / "00_sources" / relative_pdf
             destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(row["input"], destination)
+            if not _regular_external_input(row["input"]):
+                raise DualParseBootstrapError("SOURCE_PDF_INVALID")
+            try:
+                shutil.copy2(row["input"], destination)
+            except OSError as exc:
+                if not _regular_external_input(row["input"]):
+                    raise DualParseBootstrapError("SOURCE_PDF_INVALID") from exc
+                raise
             descriptor = {
                 "path": relative_pdf,
                 "sha256": row["sha256"],
