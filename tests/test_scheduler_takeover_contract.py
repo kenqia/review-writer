@@ -403,6 +403,8 @@ def test_missing_authority_and_absolute_artifact_are_unknown_and_blocked(
         "READY",
         "PASS",
         "FAILED",
+        "TIMEOUT",
+        "ENVIRONMENT_UNDETERMINED",
         "true",
         "false",
         "captured-by-orchestrator",

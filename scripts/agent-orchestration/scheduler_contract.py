@@ -119,6 +119,8 @@ _ARTIFACT_STATUS_WORDS = frozenset(
         "fail",
         "failed",
         "partial",
+        "timeout",
+        "environment_undetermined",
         "true",
         "false",
     }
