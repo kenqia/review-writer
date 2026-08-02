@@ -684,7 +684,7 @@ def _validate_state(state: object) -> dict[str, Any]:
             bound_import_digest = review["bound_import_digest"]
             if bound_import_digest not in page_counts:
                 raise ChemicalPaperError("CHEMICAL_PAPER_STATE_INVALID")
-            resolution_event_digest = review["bound_resolution_event_digest"]
+            resolution_event_digest = review.get("bound_resolution_event_digest")
             if resolution_event_digest is not None:
                 resolution_event = corrections_by_digest.get(resolution_event_digest)
                 if (

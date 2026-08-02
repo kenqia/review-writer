@@ -23,6 +23,7 @@ from review_writer.project.chemical_paper import (
     correct_chemical_paper_field,
     import_chemical_paper,
     load_chemical_paper_state,
+    review_chemical_paper_elements,
 )
 from review_writer.project.content_agent_handoff import build_content_task_package
 from review_writer.project.parse_quality import write_parse_quality_gate
