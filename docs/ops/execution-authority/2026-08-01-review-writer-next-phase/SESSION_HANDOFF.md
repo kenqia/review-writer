@@ -1,19 +1,19 @@
 # Review-Writer Next Phase Session Handoff
 
-Status: `READY_FOR_FRESH_REPAIR_OWNER`
+Status: `READY_FOR_PARALLEL_READ_ONLY_REVIEW_WAVE`
 
-Session epoch: `2`
+Session epoch: `3`
 
-Role: `C1 Canonical Review HOLD Disposition`
+Role: `Repair Intake And Parallel Review Dispatch`
 
 Context compactions in this Coordinator session: `0`
 
 ## Start and authority state
 
 ```text
-STARTED_FROM_HEAD=54dbef846aaf7a621e72572cc7f21ffda0c6d223
+STARTED_FROM_HEAD=17b06f4b54e8b64b0de519ed4562277f4ec7a02f
 CODE_HEAD=24625585d066fd7e8a96c2e2701bd77d19c0077a
-HANDOFF_HEAD_POLICY=use the current descendant docs-only HOLD-disposition HEAD after MANIFEST verification; code tree must still match CODE_HEAD
+HANDOFF_HEAD_POLICY=use the current descendant docs-only review-wave HEAD after MANIFEST verification; integration code tree must still match CODE_HEAD
 INTEGRATION_BRANCH=codex/review-writer-next-phase-integration
 INTEGRATION_WORKTREE=/home/kenqia/my_folder/review-writer/.worktrees/review-writer-next-phase-integration
 WORKTREE_CLEAN_AT_START=true
@@ -27,9 +27,10 @@ USER_INPUT_REQUESTED=false
 USER_ACTIONS_AFTER_T0=0
 ```
 
-The HOLD-disposition commit changes Git HEAD but not the code tree. A receiver
-must verify that current HEAD descends from `CODE_HEAD`, the manifest passes, and
-no later code commit exists without a matching handoff update.
+The review-wave dispatch commit changes Git HEAD but not the integration code
+tree. A receiver must verify that current HEAD descends from `CODE_HEAD`, the
+manifest passes, and no later integration code commit exists without a matching
+handoff update.
 
 ## Integrated at the code head
 
@@ -71,16 +72,26 @@ REVIEW_STATUS=HOLD
 CANDIDATE_DIRECT_INTEGRATION=FORBIDDEN
 ```
 
-Frozen repair order:
+Completed attempt-1 repair chain awaiting independent review:
 
 ```text
 SOLE_NEXT_ACTION_ID=NP-CAN-PUBLISH-001
-P1_1_STATUS=READY_FOR_REPAIR_OWNER_ATTEMPT_1
+P1_1_STATUS=PENDING_INDEPENDENT_REVIEW_ATTEMPT_1
 P1_1_STOP_LINE=exclusive anchor reservation, ownership-aware rollback, paired target/anchor publication
+REPAIR_BASE=17b06f4b54e8b64b0de519ed4562277f4ec7a02f
+TRANSPLANT_1=88573cc5ffcc801cb566824d7391a30671186e02
+TRANSPLANT_2=3a2165d26892e69b98d06deecbdcca99d359bb89
+REPAIR_COMMIT=1baa9f9e21c70337d67bbaee3e6033bb7e11e2c6
+REPAIR_PARENT=3a2165d26892e69b98d06deecbdcca99d359bb89
+REPAIR_TIP=1baa9f9e21c70337d67bbaee3e6033bb7e11e2c6
+REPAIR_PATHS=review_writer/project/dual_parse_bootstrap.py,tests/test_dual_parse_bootstrap.py
+OWNER_RED_REPORTED=1 failed, 27 deselected
+OWNER_GREEN_REPORTED=28 passed in 0.64s
+COORDINATOR_FOCUSED_FRESH=28 passed in 0.52s
+TRANSPLANT_PATCH_IDS_MATCH=true
 P1_2_ID=NP-CAN-RECEIPT-001
 P1_2_STATUS=SERIALIZED_AFTER_NP-CAN-PUBLISH-001
-WRITE_GROUP=dual_parse_bootstrap
-OWNED_PATHS=review_writer/project/dual_parse_bootstrap.py,tests/test_dual_parse_bootstrap.py
+PARALLEL_READ_ONLY_ACTION=NP-ORCH-DISPOSITION-001
 ```
 
 Reference-only or pending-disposition commits, never direct cherry-pick targets:
@@ -98,15 +109,29 @@ Active finding IDs and their stop lines are authoritative only in
 
 ## Sole next action
 
-Launch exactly one fresh Repair Owner for `NP-CAN-PUBLISH-001`. The Owner creates
-an isolated worktree and branch from the latest verified integration HEAD; the
-integration worktree remains untouched. The rejected candidate chain may be
-transplanted only inside that repair branch as implementation context and must be
-followed by a RED test and the minimal P1-1 repair.
+Launch one fresh, independent, read-only Luna 5.6 max Reviewer for
+`17b06f4b54e8b64b0de519ed4562277f4ec7a02f..1baa9f9e21c70337d67bbaee3e6033bb7e11e2c6`.
+The Reviewer verifies transplant identity, the final repair, tests, and rollback
+behavior only within `NP-CAN-PUBLISH-001`. The already frozen
+`NP-CAN-RECEIPT-001` is outside this review stop line and cannot be rediscovered
+or used to HOLD P1-1.
 
-The Owner must not fix, suppress, or claim closure of `NP-CAN-RECEIPT-001`. It
-returns one local commit chain, exact parent, focused RED/GREEN evidence, clean
-status, and a bounded handoff for one later fresh read-only Luna Reviewer.
+Expected result is `ACCEPT` or numbered `HOLD` P0/P1 findings with current
+evidence, affected paths, and an acceptance test. The Reviewer makes zero writes.
+
+## Parallel read-only action
+
+At the same time, one different fresh read-only Luna 5.6 max Reviewer may dispose
+`NP-ORCH-DISPOSITION-001`. It compares commits `404650de`, `32d74ffe`, and
+`e3a0ac82` to the current integrated scheduler lineage at code HEAD `24625585...`.
+For each candidate it returns `SUPERSEDED` with evidence or one bounded
+`CURRENT_P1` finding. It must not cherry-pick, repair, or broaden beyond persisted
+source resolution and bounded corpus-count parsing.
+
+These two sessions are disjoint and may run concurrently. The next Coordinator
+collects both results in one session; on canonical ACCEPT it integrates the three
+repair-branch commits in order, verifies the current tree, records disposition,
+and immediately opens the serialized P1-2 lane.
 
 ## Required receiver startup
 
@@ -116,16 +141,15 @@ status, and a bounded handoff for one later fresh read-only Luna Reviewer.
    `FINDING_INVENTORY.json`, and this handoff.
 4. Verify current HEAD, ancestry from `CODE_HEAD`, clean status, and no active Git
    operation or competing integration writer.
-5. Create a new repair worktree from that exact integration HEAD; do not edit the
-   integration worktree.
-6. State `NP-CAN-PUBLISH-001` and its stop line, reproduce RED, then repair only
-   that finding.
+5. Accept exactly one assigned read-only lane and state its immutable base, tip or
+   candidates, paths, and stop line before inspection.
+6. Return the bounded result without modifying any worktree or Git state.
 
 ## Forbidden next actions
 
-- no writes in the integration worktree and no direct integration of the rejected
-  candidate TIP;
-- no repair of `NP-CAN-RECEIPT-001` in the P1-1 Owner session;
+- no writes in the integration or repair worktree and no direct integration of
+  the rejected candidate TIP or pending repair chain;
+- no review expansion into `NP-CAN-RECEIPT-001` during P1-1 review;
 - no second repair attempt or new finding without a fresh independent Reviewer
   result and Coordinator disposition;
 - no corpus request, T0, project bootstrap, Dashboard/runtime claim, or Playwright;
