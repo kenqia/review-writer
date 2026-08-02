@@ -3,7 +3,7 @@
   "spec_id": "review-writer-next-phase-2026-08-01",
   "continuation_spec_id": "review-writer-next-phase-continuation-2026-08-02",
   "recorded_against_code_head": "0d7395402cd052956d959e39091912fecc0d991e",
-  "inventory_status": "READY_FOR_CURRENT_HEAD_READ_ONLY_DISPOSITION",
+  "inventory_status": "READY_FOR_OWNER",
   "new_finding_policy": "Only an Approved-Spec P0/P1 with current evidence, one stop line, affected paths, acceptance evidence, one Owner, one fresh Reviewer, and at most two attempts may be added; everything else is MVP_BACKLOG.",
   "sole_next_action_id": "NP-INP-001",
   "parallel_read_only_action_ids": [],
@@ -200,7 +200,7 @@
       "approved_spec_class": "mandatory Generic SI binding/currentness",
       "severity": "P1",
       "title": "Bind real Generic SI artifacts per study instead of deriving readiness from study count",
-      "status": "READY_FOR_CURRENT_HEAD_READ_ONLY_DISPOSITION",
+      "status": "READY_FOR_OWNER",
       "write_group": "dual_parse_bootstrap",
       "source_attempt": "23813a2ebe7e4d9587c5ec34a2a1b69e6b89df86",
       "source_attempt_policy": "REFERENCE_ONLY_DO_NOT_CHERRY_PICK",
@@ -208,17 +208,40 @@
       "attempts_used": 0,
       "max_attempts": 2,
       "ready_from_code_head": "0d7395402cd052956d959e39091912fecc0d991e",
+      "reviewer": "fresh current-head read-only Luna 5.6 max Reviewer",
+      "reviewer_disposition": "CURRENT_P1",
+      "reviewed_against_code_head": "0d7395402cd052956d959e39091912fecc0d991e",
+      "reviewer_write_permission": "NONE",
+      "reviewer_reported_focused_test": "31 passed",
+      "reviewer_reported_evidence": "Current source schema is fixed to MAIN; the receipt contains only main_pdf; bind_generic_parse_outputs binds only three MAIN basenames/source_pdf_sha256 values with a hard-coded count of 3. There is no SI Generic artifact identity/digest, source-SI binding, or SI currentness. With no SI it still returns status=bound/counts=3. A /tmp reproduction with no si_pdf and only three MAIN rows still returns bound, and every bundle has role MAIN only.",
+      "red_acceptance_test": "test_generic_binding_requires_current_si_generic_binding: MAIN-only input must be rejected and must not generate 01_evidence; the current behavior fails because status=bound.",
+      "affected_paths": [
+        "review_writer/project/dual_parse_bootstrap.py",
+        "tests/test_dual_parse_bootstrap.py"
+      ],
       "current_head_disposition": {
-        "status": "PENDING",
-        "reviewer": "fresh read-only Luna 5.6 max Reviewer",
-        "write_permission": "NONE",
+        "status": "CURRENT_P1",
         "scope": "仅确认 Generic SI readiness 是否仍由 study count 推导而没有真实 per-study Generic SI artifact identity/hash/current binding",
+        "reviewer": "fresh current-head read-only Luna 5.6 max Reviewer",
+        "reviewed_against_code_head": "0d7395402cd052956d959e39091912fecc0d991e",
         "historical_reference": "23813a2ebe7e4d9587c5ec34a2a1b69e6b89df86",
         "historical_reference_policy": "REFERENCE_ONLY_DO_NOT_CHERRY_PICK",
         "attempts_used": 0
       },
+      "owner_reviewer_contract": {
+        "owner": "one fresh Owner, attempt 1/2, starting from current integration HEAD efde930020d4c0b6af5d0a5b7e1d8c28c248327f",
+        "owner_boundary": "per-study SI Generic artifact identity/hash and source-SI binding/currentness fail-closed",
+        "owner_affected_paths": [
+          "review_writer/project/dual_parse_bootstrap.py",
+          "tests/test_dual_parse_bootstrap.py"
+        ],
+        "owner_forbidden": "Do not cherry-pick 23813a2ebe7e4d9587c5ec34a2a1b69e6b89df86; do not expand into NP-INP-002, NP-INP-003, NP-INP-004, NP-INP-005, NP-CAN-002, or any other finding.",
+        "reviewer": "one fresh independent read-only Reviewer after Owner attempt 1",
+        "reviewer_boundary": "Review only the Owner delta and the NP-INP-001 acceptance contract; write permission NONE; no self-approval."
+      },
+      "recovery": "From the current integration HEAD, create a fresh worktree and add per-study SI Generic artifact identity/hash plus source-SI binding/currentness fail-closed; do not cherry-pick 23813a2 and do not expand other findings.",
       "sole_next_action": true,
-      "next_action": "One fresh read-only Luna 5.6 max Reviewer must inspect the current code HEAD 0d7395402cd052956d959e39091912fecc0d991e only to disposition whether Generic SI readiness is still derived from study count without real per-study Generic SI artifact identity/hash/current binding; no implementation, no cherry-pick, and historical 23813a2ebe7e4d9587c5ec34a2a1b69e6b89df86 remains REFERENCE_ONLY_DO_NOT_CHERRY_PICK."
+      "next_action": "One fresh Owner attempt 1/2 may start from current integration HEAD efde930020d4c0b6af5d0a5b7e1d8c28c248327f and implement only per-study SI Generic artifact identity/hash plus source-SI binding/currentness fail-closed; after that, one fresh independent read-only Reviewer reviews only this bounded delta."
     },
     {
       "finding_id": "NP-INP-002",
