@@ -1382,12 +1382,35 @@ def _current_element_review(state: dict[str, Any], molecule: dict[str, Any]) -> 
     review_state = "not_reviewed"
     counts = molecule["element_candidate_counts"]
     digest: str | None = None
-    for event in state["element_reviews"]:
-        if event["bound_import_digest"] == state["current_import_digest"] and event["molecule_id"] == molecule["molecule_id"]:
-            review_state = event["state"]
-            counts = event["reviewed_counts"] if event["reviewed_counts"] is not None else counts
-            digest = event["event_digest"]
+    event = _current_element_review_event(state, molecule)
+    if event is not None:
+        review_state = event["state"]
+        counts = event["reviewed_counts"] if event["reviewed_counts"] is not None else counts
+        digest = event["event_digest"]
     return review_state, counts, digest
+
+
+def _current_element_review_event(
+    state: dict[str, Any], molecule: dict[str, Any]
+) -> dict[str, Any] | None:
+    current: dict[str, Any] | None = None
+    for event in state["element_reviews"]:
+        if (
+            event["bound_import_digest"] == state["current_import_digest"]
+            and event["molecule_id"] == molecule["molecule_id"]
+        ):
+            current = event
+    return current
+
+
+def _actor_identity(value: object) -> tuple[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    actor_type = value.get("actor_type")
+    actor_label = value.get("actor_label")
+    if not isinstance(actor_type, str) or not isinstance(actor_label, str):
+        return None
+    return actor_type, actor_label
 
 
 def _source_locator_binding(
