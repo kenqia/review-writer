@@ -622,6 +622,9 @@ def _validate_state(state: object) -> dict[str, Any]:
     if state["field_correction_head_digest"] != correction_head or state["element_review_head_digest"] != review_head:
         raise ChemicalPaperError("CHEMICAL_PAPER_HISTORY_INVALID")
     page_counts = {row["import_digest"]: row["page_count"] for row in imports}
+    corrections_by_digest = {
+        event["event_digest"]: event for event in ordered_corrections
+    }
     molecules_by_id: dict[str, dict[str, Any]] = {}
     for molecule in state["molecules"]:
         molecule_id = molecule["molecule_id"]
@@ -674,6 +677,33 @@ def _validate_state(state: object) -> dict[str, Any]:
             elif key in correction_values and event["prior_value"] != correction_values[key]:
                 raise ChemicalPaperError("CHEMICAL_PAPER_STATE_INVALID")
             correction_values[key] = event["value"]
+        except (KeyError, ChemicalPaperError) as exc:
+            raise ChemicalPaperError("CHEMICAL_PAPER_STATE_INVALID") from exc
+    for review in ordered_reviews:
+        try:
+            bound_import_digest = review["bound_import_digest"]
+            if bound_import_digest not in page_counts:
+                raise ChemicalPaperError("CHEMICAL_PAPER_STATE_INVALID")
+            resolution_event_digest = review["bound_resolution_event_digest"]
+            if resolution_event_digest is not None:
+                resolution_event = corrections_by_digest.get(resolution_event_digest)
+                if (
+                    resolution_event is None
+                    or resolution_event["field"] != "resolved_smiles"
+                    or resolution_event["molecule_id"] != review["molecule_id"]
+                    or resolution_event["bound_import_digest"] != bound_import_digest
+                    or resolution_event["bound_molecule_digest"]
+                    != review["bound_molecule_digest"]
+                ):
+                    raise ChemicalPaperError("CHEMICAL_PAPER_STATE_INVALID")
+            if bound_import_digest == current_import_digest:
+                molecule = molecules_by_id.get(review["molecule_id"])
+                if (
+                    molecule is None
+                    or review["bound_molecule_digest"]
+                    != molecule["molecule_digest"]
+                ):
+                    raise ChemicalPaperError("CHEMICAL_PAPER_STATE_INVALID")
         except (KeyError, ChemicalPaperError) as exc:
             raise ChemicalPaperError("CHEMICAL_PAPER_STATE_INVALID") from exc
     if state.get("state_digest") != _canonical_state_digest(state):
@@ -2266,7 +2296,44 @@ def chemical_paper_dependency_currentness(
                         if unresolved_reason not in blocking:
                             blocking.append(unresolved_reason)
                 element_state, _, _ = _current_element_review(state, molecule)
-                if dependency["requires_element_review"] and element_state == "not_reviewed":
+                material_dependency = (
+                    "resolved_smiles" in dependency["required_fields"]
+                    and resolved_smiles_confirmed
+                )
+                if material_dependency:
+                    if element_state == "not_reviewed":
+                        blocking.append(f"{claim_id}:elements:not_reviewed")
+                    elif element_state not in {"confirmed", "corrected"}:
+                        blocking.append(f"{claim_id}:elements:not_confirmed")
+                    else:
+                        resolution_event = _current_resolved_smiles_event(state, molecule)
+                        review_event = _current_element_review_event(state, molecule)
+                        if (
+                            resolution_event is None
+                            or review_event is None
+                            or review_event.get("bound_import_digest")
+                            != state["current_import_digest"]
+                            or review_event.get("molecule_id")
+                            != molecule["molecule_id"]
+                            or review_event.get("bound_molecule_digest")
+                            != molecule["molecule_digest"]
+                            or resolution_event.get("bound_import_digest")
+                            != state["current_import_digest"]
+                            or resolution_event.get("molecule_id")
+                            != molecule["molecule_id"]
+                            or resolution_event.get("bound_molecule_digest")
+                            != molecule["molecule_digest"]
+                            or review_event.get("bound_resolution_event_digest")
+                            != resolution_event.get("event_digest")
+                        ):
+                            blocking.append(
+                                f"{claim_id}:elements:resolution_review_stale"
+                            )
+                        elif _actor_identity(resolution_event.get("actor")) == _actor_identity(
+                            review_event.get("actor")
+                        ):
+                            blocking.append(f"{claim_id}:elements:not_independent")
+                elif dependency["requires_element_review"] and element_state == "not_reviewed":
                     blocking.append(f"{claim_id}:elements:not_reviewed")
                 if dependency["requires_reaction_data"]:
                     blocking.append(f"{claim_id}:reaction_data:unavailable_not_provided")

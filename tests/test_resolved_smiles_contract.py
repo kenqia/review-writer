@@ -15,6 +15,7 @@ from review_writer.delivery.dual_parse_release import preflight_chemical_paper_i
 from review_writer.project.chemical_paper import (
     ChemicalPaperError,
     _canonical_state_digest,
+    append_element_review,
     chemical_dependency_state,
     chemical_paper_dependency_currentness,
     chemical_paper_manuscript_bindings,
@@ -900,6 +901,440 @@ def test_currentness_and_impact_require_confirmed_resolved_smiles(tmp_path: Path
     dependencies[0]["required_fields"] = ["smiles_expanded"]
     with pytest.raises(ChemicalPaperError, match="CHEMICAL_DEPENDENCY_INVALID"):
         chemical_dependency_state(project, "evidence-a", dependencies)
+
+
+@pytest.mark.parametrize(
+    ("review_actor", "expected_release", "expected_reason"),
+    [
+        (None, False, "claim-a:elements:not_reviewed"),
+        (
+            {"actor_type": "human_researcher", "actor_label": "material-author"},
+            False,
+            "claim-a:elements:not_independent",
+        ),
+        (
+            {"actor_type": "human_researcher", "actor_label": "independent-reviewer"},
+            True,
+            None,
+        ),
+    ],
+)
+def test_material_claim_requires_independent_element_review_even_when_dependency_flag_is_false(
+    tmp_path: Path,
+    review_actor: dict[str, str] | None,
+    expected_release: bool,
+    expected_reason: str | None,
+) -> None:
+    from review_writer.project.chemical_paper import chemical_paper_dependency_currentness
+
+    project = _project_with_molecules(
+        tmp_path, [_molecule("mol-a", expanded="CO")]
+    )
+    material_author = {
+        "actor_type": "human_researcher",
+        "actor_label": "material-author",
+    }
+    confirmed = correct_chemical_paper_field(
+        project,
+        study_id="scholarly-a",
+        molecule_index=0,
+        field="resolved_smiles",
+        value="CO",
+        actor=material_author,
+        reason="Confirmed against the source structure.",
+        pdf_locator={"page": 1, "figure_label": "Scheme 1"},
+        version_token=chemical_paper_projection(project)["studies"][0]["version_token"],
+        resolution_status="CONFIRMED",
+    )
+    if review_actor is not None:
+        review_chemical_paper_elements(
+            project,
+            study_id="scholarly-a",
+            molecule_index=0,
+            review_state="confirmed",
+            actor=review_actor,
+            reason="Independently checked the source structure elements.",
+            version_token=confirmed["version_token"],
+        )
+        state = load_chemical_paper_state(project, "scholarly-a")
+        assert state["element_reviews"][-1]["bound_resolution_event_digest"] == state[
+            "field_corrections"
+        ][-1]["event_digest"]
+
+    binding = chemical_paper_manuscript_bindings(project)
+    result = chemical_paper_dependency_currentness(
+        project,
+        import_digests=binding["chemical_paper_import_digests"],
+        claim_dependencies=[
+            {
+                "claim_id": "claim-a",
+                "study_id": "scholarly-a",
+                "molecule_index": 0,
+                "required_fields": ["resolved_smiles"],
+                "requires_element_review": False,
+                "requires_reaction_data": False,
+            }
+        ],
+    )
+
+    assert result["can_release"] is expected_release
+    assert result["claims"][0]["status"] == (
+        "current" if expected_release else "needs_review"
+    )
+    if expected_reason is None:
+        assert result["claims"][0]["blocking_reasons"] == []
+    else:
+        assert result["claims"][0]["blocking_reasons"] == [expected_reason]
+
+
+def test_material_claim_blocks_element_review_recorded_before_final_resolution(
+    tmp_path: Path,
+) -> None:
+    from review_writer.project.chemical_paper import chemical_paper_dependency_currentness
+
+    project = _project_with_molecules(
+        tmp_path, [_molecule("mol-a", expanded="CO")]
+    )
+    material_author = {
+        "actor_type": "human_researcher",
+        "actor_label": "material-author",
+    }
+    independent_reviewer = {
+        "actor_type": "human_researcher",
+        "actor_label": "independent-reviewer",
+    }
+
+    reviewed = review_chemical_paper_elements(
+        project,
+        study_id="scholarly-a",
+        molecule_index=0,
+        review_state="confirmed",
+        actor=independent_reviewer,
+        reason="Independently checked the source structure elements.",
+        version_token=chemical_paper_projection(project)["studies"][0]["version_token"],
+    )
+    assert load_chemical_paper_state(project, "scholarly-a")["element_reviews"][-1][
+        "bound_resolution_event_digest"
+    ] is None
+    correct_chemical_paper_field(
+        project,
+        study_id="scholarly-a",
+        molecule_index=0,
+        field="resolved_smiles",
+        value="CO",
+        actor=material_author,
+        reason="Confirmed against the source structure after the element review.",
+        pdf_locator={"page": 1, "figure_label": "Scheme 1"},
+        version_token=reviewed["version_token"],
+        resolution_status="CONFIRMED",
+    )
+
+    binding = chemical_paper_manuscript_bindings(project)
+    result = chemical_paper_dependency_currentness(
+        project,
+        import_digests=binding["chemical_paper_import_digests"],
+        claim_dependencies=[
+            {
+                "claim_id": "claim-a",
+                "study_id": "scholarly-a",
+                "molecule_index": 0,
+                "required_fields": ["resolved_smiles"],
+                "requires_element_review": False,
+                "requires_reaction_data": False,
+            }
+        ],
+    )
+
+    assert result["can_release"] is False
+    assert result["claims"][0]["status"] == "needs_review"
+    assert result["claims"][0]["blocking_reasons"] == [
+        "claim-a:elements:resolution_review_stale"
+    ]
+
+
+def test_material_claim_rejects_resealed_foreign_element_molecule_binding(
+    tmp_path: Path,
+) -> None:
+    project = _project_with_molecules(
+        tmp_path,
+        [
+            _molecule("mol-a", expanded="CO"),
+            _molecule("mol-b", expanded="CN"),
+        ],
+    )
+    material_author = {
+        "actor_type": "human_researcher",
+        "actor_label": "material-author",
+    }
+    independent_reviewer = {
+        "actor_type": "human_researcher",
+        "actor_label": "independent-reviewer",
+    }
+    confirmed = correct_chemical_paper_field(
+        project,
+        study_id="scholarly-a",
+        molecule_index=0,
+        field="resolved_smiles",
+        value="CO",
+        actor=material_author,
+        reason="Confirmed against the source structure.",
+        pdf_locator={"page": 1, "figure_label": "Scheme 1"},
+        version_token=chemical_paper_projection(project)["studies"][0][
+            "version_token"
+        ],
+        resolution_status="CONFIRMED",
+    )
+    review_chemical_paper_elements(
+        project,
+        study_id="scholarly-a",
+        molecule_index=0,
+        review_state="confirmed",
+        actor=independent_reviewer,
+        reason="Independently checked the source structure elements.",
+        version_token=confirmed["version_token"],
+    )
+
+    state_path = project / "01_evidence/chemical_paper/scholarly-a/state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    review_event = state["element_reviews"][-1]
+    review_event["bound_molecule_digest"] = state["molecules"][1]["molecule_digest"]
+    review_event["event_digest"] = canonical_digest(
+        {key: value for key, value in review_event.items() if key != "event_digest"}
+    )
+    state["element_review_head_digest"] = review_event["event_digest"]
+    _reseal_state(state_path, state)
+    resealed_bytes = state_path.read_bytes()
+
+    with pytest.raises(ChemicalPaperError, match="CHEMICAL_PAPER_STATE_INVALID"):
+        load_chemical_paper_state(project, "scholarly-a")
+
+    result = chemical_paper_dependency_currentness(
+        project,
+        import_digests=[
+            {
+                "study_id": "scholarly-a",
+                "import_digest": state["current_import_digest"],
+                "state_digest": state["state_digest"],
+            }
+        ],
+        claim_dependencies=[
+            {
+                "claim_id": "claim-a",
+                "study_id": "scholarly-a",
+                "molecule_index": 0,
+                "required_fields": ["resolved_smiles"],
+                "requires_element_review": False,
+                "requires_reaction_data": False,
+            }
+        ],
+    )
+
+    assert result["can_release"] is False
+    assert result["claims"][0]["status"] == "stale"
+    assert result["claims"][0]["blocking_reasons"] == [
+        "claim-a:chemical_paper:stale"
+    ]
+    assert state_path.read_bytes() == resealed_bytes
+
+
+def test_material_claim_rejects_resealed_foreign_resolution_event_binding(
+    tmp_path: Path,
+) -> None:
+    project = _project_with_molecules(
+        tmp_path,
+        [
+            _molecule("mol-a", expanded="CO"),
+            _molecule("mol-b", expanded="CN"),
+        ],
+    )
+    material_author = {
+        "actor_type": "human_researcher",
+        "actor_label": "material-author",
+    }
+    independent_reviewer = {
+        "actor_type": "human_researcher",
+        "actor_label": "independent-reviewer",
+    }
+    confirmed_a = correct_chemical_paper_field(
+        project,
+        study_id="scholarly-a",
+        molecule_index=0,
+        field="resolved_smiles",
+        value="CO",
+        actor=material_author,
+        reason="Confirmed molecule A against the source structure.",
+        pdf_locator={"page": 1, "figure_label": "Scheme 1"},
+        version_token=chemical_paper_projection(project)["studies"][0][
+            "version_token"
+        ],
+        resolution_status="CONFIRMED",
+    )
+    confirmed_b = correct_chemical_paper_field(
+        project,
+        study_id="scholarly-a",
+        molecule_index=1,
+        field="resolved_smiles",
+        value="CN",
+        actor=material_author,
+        reason="Confirmed molecule B against the source structure.",
+        pdf_locator={"page": 1, "figure_label": "Scheme 1"},
+        version_token=confirmed_a["version_token"],
+        resolution_status="CONFIRMED",
+    )
+    review_chemical_paper_elements(
+        project,
+        study_id="scholarly-a",
+        molecule_index=0,
+        review_state="confirmed",
+        actor=independent_reviewer,
+        reason="Independently checked molecule A structure elements.",
+        version_token=confirmed_b["version_token"],
+    )
+
+    state_path = project / "01_evidence/chemical_paper/scholarly-a/state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    foreign_resolution = next(
+        event
+        for event in state["field_corrections"]
+        if event["molecule_id"] == "mol-b"
+    )
+    review_event = state["element_reviews"][-1]
+    review_event["bound_resolution_event_digest"] = foreign_resolution[
+        "event_digest"
+    ]
+    review_event["event_digest"] = canonical_digest(
+        {key: value for key, value in review_event.items() if key != "event_digest"}
+    )
+    state["element_review_head_digest"] = review_event["event_digest"]
+    _reseal_state(state_path, state)
+    resealed_bytes = state_path.read_bytes()
+
+    with pytest.raises(ChemicalPaperError, match="CHEMICAL_PAPER_STATE_INVALID"):
+        load_chemical_paper_state(project, "scholarly-a")
+    assert state_path.read_bytes() == resealed_bytes
+
+
+def test_element_review_rejects_foreign_current_molecule_digest_without_write(
+    tmp_path: Path,
+) -> None:
+    project = _project_with_molecules(
+        tmp_path,
+        [
+            _molecule("mol-a", expanded="CO"),
+            _molecule("mol-b", expanded="CN"),
+        ],
+    )
+    state = load_chemical_paper_state(project, "scholarly-a")
+    before = snapshot(project)
+
+    with pytest.raises(ChemicalPaperError, match="MOLECULE_BINDING_STALE"):
+        append_element_review(
+            project,
+            "scholarly-a",
+            "mol-a",
+            "confirmed",
+            ACTOR,
+            reason="Optional element review against the original PDF.",
+            expected_version_token=chemical_paper_projection(project)["studies"][0][
+                "version_token"
+            ],
+            bound_import_digest=state["current_import_digest"],
+            bound_molecule_digest=state["molecules"][1]["molecule_digest"],
+        )
+
+    assert snapshot(project) == before
+
+
+def test_stale_element_review_is_ignored_after_a_new_chemical_import(
+    tmp_path: Path,
+) -> None:
+    project = _project_with_molecules(
+        tmp_path, [_molecule("mol-a", expanded="CO")]
+    )
+    material_author = {
+        "actor_type": "human_researcher",
+        "actor_label": "material-author",
+    }
+    independent_reviewer = {
+        "actor_type": "human_researcher",
+        "actor_label": "independent-reviewer",
+    }
+    initial = correct_chemical_paper_field(
+        project,
+        study_id="scholarly-a",
+        molecule_index=0,
+        field="resolved_smiles",
+        value="CO",
+        actor=material_author,
+        reason="Confirmed against the source structure.",
+        pdf_locator={"page": 1, "figure_label": "Scheme 1"},
+        version_token=chemical_paper_projection(project)["studies"][0]["version_token"],
+        resolution_status="CONFIRMED",
+    )
+    review_chemical_paper_elements(
+        project,
+        study_id="scholarly-a",
+        molecule_index=0,
+        review_state="confirmed",
+        actor=independent_reviewer,
+        reason="Independently checked the source structure elements.",
+        version_token=initial["version_token"],
+    )
+
+    source_sha = load_source_truth_bundle(project, "scholarly-a")["sources"][0][
+        "pdf"
+    ]["sha256"]
+    import_chemical_paper(
+        project,
+        "scholarly-a",
+        source_sha,
+        write_chemical_zip(
+            tmp_path / "chemical-second.zip",
+            pages=1,
+            molecules=[_molecule("mol-b", expanded="CO")],
+        ),
+        ACTOR,
+    )
+    state = load_chemical_paper_state(project, "scholarly-a")
+    assert state["element_reviews"][0]["bound_import_digest"] != state[
+        "current_import_digest"
+    ]
+
+    current = correct_chemical_paper_field(
+        project,
+        study_id="scholarly-a",
+        molecule_index=0,
+        field="resolved_smiles",
+        value="CO",
+        actor=material_author,
+        reason="Reconfirmed against the current source structure.",
+        pdf_locator={"page": 1, "figure_label": "Scheme 1"},
+        version_token=chemical_paper_projection(project)["studies"][0]["version_token"],
+        resolution_status="CONFIRMED",
+    )
+    assert current["version_token"]
+
+    binding = chemical_paper_manuscript_bindings(project)
+    result = chemical_paper_dependency_currentness(
+        project,
+        import_digests=binding["chemical_paper_import_digests"],
+        claim_dependencies=[
+            {
+                "claim_id": "claim-a",
+                "study_id": "scholarly-a",
+                "molecule_index": 0,
+                "required_fields": ["resolved_smiles"],
+                "requires_element_review": False,
+                "requires_reaction_data": False,
+            }
+        ],
+    )
+
+    assert result["can_release"] is False
+    assert result["claims"][0]["status"] == "needs_review"
+    assert result["claims"][0]["blocking_reasons"] == [
+        "claim-a:elements:not_reviewed"
+    ]
 
 
 def test_content_package_and_reconciliation_publish_only_resolved_smiles(
