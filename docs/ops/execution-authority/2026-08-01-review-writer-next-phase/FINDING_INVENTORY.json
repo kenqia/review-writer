@@ -3,12 +3,10 @@
   "spec_id": "review-writer-next-phase-2026-08-01",
   "continuation_spec_id": "review-writer-next-phase-continuation-2026-08-02",
   "recorded_against_code_head": "24625585d066fd7e8a96c2e2701bd77d19c0077a",
-  "inventory_status": "CANONICAL_REPAIR_PENDING_REVIEW",
+  "inventory_status": "REVIEW_COMPLETED_HOLD_ATTEMPT_1_READY_FOR_ATTEMPT_2_OWNER",
   "new_finding_policy": "Only an Approved-Spec P0/P1 with current evidence, one stop line, affected paths, acceptance evidence, one Owner, one fresh Reviewer, and at most two attempts may be added; everything else is MVP_BACKLOG.",
   "sole_next_action_id": "NP-CAN-PUBLISH-001",
-  "parallel_read_only_action_ids": [
-    "NP-ORCH-DISPOSITION-001"
-  ],
+  "parallel_read_only_action_ids": [],
   "closed_findings": [
     {
       "finding_id": "NP-SAFE-001",
@@ -62,6 +60,35 @@
         "NP-CAN-PUBLISH-001",
         "NP-CAN-RECEIPT-001"
       ]
+    },
+    {
+      "finding_id": "NP-ORCH-DISPOSITION-001",
+      "approved_spec_class": "scheduler takeover and bounded termination",
+      "severity": "P1",
+      "title": "Disposition stale scheduler alternatives against the current lineage implementation",
+      "status": "DISPOSITION_ACCEPT_SUPERSEDED",
+      "disposition": "DISPOSITION_ACCEPT",
+      "reviewed_against_code_head": "24625585d066fd7e8a96c2e2701bd77d19c0077a",
+      "reviewer": "fresh read-only Luna 5.6 max",
+      "reviewer_reported_evidence": "Current scheduler focused tests: 44 passed; current code tree needs no scheduler repair.",
+      "candidate_dispositions": [
+        {
+          "commit": "404650de5c77aa13ae05c638708c3b762716c45b",
+          "status": "SUPERSEDED",
+          "evidence": "Old scheduler alternative superseded by the current scheduler lineage at CODE_HEAD=24625585d066fd7e8a96c2e2701bd77d19c0077a; no current-head scheduler repair is required."
+        },
+        {
+          "commit": "32d74ffee3d818f3b224023785fb714dcbf0a529",
+          "status": "SUPERSEDED",
+          "evidence": "Old scheduler alternative superseded by the current scheduler lineage at CODE_HEAD=24625585d066fd7e8a96c2e2701bd77d19c0077a; no current-head scheduler repair is required."
+        },
+        {
+          "commit": "e3a0ac82324e52757aa960bd2e17b77981d0917f",
+          "status": "SUPERSEDED",
+          "evidence": "Old scheduler alternative superseded by the current scheduler lineage at CODE_HEAD=24625585d066fd7e8a96c2e2701bd77d19c0077a; no current-head scheduler repair is required."
+        }
+      ],
+      "stop_line": "persisted source resolution and bounded corpus-count parsing only"
     }
   ],
   "active_findings": [
@@ -70,20 +97,26 @@
       "approved_spec_class": "mandatory input binding/currentness and fresh-project isolation",
       "severity": "P1",
       "title": "Publish canonical anchor without TOCTOU overwrite or competing-anchor cleanup",
-      "status": "PENDING_INDEPENDENT_REVIEW_ATTEMPT_1",
+      "status": "REVIEW_COMPLETED_HOLD_ATTEMPT_1",
       "write_group": "dual_parse_bootstrap",
       "source_review": "NP-CAN-001-REVIEW",
       "candidate_tip": "8a7502eaec7a2e7ea881a5a7de8adeff6d784694",
       "candidate_chain_policy": "May be transplanted only inside the isolated repair branch based on the latest integration HEAD; never integrate the HOLD tip unchanged.",
-      "evidence": "dual_parse_bootstrap.py lines 146-160, 456-465, and 473-484 use unconditional os.replace after a precheck and cleanup based only on the startup snapshot; reported fault injection COMPETING_ANCHOR_RETAINED=False.",
+      "review_attempt": 1,
+      "reviewer_disposition": "HOLD_P1",
+      "reviewed_base": "17b06f4b54e8b64b0de519ed4562277f4ec7a02f",
+      "reviewed_tip": "1baa9f9e21c70337d67bbaee3e6033bb7e11e2c6",
+      "evidence": "Reviewer HOLD P1: integration/repair preflight and patch identity passed; focused tests 28 passed; injected target publish failure and, after _path_identity(anchor_path) returned but before anchor_path.unlink(), replaced anchor_path with a competing anchor and created a competing target. Observed competitor_target_preserved=true, competitor_anchor_preserved=false, pair_after_failure=false. The failure is strictly the TOCTOU between rollback identity check and unlink.",
       "affected_paths": [
         "review_writer/project/dual_parse_bootstrap.py",
         "tests/test_dual_parse_bootstrap.py"
       ],
-      "owner": "one fresh Repair Owner from the latest verified integration HEAD",
+      "owner": "restore the original Repair Owner; if the original cannot be restored, stop and request human authorization before creating any replacement Owner",
+      "original_owner_thread_id": "UNKNOWN",
       "reviewer": "one later fresh read-only Luna 5.6 max Reviewer",
       "attempts_used": 1,
       "max_attempts": 2,
+      "attempt_2_is_final": true,
       "repair_chain": {
         "base": "17b06f4b54e8b64b0de519ed4562277f4ec7a02f",
         "transplanted_commits": [
@@ -104,9 +137,9 @@
       },
       "owner_reported_evidence": "RED 1 failed and 27 deselected; GREEN 28 passed in 0.64s; repair and integration worktrees clean.",
       "coordinator_preflight_evidence": "Stable patch IDs match both source commits; diff is limited to the two owned paths; fresh focused tests 28 passed in 0.52s; both worktrees clean.",
-      "stop_line": "exclusive canonical-anchor reservation, ownership-aware rollback, and paired target/anchor publication only",
-      "acceptance_test": "Run concurrent bootstrap or inject an anchor after the precheck: at most one bootstrap succeeds; a competing anchor is never overwritten or deleted; target and the winning anchor are published as a pair or neither remains.",
-      "next_action": "One fresh read-only Luna 5.6 max Reviewer evaluates BASE..TIP and returns ACCEPT or numbered HOLD findings only within the NP-CAN-PUBLISH-001 stop line."
+      "stop_line": "rollback identity check and unlink TOCTOU only",
+      "acceptance_test": "Inject target publish failure; after _path_identity(anchor_path) returns and before anchor_path.unlink(), replace anchor_path with a competing anchor and create the competing target; both the competing anchor and competing target must be preserved and remain paired after failure.",
+      "next_action": "READY_FOR_ATTEMPT_2_OWNER: restore the original Repair Owner for NP-CAN-PUBLISH-001 from the latest verified integration HEAD; attempt 2 is the final allowed attempt. Do not create a replacement Owner unless the original cannot be restored; then stop and request human authorization."
     },
     {
       "finding_id": "NP-CAN-RECEIPT-001",
@@ -192,21 +225,6 @@
       "status": "OPEN_AFTER_CANONICAL_REVIEW",
       "write_group": "dual_parse_bootstrap",
       "stop_line": "source-only fresh project publication and full receipt anchor"
-    },
-    {
-      "finding_id": "NP-ORCH-DISPOSITION-001",
-      "approved_spec_class": "scheduler takeover and bounded termination",
-      "severity": "P1",
-      "title": "Disposition stale scheduler alternatives against the current lineage implementation",
-      "status": "READY_FOR_PARALLEL_READ_ONLY_DISPOSITION",
-      "write_group": "scheduler_contract",
-      "candidate_commits": [
-        "404650de5c77aa13ae05c638708c3b762716c45b",
-        "32d74ffee3d818f3b224023785fb714dcbf0a529",
-        "e3a0ac82324e52757aa960bd2e17b77981d0917f"
-      ],
-      "candidate_policy": "DO_NOT_CHERRY_PICK_OLD_PARENT; compare each bounded finding to current integration and close as superseded or create one current-head repair",
-      "stop_line": "persisted source resolution and bounded corpus-count parsing only"
     }
   ],
   "reference_only_candidates": [
