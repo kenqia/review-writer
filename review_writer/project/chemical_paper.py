@@ -1832,11 +1832,17 @@ def append_element_review(
             molecule = _molecule(state, molecule_id)
             _require_mutation_binding(state, expected_version_token, bound_import_digest, molecule, bound_molecule_digest)
             prior_state, prior_counts, _ = _current_element_review(state, molecule)
+            current_resolution = _current_resolved_smiles_event(state, molecule)
             event = {
                 "molecule_id": molecule["molecule_id"], "prior_state": prior_state, "state": state_value,
                 "prior_counts": prior_counts, "reviewed_counts": reviewed_counts,
                 "actor": who, "reason": why, "recorded_at": _now(),
                 "bound_import_digest": state["current_import_digest"], "bound_molecule_digest": molecule["molecule_digest"],
+                "bound_resolution_event_digest": (
+                    current_resolution["event_digest"]
+                    if current_resolution is not None
+                    else None
+                ),
                 "prior_event_digest": state["element_review_head_digest"],
             }
             event["event_digest"] = canonical_digest(event)
