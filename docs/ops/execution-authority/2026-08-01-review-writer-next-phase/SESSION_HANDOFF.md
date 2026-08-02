@@ -1,18 +1,18 @@
 # Review-Writer Next Phase Session Handoff
 
-Status: `READY_FOR_ATTEMPT_2_OWNER`
+Status: `PENDING_FINAL_INDEPENDENT_REVIEW_ATTEMPT_2`
 
-Session epoch: `4`
+Session epoch: `5`
 
-Role: `Review Result Intake And Docs-Only Authority Checkpoint`
+Role: `Attempt-2 Intake Coordinator (docs-only checkpoint)`
 
 Context compactions in this Coordinator session: `0`
 
 ## Start and authority state
 
 ```text
-STARTED_FROM_HEAD=b911625f27b0e1289418f45a6fbcdf64b5b2ea5d
-CHECKPOINT_PARENT_HEAD=b911625f27b0e1289418f45a6fbcdf64b5b2ea5d
+STARTED_FROM_HEAD=9dcaacaa62a98f3dc33a1999088420a0081a3691
+CHECKPOINT_PARENT_HEAD=9dcaacaa62a98f3dc33a1999088420a0081a3691
 CODE_HEAD=24625585d066fd7e8a96c2e2701bd77d19c0077a
 HANDOFF_HEAD_POLICY=the checkpoint is a local docs-only child of CHECKPOINT_PARENT_HEAD; the integration code tree must still match CODE_HEAD
 INTEGRATION_BRANCH=codex/review-writer-next-phase-integration
@@ -27,12 +27,12 @@ T0=NOT_RECORDED
 CORPUS_REQUESTED=false
 USER_INPUT_REQUESTED=false
 USER_ACTIONS_AFTER_T0=0
-ATTEMPT_2_STARTED=false
+ATTEMPT_2_STARTED=true
 ```
 
-This checkpoint receives two completed read-only Reviewer results at the exact
-pre-checkpoint HEAD above. The docs-only commit changes Git HEAD but must not
-change the integration code tree at `CODE_HEAD`.
+This checkpoint receives the final Owner result for NP-CAN-PUBLISH-001 attempt
+2/2 at the exact pre-checkpoint HEAD above. The docs-only commit changes Git HEAD
+but must not change the integration code tree at `CODE_HEAD`.
 
 ## Integrated at the code head
 
@@ -44,7 +44,7 @@ SCHEDULER_LINEAGE_INTEGRATION=fa5cef88b151a78bab266df5f9ee6422c1334d8b
 CORPUS_COUNT_INTEGRATION=24625585d066fd7e8a96c2e2701bd77d19c0077a
 ```
 
-## NP-CAN-PUBLISH-001 Reviewer result and evidence boundary
+## NP-CAN-PUBLISH-001 attempt 1 Reviewer result and evidence boundary
 
 ```text
 REVIEW_RESULT=HOLD_P1
@@ -90,7 +90,7 @@ ATTEMPT_2_IS_FINAL=true
 ORIGINAL_REPAIR_OWNER_THREAD_ID=UNKNOWN
 P1_2_ID=NP-CAN-RECEIPT-001
 P1_2_STATUS=SERIALIZED_AFTER_NP-CAN-PUBLISH-001
-ATTEMPT_2_STARTED=false
+ATTEMPT_2_STARTED=true
 ```
 
 Acceptance test for the final attempt:
@@ -102,6 +102,39 @@ Inject target publish failure; after _path_identity(anchor_path) returns and bef
 The serialized receipt finding remains outside this stop line and must not be
 folded into attempt 2. Its status remains
 `SERIALIZED_AFTER_NP-CAN-PUBLISH-001`.
+
+## NP-CAN-PUBLISH-001 attempt 2 Owner result
+
+```text
+ATTEMPT=2/2
+ATTEMPT_IS_FINAL=true
+ATTEMPTS_USED=2
+MAX_ATTEMPTS=2
+STATUS=PENDING_FINAL_INDEPENDENT_REVIEW_ATTEMPT_2
+REPAIR_BASE=17b06f4b54e8b64b0de519ed4562277f4ec7a02f
+REPAIR_COMMIT=96a549dd95349a2c2c1457848247e1a6e14f7794
+REPAIR_PARENT=1baa9f9e21c70337d67bbaee3e6033bb7e11e2c6
+REPAIR_TIP=96a549dd95349a2c2c1457848247e1a6e14f7794
+REPAIR_PATHS=review_writer/project/dual_parse_bootstrap.py,tests/test_dual_parse_bootstrap.py
+OWNER_RED=1 failed, 28 deselected
+OWNER_GREEN=29 passed
+LEADER_FRESH_FOCUSED_TEST=29 passed in 0.51s
+STOP_LINE=atomically quarantine the owned anchor; if the moved inode is a competing anchor, restore the competing anchor; receipt handling is outside this stop line and must not be touched
+RECEIPT_SCOPE=EXCLUDED
+NP-CAN-RECEIPT-001=SERIALIZED_AFTER_NP-CAN-PUBLISH-001
+SCHEDULER_DISPOSITION=CLOSED
+```
+
+The deterministic RED proof is the rollback-window race that deleted the
+competing anchor. The final attempt's acceptance test is:
+
+```text
+Inject target publish failure; after _path_identity(anchor_path) returns and before anchor_path.unlink(), replace anchor_path with a competing anchor and create the competing target; both the competing anchor and competing target must be preserved and remain paired after failure.
+```
+
+The Owner result is recorded evidence from repair commit
+`96a549dd95349a2c2c1457848247e1a6e14f7794`; this docs-only Coordinator does not
+re-run code or tests.
 
 Reference-only commits, never direct cherry-pick targets:
 
@@ -121,6 +154,7 @@ Active finding IDs and their stop lines are authoritative only in
 ```text
 DISPOSITION=DISPOSITION_ACCEPT
 STATUS=DISPOSITION_ACCEPT_SUPERSEDED
+SCHEDULER_DISPOSITION=CLOSED
 REVIEWED_AGAINST_CODE_HEAD=24625585d066fd7e8a96c2e2701bd77d19c0077a
 CURRENT_SCHEDULER_FOCUSED_TESTS_REPORTED=44 passed
 CURRENT_SCHEDULER_REPAIR_REQUIRED=false
@@ -134,19 +168,26 @@ current-head repair or a cherry-pick target.
 
 ## Sole next action
 
-Restore the original Repair Owner for `NP-CAN-PUBLISH-001` attempt 2 from the
-latest verified integration code head `24625585d066fd7e8a96c2e2701bd77d19c0077a`.
-Attempt 2 is the final allowed attempt. Do not create a replacement Owner unless
-the original cannot be restored; then stop and request human authorization.
-The original Owner thread ID is `UNKNOWN` in the existing core files.
+One fresh, read-only Luna 5.6 max Reviewer must audit the immutable repair chain
+`17b06f4b54e8b64b0de519ed4562277f4ec7a02f..96a549dd95349a2c2c1457848247e1a6e14f7794`.
+The Reviewer must separately inspect the incremental
+`1baa9f9e21c70337d67bbaee3e6033bb7e11e2c6..96a549dd95349a2c2c1457848247e1a6e14f7794`
+delta and the full chain for compatibility with the rollback-window stop line:
+atomic quarantine of the owned anchor, restoration if the moved inode is a
+competing anchor, and no receipt handling. The Reviewer returns `ACCEPT` or
+`HOLD` with exact checks and zero writes. If the Reviewer returns `HOLD`, no
+third repair is permitted; the Coordinator must set `CODE_BLOCKED` and record
+one unique recovery action. The Reviewer must not re-review
+`NP-CAN-RECEIPT-001`, which remains serialized, and must not expand into P2/P3.
 
-This Coordinator session stops after this docs-only checkpoint. It does not enter
-attempt 2, launch an Owner or Reviewer, or run Playwright.
+This docs-only Coordinator does not launch the Reviewer and stops after the
+checkpoint commit. The original attempt-2 Owner identity is not reinterpreted by
+this handoff.
 
 ## Checkpoint verification contract
 
 ```text
-CURRENT_HEAD_AT_INTAKE=b911625f27b0e1289418f45a6fbcdf64b5b2ea5d
+CURRENT_HEAD_AT_INTAKE=9dcaacaa62a98f3dc33a1999088420a0081a3691
 CODE_HEAD=24625585d066fd7e8a96c2e2701bd77d19c0077a
 HEAD_DESCENDS_FROM_CODE_HEAD=true
 MANIFEST_AT_INTAKE=7/7 OK
@@ -161,19 +202,22 @@ runtime, or Playwright action is part of this checkpoint.
 
 ```text
 ACTIVE_FINDING_IDS=NP-CAN-PUBLISH-001,NP-CAN-RECEIPT-001,NP-INP-001,NP-INP-002,NP-INP-003,NP-INP-004,NP-INP-005,NP-CAN-002
-PENDING_REVIEW=none before attempt-2 Owner completion
+PENDING_REVIEW=NP-CAN-PUBLISH-001 final independent review of immutable repair chain 17b06f4b54e8b64b0de519ed4562277f4ec7a02f..96a549dd95349a2c2c1457848247e1a6e14f7794
 GATES=INPUT_READY:NOT_READY;CODE_FREEZE_READY:NOT_READY;RUNTIME_READY:NOT_READY
 T0=NOT_RECORDED
 CORPUS_REQUESTED=false
+ATTEMPT_2_STARTED=true
+SCHEDULER_DISPOSITION=CLOSED
 ```
 
 ## Forbidden next actions
 
-- no attempt 2, Owner/Reviewer launch, or Playwright in this Coordinator session;
-- no replacement Owner unless the original Repair Owner cannot be restored; then
-  stop and request human authorization;
+- no further Repair Owner or Reviewer launch in this docs-only Coordinator session;
+- no third repair if the final Reviewer returns `HOLD`; set `CODE_BLOCKED` and
+  record one unique recovery action instead;
 - no review expansion into `NP-CAN-RECEIPT-001`; it remains serialized after
   `NP-CAN-PUBLISH-001`;
+- no review expansion into P2/P3;
 - no direct integration of the rejected candidate TIP or any reference-only
   candidate;
 - no corpus request, T0, project bootstrap, Dashboard/runtime claim, or Playwright;
