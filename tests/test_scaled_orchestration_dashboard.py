@@ -417,6 +417,65 @@ def test_dashboard_projection_uses_only_core_rows_for_variable_n_tiered_denomina
     } == {"core-a": 2, "core-b": 3, "background-a": 4}
 
 
+def test_dashboard_projection_preserves_current_variable_n_above_legacy_denominator(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    study_specs = [("current-310", "core", ["CONFIRMED"] * 309 + ["BLOCKED"])]
+    project = _tiered_project(tmp_path, [("current-310", "core")])
+    receipt_path = project / "00_sources/acquisition_final_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt.update(
+        {
+            "corpus_kind": "authoritative_variable_n",
+            "variable_n": True,
+            "study_count": 1,
+        }
+    )
+    receipt_path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+    monkeypatch.setattr(
+        dashboard,
+        "project_chemical_completion_state",
+        lambda _project: _tiered_completion(study_specs),
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "chemical_paper_projection",
+        lambda _project: _tiered_chemical(study_specs),
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "project_chemical_completion_candidates",
+        lambda _project, _study_id: {},
+    )
+
+    payload = dashboard.project_honest_progressive_dashboard_projection(
+        project,
+        {
+            "schema_version": "dual-parse-projection.v2",
+            "status": "ready",
+            "studies": [],
+            "completion_queue": [],
+        },
+    )
+
+    honest = payload["honest_progressive"]
+    assert honest["availability"] == "available"
+    assert honest["core_molecule_count"] == 310
+    assert honest["coverage_denominator"] == 310
+    assert honest["confirmed_count"] == 309
+    assert honest["ai_provisional_count"] == 0
+    assert honest["blocked_count"] == 1
+    assert honest["coverage_ratio"] == pytest.approx(309 / 310)
+    coverage = {row["study_id"]: row for row in honest["paper_coverage"]}
+    assert coverage["current-310"]["molecule_count"] == 310
+    assert coverage["current-310"]["coverage_denominator"] == 310
+    assert coverage["current-310"]["confirmed_count"] == 309
+    assert coverage["current-310"]["blocked_count"] == 1
+    assert coverage["current-310"]["coverage_ratio"] == pytest.approx(309 / 310)
+
+
 def test_dashboard_projection_uses_shared_source_truth_tier_authority(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -221,8 +221,10 @@ HONEST_LEGACY_STUDY_COUNT = 3
 HONEST_INVALID_CORPUS_MARKER = "invalid"
 
 
-def _honest_count(value: object, *, maximum: int = HONEST_CORE_MOLECULE_COUNT) -> int | None:
-    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= maximum:
+def _honest_count(value: object, *, maximum: int | None = None) -> int | None:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        return None
+    if maximum is not None and value > maximum:
         return None
     return value
 
@@ -466,12 +468,15 @@ def _honest_uncertainty_statement(
     confirmed_count: int | None,
     ai_provisional_count: int | None,
     blocked_count: int | None,
-    denominator: int | None = None,
+    denominator: int | None,
 ) -> str:
-    if confirmed_count is None or ai_provisional_count is None or blocked_count is None:
+    if (
+        confirmed_count is None
+        or ai_provisional_count is None
+        or blocked_count is None
+        or denominator is None
+    ):
         return _honest_unknown_summary()["uncertainty_statement"]
-    if denominator is None:
-        denominator = HONEST_CORE_MOLECULE_COUNT
     return (
         f"项目级 {denominator} 个 core molecules："
         f"CONFIRMED {confirmed_count}、AI_PROVISIONAL {ai_provisional_count}、"
@@ -507,7 +512,10 @@ def _honest_paper_uncertainty_statement(
 
 
 def _honest_paper_coverage(
-    completion: dict[str, Any], *, core_ids: set[str] | None = None
+    completion: dict[str, Any],
+    *,
+    core_ids: set[str] | None = None,
+    maximum: int | None = None,
 ) -> list[dict[str, Any]]:
     rows = completion.get("studies")
     if not isinstance(rows, list):
@@ -521,16 +529,20 @@ def _honest_paper_coverage(
             continue
         molecule_count = _honest_count(
             row.get("study_molecule_count", row.get("molecule_count")),
-            maximum=HONEST_CORE_MOLECULE_COUNT,
+            maximum=maximum,
         )
+        count_maximum = molecule_count if molecule_count is not None else maximum
         confirmed_count = _honest_count(
-            row.get("study_confirmed_count", row.get("confirmed_count"))
+            row.get("study_confirmed_count", row.get("confirmed_count")),
+            maximum=count_maximum,
         )
         ai_provisional_count = _honest_count(
-            row.get("study_ai_provisional_count", row.get("ai_provisional_count"))
+            row.get("study_ai_provisional_count", row.get("ai_provisional_count")),
+            maximum=count_maximum,
         )
         blocked_count = _honest_count(
-            row.get("study_blocked_count", row.get("blocked_count"))
+            row.get("study_blocked_count", row.get("blocked_count")),
+            maximum=count_maximum,
         )
         ratio: float | None = None
         if (
