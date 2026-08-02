@@ -3,7 +3,7 @@
   "spec_id": "review-writer-next-phase-2026-08-01",
   "continuation_spec_id": "review-writer-next-phase-continuation-2026-08-02",
   "recorded_against_code_head": "0d7395402cd052956d959e39091912fecc0d991e",
-  "inventory_status": "READY_FOR_CROSS_BOUNDARY_OWNER",
+  "inventory_status": "READY_FOR_REVIEW",
   "new_finding_policy": "Only an Approved-Spec P0/P1 with current evidence, one stop line, affected paths, acceptance evidence, one Owner, one fresh Reviewer, and at most two attempts may be added; everything else is MVP_BACKLOG.",
   "sole_next_action_id": "NP-INP-001",
   "parallel_read_only_action_ids": [],
@@ -200,7 +200,7 @@
       "approved_spec_class": "mandatory Generic SI binding/currentness",
       "severity": "P1",
       "title": "Bind real Generic SI artifacts per study instead of deriving readiness from study count",
-      "status": "READY_FOR_CROSS_BOUNDARY_OWNER",
+      "status": "READY_FOR_REVIEW",
       "write_group": "dual_parse_bootstrap",
       "source_attempt": "23813a2ebe7e4d9587c5ec34a2a1b69e6b89df86",
       "source_attempt_policy": "REFERENCE_ONLY_DO_NOT_CHERRY_PICK",
@@ -216,11 +216,11 @@
         "project_dual_source_state",
         "workflow_state"
       ],
-      "attempts_used": 0,
+      "attempts_used": 1,
       "max_attempts": 2,
       "ready_from_code_head": "0d7395402cd052956d959e39091912fecc0d991e",
-      "reviewer": "fresh current-head read-only Luna 5.6 max Reviewer",
-      "reviewer_disposition": "CURRENT_P1",
+      "reviewer": "fresh independent read-only Luna 5.6 max Reviewer",
+      "reviewer_disposition": "READY_FOR_REVIEW",
       "boundary_scope_disposition": "CROSS_BOUNDARY_SCOPE_REQUIRED",
       "reviewed_against_code_head": "0d7395402cd052956d959e39091912fecc0d991e",
       "reviewer_write_permission": "NONE",
@@ -287,12 +287,57 @@
           "Playwright",
           "remote write"
         ],
-        "reviewer": "one fresh independent read-only Reviewer after Owner attempt 1",
-        "reviewer_boundary": "Review only the Owner delta and the NP-INP-001 acceptance contract; write permission NONE; no self-approval."
+        "reviewer": "one fresh independent read-only Luna 5.6 max Reviewer",
+        "reviewer_boundary": "Review only BASE..TIP for Owner attempt 1 and the NP-INP-001 stop line; write permission NONE; do not review or add any other finding or new threat-model dimension; no self-approval.",
+        "reviewer_base": "a325dc4d1e5d84be3199e415f33c645b7e340405",
+        "reviewer_tip": "a7e48f7c0dc9b6a1b49e6e34e146c4c719ed5510",
+        "reviewer_stop_line": "One Owner must close the cross-boundary Generic SI artifact identity, hash, source-SI binding, and currentness chain fail-closed; no split two-file repair and no Chemical gate change",
+        "reviewer_write_permission": "NONE",
+        "reviewer_other_findings": "FORBIDDEN",
+        "reviewer_new_threat_model_dimensions": "FORBIDDEN"
       },
-      "recovery": "From current integration HEAD e6502f7ad7a1d9fccacc57ac9027593acfa844ee, create a fresh Owner worktree and implement only the eight allowed paths in the required call order; do not cherry-pick 23813a2, modify source_truth.py or parse_quality.py, or expand other findings.",
+      "owner_attempt_1": {
+        "result": "OWNER_READY",
+        "attempt": 1,
+        "max_attempts": 2,
+        "base": "a325dc4d1e5d84be3199e415f33c645b7e340405",
+        "parent": "a325dc4d1e5d84be3199e415f33c645b7e340405",
+        "commit": "a7e48f7c0dc9b6a1b49e6e34e146c4c719ed5510",
+        "branch": "codex/repair-generic-si-binding-p1",
+        "worktree": "/home/kenqia/my_folder/review-writer/.worktrees/repair-generic-si-binding-p1",
+        "changed_paths": [
+          "schemas/project/dual_parse_bootstrap_request.v1.schema.json",
+          "review_writer/project/dual_parse_bootstrap.py",
+          "review_writer/project/input_provenance.py",
+          "scripts/run_vertical_review.py",
+          "tests/test_dual_parse_bootstrap.py",
+          "tests/test_input_provenance.py",
+          "tests/test_dual_parse_integration.py"
+        ],
+        "input_provenance_manifest_schema_changed": false,
+        "owner_reuse_forbidden_paths_unchanged": [
+          "source_truth.py",
+          "parse_quality.py"
+        ],
+        "red": {
+          "command": "TMPDIR=/tmp PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider tests/test_dual_parse_integration.py::test_formal_si_generic_binding_is_required_before_readiness_projection",
+          "reported_result": "1 passed in 0.71s",
+          "fresh_coordinator_result": "1 passed in 1.01s"
+        },
+        "green": {
+          "command": "TMPDIR=/tmp PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider tests/test_dual_parse_bootstrap.py tests/test_input_provenance.py tests/test_dual_parse_integration.py",
+          "reported_result": "56 passed in 6.50s",
+          "fresh_coordinator_result": "56 passed in 7.01s"
+        },
+        "diff_check": "PASS",
+        "production_marker_check": "PASS; no legacy_three_paper/variable_n=false marker in production review_writer/project/dual_parse_bootstrap.py; marker remains only in the N==3 test fixture compatibility layer",
+        "candidate_clean": true,
+        "context_compactions": 1,
+        "stopped_after_first_compaction": true
+      },
+      "recovery": "After the single fresh independent read-only Reviewer returns, any further action must remain within the NP-INP-001 stop line; no other finding or new threat-model dimension may be added, and any repair must use the remaining attempt only if the immutable review contract permits it.",
       "sole_next_action": true,
-      "next_action": "One fresh Owner attempt 1/2 may start from current integration HEAD e6502f7ad7a1d9fccacc57ac9027593acfa844ee and close the same NP-INP-001 cross-boundary P1 across the eight allowed paths in the required call order; attempts remain 0/2; after that, one fresh independent read-only Reviewer reviews only this bounded delta."
+      "next_action": "One fresh independent read-only Luna 5.6 max Reviewer must review BASE=a325dc4d1e5d84be3199e415f33c645b7e340405..TIP=a7e48f7c0dc9b6a1b49e6e34e146c4c719ed5510 and only the NP-INP-001 stop line; write permission NONE; no other finding or new threat-model dimension."
     },
     {
       "finding_id": "NP-INP-002",
