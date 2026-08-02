@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import review_writer.project.dual_parse_bootstrap as dual_parse_bootstrap
 from review_writer.project.dual_parse_bootstrap import (
     DualParseBootstrapError,
     bind_generic_parse_outputs,
@@ -46,6 +47,19 @@ def snapshot(root: Path) -> dict[str, bytes]:
         for path in sorted(root.rglob("*"))
         if path.is_file()
     }
+
+
+def tree_snapshot(root: Path) -> object:
+    if not root.exists():
+        return None
+    entries = []
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix()
+        if path.is_dir():
+            entries.append(("dir", relative))
+        elif path.is_file():
+            entries.append(("file", relative, path.read_bytes()))
+    return tuple(entries)
 
 
 def symlink_or_skip(link: Path, target: Path, *, target_is_directory: bool = False) -> None:
@@ -136,6 +150,85 @@ def test_bootstrap_writes_external_anchor_for_complete_canonical_receipt(
     assert anchor["receipt"] == receipt
     assert anchor["receipt_sha256"] == hashlib.sha256(canonical_receipt).hexdigest()
     assert str(tmp_path) not in anchor_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("preexisting_authority", [False, True])
+def test_bootstrap_write_failure_rolls_back_anchor_and_retry_is_safe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    preexisting_authority: bool,
+) -> None:
+    review_root = tmp_path / "review-projects"
+    review_root.mkdir()
+    authority_root = review_root / ".dual_parse_authority"
+    if preexisting_authority:
+        authority_root.mkdir()
+        (authority_root / "keep.json").write_bytes(b"pre-existing authority artifact")
+    request = source_request(tmp_path)
+    target = review_root / request["project_id"]
+    anchor_path = authority_root / f"{target.name}.json"
+    review_before = tree_snapshot(review_root)
+    authority_before = tree_snapshot(authority_root)
+    original_write = dual_parse_bootstrap._write_json_exclusive
+
+    def fail_anchor_write(path: Path, value: object, code: str) -> None:
+        if path == anchor_path:
+            path.write_bytes(b"partial anchor")
+            raise DualParseBootstrapError(code)
+        original_write(path, value, code)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(dual_parse_bootstrap, "_write_json_exclusive", fail_anchor_write)
+        with pytest.raises(DualParseBootstrapError, match="BOOTSTRAP_WRITE_FAILED"):
+            bootstrap_dual_parse_project(review_root, request)
+
+    assert not target.exists()
+    assert tree_snapshot(review_root) == review_before
+    assert tree_snapshot(authority_root) == authority_before
+
+    project = bootstrap_dual_parse_project(review_root, request)
+
+    assert project == target
+    assert project.is_dir()
+    assert anchor_path.is_file()
+    assert authority_root.exists()
+    if preexisting_authority:
+        assert (authority_root / "keep.json").read_bytes() == b"pre-existing authority artifact"
+
+
+def test_bootstrap_publish_failure_rolls_back_anchor_and_retry_is_safe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    review_root = tmp_path / "review-projects"
+    review_root.mkdir()
+    authority_root = review_root / ".dual_parse_authority"
+    request = source_request(tmp_path)
+    target = review_root / request["project_id"]
+    anchor_path = authority_root / f"{target.name}.json"
+    review_before = tree_snapshot(review_root)
+    authority_before = tree_snapshot(authority_root)
+    original_replace = dual_parse_bootstrap.os.replace
+
+    def fail_project_publish(source: object, destination: object) -> None:
+        if Path(destination) == target:
+            raise OSError("injected project publish failure")
+        original_replace(source, destination)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(dual_parse_bootstrap.os, "replace", fail_project_publish)
+        with pytest.raises(DualParseBootstrapError, match="BOOTSTRAP_WRITE_FAILED"):
+            bootstrap_dual_parse_project(review_root, request)
+
+    assert not target.exists()
+    assert tree_snapshot(review_root) == review_before
+    assert tree_snapshot(authority_root) == authority_before
+
+    project = bootstrap_dual_parse_project(review_root, request)
+
+    assert project == target
+    assert project.is_dir()
+    assert anchor_path.is_file()
 
 
 def test_generic_binding_requires_external_canonical_anchor(tmp_path: Path) -> None:

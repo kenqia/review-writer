@@ -144,11 +144,29 @@ def _canonical_anchor_body(project: Path, receipt: dict[str, Any]) -> dict[str, 
 
 
 def _write_json_exclusive(path: Path, value: object, code: str) -> None:
+    temporary: Path | None = None
     try:
-        with path.open("xb") as handle:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
             handle.write(_json_bytes(value))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        temporary = None
     except OSError as exc:
         raise DualParseBootstrapError(code) from exc
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
 
 
 def _read_canonical_anchor(project: Path) -> dict[str, Any]:
@@ -361,7 +379,9 @@ def bootstrap_dual_parse_project(review_root: Path, request: object) -> Path:
     staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.", dir=review_root))
     published = False
     anchor_path = _canonical_anchor_path(target)
-    anchor_written = False
+    authority_directory = anchor_path.parent
+    authority_directory_preexisting = os.path.lexists(authority_directory)
+    anchor_preexisting = os.path.lexists(anchor_path)
     try:
         studies: list[dict[str, Any]] = []
         candidates: list[dict[str, Any]] = []
@@ -433,7 +453,7 @@ def bootstrap_dual_parse_project(review_root: Path, request: object) -> Path:
                 for row in sources
             ],
         })
-        _ensure_safe_directory(anchor_path.parent, "BOOTSTRAP_WRITE_FAILED")
+        _ensure_safe_directory(authority_directory, "BOOTSTRAP_WRITE_FAILED")
         if os.path.lexists(anchor_path):
             raise DualParseBootstrapError("TARGET_EXISTS")
         anchor_body = _canonical_anchor_body(target, receipt)
@@ -442,7 +462,6 @@ def bootstrap_dual_parse_project(review_root: Path, request: object) -> Path:
             {**anchor_body, "anchor_digest": _canonical_digest(anchor_body)},
             "BOOTSTRAP_WRITE_FAILED",
         )
-        anchor_written = True
         os.replace(staging, target)
         published = True
         return target
@@ -453,9 +472,14 @@ def bootstrap_dual_parse_project(review_root: Path, request: object) -> Path:
     finally:
         if not published:
             shutil.rmtree(staging, ignore_errors=True)
-            if anchor_written:
+            if not anchor_preexisting:
                 try:
                     anchor_path.unlink()
+                except OSError:
+                    pass
+            if not authority_directory_preexisting:
+                try:
+                    authority_directory.rmdir()
                 except OSError:
                     pass
 
