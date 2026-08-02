@@ -208,12 +208,187 @@ def test_blocker_writes_exact_spec_termination_report_with_precise_reason(
     assert report.fields["REASON_CODE"] in SPEC_FAILURE_CODES
     assert tuple(report.fields) == TERMINATION_REPORT_FIELDS
     assert report.fields["REASON_CODE"] == "ORCHESTRATION_BLOCKED"
-    assert report.fields["BLOCKERS"] == ["scheduler ledger unreadable"]
+    assert report.fields["BLOCKERS"][:1] == ["scheduler ledger unreadable"]
+    assert "AUTHORITY_UNKNOWN" in report.fields["BLOCKERS"]
+    assert "RUN_STATE_UNKNOWN" in report.fields["BLOCKERS"]
     assert report.fields["USER_ACTIONS_AFTER_T0"] == 0
     assert report.path.read_text(encoding="utf-8").splitlines() == [
         f"{key}={report.render_value(report.fields[key])}"
         for key in TERMINATION_REPORT_FIELDS
     ]
+
+
+def test_termination_report_persists_authority_and_run_state_semantics(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "scheduler-ledger.json"
+    authority_path = tmp_path / "authority.txt"
+    authority_path.write_text(
+        "\n".join(
+            (
+                "SPEC_ID=review-writer-next-phase-2026-08-01",
+                "FROZEN_CODE_HEAD=" + "a" * 40,
+                "AUTHORITATIVE_PROJECT_ID=olefin-review-v1",
+                "CORPUS_STUDY_COUNT=24",
+                "CORE_STUDY_IDS=study-001,study-002,study-003",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    run_state_path = tmp_path / "run-state.json"
+    run_state_path.write_text(
+        json.dumps(
+            {
+                "gates": {
+                    "SCALED_CODE_READY": "OK",
+                    "SCALED_INPUT_READY": "BLOCKED",
+                    "SCALED_RUNTIME_READY": "OK",
+                    "SCALED_REVIEW_READY": "UNKNOWN",
+                },
+                "counts": {
+                    "CONFIRMED_COUNT": 17,
+                    "AI_PROVISIONAL_COUNT": 4,
+                    "BLOCKED_COUNT": 3,
+                },
+                "artifacts": {
+                    "PER_STUDY_COVERAGE_ARTIFACT": "reports/per-study-coverage.json",
+                    "GAP_REGISTRY_ARTIFACT": "reports/gap-registry.json",
+                    "PAPER_EVIDENCE_CURRENT": "evidence/paper-evidence.json",
+                    "ARTIFACT_MANIFEST": "release/artifact-manifest.json",
+                },
+                "PAPER_EVIDENCE_DISPOSITIONED": "OK",
+                "SYNTHESIS_CURRENT": "synthesis/current.json",
+                "MANUSCRIPT_CURRENT": "manuscript/current.md",
+                "CLAIM_SOURCE_AUDIT": "audit/claim-source.json",
+                "BENCHMARK_SCORE": 88,
+                "BENCHMARK_HARD_FAILS": [],
+                "BENCHMARK_ROUNDS": 1,
+                "DOCX_READY": True,
+                "PDF_READY": False,
+                "OWNER_REPORTS": ["reports/owner-001.json"],
+                "FOCUSED_TESTS": "2 passed",
+                "SMOKE": "PASS",
+                "QUALITY_CHECK": "PASS",
+                "GIT_SHOW_CHECK": "PASS",
+                "GIT_STATUS": "clean",
+                "MVP_BACKLOG": ["third theme deferred"],
+                "blockers": ["INPUT_BUNDLE_INCOMPLETE"],
+                "affected_objects": ["study-003"],
+                "completed_independent_work": ["scheduler replay", "source audit"],
+                "unique_recovery_action": "complete the missing input bundle",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    session = SchedulerSession.open(
+        ledger_path,
+        session_label="fresh-session-0",
+        run_id="run-001",
+        authority_path=authority_path,
+        run_state_path=run_state_path,
+    )
+    session.start_attempt(
+        task_id="CONTENT-001",
+        task_digest=_task_digest(),
+        at=START,
+    )
+    session.record_t0(
+        input_ready=True,
+        code_freeze_ready=True,
+        runtime_ready=True,
+        at=START,
+    )
+    report = session.terminate(
+        reason_code="INPUT_BLOCKED",
+        blockers=["input bundle is incomplete"],
+        affected_objects=["CONTENT-001"],
+        completed_independent_work=["focused contract tests"],
+        unique_recovery_action="complete the missing input bundle",
+        at=START + timedelta(minutes=2),
+    )
+
+    assert report.fields["FROZEN_CODE_HEAD"] == "a" * 40
+    assert report.fields["AUTHORITATIVE_PROJECT_ID"] == "olefin-review-v1"
+    assert report.fields["CORPUS_STUDY_COUNT"] == 24
+    assert report.fields["CORE_STUDY_COUNT"] == 3
+    assert report.fields["T0"] == "2026-08-02T01:00:00Z"
+    assert report.fields["ELAPSED_SECONDS"] == 120
+    assert report.fields["SCALED_CODE_READY"] == "OK"
+    assert report.fields["SCALED_INPUT_READY"] == "BLOCKED"
+    assert report.fields["SCALED_REVIEW_READY"] == "UNKNOWN"
+    assert report.fields["PER_STUDY_COVERAGE_ARTIFACT"] == "reports/per-study-coverage.json"
+    assert report.fields["GAP_REGISTRY_ARTIFACT"] == "reports/gap-registry.json"
+    assert report.fields["CONFIRMED_COUNT"] == 17
+    assert report.fields["BENCHMARK_SCORE"] == 88
+    assert report.fields["DOCX_READY"] == "true"
+    assert report.fields["PDF_READY"] == "false"
+    assert report.fields["AFFECTED_OBJECTS"] == ["CONTENT-001", "study-003"]
+    assert report.fields["COMPLETED_INDEPENDENT_WORK"] == [
+        "focused contract tests",
+        "scheduler replay",
+        "source audit",
+    ]
+    assert report.fields["UNIQUE_RECOVERY_ACTION"] == "complete the missing input bundle"
+    assert report.lineage["FROZEN_CODE_HEAD"] == "authority:FROZEN_CODE_HEAD"
+    assert report.lineage["SCALED_CODE_READY"] == "run_state:gates.SCALED_CODE_READY"
+
+    reopened = SchedulerSession.open(ledger_path, session_label="fresh-session-1")
+    replayed = reopened.terminate(
+        reason_code="ORCHESTRATION_BLOCKED",
+        blockers=["a different caller must not rewrite the report"],
+        affected_objects=["different-object"],
+        completed_independent_work=["different work"],
+        unique_recovery_action="different recovery",
+        at=START + timedelta(minutes=3),
+    )
+    assert replayed.fields == report.fields
+    assert replayed.lineage == report.lineage
+    assert "/" not in report.path.read_text(encoding="utf-8").split("FROZEN_CODE_HEAD=", 1)[1].splitlines()[0]
+
+
+def test_missing_authority_and_absolute_artifact_are_unknown_and_blocked(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "scheduler-ledger.json"
+    run_state_path = tmp_path / "run-state.json"
+    run_state_path.write_text(
+        json.dumps(
+            {
+                "gates": {"SCALED_CODE_READY": True},
+                "artifacts": {"ARTIFACT_MANIFEST": "/private/project/manifest.json"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    session = SchedulerSession.open(
+        ledger_path,
+        session_label="fresh-session-0",
+        run_id="run-001",
+        run_state_path=run_state_path,
+    )
+    session.start_attempt(task_id="CONTENT-001", task_digest=_task_digest(), at=START)
+    report = session.terminate(
+        reason_code="ORCHESTRATION_BLOCKED",
+        blockers=["authority record is unavailable"],
+        affected_objects=["CONTENT-001"],
+        completed_independent_work=["ledger replay"],
+        unique_recovery_action="record authority before resuming",
+        at=START + timedelta(minutes=1),
+    )
+
+    assert report.fields["FROZEN_CODE_HEAD"] == "UNKNOWN"
+    assert report.fields["AUTHORITATIVE_PROJECT_ID"] == "UNKNOWN"
+    assert report.fields["CORPUS_STUDY_COUNT"] == "UNKNOWN"
+    assert report.fields["CORE_STUDY_COUNT"] == "UNKNOWN"
+    assert report.fields["SCALED_CODE_READY"] == "OK"
+    assert report.fields["ARTIFACT_MANIFEST"] == "UNKNOWN"
+    assert any("AUTHORITY_UNKNOWN" in blocker for blocker in report.fields["BLOCKERS"])
+    assert any("ARTIFACT_REFERENCE_INVALID" in blocker for blocker in report.fields["BLOCKERS"])
+    rendered = report.path.read_text(encoding="utf-8")
+    assert "/private/project/manifest.json" not in rendered
+    assert "/home/" not in rendered
 
 
 def test_t0_rejects_user_action_and_keeps_fixed_zero(tmp_path: Path) -> None:
