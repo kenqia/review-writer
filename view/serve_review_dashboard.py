@@ -127,6 +127,7 @@ from review_writer.project.source_truth import (  # noqa: E402
     declared_study_ids,
     load_source_truth_bundle,
     project_source_binding,
+    source_tier_authority,
     source_truth_asset_snapshot,
 )
 from review_writer.project.chemical_paper import (  # noqa: E402
@@ -278,45 +279,6 @@ def _honest_project_corpus_marker(project: Path, declared_ids: list[str]) -> str
     ):
         return HONEST_LEGACY_CORPUS_KIND
     return HONEST_INVALID_CORPUS_MARKER
-
-
-def _honest_current_core_ids(
-    declared_ids: list[str], tier_manifest: Path
-) -> list[str]:
-    """Return core IDs only when the current tier map is an exact binding."""
-
-    payload = read_json_if_exists(tier_manifest)
-    rows = payload.get("candidates") if isinstance(payload, dict) else None
-    if not isinstance(rows, list) or len(rows) != len(declared_ids):
-        raise SourceTruthError("SOURCE_TIER_INVALID")
-
-    declared_set = set(declared_ids)
-    tiers_by_candidate: dict[str, str] = {}
-    bound_study_ids: set[str] = set()
-    for row in rows:
-        if not isinstance(row, dict):
-            raise SourceTruthError("SOURCE_TIER_INVALID")
-        candidate_id = row.get("candidate_id")
-        study_id = row.get("study_id")
-        tier = row.get("tier")
-        if (
-            not isinstance(candidate_id, str)
-            or not isinstance(study_id, str)
-            or candidate_id != study_id
-            or candidate_id not in declared_set
-            or tier not in {"core", "background"}
-            or candidate_id in tiers_by_candidate
-            or study_id in bound_study_ids
-        ):
-            raise SourceTruthError("SOURCE_TIER_INVALID")
-        tiers_by_candidate[candidate_id] = tier
-        bound_study_ids.add(study_id)
-
-    if set(tiers_by_candidate) != declared_set or bound_study_ids != declared_set:
-        raise SourceTruthError("SOURCE_TIER_INVALID")
-    return [
-        study_id for study_id in declared_ids if tiers_by_candidate[study_id] == "core"
-    ]
 
 
 def _honest_identifier(value: object) -> str | None:
@@ -1059,9 +1021,12 @@ def project_honest_progressive_dashboard_projection(
                 current_core_ids = []
             elif corpus_marker == HONEST_CURRENT_CORPUS_KIND or tier_manifest.is_file():
                 try:
-                    current_core_ids = _honest_current_core_ids(
-                        current_declared_ids, tier_manifest
-                    )
+                    tiers = source_tier_authority(project)
+                    current_core_ids = [
+                        study_id
+                        for study_id in current_declared_ids
+                        if tiers[study_id] == "core"
+                    ]
                 except SourceTruthError:
                     # A current tiered declaration without a valid tier map must
                     # not fall back to the historical fixed three-paper path.

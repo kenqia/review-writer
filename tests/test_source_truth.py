@@ -15,8 +15,10 @@ from review_writer.project.source_truth import (
     canonical_digest,
     declared_study_ids,
     load_source_truth_bundle,
+    source_tier_authority,
     source_truth_asset,
     source_truth_asset_snapshot,
+    study_source_tier,
     write_source_truth_bundle,
 )
 
@@ -203,6 +205,24 @@ def _source_truth_project(
     return project
 
 
+def _tier_authority_project(
+    tmp_path: Path,
+    rows: list[dict[str, object]],
+    study_ids: list[str] | None = None,
+) -> Path:
+    project = _source_truth_project(tmp_path)
+    ids = study_ids or [row["study_id"] for row in rows if isinstance(row.get("study_id"), str)]
+    receipt_path = project / "00_sources/acquisition_final_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["studies"] = [{"study_id": study_id} for study_id in ids]
+    _write_json(receipt_path, receipt)
+    _write_json(
+        project / "00_discovery/candidate_pool.json",
+        {"schema_version": "candidate-pool.v1", "candidates": rows},
+    )
+    return project
+
+
 def test_bundle_closes_study_slug_and_source_id_by_verified_pdf(tmp_path: Path) -> None:
     project = _source_truth_project(tmp_path)
 
@@ -223,6 +243,57 @@ def test_bundle_closes_study_slug_and_source_id_by_verified_pdf(tmp_path: Path) 
     assert source["content_list_v2"]["sha256"]
     body = {key: value for key, value in bundle.items() if key != "bundle_digest"}
     assert bundle["bundle_digest"] == canonical_digest(body)
+
+
+def test_source_tier_authority_requires_exact_one_to_one_binding(tmp_path: Path) -> None:
+    project = _tier_authority_project(
+        tmp_path,
+        [
+            {"candidate_id": "study-a", "study_id": "study-a", "tier": "core"},
+            {"candidate_id": "study-b", "study_id": "study-b", "tier": "background"},
+        ],
+        ["study-a", "study-b"],
+    )
+
+    assert source_tier_authority(project) == {
+        "study-a": "core",
+        "study-b": "background",
+    }
+    assert study_source_tier(project, "study-a") == "core"
+    assert study_source_tier(project, "study-b") == "background"
+
+
+@pytest.mark.parametrize(
+    "rows",
+    (
+        [
+            {"candidate_id": "study-a", "study_id": "study-a", "tier": "core"},
+            {"candidate_id": "study-b", "study_id": "study-b", "tier": "background"},
+            {"candidate_id": "stale", "study_id": "stale", "tier": "core"},
+        ],
+        [
+            {"candidate_id": "study-a", "study_id": "study-a", "tier": "core"},
+        ],
+        [
+            {"candidate_id": "study-a", "study_id": "study-a", "tier": "core"},
+            {"candidate_id": "study-a", "study_id": "study-a", "tier": "background"},
+        ],
+        [
+            {"candidate_id": "study-a", "study_id": "study-b", "tier": "core"},
+            {"candidate_id": "study-b", "study_id": "study-b", "tier": "background"},
+        ],
+    ),
+)
+def test_source_tier_authority_fails_closed_for_non_exact_binding(
+    tmp_path: Path, rows: list[dict[str, object]]
+) -> None:
+    project = _tier_authority_project(tmp_path, rows, ["study-a", "study-b"])
+
+    with pytest.raises(SourceTruthError, match="SOURCE_TIER_INVALID"):
+        source_tier_authority(project)
+
+    with pytest.raises(SourceTruthError, match="SOURCE_TIER_INVALID"):
+        study_source_tier(project, "study-a")
 
 
 @pytest.mark.parametrize(

@@ -417,6 +417,60 @@ def test_dashboard_projection_uses_only_core_rows_for_variable_n_tiered_denomina
     } == {"core-a": 2, "core-b": 3, "background-a": 4}
 
 
+def test_dashboard_projection_uses_shared_source_truth_tier_authority(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from view import serve_review_dashboard as dashboard
+
+    study_specs = [
+        ("core-a", "core", ["CONFIRMED", "BLOCKED"]),
+        ("background-a", "background", ["AI_PROVISIONAL", "BLOCKED"]),
+    ]
+    project = _tiered_project(
+        tmp_path,
+        [("core-a", "core"), ("background-a", "background")],
+    )
+    calls: list[Path] = []
+
+    def shared_authority(root: Path) -> dict[str, str]:
+        calls.append(root)
+        return {"core-a": "core", "background-a": "background"}
+
+    monkeypatch.setattr(dashboard, "source_tier_authority", shared_authority)
+    monkeypatch.setattr(
+        dashboard,
+        "project_chemical_completion_state",
+        lambda _project: _tiered_completion(study_specs),
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "chemical_paper_projection",
+        lambda _project: _tiered_chemical(study_specs),
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "project_chemical_completion_candidates",
+        lambda _project, _study_id: {},
+    )
+
+    payload = dashboard.project_honest_progressive_dashboard_projection(
+        project,
+        {
+            "schema_version": "dual-parse-projection.v2",
+            "status": "ready",
+            "studies": [],
+            "completion_queue": [],
+        },
+    )
+
+    assert calls == [project.resolve()]
+    assert payload["honest_progressive"]["coverage_denominator"] == 2
+    assert [row["study_id"] for row in payload["honest_progressive"]["paper_coverage"]] == [
+        "core-a",
+        "background-a",
+    ]
+
+
 @pytest.mark.parametrize("invalid_authority", ("receipt", "tier"))
 def test_dashboard_projection_fails_closed_for_invalid_current_authority(
     tmp_path: Path, monkeypatch, invalid_authority: str

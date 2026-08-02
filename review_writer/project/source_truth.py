@@ -623,17 +623,54 @@ def acquisition_receipt_digest(project: Path) -> str:
         raise SourceTruthError("ACQUISITION_FINAL_RECEIPT_INVALID") from exc
 
 
-def study_source_tier(project: Path, study_id: str) -> str:
-    """Return the explicit core/background routing tier for one declared study."""
+def source_tier_authority(project: Path) -> dict[str, str]:
+    """Return the exact current candidate-to-study tier authority."""
+
     project = project.resolve(strict=True)
-    matches = [
-        row for row in _study_candidates(project)
-        if row.get("candidate_id") == study_id or row.get("study_id") == study_id
-    ]
-    tiers = {row.get("tier") for row in matches}
-    if len(matches) != 1 or tiers not in ({"core"}, {"background"}):
+    declared_ids = _declared_study_ids(project)
+    declared_set = set(declared_ids)
+    rows = _study_candidates(project)
+    if len(rows) != len(declared_ids):
         raise SourceTruthError("SOURCE_TIER_INVALID")
-    return next(iter(tiers))
+
+    tiers_by_candidate: dict[str, str] = {}
+    tiers_by_study: dict[str, str] = {}
+    for row in rows:
+        candidate_id = row.get("candidate_id")
+        study_id = row.get("study_id")
+        tier = row.get("tier")
+        if (
+            not isinstance(candidate_id, str)
+            or not isinstance(study_id, str)
+            or candidate_id != study_id
+            or candidate_id not in declared_set
+            or tier not in {"core", "background"}
+            or candidate_id in tiers_by_candidate
+            or study_id in tiers_by_study
+        ):
+            raise SourceTruthError("SOURCE_TIER_INVALID")
+        tiers_by_candidate[candidate_id] = tier
+        tiers_by_study[study_id] = tier
+
+    if (
+        set(tiers_by_candidate) != declared_set
+        or set(tiers_by_study) != declared_set
+        or tiers_by_candidate != tiers_by_study
+    ):
+        raise SourceTruthError("SOURCE_TIER_INVALID")
+    return {study_id: tiers_by_study[study_id] for study_id in declared_ids}
+
+
+def study_source_tier(project: Path, study_id: str) -> str:
+    """Return one tier from the exact current candidate-to-study authority."""
+
+    if not isinstance(study_id, str):
+        raise SourceTruthError("SOURCE_TIER_INVALID")
+    tiers = source_tier_authority(project)
+    tier = tiers.get(study_id)
+    if tier is None:
+        raise SourceTruthError("SOURCE_TIER_INVALID")
+    return tier
 
 
 def build_all_source_truth(project: Path) -> list[dict[str, object]]:
