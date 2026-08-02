@@ -169,16 +169,15 @@ def test_bootstrap_write_failure_rolls_back_anchor_and_retry_is_safe(
     anchor_path = authority_root / f"{target.name}.json"
     review_before = tree_snapshot(review_root)
     authority_before = tree_snapshot(authority_root)
-    original_write = dual_parse_bootstrap._write_json_exclusive
+    original_link = dual_parse_bootstrap.os.link
 
-    def fail_anchor_write(path: Path, value: object, code: str) -> None:
-        if path == anchor_path:
-            path.write_bytes(b"partial anchor")
-            raise DualParseBootstrapError(code)
-        original_write(path, value, code)
+    def fail_anchor_link(source: object, destination: object) -> None:
+        if Path(destination) == anchor_path:
+            raise OSError("injected anchor link failure")
+        original_link(source, destination)
 
     with monkeypatch.context() as patch:
-        patch.setattr(dual_parse_bootstrap, "_write_json_exclusive", fail_anchor_write)
+        patch.setattr(dual_parse_bootstrap.os, "link", fail_anchor_link)
         with pytest.raises(DualParseBootstrapError, match="BOOTSTRAP_WRITE_FAILED"):
             bootstrap_dual_parse_project(review_root, request)
 
@@ -229,6 +228,43 @@ def test_bootstrap_publish_failure_rolls_back_anchor_and_retry_is_safe(
     assert project == target
     assert project.is_dir()
     assert anchor_path.is_file()
+
+
+def test_bootstrap_preserves_competing_pair_injected_after_anchor_precheck(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    review_root = tmp_path / "review-projects"
+    review_root.mkdir()
+    request = source_request(tmp_path)
+    target = review_root / request["project_id"]
+    anchor_path = review_root / ".dual_parse_authority" / f"{target.name}.json"
+    competing_anchor = b"competing-anchor"
+    original_write = dual_parse_bootstrap._write_json_exclusive
+    injected = False
+
+    def inject_competing_pair(path: Path, value: object, code: str) -> None:
+        nonlocal injected
+        if path == anchor_path and not injected:
+            injected = True
+            target.mkdir(parents=True)
+            (target / "winner.marker").write_bytes(b"winner")
+            anchor_path.parent.mkdir(parents=True, exist_ok=True)
+            anchor_path.write_bytes(competing_anchor)
+        original_write(path, value, code)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            dual_parse_bootstrap,
+            "_write_json_exclusive",
+            inject_competing_pair,
+        )
+        with pytest.raises(DualParseBootstrapError, match="BOOTSTRAP_WRITE_FAILED"):
+            bootstrap_dual_parse_project(review_root, request)
+
+    assert injected
+    assert (target / "winner.marker").read_bytes() == b"winner"
+    assert anchor_path.read_bytes() == competing_anchor
 
 
 def test_generic_binding_requires_external_canonical_anchor(tmp_path: Path) -> None:

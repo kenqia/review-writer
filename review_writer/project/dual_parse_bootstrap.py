@@ -143,8 +143,14 @@ def _canonical_anchor_body(project: Path, receipt: dict[str, Any]) -> dict[str, 
     }
 
 
-def _write_json_exclusive(path: Path, value: object, code: str) -> None:
+def _path_identity(path: Path) -> tuple[int, int]:
+    info = path.lstat()
+    return info.st_dev, info.st_ino
+
+
+def _write_json_exclusive(path: Path, value: object, code: str) -> tuple[int, int]:
     temporary: Path | None = None
+    anchor_identity: tuple[int, int] | None = None
     try:
         with tempfile.NamedTemporaryFile(
             mode="wb",
@@ -157,9 +163,16 @@ def _write_json_exclusive(path: Path, value: object, code: str) -> None:
             handle.write(_json_bytes(value))
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        temporary = None
+        os.link(temporary, path)
+        anchor_identity = _path_identity(path)
+        return anchor_identity
     except OSError as exc:
+        if anchor_identity is not None:
+            try:
+                if _path_identity(path) == anchor_identity:
+                    path.unlink()
+            except OSError:
+                pass
         raise DualParseBootstrapError(code) from exc
     finally:
         if temporary is not None:
@@ -381,7 +394,8 @@ def bootstrap_dual_parse_project(review_root: Path, request: object) -> Path:
     anchor_path = _canonical_anchor_path(target)
     authority_directory = anchor_path.parent
     authority_directory_preexisting = os.path.lexists(authority_directory)
-    anchor_preexisting = os.path.lexists(anchor_path)
+    authority_directory_created = False
+    anchor_identity: tuple[int, int] | None = None
     try:
         studies: list[dict[str, Any]] = []
         candidates: list[dict[str, Any]] = []
@@ -454,10 +468,11 @@ def bootstrap_dual_parse_project(review_root: Path, request: object) -> Path:
             ],
         })
         _ensure_safe_directory(authority_directory, "BOOTSTRAP_WRITE_FAILED")
+        authority_directory_created = not authority_directory_preexisting
         if os.path.lexists(anchor_path):
             raise DualParseBootstrapError("TARGET_EXISTS")
         anchor_body = _canonical_anchor_body(target, receipt)
-        _write_json_exclusive(
+        anchor_identity = _write_json_exclusive(
             anchor_path,
             {**anchor_body, "anchor_digest": _canonical_digest(anchor_body)},
             "BOOTSTRAP_WRITE_FAILED",
@@ -472,12 +487,13 @@ def bootstrap_dual_parse_project(review_root: Path, request: object) -> Path:
     finally:
         if not published:
             shutil.rmtree(staging, ignore_errors=True)
-            if not anchor_preexisting:
+            if anchor_identity is not None:
                 try:
-                    anchor_path.unlink()
+                    if _path_identity(anchor_path) == anchor_identity:
+                        anchor_path.unlink()
                 except OSError:
                     pass
-            if not authority_directory_preexisting:
+            if authority_directory_created:
                 try:
                     authority_directory.rmdir()
                 except OSError:
