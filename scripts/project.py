@@ -110,11 +110,40 @@ def build_parser() -> argparse.ArgumentParser:
     rebind.add_argument("--project", type=Path, required=True)
     rebind.add_argument("--actor-label", required=True)
     rebind.add_argument("--dry-run", action="store_true")
+    migration = subparsers.add_parser(
+        "migrate-deliverable-first-legacy",
+        help="Rebind one renamed frozen legacy three-paper project",
+    )
+    migration.add_argument("--project", type=Path, required=True)
+    migration.add_argument("--expected-source-project-id", required=True)
+    migration.add_argument("--dry-run", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "migrate-deliverable-first-legacy":
+        from review_writer.project.deliverable_first_migration import (
+            DeliverableFirstMigrationError,
+            migrate_legacy_three_paper_project,
+        )
+
+        try:
+            report = migrate_legacy_three_paper_project(
+                args.project,
+                expected_source_project_id=args.expected_source_project_id,
+                dry_run=args.dry_run,
+            )
+        except DeliverableFirstMigrationError as exc:
+            print(
+                json.dumps(
+                    {"status": "REFUSED", "reason_code": exc.code},
+                    sort_keys=True,
+                )
+            )
+            return 2
+        print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+        return 0
     if args.command == "rebind-simulated-review-chain":
         from review_writer.project.simulated_review_rebind import (
             SimulatedReviewRebindError,
