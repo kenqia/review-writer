@@ -267,6 +267,52 @@ def test_bootstrap_preserves_competing_pair_injected_after_anchor_precheck(
     assert anchor_path.read_bytes() == competing_anchor
 
 
+def test_bootstrap_rollback_preserves_pair_replaced_after_identity_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    review_root = tmp_path / "review-projects"
+    review_root.mkdir()
+    request = source_request(tmp_path)
+    target = review_root / request["project_id"]
+    anchor_path = review_root / ".dual_parse_authority" / f"{target.name}.json"
+    competing_anchor = b"competing-anchor-after-identity-check"
+    original_replace = dual_parse_bootstrap.os.replace
+    original_identity = dual_parse_bootstrap._path_identity
+    anchor_identity_calls = 0
+
+    def fail_project_publish(source: object, destination: object) -> None:
+        if Path(destination) == target:
+            raise OSError("injected project publish failure")
+        original_replace(source, destination)
+
+    def replace_after_identity_check(path: Path) -> tuple[int, int]:
+        nonlocal anchor_identity_calls
+        identity = original_identity(path)
+        if path == anchor_path:
+            anchor_identity_calls += 1
+            if anchor_identity_calls == 2:
+                path.unlink()
+                target.mkdir(parents=True)
+                (target / "winner.marker").write_bytes(b"winner")
+                path.write_bytes(competing_anchor)
+        return identity
+
+    with monkeypatch.context() as patch:
+        patch.setattr(dual_parse_bootstrap.os, "replace", fail_project_publish)
+        patch.setattr(
+            dual_parse_bootstrap,
+            "_path_identity",
+            replace_after_identity_check,
+        )
+        with pytest.raises(DualParseBootstrapError, match="BOOTSTRAP_WRITE_FAILED"):
+            bootstrap_dual_parse_project(review_root, request)
+
+    assert anchor_identity_calls == 2
+    assert (target / "winner.marker").read_bytes() == b"winner"
+    assert anchor_path.read_bytes() == competing_anchor
+
+
 def test_generic_binding_requires_external_canonical_anchor(tmp_path: Path) -> None:
     request = source_request(tmp_path)
     project = bootstrap_dual_parse_project(tmp_path / "review-projects", request)

@@ -182,6 +182,46 @@ def _write_json_exclusive(path: Path, value: object, code: str) -> tuple[int, in
                 pass
 
 
+def _remove_owned_anchor(path: Path, expected_identity: tuple[int, int]) -> None:
+    """Remove our anchor without unlinking a competing replacement."""
+    try:
+        if _path_identity(path) != expected_identity:
+            return
+    except OSError:
+        return
+
+    quarantine: Path | None = None
+    try:
+        descriptor, quarantine_name = tempfile.mkstemp(
+            prefix=f".{path.name}.rollback.", dir=path.parent
+        )
+        os.close(descriptor)
+        quarantine = Path(quarantine_name)
+        quarantine.unlink()
+        os.rename(path, quarantine)
+        moved_identity = _path_identity(quarantine)
+        if moved_identity == expected_identity:
+            quarantine.unlink()
+            quarantine = None
+            return
+        try:
+            os.link(quarantine, path)
+        except FileExistsError:
+            if _path_identity(path) != moved_identity:
+                return
+        quarantine.unlink()
+        quarantine = None
+    except OSError:
+        return
+    finally:
+        if quarantine is not None:
+            try:
+                if _path_identity(quarantine) == expected_identity:
+                    quarantine.unlink()
+            except OSError:
+                pass
+
+
 def _read_canonical_anchor(project: Path) -> dict[str, Any]:
     path = _safe_existing_path(
         _canonical_anchor_path(project),
@@ -488,11 +528,7 @@ def bootstrap_dual_parse_project(review_root: Path, request: object) -> Path:
         if not published:
             shutil.rmtree(staging, ignore_errors=True)
             if anchor_identity is not None:
-                try:
-                    if _path_identity(anchor_path) == anchor_identity:
-                        anchor_path.unlink()
-                except OSError:
-                    pass
+                _remove_owned_anchor(anchor_path, anchor_identity)
             if authority_directory_created:
                 try:
                     authority_directory.rmdir()
