@@ -64,6 +64,12 @@
 /source-paper/
 /mineru-outputs/
 /review-projects/
+/projects/*
+!/projects/
+!/projects/README.md
+/inputs/*
+!/inputs/
+!/inputs/README.md
 /review-library/
 /build/
 *.pdf

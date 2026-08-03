@@ -17,7 +17,8 @@ review-writer 是一个面向化学研究者的、本地优先、证据可追溯
 - Generic Parse 必须为 `2N` 份（每篇 MAIN 一份、SI 一份），不能用同名文件猜测归属；
 - 每篇论文会生成包含 MAIN/SI 的 Source Truth 和 Parse Quality 绑定；
 - 输入 provenance 会按实际 `N` 和 `K` 计算数量，不再固定三篇或 309；
-- `preflight`/`import` 还会检查每篇论文的 Chemical ZIP；它是输入绑定，不是分子确认；
+- `preflight-corpus-inputs`/`import-corpus-inputs` 还会检查每篇论文的 Chemical ZIP；
+  它是输入绑定，不是分子确认；
 - 缺文件、错 hash、跨论文复用、过期或不完整输入会在发布前失败，并尽量保持零写入；
 - Dashboard、Evidence、Synthesis、DOCX/PDF 只能消费 current 且有来源链的结果。
 
@@ -26,22 +27,24 @@ review-writer 是一个面向化学研究者的、本地优先、证据可追溯
 
 ## 用户最短流程
 
-在仓库根目录执行。仓库只放代码和文档；真实论文、SI、Generic 输出、Chemical ZIP、
-请求 JSON 和项目目录放在仓库之外。例如：
+在仓库根目录执行。请求 JSON 和运行后的项目目录放在仓库内，真实论文、SI、Generic
+输出和 Chemical ZIP 可以继续放在仓库之外。例如：
 
 ```text
-/data/review-writer/                    # 本仓库
-/data/review-inputs/
-├── requests/visible-light-review.json  # bootstrap 请求
+review-writer/                           # 本仓库
+├── inputs/visible-light-review.json     # bootstrap 请求
+├── inputs/visible-light-inputs.json     # provenance manifest
+└── projects/                            # 用户项目目录
+
+/data/review-inputs/                     # 仓库外的原始输入
 ├── papers/study-001-main.pdf           # MAIN
 ├── papers/study-001-si.pdf             # SI
 ├── mineru/visible-light-review/        # 2N 个 Generic 输出
-├── chemical/study-001.zip              # 每篇 study 的 Chemical ZIP
-└── review-projects/                    # --review-root；命令创建项目子目录
+└── chemical/study-001.zip              # 每篇 study 的 Chemical ZIP
 ```
 
 上面的 `/data` 只是示意，请替换成自己的本地路径。`bootstrap-corpus` 会创建
-`review-projects/<project_id>/`，不要先手工复制旧项目到该目录。
+`projects/<project_id>/`，不要先手工复制旧项目到该目录。
 
 ### 1. 准备请求文件
 
@@ -81,8 +84,8 @@ hash 可以用 `sha256sum 文件路径` 计算。请求文件中的路径只用�
 
 ```bash
 python scripts/run_vertical_review.py bootstrap-corpus \
-  --review-root /data/review-projects \
-  --request /data/requests/visible-light-review.json
+  --review-root projects \
+  --request inputs/visible-light-review.json
 ```
 
 用户变化：得到一个全新的、只含输入边界和来源记录的项目；旧项目的 Evidence、
@@ -99,7 +102,7 @@ Synthesis、Manuscript 或 Release 状态不会被复制。项目中会出现
 
 ```bash
 python scripts/run_vertical_review.py bind-generic-parse \
-  --project /data/review-projects/visible-light-review \
+  --project projects/visible-light-review \
   --mineru-output /data/mineru/visible-light-review
 ```
 
@@ -114,8 +117,8 @@ ZIP 及页数。详情见[用户使用说明](docs/用户使用说明.md)。先�
 
 ```bash
 python scripts/run_vertical_review.py preflight-corpus-inputs \
-  --project /data/review-projects/visible-light-review \
-  --manifest /data/requests/visible-light-inputs.json
+  --project projects/visible-light-review \
+  --manifest inputs/visible-light-inputs.json
 ```
 
 用户变化：在写入正式 provenance 之前，先看到实际 `N`、`K`、MAIN/SI/Generic/Chemical
@@ -125,8 +128,8 @@ python scripts/run_vertical_review.py preflight-corpus-inputs \
 
 ```bash
 python scripts/run_vertical_review.py import-corpus-inputs \
-  --project /data/review-projects/visible-light-review \
-  --manifest /data/requests/visible-light-inputs.json \
+  --project projects/visible-light-review \
+  --manifest inputs/visible-light-inputs.json \
   --actor-type human_researcher \
   --actor-label "my-researcher-label"
 ```
@@ -141,9 +144,10 @@ currentness 已记录，不表示 Chemical 分子已被研究者确认，也不�
 - bootstrap 失败：修正请求、路径或 hash，使用新的 `project_id` 重试；不要覆盖已有目录。
 - Generic 绑定失败：修复外部 `manifest.json` 或输出文件，确认项目还没有
   `01_evidence/` 后再重试；不要用 basename 猜归属。
-- preflight 失败：按错误代码修复对应 MAIN、SI、Generic 或 Chemical 输入，再重复只读
+- `preflight-corpus-inputs` 失败：按错误代码修复对应 MAIN、SI、Generic 或 Chemical 输入，再重复只读
   检查；这一步不会替你发布状态。
-- import 失败：保留错误报告，重新计算 hash 并再次 preflight；不要手改项目 JSON 或把
+- `import-corpus-inputs` 失败：保留错误报告，重新计算 hash 并再次运行
+  `preflight-corpus-inputs`；不要手改项目 JSON 或把
   缺失项改成 `READY`。
 
 更多错误代码、恢复边界和科学状态见[用户使用说明](docs/用户使用说明.md)。
@@ -167,9 +171,6 @@ currentness 已记录，不表示 Chemical 分子已被研究者确认，也不�
 
 - [用户使用说明](docs/用户使用说明.md)：按用户任务说明准备、运行、错误和恢复。
 - [项目规格](docs/项目规格.md)：当前支持什么、禁止什么、成功标准是什么。
-- [2026-08-03 收敛说明](docs/CONVERGENCE_2026-08-03.md)：本次整合的用户结果和停车边界。
-- [产品路线图](docs/product/PRODUCT_ROADMAP.md)：将历史 M0、当前 variable-N 基础线和未来工作分开。
-- [Deliverable-First Core Contract](docs/product/DELIVERABLE_FIRST_CORE_CONTRACT.md)：证据和用户价值的最高项目内约束。
 
 ## 本地验证
 

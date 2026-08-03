@@ -5701,7 +5701,7 @@ def is_direct_output_root(review_root: Path) -> bool:
 def has_dashboard_data(review_root: Path) -> bool:
     if (review_root / "review-library" / "metadata" / "papers").exists() or is_direct_output_root(review_root):
         return True
-    projects = review_root / "review-projects"
+    projects = review_root
     return projects.is_dir() and any((project / "00_brief" / "review_state.json").is_file() for project in projects.iterdir() if project.is_dir())
 
 
@@ -5751,9 +5751,9 @@ def normalized_project_id(project_id: str) -> str:
 def project_dir(review_root: Path, project_id: str) -> Path:
     normalized_id = normalized_project_id(project_id)
     root = review_root.resolve()
-    projects_path = root / "review-projects"
+    projects_path = root
     if is_reparse_component(projects_path):
-        raise ValueError("invalid review-projects boundary")
+        raise ValueError("invalid projects boundary")
     nested_root = projects_path.resolve()
     nested = (nested_root / normalized_id).resolve()
     if not is_relative_to(nested, nested_root):
@@ -5785,6 +5785,8 @@ def project_nonblank_text_file_bytes(project: Path, relative: Path) -> bytes | N
 def has_review_product_data(project: Path) -> bool:
     regular_artifacts = (
         "00_brief/review_state.json",
+        "00_sources/acquisition_final_receipt.json",
+        "00_sources/source_coverage.json",
         "00_discovery/combined_results_by_keyword.json",
         "00_discovery/discovery_candidates.json",
         "00_discovery/screening_decisions.json",
@@ -5872,7 +5874,7 @@ def list_review_projects(review_root: Path) -> list[dict[str, Any]]:
                 "has_final_audit": (review_root / "05_final_audit" / "final_draft.md").exists(),
             }
         ])
-    base = review_root / "review-projects"
+    base = review_root
     projects: list[dict[str, Any]] = []
     if not base.exists():
         return projects
@@ -6782,7 +6784,7 @@ def is_project_release_docx(path: Path, review_root: Path) -> bool:
     if project == root:
         return True
     try:
-        relative = project.relative_to(root / "review-projects")
+        relative = project.relative_to(root)
     except ValueError:
         return False
     return len(relative.parts) == 1
@@ -7248,7 +7250,11 @@ def run(args: argparse.Namespace) -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Serve local review metadata dashboard.")
-    parser.add_argument("--review-root", default=str(Path(__file__).resolve().parents[1]))
+    parser.add_argument(
+        "--review-root",
+        default=str(Path(__file__).resolve().parents[1] / "projects"),
+        help="本地用户项目目录，默认使用仓库内的 projects/",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     return parser.parse_args()

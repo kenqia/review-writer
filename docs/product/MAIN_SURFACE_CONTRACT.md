@@ -19,14 +19,14 @@ bootstrap-corpus
 ```
 
 它们都通过 `scripts/run_vertical_review.py` 执行。`README.md`、`docs/用户使用说明.md`
-和 `docs/项目规格.md` 是用户理解和恢复这条路径的必要说明；输入 schema 和当前
-CLI 的运行时闭包必须随主面保留。
+和 `docs/项目规格.md` 是用户理解和恢复这条路径的必要说明；`view/` 是用户查看
+项目状态的本地工作台；输入 schema 和当前 CLI 的运行时闭包必须随主面保留。
 
 ### 用户变化
 
-无新的运行时命令或科学能力；用户得到的是一个可验证的“应该从哪里开始”的边界。
-主面只承诺 20–40 篇 MAIN/SI 语料输入基础线，不把旧三篇入口、309 分母、Dashboard、
-Phase 8、Provider、RAG、QoderWork 或旧 release 波次展示成当前产品流程。
+无新的科学能力；用户得到的是一条可运行的四步入口、仓库内项目目录和本地工作台。
+主面只承诺 20–40 篇 MAIN/SI 语料输入基础线，不把旧三篇入口、309 分母、Phase 8、
+Provider、RAG、QoderWork 或旧 release 波次展示成当前产品流程。
 
 ### 使用方式
 
@@ -55,6 +55,9 @@ python scripts/validators/validate_main_surface.py --root /path/to/main --mode m
 
 - 用户说明、项目规格和 README：告诉用户准备什么、运行什么、如何恢复，以及当前
   不承诺什么。
+- `Makefile`、`.gitignore`、`inputs/` 和 `projects/`：提供用户命令、输入占位目录和
+  项目工作区；真实输入与运行产物不会进入 Git 提交。
+- `view/`：本地只读工作台，默认查看 `projects/<project_id>/` 中已经创建的项目。
 - `scripts/run_vertical_review.py`：唯一当前 CLI 入口。
 - `bootstrap-corpus`、`bind-generic-parse`、`preflight-corpus-inputs`、
   `import-corpus-inputs`：当前公共命令集合。
@@ -70,7 +73,7 @@ superpowers、provider 配置和维护脚本属于开发面。它们可以继续
 
 ### 应留在 core-development 的历史资产
 
-`demo_projects/`、`view/`、`rag/`、Phase 8 schema/script/template、Provider/RAG/旧
+`demo_projects/`、`rag/`、Phase 8 schema/script/template、Provider/RAG/旧
 QoderWork 文档、旧 demo/eval/migration/release 资料和旧 allene 规则只作为回归或恢复
 证据保留。保留不等于 current、READY、科学确认，也不授权物理清理。
 
@@ -117,9 +120,14 @@ STOP_LINE=只修改本合同、独立检查脚本及其测试；不删除、移�
     "import-corpus-inputs"
   ],
   "main_user_surface": [
+    {"path": ".gitignore", "kind": "file"},
     {"path": "README.md", "kind": "file"},
     {"path": "docs/用户使用说明.md", "kind": "file"},
     {"path": "docs/项目规格.md", "kind": "file"},
+    {"path": "Makefile", "kind": "file"},
+    {"path": "inputs", "kind": "dir"},
+    {"path": "projects", "kind": "dir"},
+    {"path": "view", "kind": "dir"},
     {"path": "requirements.txt", "kind": "file"},
     {"path": "scripts/run_vertical_review.py", "kind": "file"},
     {"path": "schemas/project/corpus_manifest.v1.schema.json", "kind": "file"},
@@ -147,6 +155,7 @@ STOP_LINE=只修改本合同、独立检查脚本及其测试；不删除、移�
     {"path": ".agents", "kind": "dir"},
     {"path": ".codex", "kind": "dir"},
     {"path": ".github", "kind": "dir"},
+    {"path": "AGENTS.md", "kind": "file"},
     {"path": "config", "kind": "dir"},
     {"path": "docs/agent-contracts", "kind": "dir"},
     {"path": "docs/agent-memory.md", "kind": "file"},
@@ -162,12 +171,11 @@ STOP_LINE=只修改本合同、独立检查脚本及其测试；不删除、移�
     {"path": "docs/ops", "kind": "dir"},
     {"path": "docs/portability", "kind": "dir"},
     {"path": "docs/pr", "kind": "dir"},
-    {"path": "docs/product/MAIN_SURFACE_CONTRACT.md", "kind": "file"},
+    {"path": "docs/product", "kind": "dir"},
     {"path": "docs/qa", "kind": "dir"},
     {"path": "docs/quality", "kind": "dir"},
     {"path": "docs/superpowers", "kind": "dir"},
     {"path": "evals", "kind": "dir"},
-    {"path": "Makefile", "kind": "file"},
     {"path": "qoderwork", "kind": "dir"},
     {"path": "requirements-ci.txt", "kind": "file"},
     {"path": "scripts/acquisition", "kind": "dir"},
@@ -202,8 +210,7 @@ STOP_LINE=只修改本合同、独立检查脚本及其测试；不删除、移�
     {"path": "scripts/provider-qualification", "kind": "dir"},
     {"path": "scripts/rag", "kind": "dir"},
     {"path": "template", "kind": "dir"},
-    {"path": "templates", "kind": "dir"},
-    {"path": "view", "kind": "dir"}
+    {"path": "templates", "kind": "dir"}
   ],
   "non_public_runtime_paths": [
     {"path": "review_writer/phase8", "kind": "dir"}
@@ -245,12 +252,12 @@ STOP_LINE=只修改本合同、独立检查脚本及其测试；不删除、移�
 
 ## 限制/风险与后续整合
 
-- 当前候选的 CLI help 仍会列出若干兼容/开发命令，所以 `--mode main` 预期会失败；
-  这不是本任务直接修改入口实现的授权。
+- 当前主面 CLI help 只列出四个用户命令；开发者兼容命令继续保留在
+  `core-development` 的历史版本中，不参与用户启动流程。
 - `review_writer/` 作为当前 import 闭包仍比用户功能宽，不能仅凭目录名把其中模块
   删除或移动。后续应由独立 Owner 做 import 解耦，重新验证四个命令和零写入失败路径。
 - 本合同不证明真实 20–40 篇输入、Generic/MinerU、Chemical、科学确认、Dashboard、
   综合矩阵、Gold calibration 或 DOCX/PDF release。
-- 整合建议：先在新的 main 候选上运行 `--mode main`，只接受报告为 `PASS` 的边界；
-  若仍有 `MAIN_HELP_EXPOSES_NON_PUBLIC_COMMAND` 或运行时闭包缺失，退回入口/运行时
-  Owner 修复，不通过物理删除历史目录来“消除”检查。
+- 整合建议：从 `core-development` 运行 `--mode main` 指向新的 main 工作树，只接受
+  报告为 `PASS` 的边界；若仍有 `MAIN_HELP_EXPOSES_NON_PUBLIC_COMMAND` 或运行时闭包
+  缺失，退回入口/运行时 Owner 修复，不通过隐藏错误来“消除”检查。

@@ -1000,12 +1000,10 @@ def _wait_for_state(
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the offline vertical review projection.")
+    parser = argparse.ArgumentParser(
+        description="review-writer v0.1：创建并检查 20–40 篇论文的输入项目。"
+    )
     commands = parser.add_subparsers(dest="command", required=True)
-
-    dual_bootstrap = commands.add_parser("bootstrap-dual-parse")
-    dual_bootstrap.add_argument("--review-root", type=Path, required=True)
-    dual_bootstrap.add_argument("--request", type=Path, required=True)
 
     corpus_bootstrap = commands.add_parser(
         "bootstrap-corpus",
@@ -1037,127 +1035,6 @@ def _parser() -> argparse.ArgumentParser:
         required=True,
     )
     corpus_import.add_argument("--actor-label", required=True)
-
-    dual_source = commands.add_parser("build-dual-source")
-    dual_source.add_argument("--project", type=Path, required=True)
-    dual_source.add_argument("--study-id")
-
-    dual_state = commands.add_parser("dual-source-state")
-    dual_state.add_argument("--project", type=Path, required=True)
-
-    reconcile = commands.add_parser("build-parse-reconciliation")
-    reconcile.add_argument("--project", type=Path, required=True)
-    reconcile.add_argument("--study-id")
-
-    reconcile_state = commands.add_parser("parse-reconciliation-state")
-    reconcile_state.add_argument("--project", type=Path, required=True)
-
-    reconcile_decision = commands.add_parser("record-parse-reconciliation")
-    reconcile_decision.add_argument("--project", type=Path, required=True)
-    reconcile_decision.add_argument("--study-id", required=True)
-    reconcile_decision.add_argument("--input", type=Path, required=True)
-
-    preflight = commands.add_parser("preflight")
-    preflight.add_argument("--review-root", type=Path, required=True)
-    preflight.add_argument("--mineru-token-file", type=Path, default=DEFAULT_MINERU_TOKEN_FILE)
-    preflight.add_argument("--mineru-egress-authorized", action="store_true")
-    preflight.add_argument("--skip-network-check", action="store_true")
-
-    init = commands.add_parser("init")
-    init.add_argument("--review-root", type=Path, required=True)
-    init.add_argument("--project-id", required=True)
-    init.add_argument("--brief", type=Path, required=True)
-
-    wait = commands.add_parser("wait-state")
-    wait.add_argument("--project-dir", type=Path, required=True)
-    wait.add_argument("--status", required=True)
-    wait.add_argument("--stage", required=True)
-    wait.add_argument("--poll-seconds", type=float, default=2.0)
-    wait.add_argument("--timeout-seconds", type=float)
-
-    reusable_audit = commands.add_parser("audit-reusable-library")
-    reusable_audit.add_argument("--project-dir", type=Path, required=True)
-
-    source_truth = commands.add_parser("build-source-truth")
-    source_truth.add_argument("--project", type=Path, required=True)
-    source_truth.add_argument("--study-id")
-
-    parse_decision = commands.add_parser("record-parse-quality")
-    parse_decision.add_argument("--project", type=Path, required=True)
-    parse_decision.add_argument("--study-id", required=True)
-    parse_decision.add_argument("--object-id", required=True)
-    parse_decision.add_argument("--gate-digest", required=True)
-    parse_decision.add_argument(
-        "--action",
-        choices=(
-            "approve_candidate_extraction",
-            "pdf_locator_only",
-            "reparse_required",
-        ),
-        required=True,
-    )
-    parse_decision.add_argument("--note", required=True)
-
-    paper_register = commands.add_parser("register-paper-evidence")
-    paper_register.add_argument("--project", type=Path, required=True)
-    paper_register.add_argument("--study-id", required=True)
-    paper_register.add_argument("--input", type=Path, required=True)
-
-    manual_paper = commands.add_parser("register-manual-pdf-evidence")
-    manual_paper.add_argument("--project", type=Path, required=True)
-    manual_paper.add_argument("--input", type=Path, required=True)
-
-    paper_decision = commands.add_parser("record-paper-evidence")
-    paper_decision.add_argument("--project", type=Path, required=True)
-    paper_decision.add_argument("--input", type=Path, required=True)
-
-    prepare = commands.add_parser("prepare-study")
-    prepare.add_argument("--project-dir", type=Path, required=True)
-    prepare.add_argument("--study-id", required=True)
-
-    batch = commands.add_parser("prepare-batch")
-    batch.add_argument("--project-dir", type=Path, required=True)
-    batch.add_argument("--study-ids-file", type=Path, required=True)
-
-    run = commands.add_parser("run-batch")
-    run.add_argument("--project-dir", type=Path, required=True)
-    run.add_argument("--study-ids-file", type=Path, required=True)
-    run.add_argument("--credits-before", type=int)
-    run.add_argument("--credits-after", type=int)
-    run.add_argument("--forecast-credits", type=float)
-
-    credits = commands.add_parser("record-credits")
-    credits.add_argument("--project", type=Path, required=True)
-    credits.add_argument("--stage", required=True)
-    credits.add_argument("--before", type=int, required=True)
-    credits.add_argument("--after", type=int, required=True)
-    credits.add_argument("--source", required=True)
-    credits.add_argument("--study-id", action="append", default=[])
-    credits.add_argument("--input-digest")
-    credits.add_argument("--output-digest")
-    credits.add_argument("--forecast-credits", type=float)
-
-    register = commands.add_parser("register-study")
-    register.add_argument("--project-dir", type=Path, required=True)
-    register.add_argument("--candidate", type=Path, required=True)
-    register.add_argument("--r0-report", type=Path, required=True)
-    register.add_argument("--reviewer", type=Path, required=True)
-
-    risk = commands.add_parser("build-risk-packet")
-    risk.add_argument("--project-dir", type=Path, required=True)
-
-    writer = commands.add_parser("build-writer-packet")
-    writer.add_argument("--project-dir", type=Path, required=True)
-
-    bind = commands.add_parser("bind-draft")
-    bind.add_argument("--project-dir", type=Path, required=True)
-    bind.add_argument("--manuscript", type=Path, required=True)
-    bind.add_argument("--lineage", type=Path, required=True)
-
-    metrics = commands.add_parser("metrics")
-    metrics.add_argument("--project-dir", type=Path, required=True)
-    metrics.add_argument("--output", type=Path, required=True)
-    chemical_paper_cli.add_subcommands(commands)
     return parser
 
 
