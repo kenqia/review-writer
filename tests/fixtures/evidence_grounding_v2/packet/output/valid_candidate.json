@@ -1,0 +1,83 @@
+{
+  "schema_version": "evidence-candidate.v2",
+  "job_id": "SYNTHETIC-GROUNDING-V2",
+  "study_id": "SYNTHETIC_STUDY",
+  "eligibility": {
+    "status": "SCIENTIFICALLY_ELIGIBLE_CORE",
+    "evidence_refs": [
+      {
+        "evidence_mode": "TEXT_QUOTE",
+        "source_id": "SYNTH_MAIN",
+        "page": 2,
+        "section_or_item": "Results",
+        "exact_quote": "The catalyst afforded product 2a in 91% isolated yield under blue light.",
+        "evidence_summary": "The reported model reaction gives 2a in 91% isolated yield.",
+        "depiction_locator": null,
+        "transcribed_values": [],
+        "r3_flags": []
+      }
+    ]
+  },
+  "study_card": {},
+  "anchor_reaction_unit_id": "RU-1",
+  "reaction_units": [
+    {
+      "reaction_unit_id": "RU-1",
+      "risk_level": "R3",
+      "risk_categories": ["FIGURE_TABLE_CHEMISTRY"],
+      "evidence_refs": [
+        {
+          "evidence_mode": "FIGURE_TABLE_IMAGE",
+          "source_id": "SYNTH_MAIN",
+          "page": 2,
+          "section_or_item": "Figure 2",
+          "exact_quote": null,
+          "evidence_summary": "Figure 2 depicts product 2a and reports 91% isolated yield.",
+          "depiction_locator": "Figure 2, model reaction arrow and yield label",
+          "transcribed_values": ["2a", "91% isolated yield"],
+          "r3_flags": ["R3_SOURCE_DEPICTION_REQUIRED"]
+        }
+      ]
+    }
+  ],
+  "claims": [
+    {
+      "claim_id": "CL-1",
+      "claim_text": "The model reaction reports 91% isolated yield.",
+      "risk_level": "R1",
+      "risk_categories": [],
+      "evidence_refs": [
+        {
+          "evidence_mode": "TEXT_QUOTE",
+          "source_id": "SYNTH_MAIN",
+          "page": 2,
+          "section_or_item": "Results",
+          "exact_quote": "The catalyst afforded product 2a in 91% isolated yield under blue light.",
+          "evidence_summary": "The model reaction reports 91% isolated yield.",
+          "depiction_locator": null,
+          "transcribed_values": [],
+          "r3_flags": []
+        }
+      ]
+    }
+  ],
+  "conflicts": [],
+  "r3_review_items": [
+    {
+      "target_id": "RU-1",
+      "risk_categories": ["FIGURE_TABLE_CHEMISTRY"],
+      "action_required": "Inspect the cited depiction before scientific promotion."
+    }
+  ],
+  "source_coverage": {
+    "SYNTH_MAIN": {
+      "status": "READ_AND_USED",
+      "evidence_ref_count": 3,
+      "note": "Narrative and figure evidence were inspected."
+    }
+  },
+  "extraction_limitations": [],
+  "self_check": {
+    "all_grounding_valid": true
+  }
+}

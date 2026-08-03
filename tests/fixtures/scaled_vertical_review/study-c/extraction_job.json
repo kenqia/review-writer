@@ -1,0 +1,38 @@
+{
+  "schema_version": "sealed-evidence-extraction-job.v2",
+  "job_id": "JOB-605ee0bf8c004baba7914e84741e00cc70cf78a87e0cd96059fafffe0e1383ef",
+  "mode": "EVIDENCE_ATOM_SEMANTIC_DECISION_V1",
+  "semantic_target_contract": {
+    "allowed_target_kinds": ["ELIGIBILITY", "REACTION_UNIT", "CLAIM"],
+    "denied_claim_ids": [],
+    "policy": "ALLOW_EXCEPT_DECLARED_SI_DEPENDENT_CLAIMS"
+  },
+  "study": {
+    "study_id": "STUDY-C"
+  },
+  "source_files": [
+    {
+      "source_id": "STUDY-C-MAIN",
+      "document_role": "MAIN",
+      "source_binary_sha256": "c8b321d85e1d15ea3bb8d5044d7bb8a42aeadfc571edc2ba09ef29ce8850e7eb",
+      "reading_order_path": "sources/STUDY-C-MAIN.reading.txt",
+      "reading_order_sha256": "c8b321d85e1d15ea3bb8d5044d7bb8a42aeadfc571edc2ba09ef29ce8850e7eb",
+      "layout_path": "sources/STUDY-C-MAIN.layout.txt",
+      "layout_sha256": "53f2978f728e65657f439850f5968e19e87bd0454e12aa0d594930b130e46315",
+      "page_count": 1,
+      "visual_evidence_allowed": false
+    },
+    {
+      "source_id": "STUDY-C-SI",
+      "document_role": "SI",
+      "source_binary_sha256": "6778b6824a57df8bf10a93fb6d346944ad84353e05ba55ee6c00606758910fb8",
+      "reading_order_path": "sources/STUDY-C-SI.reading.txt",
+      "reading_order_sha256": "6778b6824a57df8bf10a93fb6d346944ad84353e05ba55ee6c00606758910fb8",
+      "layout_path": "sources/STUDY-C-SI.layout.txt",
+      "layout_sha256": "a4def3b3d067eeb93a63539f99a0a9322f5dfcd63363ea719fe32c9aa68ba7d8",
+      "page_count": 1,
+      "visual_evidence_allowed": false
+    }
+  ],
+  "visual_crops": []
+}

@@ -1,80 +1,56 @@
-# 收敛清理 inventory — 2026-08-03
+# 2026-08-03 收敛 inventory
 
-这是本地 `main` 快进到 `ab3e76b7d040d6bb1e3178778d569e772aa96b8f` 后生成的只读
-清理清单。它记录恢复边界，不等于允许删除清单之外的任何内容。
+状态：`VERIFIED_CANDIDATE_NOT_YET_ON_MAIN`
 
-## 仓库状态
+这份清单服务于恢复和减法，不是产品验收，也不是删除授权。当前整合候选位于
+独立 worktree；`main` 尚未因此自动改变。
+
+## 当前保留对象
+
+- 当前整合候选代码、schema、测试和中文用户文档；
+- 旧 branch/worktree，直到确认没有未跟踪数据、ignored runtime 或用户修改；
+- 外部论文、SI、MinerU、Chemical ZIP 和 review-projects；
+- 历史 M0、三篇 fixture、Phase 8、Provider、RAG、QoderWork 和 dashboard 代码，
+  作为回归或恢复证据。
+
+## 当前用户主路径
 
 ```text
-branch=main
-head=ab3e76b7d040d6bb1e3178778d569e772aa96b8f
-relationship=main == origin/main
-local_untracked=docs/CONVERGENCE_2026-08-03.md; docs/superpowers/specs/
-local_tests=基线快照时未运行；后续基线 smoke/quality-check 均通过
+bootstrap-corpus
+bind-generic-parse
+preflight-corpus-inputs
+import-corpus-inputs
 ```
 
-当前有 132 个本地 branch 和 118 个注册 worktree。branch 引用仍是恢复记录；
-worktree 只是 checkout，不是独立的 Git 历史副本。
+其他命令和 Makefile 目标不是当前默认入口。停车不代表删除，也不代表它们已经通过
+当前 `20–40` 篇真实运行验收。
 
-## 保留的 dirty worktree
+## 目前不能据此宣称
 
-以下位置未移除，因为存在 tracked/untracked 修改，或是明确保留的临时 checkout。
-为保持仓库可移植，提交文档只记录相对角色，不写入本机绝对路径；实际恢复路径
-保留在当前会话的本地清单中：
+- 当前 `main` 已经合并本轮候选；
+- 真实 20–40 篇综述已完成；
+- Dashboard/Playwright、五个综合矩阵、Gold benchmark、DOCX/PDF audit 已通过；
+- 任何具体分子已获得真实研究者确认。
 
-- `<WORKTREE_ROOT>/review-writer`
-- `<WORKTREE_ROOT>/review-writer-task1-empty-project-waiting`
-- `<WORKTREE_ROOT>/review-writer/.worktrees/deliverable-first-rescue`
-- `<WORKTREE_ROOT>/review-writer/.worktrees/e2r-dual-integration`
-- `<WORKTREE_ROOT>/review-writer/.worktrees/provider-qualification`
-- `<WORKTREE_ROOT>/review-writer/.worktrees/repair-scientific-schema-f002a`
-- `<WORKTREE_ROOT>/review-writer/.worktrees/review-writer-next-phase-integration`
-- `<TEMP_ROOT>/review-writer-repair-scientific-f003b-red`
+## 当前 fresh verification
 
-主 checkout 另有 97 个 ignored entry。ignored 不等于无价值，因此不纳入第一轮清理。
+- focused variable-N/SI 与 QoderWork 文档回归：`136 passed`；
+- `make smoke`：exit 0；
+- `make quality-check`：exit 0；
+- `TMPDIR=/tmp make scaled-review-check`：exit 0。
 
-## 已完成的第一轮清理
+上述证据只证明仓库内合同、回归和用户入口可重复运行。独立 Reviewer 尚未对本候选
+hash 给出新鲜结果，因此 `main` 仍保持未变，真实主题综述和科学发布仍未宣称。
 
-以下 6 个干净 worktree 没有 untracked 或 ignored 内容；它们的 branch 和 commit 仍保留：
+## 未来物理清理的闸门
 
-- `codex/canonical-anchor-transactional-repair`
-- `codex/e2r-runtime-view-repair`
-- `codex/repair-canonical-receipt-p1`
-- `codex/repair-generic-si-binding-p1`
-- `codex/next-phase-repair-scientific-schema-f003`
-- `codex/e2r-chemical-paper-integration`
+删除、移动、重命名或覆盖前必须同时具备：
 
-回滚方式是 `git worktree add <new-path> <existing-branch>`；没有删除 branch 或 commit。
+1. 精确目标清单；
+2. 文件和 hash inventory；
+3. 可恢复备份或明确的 Git 恢复路径；
+4. 确认没有 dirty/untracked/ignored 用户数据；
+5. 单独明确授权。
 
-## 干净但带数据的 worktree
-
-剩余干净 worktree 含 ignored runtime/data，部分体积足以让自动移除误删本地证据：
-
-- `m2-qoder-native-benchmark`：约 587 MB
-- `e2r-dual-integration`：约 222 MB（同时 dirty，已保留）
-- `e2r-chemical-integration`：约 200 MB
-- 其他多数 E2R、repair、owner、provider、M0/M1/M2、Phase 8 checkout：约 6–15 MB，含 ignored entry
-
-这些 worktree 必须先生成逐目录 ignored-file manifest。
-
-## 外部项目副本
-
-外部 `review-projects` 目录目前有多个大副本，体积约为：
-
-- `vis-light-olefin-difunctionalization-complete-loop-regression-v3-honest-progressive-fresh`：453 MB
-- `vis-light-olefin-difunctionalization-deliverable-first-rescue-a1`：453 MB
-- `vis-light-olefin-difunctionalization-deliverable-first-rescue-a2`：453 MB
-- `vis-light-olefin-difunctionalization-complete-loop-regression-v3-honest-progressive-fresh-backup-before-mvp-20260801-175720`：388 MB
-- `e2r-dual-parse-inputs-20260801`：239 MB
-- 较旧 v2/v3 副本：24–25 MB
-- `vis-light-olefin-difunctionalization-deliverable-first-rescue-a3`：536 KB
-
-没有删除任何外部项目。确定 canonical copy 前必须有文件/hash inventory 和恢复
-位置；体积相同不代表内容等价，也不代表有权威性。
-
-## 下一轮删除闸门
-
-下一轮只可移除已经明确列出的 clean worktree，并且必须先确认其中 ignored
-内容只是可再生 cache/runtime。branch 在 archive manifest 记录前继续保留。外部
-项目、PDF、SI、MinerU 输出和候选 review package，在 Owner 与 hash-bound 恢复记录
-明确前继续保留。
+在这些条件满足前，减法以“从用户入口和文档中停车”为主，不对历史对象做不可逆
+删除。任何清理报告都先说明用户会失去什么、如何恢复，再说明删除结果。

@@ -1,0 +1,17 @@
+{
+  "schema_version": "scaled-vertical-review-fixture.v1",
+  "studies": [
+    {
+      "fixture_dir": "study-a",
+      "study_id": "STUDY-A"
+    },
+    {
+      "fixture_dir": "study-b",
+      "study_id": "STUDY-B"
+    },
+    {
+      "fixture_dir": "study-c",
+      "study_id": "STUDY-C"
+    }
+  ]
+}

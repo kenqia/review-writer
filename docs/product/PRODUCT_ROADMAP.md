@@ -1,278 +1,96 @@
-# Product Roadmap
+# review-writer 产品路线图
 
-Status: `CURRENT_PRODUCT_ROADMAP`
+状态：`CURRENT_USER_FACING_ROADMAP`
 
-Last updated: 2026-07-19
+更新日期：2026-08-03
 
-This roadmap supersedes the sequencing recommendations in the historical
-competition roadmap. It preserves the same core lesson: stabilize the public
-contract before attempting broad product or UI work.
+本路线图只保留能改善用户结果、信任或恢复能力的工作。历史模块仍可能保留在仓库
+中作为证据和回归测试，但“存在代码”不等于“当前用户入口”，更不等于科学发布就绪。
 
-## 用户价值硬约束
+## 产品北极星
 
-路线图中的每个工作包都必须能用用户语言说明其价值：
+用户应能从一个综述结论回到：它来自哪篇论文、哪一版 MAIN/SI、哪条证据、哪个决定、
+哪个页码/图表定位和哪个导出文件。遇到不确定时，系统要明确告诉用户“不能确定”和
+下一步，而不是用流畅文字遮住空缺。
 
-1. 用户原来遇到什么问题；
-2. 完成后用户能少做什么、看懂什么或更可靠地得到什么；
-3. 用户如何使用；
-4. 哪些情况仍会被阻断或需要人工判断。
+## 当前主线：20–40 篇输入与证据基础线
 
-开发者过程、代理数量、内部抽象和测试数量不能单独构成产品价值。没有直
-接用户收益的工作应停车、合并为最小实现，或删除。新文档默认使用中文；
-面向用户的报告不以开发者视角叙述。
+### 用户问题
 
-## M0 - Product and Checkpoint Contract
+用户已经选好主题和论文，却无法可靠区分 MAIN、SI、Generic Parse、Chemical ZIP
+是否属于同一 study，也无法知道旧结果是否仍然 current。
 
-Goal: define one public project boundary before a new scientific run.
+### 已交付的用户变化
 
-The only minimum implementation package for M0 is the local work-package alias
-`PR A`, with stable ID `M0-PR-A`. This label does not assert a remote pull
-request. Until explicitly changed, run records use:
+- 可以创建 20–40 篇的新鲜 variable-N 项目；
+- 每篇 MAIN/SI 都被复制、hash-bound 并保留来源身份；
+- Generic Parse 要求 `2N`，MAIN/SI identity 分开；
+- Source Truth、Parse Quality 和输入 provenance 由实际 `N/K` 计算；
+- 缺失、错 hash、过期和跨 study 复用会阻断，不降级为 warning；
+- 中文文档说明用户准备什么、得到什么和不能相信什么。
 
-```text
-work_package_id = M0-PR-A
-remote_pr_created = false
-remote_pr_url = null
-```
-
-Contract and schema lock reaches `M0_CONTRACT_LOCKED`. M0 completes only at
-`M0_IMPLEMENTED_AND_ACCEPTED`, after the whole work package passes its offline
-acceptance evidence and human checkpoint. The package may contain multiple
-commits and review/repair rounds under one Implementation Owner; it cannot be
-split into independently bypassable acceptance packages.
-
-### M0/PR A acceptance question
-
-This work package answers exactly one question:
-
-> Can the same minimum, case-neutral, local project contract validate both a
-> synthetic non-allene project and frozen Case 01, while protecting existing
-> evidence, human decisions, and historical outputs from editable configuration
-> drift, so the project can safely prepare M1?
-
-The retained list is the maximum allowed boundary, not an instruction to build
-one module, service, repository, or state machine per noun. A required field or
-production-code branch must be read by the two acceptance paths and asserted by
-at least one acceptance test. Otherwise it is removed or deferred.
-
-The M0 ProjectManifest field set is frozen to schema version, project ID/title,
-initial goal/scope, discovery policy, output language, citation style, three
-relative roots, initial source inputs, network policy, and optional closed
-`adapter_ref`. `provider_profile_ref` and manifest/contract version-management
-fields are excluded. M0 accepts only `CLOSED_CORPUS` and `OFFLINE_ONLY`.
-Provider/model execution evidence, if separately authorized in M1, belongs to
-the immutable RunManifest rather than project configuration.
-
-Deliver:
-
-- editable, case-neutral ProjectManifest validation and standard artifact/output
-  layout;
-- immutable resolved configuration in RunManifest, corpus/draft/checkpoint
-  snapshots, and ReleaseRecord closures;
-- ArtifactRef, orthogonal SourceRecord fields, separate ParseArtifact,
-  CorpusVersion, and source eligibility validation;
-- immutable ClaimVersionRecord and human ClaimDecisionEvent inputs plus a
-  deterministic current/writing-eligibility registry view;
-- minimum ConflictRecord/decision validation that prevents artifact errors or
-  non-comparable results from becoming academic controversy;
-- the minimum logical CheckpointContract/Snapshot/Event fields needed to bind a
-  decision to one artifact hash;
-- Case 01 frozen-artifact adapter and one synthetic non-allene manifest;
-- case-neutral `project validate` and `project status`, including
-  `CONFIG_CHANGED` and affected-stage reporting;
-- offline schema, portability, hardcoding, path-safety, config-snapshot, and
-  immutable snapshot/release hash-closure tests.
-
-Deferred after M0/PR A unless real usage demonstrates the need:
-
-- ProjectManifest versions, adoption events, rollback, or ProjectProjection;
-- a project-wide event journal, canonical event envelope, OS locking, fsync
-  protocol, crash recovery, idempotent operations, or generic replay engine;
-- a general dependency/invalidation engine beyond reporting the directly
-  affected stages and artifacts required by the minimum slice;
-- all fifteen checkpoint implementations or UIs and any dashboard rewrite;
-- a mandatory Approved Claim RAG/index;
-- AI claim verification, full writing, or a generic claim ontology;
-- automatic conflict discovery, comparability judgment, adjudication, or
-  academic-language generation;
-- new providers;
-- a full new review;
-- a universal scientific ontology;
-- a database, accounts, deployment, concurrent writers, distributed
-  transactions, or online migration.
-
-### Allowed implementation form
-
-Retained objects may be implemented only as:
-
-- JSON Schema or equivalent structural validation;
-- pure functions over explicit inputs;
-- a deterministic derived view for one explicit snapshot;
-- immutable-output creation with overwrite refusal;
-- fixtures, the read-only Case 01 adapter, and offline tests.
-
-M0/PR A explicitly excludes claim/conflict/checkpoint mutation services,
-persistent projections, event replay or lifecycle engines, atomic registration
-workflows, HTTP `409`/three-way-diff/optimistic-concurrency servers, dependency
-ledgers, generic invalidation propagation, CP00-CP14 orchestration or UI,
-network/model calls, writing generation, and provider changes. Descriptions of
-those behaviors in the target Checkpoint Contract do not expand this work
-package.
-
-### Formal acceptance paths
-
-**Synthetic non-allene**
-
-- validates through the generic editable ProjectManifest;
-- `project validate` passes;
-- `project status` deterministically summarizes project, corpus, claims,
-  checkpoint, run, and release closure;
-- production code contains no Case 01 IDs/counts, allene taxonomy, or fixed run
-  ID.
-
-The synthetic path also changes the editable manifest and verifies
-`CONFIG_CHANGED` with a static list of directly affected stages. It does not
-perform DAG propagation. Existing RunManifest, snapshots, scientific decisions,
-releases, and their hashes remain unchanged.
-
-For goal/scope changes the static list is `CORPUS`, `CLAIMS`, `CHECKPOINT`,
-`DRAFT`, `RUN`, and `RELEASE`. Equivalent NFC/NFD text, CRLF/CR/LF line endings,
-or whole-string outer whitespace must resolve to the same config hash and must
-not report `CONFIG_CHANGED`.
-
-**Frozen Case 01 adapter**
-
-- resolves frozen artifacts read-only without changing source files or hashes;
-- accepts correct source/parse bindings and rejects quarantined or excluded
-  evidence from writing eligibility;
-- deterministically interprets the minimum legacy claim, conflict, checkpoint,
-  run, and release fields;
-- introduces no Case 01-only public field.
-
-### Minimum scientific and integrity assertions
-
-- one eligible claim is writing-eligible;
-- one claim bound to quarantined or excluded evidence is not writing-eligible;
-- ordinary checkpoint approval cannot register a scientific fact;
-- incompatible conflict classification/status/treatment is rejected;
-- tampering with an immutable snapshot or release breaks hash-closure
-  verification.
-
-Only these two paths constitute formal PR A acceptance. New needs discovered by
-them require an explicit scope-change decision; they cannot enter the work
-package implicitly.
-
-Exit evidence:
-
-- a synthetic non-allene manifest validates without production-code edits;
-- generic entrypoints contain no required F3I/F47A/P403 IDs, 44/37/7 counts,
-  allene taxonomy, or fixed run ID;
-- Case 01 frozen artifacts resolve through an adapter without mutation;
-- modifying editable configuration produces `CONFIG_CHANGED` while prior
-  RunManifest, snapshots, releases, scientific decisions, and their hashes stay
-  unchanged;
-- the retained minimum slice passes one unified human acceptance checkpoint.
-
-## M1 - Case 01 v5 Golden Calibration and Minimal UI Slice
-
-Goal: prove that the intended product contract produces a chemically stronger,
-user-aligned DOCX through the real QoderWork path.
-
-Deliver:
-
-- preserve Case 01 v4 unchanged;
-- create a new v5 project through the generic contract;
-- bind the correct P403 ACS Catalysis main/SI source hashes and refuse the
-  quarantined wrong JACS extraction;
-- perform only the targeted source parsing and evidence repair needed for the
-  approved two-study perspective;
-- add the accepted three original redraws and compact comparison table;
-- provide a minimal bilingual localhost checkpoint UI using the existing
-  Python/HTML/CSS/JS dashboard stack;
-- run one Windows-native QoderWork CN flow with `qwen3.7-max` after evidence,
-  outline, and figure-plan approval;
-- produce one `SELF_REVIEWED_DRAFT` DOCX and a closed internal evidence package.
-
-This is a calibration run, not proof of generality or publication readiness.
-M0 acceptance authorizes preparation of an M1 work package only. M1 execution
-requires a separate human approval, scope, Implementation Owner, and acceptance
-criteria. It must not rerun or rewrite frozen Phase 8, add Case 01-only
-validators or providers, expand scientific claims beyond the approved v5
-scope, or build the complete checkpoint UI/workflow engine.
-
-## M2 - New 20-40 Paper Chemistry Review
-
-Goal: run the first large, valuable review without expanding Case 01 or adding
-case-specific production code.
-
-Inputs:
-
-- a user-selected chemistry topic;
-- main papers and SI supplied as a seed corpus;
-- project-selected `CLOSED_CORPUS`, `MODEL_ASSISTED`, `SCHOLARLY_SEARCH`, or
-  `HYBRID` discovery mode.
-
-Requirements:
-
-- execute through QoderWork CN in a Windows-native clone;
-- use source identity, corpus versioning, Evidence Discovery RAG, the Approved
-  Claim Registry, approved claims, conflict records, rolling paragraph review,
-  figure review, and DOCX visual review; add a derived Approved Claim index only
-  if claim scale and measured retrieval needs justify it;
-- apply risk-tiered human attention so a large claim set does not require a
-  routine click for every low-risk item;
-- produce comparable Direct LLM, ordinary RAG, and full-system metrics only
-  when a bounded evaluation is explicitly authorized.
-
-Exit evidence:
-
-- no production code contains new topic-specific IDs or rules;
-- the final expert-facing artifact is one traceable DOCX;
-- every material claim resolves to the Approved Claim Registry;
-- user edits survive regeneration and affected artifacts rebuild locally;
-- release status honestly distinguishes self review from external expert review.
-
-## M3 - Product Hardening
-
-Goal: make the validated workflow easy to install, understand, and repeat.
-
-Deliver:
-
-- one simple README quick start and one QoderWork prompt;
-- stable localhost checkpoint navigation and bilingual terminology;
-- recovery guidance for missing full text, parse errors, provider failure,
-  outdated approvals, and DOCX visual defects;
-- product metrics and reproducible demo/eval harnesses;
-- Windows-native portability and offline CI evidence.
-
-Still out of scope:
-
-- SaaS deployment, accounts, payments, multi-tenancy;
-- a large frontend framework migration;
-- fully autonomous scientific acceptance;
-- broad cross-domain expansion.
-
-## Ordering rule
-
-M0 is first. After `M0_IMPLEMENTED_AND_ACCEPTED`, do not continue horizontal
-infrastructure work. Prepare M1 immediately as the next separately approved work
-package. M0 acceptance does not itself authorize network/model execution.
-
-Once the user separately approves M1 provider, transmitted content, request
-budget, scope, Owner, and acceptance criteria, its first runtime gate is:
+### 当前使用
 
 ```text
-hash-bound evidence
--> human-approved claims
--> one real model API section draft
--> citation/evidence validation
--> human review
+bootstrap-corpus
+  -> bind-generic-parse
+  -> preflight-corpus-inputs
+  -> import-corpus-inputs
 ```
 
-Passing that gate continues to the complete Case 01 v5 DOCX within the same M1;
-it does not start another infrastructure project. Model output is always a
-draft and cannot approve its own scientific facts. M1 may add only the minimum
-UI needed to exercise approved checkpoint contracts.
+### 当前限制
 
-M2 starts only after M1 exposes a stable, user-aligned vertical slice. M3
-hardens proven behavior; it does not precede it.
+这条线还没有真实 20–40 篇科学运行、研究者确认、Gold benchmark、同源 DOCX/PDF
+和无人值守 12 小时证据。因此它是可验证的输入基础线，不是最终综述发布线。
+
+## 下一阶段：一次真实主题的纵向闭环
+
+只有当用户提供完整合法的 MAIN/SI/Generic/Chemical 输入，并通过输入 currentness
+后，才进入这一阶段：
+
+1. fresh project 和 Dashboard 主路径；
+2. 每篇论文独立 Paper Evidence；
+3. 五个 Review-Question Synthesis Matrix；
+4. 单一权威 manuscript；
+5. claim/source audit、gap disclosure 和同源 DOCX/PDF；
+6. 独立 Gold review 和真实研究者 checkpoint。
+
+用户得到的目标变化是：从“输入边界可靠”推进到“得到可读、可审计、清楚披露不确定性
+的综述交付物”。这阶段的任何成功都必须用新鲜真实 artifact 证明，不能沿用 synthetic
+fixture 或旧项目状态。
+
+## 历史资产的处理方式
+
+| 历史资产 | 仍有价值的部分 | 当前处理 |
+| --- | --- | --- |
+| M0/PR A | 案例中立、离线、路径和配置保护 | 作为兼容回归证据，不是当前大语料入口 |
+| 三篇 dual-parse fixture | 测试 MAIN/SI、Source Truth 和失败零写入 | 仅测试/legacy adapter |
+| Honest Progressive | `CONFIRMED/AI_PROVISIONAL/BLOCKED` 和 gap 可见性 | 作为科学状态约束，不能绕过 researcher decision |
+| Dashboard/Evidence/Synthesis | 为未来纵向闭环保留的用户价值代码 | 需 fresh runtime/review 验收后才可宣称可用 |
+| Phase 8、Provider、RAG、QoderWork | 历史实验和部分可复用脚本 | 停车，不进入当前主流程 |
+| 旧 worktree/外部项目 | 可能含恢复证据 | 不自动删除；先 inventory、备份和授权 |
+
+## 永不自动进入主线的内容
+
+- 新 Provider、RAG、SaaS、多用户、数据库或部署；
+- 开放式 discovery 或第二主题；
+- 猜 SMILES、自动确认机制、把 candidate 变成事实；
+- 仅增加代理数量、页面数量、抽象层或测试数量，却不改善用户结果的工作；
+- 没有可复核恢复路径的递归删除、worktree 清理或外部数据迁移。
+
+## 进入新工作包的门槛
+
+每个新工作包必须先写清：
+
+```text
+用户问题=
+用户变化=
+输入与输出=
+GOLD_DELTA=
+TRACE_DELTA=
+失败时如何恢复=
+停止线=
+```
+
+如果不能说明用户结果或证据链增量，工作包进入停车场。具体规则见
+`docs/product/DELIVERABLE_FIRST_CORE_CONTRACT.md`。

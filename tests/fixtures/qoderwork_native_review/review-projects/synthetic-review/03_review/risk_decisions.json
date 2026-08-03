@@ -1,0 +1,11 @@
+{
+  "decisions": [
+    {
+      "action": "UNRESOLVED",
+      "claim_id": "claim-neutral-01",
+      "review_target_digest": "b4dac5597d27c55c41a2438b9cbe38d267495993d1c88f17fabbe54c386b1afc"
+    }
+  ],
+  "project_id": "synthetic-review",
+  "schema_version": "vertical-review-risk-decisions.v1"
+}

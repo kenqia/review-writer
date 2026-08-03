@@ -1,0 +1,15 @@
+{
+  "asset_path": "assets/page-1-crop.png",
+  "asset_sha256": "2e9b06dc65a4dec84a3eb3124553ec93ca27c78221e64ab2177d0f1412cfcb20",
+  "page": 1,
+  "renderer_contract": {
+    "dpi": 144,
+    "format": "png",
+    "name": "PDFTOPPM_PNG_SINGLE_PAGE_V1",
+    "single_page": true
+  },
+  "renderer_sha256": "662d3ffff1d5f9c0ac1ed622a7013f0627fb8c43093557167eef3c6b63434f12",
+  "schema_version": "evidence-page-crop-manifest.v1",
+  "source_binary_sha256": "15d64012eef9c7c7ac0140c81eb46ba439416861dbf01470d56e745f1eca3e3f",
+  "source_id": "SYNTH_MAIN"
+}

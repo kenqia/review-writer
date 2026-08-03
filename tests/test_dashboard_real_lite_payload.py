@@ -120,10 +120,23 @@ def run_checks(port: int) -> list[str]:
         failures.append("final payload missing quality_report")
     if not final.get("final_draft_md"):
         failures.append("final payload missing final_draft_md")
+    if final.get("manuscript_source") != "authoritative_manuscript":
+        failures.append("legacy preview must use its authoritative manuscript")
+    if final.get("release_status") != "IN_PROGRESS":
+        failures.append("legacy preview without a DOCX must remain IN_PROGRESS")
+    release_snapshot = final.get("release_snapshot") or {}
+    if release_snapshot.get("exists"):
+        failures.append("legacy preview must not claim a release snapshot")
+    if release_snapshot.get("docx_exists") or final.get("final_draft_docx_exists"):
+        failures.append("legacy preview must not expose a release DOCX")
+    if final.get("final_draft_docx_path"):
+        failures.append("legacy preview must not expose a release DOCX path")
     if len((final.get("checkpoint_log") or {}).get("checkpoints") or []) != 9:
         failures.append("final payload missing 9 checkpoint records")
-    if not (figures.get("figure_manifest") or figures.get("redrawn_manifest")):
-        failures.append("figures payload missing figure manifest")
+    if not figures.get("figures"):
+        failures.append("figures payload missing researcher-safe figure rows")
+    if (figures.get("summary") or {}).get("placeholders") != 1:
+        failures.append("figures payload must preserve the real-lite pointer placeholder")
     if not (matrix.get("literature_matrix") or {}).get("rows"):
         failures.append("matrix payload missing real-lite rows")
     if not (blueprint.get("section_blueprint") or {}).get("sections"):

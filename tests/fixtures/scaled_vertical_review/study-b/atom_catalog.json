@@ -1,0 +1,63 @@
+{
+  "atoms": [
+    {
+      "asset_path": null,
+      "asset_sha256": null,
+      "atom_id": "STUDY-B-MAIN:p1:t1",
+      "atom_sha256": "bb53146eba0abd3d221520f5ca955f3db2b059902492f9c832584da5327dcdb8",
+      "canonical_span": "This synthetic study evaluates a second generic intervention under controlled conditions.",
+      "crop_manifest_path": null,
+      "crop_manifest_sha256": null,
+      "depiction_locator": null,
+      "evidence_mode": "TEXT_QUOTE",
+      "page": 1,
+      "r3_floor_categories": [],
+      "raw_source_span": "This synthetic study evaluates a second generic intervention under controlled conditions.",
+      "renderer_contract": null,
+      "renderer_sha256": null,
+      "source_binary_sha256": null,
+      "source_id": "STUDY-B-MAIN"
+    },
+    {
+      "asset_path": null,
+      "asset_sha256": null,
+      "atom_id": "STUDY-B-MAIN:p1:t2",
+      "atom_sha256": "f10bad1bb1fa6ee34a3606503d8b86c94cfbbecfc770a9dbb39680f588654720",
+      "canonical_span": "The intervention causes the response through a proposed pathway.",
+      "crop_manifest_path": null,
+      "crop_manifest_sha256": null,
+      "depiction_locator": null,
+      "evidence_mode": "TEXT_QUOTE",
+      "page": 1,
+      "r3_floor_categories": [],
+      "raw_source_span": "The intervention causes the response through a proposed pathway.\n",
+      "renderer_contract": null,
+      "renderer_sha256": null,
+      "source_binary_sha256": null,
+      "source_id": "STUDY-B-MAIN"
+    },
+    {
+      "asset_path": null,
+      "asset_sha256": null,
+      "atom_id": "STUDY-B-SI:p1:t1",
+      "atom_sha256": "4db3ba591d30e59d9ae1f82b7e1743aac8992417a553fdac45bd2c0ddee3103a",
+      "canonical_span": "The supporting layer records the predefined comparison procedure.",
+      "crop_manifest_path": null,
+      "crop_manifest_sha256": null,
+      "depiction_locator": null,
+      "evidence_mode": "TEXT_QUOTE",
+      "page": 1,
+      "r3_floor_categories": [],
+      "raw_source_span": "The supporting layer records the predefined comparison procedure.\n",
+      "renderer_contract": null,
+      "renderer_sha256": null,
+      "source_binary_sha256": null,
+      "source_id": "STUDY-B-SI"
+    }
+  ],
+  "catalog_sha256": "e611f08c9880219cb450ff4482006d07f5d99dd11ec6910cead6a6d2cde06e49",
+  "job_id": "JOB-571ebbb1ef47ee8cc023995d9e7c7f537f6d240c3d81483dbb760e74ece16e42",
+  "job_sha256": "05530b0766b4cdbad0ae100aef334749a6a36213fb1d72dd9941b0bd73daf17b",
+  "schema_version": "evidence-atom-catalog.v1",
+  "study_id": "STUDY-B"
+}

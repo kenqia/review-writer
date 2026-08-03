@@ -1,0 +1,12 @@
+{
+  "paper_id": "synthetic-study-01",
+  "slug": "synthetic-study-01",
+  "title": {"value": "Synthetic study for dashboard verification"},
+  "authors": {"value": ["Example Author"]},
+  "year": {"value": 2026},
+  "journal": {"value": "Synthetic Methods"},
+  "doi": {"value": "10.0000/synthetic.fixture"},
+  "source_paths": {},
+  "human_review": {"status": "approved"},
+  "quality": {"needs_human_check": false}
+}

@@ -1,0 +1,34 @@
+{
+  "schema_version": "sealed-evidence-extraction-job.v2",
+  "job_id": "JOB-a3bb831e9e6c0aa96ffcd4fb409643769c61f9b6fed8ba6d35b8d03db273b80b",
+  "mode": "EVIDENCE_ATOM_SEMANTIC_DECISION_V1",
+  "semantic_target_contract": {
+    "allowed_target_kinds": ["ELIGIBILITY", "REACTION_UNIT", "CLAIM"],
+    "denied_claim_ids": [],
+    "policy": "ALLOW_EXCEPT_DECLARED_SI_DEPENDENT_CLAIMS"
+  },
+  "study": {
+    "study_id": "SYNTHETIC_STUDY"
+  },
+  "source_files": [
+    {
+      "source_id": "SYNTH_MAIN",
+      "document_role": "MAIN",
+      "source_binary_sha256": "15d64012eef9c7c7ac0140c81eb46ba439416861dbf01470d56e745f1eca3e3f",
+      "reading_order_path": "sources/SYNTH_MAIN.reading.txt",
+      "reading_order_sha256": "e632a05baf19117f1387b4944e669087bb2026ed569206b633e4c1edcac6b731",
+      "layout_path": "sources/SYNTH_MAIN.layout.txt",
+      "layout_sha256": "2c89c336c603add5b94dfa5ca00ac2891c4c106a3e267fdd94816c8f7748a4f0",
+      "page_count": 2,
+      "visual_evidence_allowed": true
+    }
+  ],
+  "visual_crops": [
+    {
+      "source_id": "SYNTH_MAIN",
+      "page": 1,
+      "manifest_path": "input/crops/SYNTH_MAIN.page-1.crop-manifest.json",
+      "manifest_sha256": "8e9cc2b554257fb3fae455a75ef7e6d7cb0e6a06018ff893d646f27496aac8ea"
+    }
+  ]
+}

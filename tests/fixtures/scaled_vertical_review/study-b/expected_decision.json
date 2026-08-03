@@ -1,0 +1,6 @@
+{
+  "claim_id": "CLAIM-B",
+  "decision": "HUMAN_REQUIRED",
+  "exception_queued": false,
+  "study_id": "STUDY-B"
+}

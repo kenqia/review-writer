@@ -60,9 +60,25 @@ def detect_references_section(text: str) -> dict[str, Any]:
 def scan_draft(project: Path) -> dict[str, Any]:
     final_path = project / "05_final_audit" / "final_draft.md"
     first_path = project / "04_first_draft" / "first_draft.md"
-    draft = final_path if final_path.exists() else first_path
+    release_path = project / "05_release" / "self_reviewed_draft.md"
+    if final_path.exists():
+        draft = final_path
+    elif first_path.exists():
+        draft = first_path
+    else:
+        # The evidence-to-release route publishes its authoritative export
+        # under 05_release rather than the legacy 04/05 draft directories.
+        # Scan that current release snapshot without manufacturing a legacy
+        # first-draft state.
+        draft = release_path
     text = read_text(draft) if draft.exists() else ""
-    target = "final_draft" if draft == final_path and final_path.exists() else "first_draft"
+    target = (
+        "final_draft"
+        if draft == final_path and final_path.exists()
+        else "first_draft"
+        if draft == first_path and first_path.exists()
+        else "self_reviewed_release"
+    )
     headings = [{"level": len(m.group(1)), "title": m.group(2).strip()} for m in HEADING_RE.finditer(text)]
     duplicate_headings = sorted(
         {h["title"] for h in headings if [x["title"] for x in headings].count(h["title"]) > 1}

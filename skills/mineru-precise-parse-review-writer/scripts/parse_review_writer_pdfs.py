@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -56,12 +57,36 @@ class ParseJob:
         return str(self.pdf_path.relative_to(self.source_root))
 
 
+@dataclass(frozen=True)
+class StagedPdf:
+    job: ParseJob
+    data: bytes
+    sha256: str
+
+
 def now_utc() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def ensure_parent(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def stage_pdf(job: ParseJob) -> StagedPdf:
+    data = job.pdf_path.read_bytes()
+    return StagedPdf(
+        job=job,
+        data=data,
+        sha256=sha256_bytes(data),
+    )
+
+
+def stage_jobs(jobs: List[ParseJob]) -> List[StagedPdf]:
+    return [stage_pdf(job) for job in jobs]
 
 
 def write_json(path: Path, payload: Dict[str, Any]) -> None:
@@ -320,12 +345,11 @@ def request_upload_batch(
     return data
 
 
-def upload_batch_files(jobs: List[ParseJob], upload_urls: List[str]) -> None:
-    for job, upload_url in zip(jobs, upload_urls):
-        with job.pdf_path.open("rb") as handle:
-            response = requests.put(upload_url, data=handle, timeout=300)
+def upload_batch_files(staged_jobs: List[StagedPdf], upload_urls: List[str]) -> None:
+    for staged, upload_url in zip(staged_jobs, upload_urls):
+        response = requests.put(upload_url, data=staged.data, timeout=300)
         response.raise_for_status()
-        print(f"[upload] {job.relative_pdf_path}")
+        print(f"[upload] {staged.job.relative_pdf_path}")
 
 
 def poll_batch_results(
@@ -394,7 +418,10 @@ def rewrite_image_paths(markdown: str, slug: str) -> str:
     return text
 
 
-def materialize_markdown(output_dir: Path, job: ParseJob, zip_url: str, force: bool) -> Dict[str, Any]:
+def materialize_markdown(
+    output_dir: Path, staged: StagedPdf, zip_url: str, force: bool
+) -> Dict[str, Any]:
+    job = staged.job
     raw_zip = output_dir / "raw_zips" / f"{job.slug}.zip"
     extracted_dir = output_dir / "extracted" / job.slug
     markdown_path = output_dir / "markdown" / f"{job.slug}.md"
@@ -403,6 +430,7 @@ def materialize_markdown(output_dir: Path, job: ParseJob, zip_url: str, force: b
     prepare_target(extracted_dir, force)
 
     download_binary(zip_url, raw_zip)
+    raw_zip_sha256 = sha256_bytes(raw_zip.read_bytes())
     with zipfile.ZipFile(raw_zip) as archive:
         archive.extractall(extracted_dir)
 
@@ -420,9 +448,11 @@ def materialize_markdown(output_dir: Path, job: ParseJob, zip_url: str, force: b
     return {
         "pdf_name": job.file_name,
         "relative_pdf_path": job.relative_pdf_path,
+        "source_pdf_sha256": staged.sha256,
         "slug": job.slug,
         "data_id": job.data_id,
         "raw_zip": str(raw_zip),
+        "raw_zip_sha256": raw_zip_sha256,
         "extracted_dir": str(extracted_dir),
         "full_md": str(full_md),
         "markdown_copy": str(markdown_path),
@@ -445,13 +475,14 @@ def run_batch(
     output_dir: Path,
     manifest: Dict[str, Any],
 ) -> None:
+    staged_jobs = stage_jobs(jobs)
     upload_batch = request_upload_batch(session, token, jobs, args)
     batch_id = str(upload_batch.get("batch_id") or "").strip()
     if not batch_id:
         raise RuntimeError("MinerU did not return a batch_id.")
     print(f"[batch] {batch_id} ({len(jobs)} files)")
 
-    upload_batch_files(jobs, list(upload_batch.get("file_urls") or []))
+    upload_batch_files(staged_jobs, list(upload_batch.get("file_urls") or []))
     results = poll_batch_results(
         session=session,
         token=token,
@@ -469,7 +500,7 @@ def run_batch(
     }
     manifest["batches"].append(batch_record)
 
-    for job in jobs:
+    for job, staged in zip(jobs, staged_jobs):
         result = results.get(job.data_id) or {}
         state = str(result.get("state") or "unknown").lower()
         job_record: Dict[str, Any] = {
@@ -488,7 +519,9 @@ def run_batch(
                 manifest["failed"].append(job_record)
                 batch_record["jobs"].append(job_record)
                 continue
-            output_record = materialize_markdown(output_dir, job, zip_url, force=args.force)
+            output_record = materialize_markdown(
+                output_dir, staged, zip_url, force=args.force
+            )
             job_record.update(output_record)
             manifest["completed"].append(job_record)
         else:

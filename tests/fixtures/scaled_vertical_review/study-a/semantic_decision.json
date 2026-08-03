@@ -1,0 +1,32 @@
+{
+  "schema_version": "evidence-atom-semantic-decision.v1",
+  "job_id": "JOB-c5fd16fc16948e57b251b0706a985c782838569d05ca9da7151735373255b2bb",
+  "study_id": "STUDY-A",
+  "eligibility_status": "SCIENTIFICALLY_ELIGIBLE_CORE",
+  "decisions": [
+    {
+      "target_kind": "ELIGIBILITY",
+      "target_id": "ELIGIBILITY-A",
+      "statement": "Study A is eligible for the synthetic review.",
+      "evidence_summary": "The main layer defines the controlled synthetic study.",
+      "atom_ids": ["STUDY-A-MAIN:p1:t1"],
+      "risk_classification": "NO_HIGH_RISK"
+    },
+    {
+      "target_kind": "REACTION_UNIT",
+      "target_id": "OBSERVATION-A",
+      "statement": "Study A reports a predefined observation procedure.",
+      "evidence_summary": "The supporting layer records the procedure.",
+      "atom_ids": ["STUDY-A-SI:p1:t1"],
+      "risk_classification": "NO_HIGH_RISK"
+    },
+    {
+      "target_kind": "CLAIM",
+      "target_id": "CLAIM-A",
+      "statement": "The measured response increased from baseline under the stated conditions.",
+      "evidence_summary": "The main layer directly reports the measured response.",
+      "atom_ids": ["STUDY-A-MAIN:p1:t2"],
+      "risk_classification": "NO_HIGH_RISK"
+    }
+  ]
+}

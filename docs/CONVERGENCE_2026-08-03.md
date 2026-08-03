@@ -1,114 +1,97 @@
-# review-writer 收敛说明 — 2026-08-03
+# 2026-08-03 大收敛说明
 
-状态：`M0_USER_SLICE_IMPLEMENTED`
+状态：`VERIFIED_CANDIDATE_NOT_YET_ON_MAIN`
 
-本说明记录项目暂停旧路线后的第一次大收敛边界。它不是发布结论，也不授权
-联网、调用 provider、修改 corpus、发布内容或作出科学决定。
+## 1. 这次收敛给用户带来的实际变化
 
-## 1. 唯一主线
+此前项目同时保留 M0、三篇 dual-parse、309 分母、Honest Progressive、旧
+Dashboard、Provider/RAG 和多个历史修复波次，用户很难判断哪个入口是真的。
 
-项目现在只沿着一条产品主线前进：
+本次先把最有直接用户价值的一条路径收拢出来：
 
-> 面向化学研究者的、案例中立、离线优先的项目契约；它保护来源、证据、
-> 用户决定、检查点状态和不可变的产物链路，让用户能知道结果从哪里来、
-> 哪些地方仍需要自己判断。
+> 用户准备一个主题、五个问题和 20–40 篇论文的 MAIN/SI 后，系统先用可验证的
+> 输入和 provenance 检查保护后续综述，不把旧项目状态、同名文件或 AI 候选冒充成
+> 当前科学证据。
 
-当前本地主线基线为：
+用户现在可以依次使用：
 
-```text
-ab3e76b7d040d6bb1e3178778d569e772aa96b8f
-```
+1. `bootstrap-corpus` 创建全新 variable-N 项目；
+2. `bind-generic-parse` 绑定每篇论文的 MAIN 与 SI，要求 `2N` 份 Generic Parse；
+3. `preflight-corpus-inputs` 只读检查 MAIN/SI/Generic/Chemical 四条输入 lane；
+4. `import-corpus-inputs` 发布 hash-bound provenance，且明确 actor 身份。
 
-本地 `main` 已快进到已经存在的本地 `origin/main`，没有联网和远端写入。
+这些改变减少了用户的猜测和返工；它们不等于系统已经完成科学综述或导出发布物。
 
-当前唯一产品问题是 M0/PR A 验收问题：同一个最小、案例中立的本地项目契约，
-能否同时验证合成的非 allene 项目和冻结的 Case 01，并防止可编辑配置污染
-既有证据、用户决定、快照和历史发布产物。
+## 2. 本轮真正整合的内容
 
-用户能得到的改变是：项目先把“输入是什么、哪些证据可信、哪些结论能写进
-综述、配置变化影响什么”说清楚，再考虑更复杂的自动化。
+### 输入层
 
-## 2. 保留为核心
+- 权威 corpus 支持 `20–40` 篇，不再把 `3` 或 `309` 当成公共分母；
+- 每个 study 强制 MAIN/SI 成对输入；
+- 复制后的 MAIN/SI 都记录 hash、大小和路径；
+- 重复 study/source、重复 PDF 字节和 hash 错误在发布前失败；
+- 新项目使用独立目录与 external anchor，已存在目标拒绝覆盖。
 
-以下内容继续保留，直到另有明确审查结论：
+### 解析与 provenance 层
 
-- `docs/product/PRODUCT_NORTH_STAR.md`
-- `docs/product/PRODUCT_ROADMAP.md`
-- `docs/product/CHECKPOINT_CONTRACT.md`
-- `docs/decisions/ADR-001-chemistry-first-evidence-governed-workbench.md`
-- `review_writer/project/` 与 `schemas/project/`
-- M0 fixture 和测试覆盖的离线校验、路径安全、快照、发布闭包和证据边界
-- 冻结的 Case 01 adapter 与合成非 allene 验收 fixture
-- 唯一公开入口及其 Owner/Reviewer/安全约束
+- Generic Parse 的 variable-N 完成数量是 `2N`；
+- MAIN/SI 通过完整相对路径、角色和 hash 绑定；
+- MAIN identity 为 `source_id`，SI identity 为 `<source_id>__SI`；
+- Source Truth 每个 study 同时包含 MAIN/SI；
+- Parse Quality 会覆盖两种文档，input provenance 会再次校验 SI Source Truth、
+  页数、hash 和 currentness；
+- preflight/import 的失败保持 fail-closed，已有项目状态不被错误请求覆盖。
 
-这些资产对用户的价值是减少“同一个项目为什么得到不同结果”的不确定性。
-保留它们不等于开始建设通用 workflow engine。
+### 用户文档与入口层
 
-## 3. 冻结并停车
+- README、用户使用说明和项目规格改为中文用户视角；
+- 报告规则明确先说明用户变化、使用方式和限制；
+- 新增 `preflight-corpus-inputs` 与 `import-corpus-inputs` CLI；
+- 旧三篇入口保留为 fixture 兼容路径，但不再作为当前用户文档主入口；
+- 旧 M0、Provider、RAG、QoderWork 迁移、Phase 8 和历史 worktree 只停车，不删除
+  可能仍有恢复价值的对象。
 
-以下内容只作为历史证据或未来候选，不再作为当前开发线：
+## 3. 仍然没有完成的事情
 
-- Phase 8A/8B adjudication 与 grounded revision 分支
-- Bailian、RAG、provider qualification 和在线执行路径
-- QoderWork 迁移实验与 native workbench 分支
-- 旧 E2R、dashboard、resolved-SMILES、chemical-completion 和 release 修复波次
-- deliverable-first 的 a1/a2/a3 外部候选与 SI migration 结果
+当前工作树没有真实 20–40 篇主题语料的完整运行证据，也没有因此宣称：
 
-它们不能成为 M0 权威，也不能因为已有文件或旧报告就对用户宣称 READY。
+- `SCALED_INPUT_READY=OK`；
+- 真实 Dashboard/Playwright 路径完成；
+- 5 个 Review-Question Synthesis Matrix 已 current；
+- Gold benchmark 达标；
+- 同源 DOCX/PDF 已生成并通过 audit；
+- 真实合格研究者已确认具体结构或授权发布。
 
-初始收敛冻结阶段不启动新的综述运行、新 provider、新主题专用生产代码、DOCX/PDF
-导出或 SI binding 修复。
+原因不是代码可以“补一个字段”解决，而是这些结论需要真实输入、合法解析、可见
+用户 checkpoint 和新鲜 artifact 审计。当前阶段不读外部 PDF、不修改外部项目、不把
+synthetic fixture 当作科学运行。
 
-## 4. 本次收敛实际交付
+## 4. 减法边界
 
-本次在 M0 边界内补齐了一个用户可执行的最小切片：
+当前只把低价值入口停车，不做没有恢复证据的删除：
 
-- `scripts/project.py init` 可以在用户自己的目录创建标准项目骨架；
-- 用户显式绑定 MAIN/SI 后，初始化立即进行路径、配对和文件哈希检查；
-- `validate` 继续提供可重复的只读复核；已有 manifest 不会被 `init` 覆盖；
-- 缺失来源、来源越界和配置错误返回稳定错误码，而不是暴露 Python 堆栈；
-- 新增中文《用户使用说明》和《项目规格》，明确用户得到什么以及当前不能做什么；
-- 新增最小公开依赖声明，避免新环境缺少 `jsonschema` 才发现无法运行。
+- 旧 Makefile 目标、旧三篇案例、旧 Phase 8、Provider、RAG、QoderWork、历史
+  dashboard 和旧 release 波次不出现在用户主流程；
+- 它们保留为回归/历史证据，避免误删用户仍需恢复的内容；
+- 清理 worktree、branch、外部项目、PDF、SI 或 ignored runtime 前，必须先做精确
+  inventory、备份/恢复路径和单独授权。
 
-这次交付改善的是项目输入的可靠性和可理解性，不等于综述科学内容已经完成或
-可以发布。自动检索、解析、写作、专家判断和 DOCX/PDF 仍保持停车。
+因此本轮“减法”的用户可见结果是入口更少、说明更清楚；文件物理删除仍不是本轮
+交付的一部分。
 
-## 5. 清理边界
+## 5. 当前验收结果和下一步
 
-清理按可恢复性分阶段进行：
+本轮候选已经完成本地可重复验证：
 
-1. 只移除已经确认没有未跟踪文件和 ignored 文件的干净 worktree；分支引用保留。
-2. 对仍有 ignored runtime/data 的干净 worktree，先生成只读清单，再决定是否移除。
-3. dirty worktree 和外部候选/来源目录在记录 Owner、hash 和恢复价值前不得删除。
-4. 外部重复项目必须先完成文件/hash inventory，确定 canonical copy 和恢复位置后才能处理。
-5. 未合并 branch/commit 不因为“没有合并”就删除；branch 清理需要单独的 archive manifest
-   和精确目标清单。
+- focused variable-N/SI 与 QoderWork 文档回归：`136 passed`；
+- `make smoke`：exit 0，包含 `52 passed` 的 variable-N/SI 回归；
+- `make quality-check`：exit 0；
+- `TMPDIR=/tmp make scaled-review-check`：exit 0，包含输入、证据、投影、维护者
+  回归和发布/垂直 review 回归。
 
-第一轮已移除 6 个没有未跟踪数据的干净 worktree；它们的分支和 commit 均保留。
+这些结果说明用户主路径的本地合同可运行、错误输入会停在对应边界，不能说明真实
+20–40 篇主题语料已经完成综述。按照本文件的变更准入，下一步仍需独立 Reviewer
+只审当前候选 hash；在该复核有新鲜结果前，不把本候选宣称为已合并到 `main`。
 
-## 6. 报告规则
-
-以后每份报告先用用户语言说明：
-
-- 用户遇到的问题；
-- 本次改变给用户带来的结果；
-- 用户如何使用；
-- 仍然会被什么阻断；
-- 用户下一步需要做什么。
-
-开发者过程、代理数量、内部抽象、branch、worktree、测试数量和 hash 只能作为
-验证证据，不能替代用户结果。若没有直接用户可见变化，必须明确写出“无直接
-用户可见变化”及保留它的理由。新写文档默认使用中文。
-
-## 7. 停止线
-
-收敛边界被接受前：
-
-- 不为旧路线运行测试或调用模型/API；
-- 不做远端写入、push、deploy、发布或 provider 调用；
-- 不读 PDF，不修改外部项目；
-- 不清理、reset、覆盖、重命名或移动 dirty worktree；
-- 不在精确、先核验的目标清单之外删除任何内容。
-
-下一项不可逆动作不是开发，而是：在记录恢复证据后，明确选择哪些剩余
-worktree 和外部目录可以归档或删除。
+如果任一 gate 失败，报告用户能看到的阻断和唯一恢复动作，不把历史通过记录搬到
+当前候选上。

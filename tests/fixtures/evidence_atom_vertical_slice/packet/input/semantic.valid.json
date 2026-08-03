@@ -1,0 +1,47 @@
+{
+  "schema_version": "evidence-atom-semantic-decision.v1",
+  "job_id": "JOB-a3bb831e9e6c0aa96ffcd4fb409643769c61f9b6fed8ba6d35b8d03db273b80b",
+  "study_id": "SYNTHETIC_STUDY",
+  "eligibility_status": "SCIENTIFICALLY_ELIGIBLE_CORE",
+  "decisions": [
+    {
+      "target_kind": "ELIGIBILITY",
+      "target_id": "ELIGIBILITY",
+      "statement": "The sealed synthetic study is eligible for the bounded slice.",
+      "evidence_summary": "The selected narrative atom reports the bounded model result.",
+      "risk_classification": "NO_HIGH_RISK",
+      "atom_ids": ["ATOM-WHITESPACE"]
+    },
+    {
+      "target_kind": "REACTION_UNIT",
+      "target_id": "RU-VISUAL",
+      "statement": "The selected depiction carries chemistry that requires source review.",
+      "evidence_summary": "The crop depicts the selected synthetic reaction item.",
+      "atom_ids": ["ATOM-VISUAL"],
+      "risk_classification": "HIGH_RISK",
+      "semantic_risk_categories": ["MATERIAL_COMPARISON"],
+      "visual_transcribed_values": [
+        {
+          "atom_id": "ATOM-VISUAL",
+          "values": ["synthetic product label", "91% yield"]
+        }
+      ]
+    },
+    {
+      "target_kind": "CLAIM",
+      "target_id": "CL-HIGH-RISK",
+      "statement": "The selected synthetic claim exercises every high-risk floor.",
+      "evidence_summary": "The atom supplies the bounded narrative evidence for review.",
+      "atom_ids": ["ATOM-UNICODE"],
+      "risk_classification": "HIGH_RISK",
+      "semantic_risk_categories": [
+        "STRUCTURE",
+        "STEREOCHEMISTRY",
+        "MECHANISM_CAUSALITY",
+        "NEGATIVE_GENERALIZATION",
+        "MATERIAL_COMPARISON",
+        "FIGURE_TABLE_CHEMISTRY"
+      ]
+    }
+  ]
+}

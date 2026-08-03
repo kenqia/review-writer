@@ -14,6 +14,26 @@ Generated paper libraries, MinerU outputs, project outputs, real PDFs, API token
 - 默认读者不是深度工程专家。项目维护者按软件工程专业大三学生的知识深度沟通；避免不必要的架构黑话，不把内部复杂度转嫁给用户。
 - 所有产品取舍以用户能否更可靠、更清楚、更少操作地完成目标为准。不能改善用户结果、信任或可恢复性的工作，进入停车场或删除候选。
 
+## Deliverable-First Core Contract
+
+The active execution priority is
+[docs/product/DELIVERABLE_FIRST_CORE_CONTRACT.md](docs/product/DELIVERABLE_FIRST_CORE_CONTRACT.md).
+Every new session, recovery after context compaction, Owner, Reviewer, and
+Coordinator must, before starting a task or treating an inherited finding as
+active:
+
+1. verify the hash-bound core manifest;
+2. read this file and the Deliverable-First Core Contract;
+3. read the immutable Approved Spec for any scientific, source-integrity, or
+   safety constraint affected by the task; and
+4. state a concrete GOLD_DELTA and/or TRACE_DELTA for the bounded task.
+
+If both deltas are NONE, the task is prohibited. An inherited continuation,
+inventory, repair branch, or platform idea is reference-only unless it passes
+that gate. The Core Contract may reprioritize old execution mechanics, but it
+does not permit lowering an immutable scientific or safety constraint, guessing
+scientific facts, fabricating a researcher decision, or fabricating READY.
+
 ## Safety
 
 - Do not read, print, copy, commit, or upload real API keys, tokens, cookies, sessions, or private auth files.
@@ -82,3 +102,25 @@ If a check cannot run because project data has not been created yet, report that
 - Repairs resume the recorded original Owner unless a documented replacement is approved.
 - Parallel writing requires approved worktrees and a dedicated Integration Owner.
 - Read `docs/agent-orchestration/AGENT_OPERATING_MODEL.md` before launching orchestration work.
+
+## Session Health And Durable Handoff
+
+- A long-running Coordinator session owns one bounded phase, reserves time for verification and handoff, and must stop no later than 90 minutes. Prefer a fresh session before context compaction.
+- If context is compacted once, do not start new implementation, review dimensions, agents, or branches. Re-read the task's hash-bound core files, finish only the current atomic operation, persist a handoff, and stop. Continuing after a second compaction is prohibited.
+- Conversation summaries, branch names, historical handoffs, and Worker claims are not execution authority. At every new session and after compaction, verify the current Git HEAD, clean/dirty state, in-progress Git operations, core-file manifest, execution authority, finding inventory, and latest handoff before any write.
+- Only one Integration Coordinator may write the integration worktree. Only one named actor may write a mutable project. Parallel sessions require disjoint worktrees and disjoint path ownership; overlapping paths are serialized.
+- Total concurrency may not exceed the active task contract. Reviewers are fresh and read-only, and review immutable commits or explicitly bounded commit chains. They must not review a stale branch as if it were the current integrated tree.
+- Every accepted repair is integrated or explicitly parked with a reason during the same Coordinator session. New repairs start from the latest verified integration HEAD; recursive repair branches from historical parents are prohibited.
+- A handoff must name the exact code HEAD, commits and parents, checks run, unresolved finding IDs, sole next action, and forbidden actions. If an atomic clean handoff cannot be produced, stop as `DIRTY_HANDOFF_BLOCKED` without reset, checkout, discard, or cleanup.
+
+## Mainline And Scope-Freeze Discipline
+
+- Keep the active acceptance objective on the critical path: code freeze, one fresh non-overwriting project, one complete independent browser run, then final artifact audit.
+- A finding run may close directly observed P0/P1 or science-affecting P2 defects, but must not silently expand into an open-ended platform or filesystem security audit.
+- Before a repair cycle, state the exact threat model and stop line. Close already known violations of the approved design; record newly discovered non-scientific P2/P3 issues as residual risk unless they directly block the current workflow or release contract.
+- Run RED/GREEN and focused Owner tests while contracts are still changing. Do not start long Task 9/10/full-regression gates until all intended Owner commits and cross-Owner interfaces are stable. After integration, run each prescribed long gate once from the final clean revision.
+- When a defect crosses Owner boundaries, define one end-to-end contract and test it in integration instead of duplicating implementations or repeatedly broadening each isolated branch.
+- After a release-blocking browser finding, preserve that run only as evidence; repair, create a new project and browser context, and restart from checkpoint 1. Do not splice evidence.
+- Scientific blockers outrank automation completion. Never guess or auto-fill SMILES; if the PDF cannot support a unique value, record the precise blocker and complete all independent work.
+- Environment friction is not a product finding. In WSL, run Python tests with `TMPDIR=/tmp PYTHONDONTWRITEBYTECODE=1`; use `-s` only when pytest capture itself is failing, and record that environmental exception.
+- Do not infer performance from lifetime-average `ps` CPU. Confirm live utilization before stopping a service, and stop only a process whose ownership and role are known.

@@ -1,0 +1,43 @@
+{
+  "schema_version": "evidence-atom-semantic-decision.v1",
+  "job_id": "<SEALED_JOB_ID>",
+  "study_id": "<SEALED_STUDY_ID>",
+  "eligibility_status": "ELIGIBILITY_UNRESOLVED",
+  "decisions": [
+    {
+      "target_kind": "ELIGIBILITY",
+      "target_id": "ELIGIBILITY",
+      "statement": "<BOUNDED_ELIGIBILITY_STATEMENT>",
+      "evidence_summary": "<SEMANTIC_SUMMARY_OF_SELECTED_ATOM>",
+      "risk_classification": "NO_HIGH_RISK",
+      "atom_ids": ["<EXISTING_TEXT_ATOM_ID>"]
+    },
+    {
+      "target_kind": "REACTION_UNIT",
+      "target_id": "<UNIQUE_REACTION_UNIT_ID>",
+      "statement": "<BOUNDED_HIGH_RISK_TEXT_STATEMENT>",
+      "evidence_summary": "<SEMANTIC_SUMMARY_OF_SELECTED_TEXT_ATOM>",
+      "risk_classification": "HIGH_RISK",
+      "semantic_risk_categories": [
+        "MECHANISM_CAUSALITY",
+        "NEGATIVE_GENERALIZATION"
+      ],
+      "atom_ids": ["<EXISTING_TEXT_ATOM_ID>"]
+    },
+    {
+      "target_kind": "CLAIM",
+      "target_id": "<UNIQUE_VISUAL_CLAIM_ID>",
+      "statement": "<BOUNDED_VISUAL_CLAIM>",
+      "evidence_summary": "<SEMANTIC_SUMMARY_OF_SELECTED_VISUAL_ATOM>",
+      "risk_classification": "HIGH_RISK",
+      "semantic_risk_categories": ["MATERIAL_COMPARISON"],
+      "atom_ids": ["<EXISTING_VISUAL_ATOM_ID>"],
+      "visual_transcribed_values": [
+        {
+          "atom_id": "<EXISTING_VISUAL_ATOM_ID>",
+          "values": ["<LITERAL_VALUE_VISIBLE_IN_CROP>"]
+        }
+      ]
+    }
+  ]
+}
