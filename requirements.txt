@@ -1,2 +1,2 @@
-# M0 offline project contract
+# v0.1 离线 MVP 运行时依赖
 jsonschema==4.25.0

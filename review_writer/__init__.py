@@ -1,3 +1,3 @@
-"""review-writer offline-first adapter package."""
+"""review-writer v0.1 的离线输入与证据绑定运行时。"""
 
-__all__ = ["providers", "retrieval", "image", "config"]
+__all__: list[str] = []

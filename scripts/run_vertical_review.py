@@ -104,7 +104,6 @@ from scripts.evidence.build_page_atom_catalog import (  # noqa: E402
 )
 from scripts.evidence.evidence_atom_core import canonical_sealed_job_id, sha256_file  # noqa: E402
 from scripts.evidence.validate_evidence_candidate import validate as validate_evidence_candidate  # noqa: E402
-from scripts.review import chemical_paper as chemical_paper_cli  # noqa: E402
 
 
 CATALOG_SCHEMA = REPO_ROOT / "schemas" / "evidence" / "evidence_atom_catalog.v1.schema.json"
@@ -1312,8 +1311,6 @@ def _run(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     raw_args = list(sys.argv[1:] if argv is None else argv)
-    if raw_args and raw_args[0] in chemical_paper_cli.COMMANDS:
-        return chemical_paper_cli.main(raw_args)
     args = _parser().parse_args(raw_args)
     try:
         return _run(args)
