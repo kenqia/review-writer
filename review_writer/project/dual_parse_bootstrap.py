@@ -685,6 +685,8 @@ def bind_generic_parse_outputs(project: Path, mineru_output: Path) -> dict[str, 
                 "source_pdf_sha256": expected_hash,
                 "markdown_copy": f"markdown/{slug}.md",
             }
+            if isinstance(row.get("raw_zip_sha256"), str):
+                common["raw_zip_sha256"] = row["raw_zip_sha256"]
             mineru_rows.append(common)
             parse_rows.append({
                 **common, "full_md": f"extracted/{slug}/full.md",

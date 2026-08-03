@@ -95,12 +95,19 @@ def _root(project: Path) -> Path:
     return root
 
 
+def _reject_non_finite_json(value: str) -> Any:
+    raise ValueError(f"non-finite JSON constant: {value}")
+
+
 def _read_json(path: Path, code: str) -> dict[str, Any]:
     if not path.is_file() or path.is_symlink():
         raise DeliverableFirstMigrationError(code)
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        value = json.loads(
+            path.read_text(encoding="utf-8"),
+            parse_constant=_reject_non_finite_json,
+        )
+    except (OSError, UnicodeError, ValueError) as exc:
         raise DeliverableFirstMigrationError(code) from exc
     if not isinstance(value, dict):
         raise DeliverableFirstMigrationError(code)
@@ -183,6 +190,20 @@ def _require_sha256(value: object, code: str) -> str:
     return value
 
 
+def _si_generic_identity_bound(
+    source_id: object,
+    slug: object,
+    data_id: object,
+) -> bool:
+    if not all(isinstance(value, str) for value in (source_id, slug, data_id)):
+        return False
+    return (
+        source_id in slug
+        and source_id in data_id
+        and (data_id == slug or data_id.endswith(f"-{slug}"))
+    )
+
+
 def _canonical_manifest_digest(value: dict[str, Any], key: str, code: str) -> None:
     digest = value.get(key)
     body = {name: item for name, item in value.items() if name != key}
@@ -227,6 +248,7 @@ def _validate_si_generic_sidecars(
     canonical_pdf: str,
     pdf_sha256: str,
     page_count: int,
+    source_id: str,
 ) -> str:
     expected_pdf = canonical_pdf.removeprefix("00_sources/")
     mineru = _read_json(project / MINERU_MANIFEST_PATH, "SI_GENERIC_BINDING_MISSING")
@@ -251,6 +273,7 @@ def _validate_si_generic_sidecars(
         or "/" in slug
         or not isinstance(data_id, str)
         or not data_id.strip()
+        or not _si_generic_identity_bound(source_id, slug, data_id)
         or row.get("source_pdf_sha256") != pdf_sha256
         or row.get("markdown_copy") != f"markdown/{slug}.md"
     ):
@@ -268,7 +291,15 @@ def _validate_si_generic_sidecars(
             path = project / relative
             if path.is_symlink() or not path.is_file():
                 raise DeliverableFirstMigrationError("SI_GENERIC_BINDING_MISSING")
-        if not zipfile.is_zipfile(project / expected_paths[1]):
+        raw_zip = project / expected_paths[1]
+        if not zipfile.is_zipfile(raw_zip):
+            raise DeliverableFirstMigrationError("SI_GENERIC_BINDING_MISSING")
+        raw_zip_sha256, _ = _file_digest(
+            raw_zip, "SI_GENERIC_BINDING_MISSING"
+        )
+        if raw_zip_sha256 != _require_sha256(
+            row.get("raw_zip_sha256"), "SI_GENERIC_BINDING_MISSING"
+        ):
             raise DeliverableFirstMigrationError("SI_GENERIC_BINDING_MISSING")
         canonical_markdown_sha, _ = _file_digest(
             project / expected_paths[0], "SI_GENERIC_BINDING_MISSING"
@@ -299,8 +330,11 @@ def _validate_si_generic_sidecars(
     ):
         raise DeliverableFirstMigrationError("SI_GENERIC_BINDING_MISSING")
     try:
-        content_v2 = json.loads(content_lists_v2[0].read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        content_v2 = json.loads(
+            content_lists_v2[0].read_text(encoding="utf-8"),
+            parse_constant=_reject_non_finite_json,
+        )
+    except (OSError, UnicodeError, ValueError) as exc:
         raise DeliverableFirstMigrationError("SI_GENERIC_BINDING_MISSING") from exc
     if (
         not isinstance(content_v2, list)
@@ -327,9 +361,16 @@ def _validate_si_generic_sidecars(
         or parse_matches[0].get("data_id") != data_id
         or parse_matches[0].get("slug") != slug
         or parse_matches[0].get("source_pdf_sha256") != pdf_sha256
+        or parse_matches[0].get("raw_zip_sha256")
+        != row.get("raw_zip_sha256")
         or parse_matches[0].get("full_md") != f"extracted/{slug}/full.md"
         or parse_matches[0].get("extracted_dir") != f"extracted/{slug}"
         or parse_matches[0].get("markdown_copy") != f"markdown/{slug}.md"
+        or not _si_generic_identity_bound(
+            source_id,
+            parse_matches[0].get("slug"),
+            parse_matches[0].get("data_id"),
+        )
     ):
         raise DeliverableFirstMigrationError("SI_GENERIC_BINDING_MISSING")
     return slug
@@ -342,6 +383,7 @@ def _validate_si_text_layer(
     page_count: int,
     pdf_name: str,
     main_source_ids: set[str],
+    expected_source_id: str,
 ) -> str:
     manifest = _read_json(
         project / TEXT_LAYERS_MANIFEST_PATH, "SI_TEXT_LAYER_BINDING_MISSING"
@@ -357,11 +399,12 @@ def _validate_si_text_layer(
     if len(matches) != 1:
         raise DeliverableFirstMigrationError("SI_TEXT_LAYER_BINDING_MISSING")
     row = matches[0]
-    source_id = row.get("source_id")
+    text_source_id = row.get("source_id")
     if (
-        not isinstance(source_id, str)
-        or not source_id.strip()
-        or source_id in main_source_ids
+        not isinstance(text_source_id, str)
+        or not text_source_id.strip()
+        or text_source_id in main_source_ids
+        or expected_source_id not in text_source_id
         or row.get("page_count") != page_count
         or row.get("pdf_name") != pdf_name
     ):
@@ -389,7 +432,7 @@ def _validate_si_text_layer(
             raise DeliverableFirstMigrationError("SI_TEXT_LAYER_BINDING_MISSING")
     if row["reading_order_path"] == row["layout_path"]:
         raise DeliverableFirstMigrationError("SI_TEXT_LAYER_BINDING_MISSING")
-    return source_id
+    return text_source_id
 
 
 def _required_si_bindings(
@@ -417,8 +460,16 @@ def _required_si_bindings(
     ]
     if not required:
         return {}
-    if sorted(required) != sorted(studies) or len(coverage_by_study) != len(studies):
+    if sorted(required) != sorted(studies):
         raise DeliverableFirstMigrationError("SI_AUTHORITY_INVALID")
+    if (
+        coverage.get("schema_version") != "source-coverage.v1"
+        or coverage.get("canonical_artifact") != SOURCE_COVERAGE_PATH.as_posix()
+    ):
+        raise DeliverableFirstMigrationError("SI_AUTHORITY_INVALID")
+    coverage_by_study = _index_study_rows(
+        coverage_rows, studies, "SI_AUTHORITY_INVALID"
+    )
 
     input_manifest = _read_json(
         project / INPUT_PROVENANCE_PATH, "SI_AUTHORITY_MISSING"
@@ -433,7 +484,14 @@ def _required_si_bindings(
     ):
         raise DeliverableFirstMigrationError("SI_AUTHORITY_INVALID")
     _canonical_manifest_digest(input_manifest, "artifact_digest", "SI_AUTHORITY_INVALID")
-    _require_sha256(input_manifest.get("manifest_digest"), "SI_AUTHORITY_INVALID")
+    manifest_digest = _require_sha256(
+        input_manifest.get("manifest_digest"), "SI_AUTHORITY_INVALID"
+    )
+    if (
+        _require_sha256(coverage.get("manifest_digest"), "SI_AUTHORITY_INVALID")
+        != manifest_digest
+    ):
+        raise DeliverableFirstMigrationError("SI_AUTHORITY_INVALID")
     manifest_by_study = _index_study_rows(
         input_manifest.get("studies"), studies, "SI_AUTHORITY_INVALID"
     )
@@ -531,6 +589,8 @@ def _required_si_bindings(
         )
         if not canonical_relative.startswith("00_sources/supplements/"):
             raise DeliverableFirstMigrationError("SI_AUTHORITY_INVALID")
+        if canonical_path.name != f"{source_id}.pdf":
+            raise DeliverableFirstMigrationError("SI_AUTHORITY_INVALID")
         canonical_sha, canonical_size = _pdf_file_digest(
             canonical_path, "SI_AUTHORITY_INVALID"
         )
@@ -590,6 +650,7 @@ def _required_si_bindings(
             canonical_pdf=canonical_relative,
             pdf_sha256=expected_sha,
             page_count=page_count,
+            source_id=source_id,
         )
         text_source_id = _validate_si_text_layer(
             project,
@@ -597,6 +658,7 @@ def _required_si_bindings(
             page_count=page_count,
             pdf_name=canonical_path.name,
             main_source_ids=main_source_ids,
+            expected_source_id=source_id,
         )
         binding = {
             "path": canonical_relative.removeprefix("00_sources/"),
@@ -1195,6 +1257,11 @@ def _refresh_si_currentness(
     input_manifest = _read_json(
         staging / INPUT_PROVENANCE_PATH, "SI_AUTHORITY_MISSING"
     )
+    if input_manifest.get("schema_version") != "input-provenance-manifest.v1":
+        raise DeliverableFirstMigrationError("SI_CURRENTNESS_REFRESH_INVALID")
+    manifest_digest = _require_sha256(
+        input_manifest.get("manifest_digest"), "SI_CURRENTNESS_REFRESH_INVALID"
+    )
     manifest_rows = input_manifest.get("studies")
     if not isinstance(manifest_rows, list):
         raise DeliverableFirstMigrationError("SI_AUTHORITY_INVALID")
@@ -1229,8 +1296,21 @@ def _refresh_si_currentness(
         raise DeliverableFirstMigrationError("SI_CURRENTNESS_REFRESH_INVALID")
     coverage = _read_json(coverage_path, "SI_CURRENTNESS_REFRESH_INVALID")
     coverage_rows = coverage.get("studies")
-    if not isinstance(coverage_rows, list):
+    if (
+        coverage.get("schema_version") != "source-coverage.v1"
+        or coverage.get("canonical_artifact") != SOURCE_COVERAGE_PATH.as_posix()
+        or _require_sha256(
+            coverage.get("manifest_digest"), "SI_CURRENTNESS_REFRESH_INVALID"
+        )
+        != manifest_digest
+        or not isinstance(coverage_rows, list)
+    ):
         raise DeliverableFirstMigrationError("SI_CURRENTNESS_REFRESH_INVALID")
+    _index_study_rows(
+        coverage_rows,
+        chain["studies"],
+        "SI_CURRENTNESS_REFRESH_INVALID",
+    )
     for row in coverage_rows:
         if not isinstance(row, dict):
             raise DeliverableFirstMigrationError("SI_CURRENTNESS_REFRESH_INVALID")

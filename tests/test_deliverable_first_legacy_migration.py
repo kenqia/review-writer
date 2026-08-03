@@ -696,6 +696,7 @@ def _add_raw_required_si_authority_without_generic_sidecars(project: Path) -> No
                 "study_status": "READY",
             }
         )
+    coverage["manifest_digest"] = manifest_body["manifest_digest"]
     _write_json(project / "00_sources/source_coverage.json", coverage)
 
 
@@ -741,6 +742,7 @@ def _add_required_si_generic_sidecars(project: Path) -> None:
         raw_zip.parent.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(raw_zip, "w") as archive:
             archive.writestr("full.md", markdown)
+        raw_zip_sha256 = hashlib.sha256(raw_zip.read_bytes()).hexdigest()
 
         si_pdf = _read_json(project / "00_sources/input_provenance_manifest.json")
         si_row = next(row for row in si_pdf["studies"] if row["study_id"] == study_id)
@@ -753,6 +755,7 @@ def _add_required_si_generic_sidecars(project: Path) -> None:
                 "state": "done",
                 "relative_pdf_path": relative_pdf,
                 "source_pdf_sha256": si_descriptor["sha256"],
+                "raw_zip_sha256": raw_zip_sha256,
                 "markdown_copy": f"markdown/{slug}.md",
             }
         )
@@ -763,6 +766,7 @@ def _add_required_si_generic_sidecars(project: Path) -> None:
                 "state": "done",
                 "relative_pdf_path": relative_pdf,
                 "source_pdf_sha256": si_descriptor["sha256"],
+                "raw_zip_sha256": raw_zip_sha256,
                 "full_md": f"extracted/{slug}/full.md",
                 "extracted_dir": f"extracted/{slug}",
                 "markdown_copy": f"markdown/{slug}.md",
@@ -789,6 +793,235 @@ def _add_required_si_generic_sidecars(project: Path) -> None:
     _write_json(
         project / "01_evidence/text_layers/text_layers.manifest.json", text_layers
     )
+
+
+def _required_si_project(tmp_path: Path) -> Path:
+    project, _, _ = _legacy_three_paper_project(tmp_path)
+    _add_raw_required_si_authority_without_generic_sidecars(project)
+    _add_required_si_generic_sidecars(project)
+    return project
+
+
+def _si_manifest_row(manifest: dict, relative_pdf: str) -> dict:
+    return next(
+        row
+        for row in manifest["completed"]
+        if row.get("relative_pdf_path") == relative_pdf
+    )
+
+
+def _si_text_row(manifest: dict, pdf_sha256: str) -> dict:
+    return next(
+        row
+        for row in manifest["sources"]
+        if row.get("pdf_sha256") == pdf_sha256
+    )
+
+
+def test_required_si_raw_zip_content_mismatch_refuses_zero_write(
+    tmp_path: Path,
+) -> None:
+    project = _required_si_project(tmp_path)
+    mineru = _read_json(project / "01_evidence/mineru/manifest.json")
+    row = _si_manifest_row(mineru, "supplements/imported/stud-a.pdf")
+    raw_zip = project / "01_evidence/mineru/raw_zips" / f"{row['slug']}.zip"
+    with zipfile.ZipFile(raw_zip, "w") as archive:
+        archive.writestr("full.md", b"tampered ZIP content")
+    before = _snapshot(project)
+
+    with pytest.raises(
+        DeliverableFirstMigrationError,
+        match="SI_GENERIC_BINDING_MISSING",
+    ):
+        migrate_legacy_three_paper_project(
+            project,
+            expected_source_project_id="case",
+            dry_run=True,
+        )
+
+    assert _snapshot(project) == before
+
+
+def test_required_si_generic_identity_cross_study_refuses_zero_write(
+    tmp_path: Path,
+) -> None:
+    project = _required_si_project(tmp_path)
+    mineru_path = project / "01_evidence/mineru/manifest.json"
+    parses_path = project / "01_evidence/parses/manifest.json"
+    mineru = _read_json(mineru_path)
+    parses = _read_json(parses_path)
+    first_mineru = _si_manifest_row(mineru, "supplements/imported/stud-a.pdf")
+    second_mineru = _si_manifest_row(mineru, "supplements/imported/stud-b.pdf")
+    first_parse = _si_manifest_row(parses, "supplements/imported/stud-a.pdf")
+    second_parse = _si_manifest_row(parses, "supplements/imported/stud-b.pdf")
+    for row, other in (
+        (first_mineru, second_mineru),
+        (first_parse, second_parse),
+    ):
+        row["data_id"] = other["data_id"]
+        row["slug"] = other["slug"]
+        row["markdown_copy"] = other["markdown_copy"]
+        row["raw_zip_sha256"] = other["raw_zip_sha256"]
+    first_parse["full_md"] = second_parse["full_md"]
+    first_parse["extracted_dir"] = second_parse["extracted_dir"]
+    _write_json(mineru_path, mineru)
+    _write_json(parses_path, parses)
+    before = _snapshot(project)
+
+    with pytest.raises(
+        DeliverableFirstMigrationError,
+        match="SI_GENERIC_BINDING_MISSING",
+    ):
+        migrate_legacy_three_paper_project(
+            project,
+            expected_source_project_id="case",
+            dry_run=True,
+        )
+
+    assert _snapshot(project) == before
+
+
+def test_required_si_text_layer_cross_study_refuses_zero_write(
+    tmp_path: Path,
+) -> None:
+    project = _required_si_project(tmp_path)
+    manifest_path = project / "01_evidence/text_layers/text_layers.manifest.json"
+    manifest = _read_json(manifest_path)
+    input_manifest = _read_json(
+        project / "00_sources/input_provenance_manifest.json"
+    )
+    first_sha = next(
+        row["si"]["sha256"]
+        for row in input_manifest["studies"]
+        if row["study_id"] == "scholarly-a"
+    )
+    second_sha = next(
+        row["si"]["sha256"]
+        for row in input_manifest["studies"]
+        if row["study_id"] == "scholarly-b"
+    )
+    first = _si_text_row(manifest, first_sha)
+    second = _si_text_row(manifest, second_sha)
+    first["source_id"] = second["source_id"]
+    _write_json(manifest_path, manifest)
+    before = _snapshot(project)
+
+    with pytest.raises(
+        DeliverableFirstMigrationError,
+        match="SI_TEXT_LAYER_BINDING_MISSING",
+    ):
+        migrate_legacy_three_paper_project(
+            project,
+            expected_source_project_id="case",
+            dry_run=True,
+        )
+
+    assert _snapshot(project) == before
+
+
+def test_required_si_canonical_path_must_bind_source_id_refuses_zero_write(
+    tmp_path: Path,
+) -> None:
+    project = _required_si_project(tmp_path)
+    input_path = project / "00_sources/input_provenance_manifest.json"
+    registry_path = project / "00_sources/si_resource_registry.json"
+    input_manifest = _read_json(input_path)
+    registry = _read_json(registry_path)
+    input_row = next(
+        row for row in input_manifest["studies"] if row["study_id"] == "scholarly-a"
+    )
+    old_canonical = input_row["si"]["path"]
+    new_canonical = "00_sources/supplements/imported/not-source-bound.pdf"
+    (project / new_canonical).write_bytes((project / old_canonical).read_bytes())
+    input_row["si"]["path"] = new_canonical
+    registry_row = next(
+        row for row in registry["resources"] if row["study_id"] == "scholarly-a"
+    )
+    registry_row["path"] = new_canonical
+    old_relative = old_canonical.removeprefix("00_sources/")
+    new_relative = new_canonical.removeprefix("00_sources/")
+    for manifest_path in (
+        project / "01_evidence/mineru/manifest.json",
+        project / "01_evidence/parses/manifest.json",
+    ):
+        manifest = _read_json(manifest_path)
+        row = _si_manifest_row(manifest, old_relative)
+        row["relative_pdf_path"] = new_relative
+        _write_json(manifest_path, manifest)
+    text_path = project / "01_evidence/text_layers/text_layers.manifest.json"
+    text_layers = _read_json(text_path)
+    input_sha = input_row["si"]["sha256"]
+    _si_text_row(text_layers, input_sha)["pdf_name"] = "not-source-bound.pdf"
+    _write_json(text_path, text_layers)
+    input_body = {
+        key: value for key, value in input_manifest.items() if key != "artifact_digest"
+    }
+    input_manifest["artifact_digest"] = canonical_digest(input_body)
+    registry_body = {
+        key: value for key, value in registry.items() if key != "registry_digest"
+    }
+    registry["registry_digest"] = canonical_digest(registry_body)
+    _write_json(input_path, input_manifest)
+    _write_json(registry_path, registry)
+    before = _snapshot(project)
+
+    with pytest.raises(
+        DeliverableFirstMigrationError,
+        match="SI_AUTHORITY_INVALID",
+    ):
+        migrate_legacy_three_paper_project(
+            project,
+            expected_source_project_id="case",
+            dry_run=True,
+        )
+
+    assert _snapshot(project) == before
+
+
+def test_required_si_stale_coverage_manifest_digest_refuses_zero_write(
+    tmp_path: Path,
+) -> None:
+    project = _required_si_project(tmp_path)
+    coverage_path = project / "00_sources/source_coverage.json"
+    coverage = _read_json(coverage_path)
+    coverage["manifest_digest"] = "f" * 64
+    _write_json(coverage_path, coverage)
+    before = _snapshot(project)
+
+    with pytest.raises(
+        DeliverableFirstMigrationError,
+        match="SI_AUTHORITY_INVALID",
+    ):
+        migrate_legacy_three_paper_project(
+            project,
+            expected_source_project_id="case",
+            dry_run=True,
+        )
+
+    assert _snapshot(project) == before
+
+
+def test_required_si_nan_manifest_refuses_with_stable_error_and_zero_write(
+    tmp_path: Path,
+) -> None:
+    project = _required_si_project(tmp_path)
+    manifest_path = project / "00_sources/input_provenance_manifest.json"
+    manifest = _read_json(manifest_path)
+    manifest["malformed_nan"] = float("nan")
+    _write_json(manifest_path, manifest)
+    before = _snapshot(project)
+
+    with pytest.raises(
+        DeliverableFirstMigrationError,
+        match="SI_AUTHORITY_MISSING",
+    ):
+        migrate_legacy_three_paper_project(
+            project,
+            expected_source_project_id="case",
+            dry_run=True,
+        )
+
+    assert _snapshot(project) == before
 
 
 def test_required_si_raw_authority_without_generic_sidecars_refuses_zero_write(

@@ -430,6 +430,7 @@ def materialize_markdown(
     prepare_target(extracted_dir, force)
 
     download_binary(zip_url, raw_zip)
+    raw_zip_sha256 = sha256_bytes(raw_zip.read_bytes())
     with zipfile.ZipFile(raw_zip) as archive:
         archive.extractall(extracted_dir)
 
@@ -451,6 +452,7 @@ def materialize_markdown(
         "slug": job.slug,
         "data_id": job.data_id,
         "raw_zip": str(raw_zip),
+        "raw_zip_sha256": raw_zip_sha256,
         "extracted_dir": str(extracted_dir),
         "full_md": str(full_md),
         "markdown_copy": str(markdown_path),

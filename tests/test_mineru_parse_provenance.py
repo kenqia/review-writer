@@ -200,6 +200,9 @@ def test_producer_binds_uploaded_a_not_mutated_b_and_restores_without_stale_evid
     assert len(uploaded) == 3
     assert uploaded[0] == source_a
     assert completed[0]["source_pdf_sha256"] == hashlib.sha256(source_a).hexdigest()
+    assert completed[0]["raw_zip_sha256"] == hashlib.sha256(
+        (output_dir / "raw_zips/source-0.zip").read_bytes()
+    ).hexdigest()
 
     before_bind = _snapshot(project)
     with pytest.raises(
