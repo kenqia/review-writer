@@ -6,6 +6,14 @@ This repo contains the review-writer workflow source, QoderWork skill source, lo
 
 Generated paper libraries, MinerU outputs, project outputs, real PDFs, API tokens, and local metadata are external data and should not be committed.
 
+## 用户视角与文档语言
+
+- 新增或实质修改的项目文档默认使用中文；历史英文文档只在确有用户价值时翻译，不为了形式制造迁移工作。
+- 报告必须先回答用户关心的问题：改了什么、用户能得到什么、怎么使用、有什么限制、下一步做什么。分支、commit、测试和内部角色只作为支撑证据，不得成为报告主体。
+- 每个行为或功能改动都要明确写出 `用户变化`、`使用方式` 和 `限制/风险`。如果没有直接用户可见变化，要明确写“无直接用户可见变化”及原因。
+- 默认读者不是深度工程专家。项目维护者按软件工程专业大三学生的知识深度沟通；避免不必要的架构黑话，不把内部复杂度转嫁给用户。
+- 所有产品取舍以用户能否更可靠、更清楚、更少操作地完成目标为准。不能改善用户结果、信任或可恢复性的工作，进入停车场或删除候选。
+
 ## Safety
 
 - Do not read, print, copy, commit, or upload real API keys, tokens, cookies, sessions, or private auth files.

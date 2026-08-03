@@ -8,6 +8,19 @@ This roadmap supersedes the sequencing recommendations in the historical
 competition roadmap. It preserves the same core lesson: stabilize the public
 contract before attempting broad product or UI work.
 
+## 用户价值硬约束
+
+路线图中的每个工作包都必须能用用户语言说明其价值：
+
+1. 用户原来遇到什么问题；
+2. 完成后用户能少做什么、看懂什么或更可靠地得到什么；
+3. 用户如何使用；
+4. 哪些情况仍会被阻断或需要人工判断。
+
+开发者过程、代理数量、内部抽象和测试数量不能单独构成产品价值。没有直
+接用户收益的工作应停车、合并为最小实现，或删除。新文档默认使用中文；
+面向用户的报告不以开发者视角叙述。
+
 ## M0 - Product and Checkpoint Contract
 
 Goal: define one public project boundary before a new scientific run.

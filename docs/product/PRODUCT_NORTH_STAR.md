@@ -16,6 +16,21 @@ The final expert-facing deliverable is one clean DOCX. Source inventories,
 claims, retrieval bundles, conflicts, revision events, figures, audit reports,
 and hash manifests are internal product artifacts.
 
+## 核心理念：一切以用户完成任务为中心
+
+产品不是为了展示开发过程、模型数量或内部架构，而是帮助用户更可靠地
+完成一次有证据、有边界、可复查的化学综述。任何新功能、修复或流程调整都
+必须说明：用户看到了什么变化、如何使用、解决了什么问题，以及仍有哪些
+限制。
+
+项目报告默认面向普通但认真完成科研工作的用户，不要求用户理解分支、代理、
+worktree、RAG、哈希闭包或模型调度。开发者实现细节只能作为验证证据；若某项
+改动没有直接用户可见变化，报告必须明确说明“无直接用户可见变化”，并解释
+它为什么仍然值得保留。
+
+新写文档默认使用中文。用户价值、可理解性、科学诚实和可恢复性优先于工程
+炫技、功能数量和过程完整感。
+
 ## Internal architecture statement
 
 > Chemistry-first, case-neutral, evidence-governed review workflow with
