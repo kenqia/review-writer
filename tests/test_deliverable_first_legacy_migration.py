@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -536,3 +537,402 @@ def test_migration_rejects_scaled_or_variable_n_marker_without_writes(
         )
 
     assert _snapshot(project) == before
+
+
+def _add_raw_required_si_authority_without_generic_sidecars(project: Path) -> None:
+    """Add the real input-provenance shape while deliberately omitting SI parse edges."""
+
+    receipt = _read_json(project / "00_sources/acquisition_final_receipt.json")
+    manifest_studies = []
+    registry_resources = []
+    downloads = []
+    for study_id, source_id, suffix, doi in STUDIES:
+        payload = f"%PDF-1.7\nraw-SI-{suffix}\n%%EOF\n".encode()
+        canonical = project / "00_sources/supplements/imported" / f"{source_id}.pdf"
+        alias = project / "00_sources/supplements/imported" / f"{study_id}.si.pdf"
+        canonical.parent.mkdir(parents=True, exist_ok=True)
+        canonical.write_bytes(payload)
+        alias.write_bytes(payload)
+        si_sha = hashlib.sha256(payload).hexdigest()
+        si_path = canonical.relative_to(project).as_posix()
+        alias_path = alias.relative_to(project / "00_sources").as_posix()
+        receipt_row = next(
+            row for row in receipt["studies"] if row["study_id"] == study_id
+        )
+        receipt_row["source_id"] = source_id
+        main = receipt_row["main_pdf"]
+        bundle = load_source_truth_bundle(project, study_id)
+        manifest_studies.append(
+            {
+                "study_id": study_id,
+                "source_id": source_id,
+                "main_pdf": {
+                    "sha256": main["sha256"],
+                    "page_count": bundle["sources"][0]["page_count"],
+                    "source_truth_bundle_digest": bundle["bundle_digest"],
+                },
+                "generic_parse": {
+                    "status": "current",
+                    "parse_gate_digest": _read_json(
+                        project / f"01_evidence/source_truth/{study_id}/parse_quality.json"
+                    )["gate_digest"],
+                    "source_truth_bundle_digest": bundle["bundle_digest"],
+                },
+                "si": {
+                    "path": si_path,
+                    "sha256": si_sha,
+                    "page_count": 1,
+                    "size_bytes": len(payload),
+                    "status": "current",
+                },
+                "chemical_zip": {
+                    "sha256": "0" * 64,
+                    "page_count": 1,
+                    "status": "declared",
+                },
+            }
+        )
+        registry_resources.append(
+            {
+                "study_id": study_id,
+                "source_id": source_id,
+                "document_role": "SI",
+                "main_pdf_sha256": main["sha256"],
+                "path": si_path,
+                "sha256": si_sha,
+                "size_bytes": len(payload),
+                "page_count": 1,
+                "status": "CURRENT",
+                "authority": "INPUT_PROVENANCE_ONLY",
+            }
+        )
+        downloads.append(
+            {
+                "download_id": f"{source_id}-si",
+                "study_id": study_id,
+                "document_role": "SI",
+                "target_path": alias_path,
+                "expected_sha256": si_sha,
+                "doi": doi,
+                "archive_names": [f"{source_id}-si.pdf"],
+            }
+        )
+
+    manifest_body = {
+        "schema_version": "input-provenance-manifest.v1",
+        "canonical_artifact": "00_sources/input_provenance_manifest.json",
+        "project_id": "case",
+        "manifest_digest": "1" * 64,
+        "status": "CURRENT",
+        "counts": {"main_pdf": 3, "si": 3, "chemical_zip": 3, "generic_parse": 3},
+        "derived_refreshes": [
+            {"study_id": study_id, "status": "blocked", "stage": "source_truth"}
+            for study_id, _, _, _ in STUDIES
+        ],
+        "studies": manifest_studies,
+    }
+    _write_json(
+        project / "00_sources/input_provenance_manifest.json",
+        {**manifest_body, "artifact_digest": canonical_digest(manifest_body)},
+    )
+    _write_json(project / "00_sources/acquisition_final_receipt.json", receipt)
+
+    registry_body = {
+        "schema_version": "si-resource-registry.v1",
+        "canonical_artifact": "00_sources/si_resource_registry.json",
+        "project_id": "case",
+        "core_si_required": True,
+        "raw_scientific_authority": "CANDIDATE_ONLY",
+        "human_chemical_review_required_for_scientific_use": True,
+        "integration_status": "CURRENT",
+        "manifest_digest": manifest_body["manifest_digest"],
+        "resources": registry_resources,
+    }
+    _write_json(
+        project / "00_sources/si_resource_registry.json",
+        {**registry_body, "registry_digest": canonical_digest(registry_body)},
+    )
+    _write_json(
+        project / "00_sources/supplements/source-bundle-2026-08-01/si_acquisition_manifest.json",
+        {"schema_version": "public-corpus-acquisition.v1", "downloads": downloads},
+    )
+    acquisition_path = project / (
+        "00_sources/supplements/source-bundle-2026-08-01/si_acquisition_manifest.json"
+    )
+    _write_json(
+        project / "00_sources/manual_import_receipt.json",
+        {
+            "schema_version": "manual-archive-import-receipt.v1",
+            "manifest_sha256": hashlib.sha256(acquisition_path.read_bytes()).hexdigest(),
+            "results": [
+                {
+                    "study_id": study_id,
+                    "document_role": "SI",
+                    "download_id": f"{source_id}-si",
+                    "status": "IMPORTED",
+                    "target_path": f"supplements/imported/{study_id}.si.pdf",
+                    "sha256": next(
+                        row["sha256"] for row in registry_resources if row["study_id"] == study_id
+                    ),
+                    "size_bytes": next(
+                        row["size_bytes"]
+                        for row in registry_resources
+                        if row["study_id"] == study_id
+                    ),
+                }
+                for study_id, source_id, _, _ in STUDIES
+            ],
+            "unmatched_count": 1,
+            "unresolved": [],
+        },
+    )
+
+    coverage = _read_json(project / "00_sources/source_coverage.json")
+    for row in coverage["studies"]:
+        row.update(
+            {
+                "available_roles": ["MAIN", "SI"],
+                "si_policy": "REQUIRED",
+                "study_status": "READY",
+            }
+        )
+    _write_json(project / "00_sources/source_coverage.json", coverage)
+
+
+def _add_required_si_generic_sidecars(project: Path) -> None:
+    mineru = _read_json(project / "01_evidence/mineru/manifest.json")
+    parses = _read_json(project / "01_evidence/parses/manifest.json")
+    text_layers = _read_json(
+        project / "01_evidence/text_layers/text_layers.manifest.json"
+    )
+    for study_id, source_id, suffix, _ in STUDIES:
+        slug = f"si-{source_id}"
+        markdown = b"# Supplementary Information\n\n## References\n\nFixture reference.\n"
+        markdown_path = project / f"01_evidence/mineru/markdown/{slug}.md"
+        parse_markdown_path = project / f"01_evidence/parses/markdown/{slug}.md"
+        _write_json(
+            project / f"01_evidence/parses/extracted/{slug}/parse_content_list.json",
+            [{"type": "text", "text": "Fixture", "page_idx": 0, "bbox": [1, 2, 3, 4]}],
+        )
+        _write_json(
+            project
+            / f"01_evidence/parses/extracted/{slug}/parse_content_list_v2.json",
+            [[
+                {
+                    "type": "text",
+                    "bbox": [1, 2, 3, 4],
+                    "content": {"content": "Fixture"},
+                }
+            ]],
+        )
+        _write_json(
+            project / f"01_evidence/parses/extracted/{slug}/layout.json",
+            {"pages": [{"page_idx": 0}]},
+        )
+        markdown_path.parent.mkdir(parents=True, exist_ok=True)
+        markdown_path.write_bytes(markdown)
+        parse_markdown_path.parent.mkdir(parents=True, exist_ok=True)
+        parse_markdown_path.write_bytes(markdown)
+        full_markdown_path = (
+            project / f"01_evidence/parses/extracted/{slug}/full.md"
+        )
+        full_markdown_path.write_bytes(markdown)
+        raw_zip = project / f"01_evidence/mineru/raw_zips/{slug}.zip"
+        raw_zip.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(raw_zip, "w") as archive:
+            archive.writestr("full.md", markdown)
+
+        si_pdf = _read_json(project / "00_sources/input_provenance_manifest.json")
+        si_row = next(row for row in si_pdf["studies"] if row["study_id"] == study_id)
+        si_descriptor = si_row["si"]
+        relative_pdf = si_descriptor["path"].removeprefix("00_sources/")
+        mineru["completed"].append(
+            {
+                "data_id": f"si-{source_id}",
+                "slug": slug,
+                "state": "done",
+                "relative_pdf_path": relative_pdf,
+                "source_pdf_sha256": si_descriptor["sha256"],
+                "markdown_copy": f"markdown/{slug}.md",
+            }
+        )
+        parses["completed"].append(
+            {
+                "data_id": f"si-{source_id}",
+                "slug": slug,
+                "state": "done",
+                "relative_pdf_path": relative_pdf,
+                "source_pdf_sha256": si_descriptor["sha256"],
+                "full_md": f"extracted/{slug}/full.md",
+                "extracted_dir": f"extracted/{slug}",
+                "markdown_copy": f"markdown/{slug}.md",
+            }
+        )
+        reading = project / f"01_evidence/text_layers/{source_id}-si.reading.txt"
+        layout = project / f"01_evidence/text_layers/{source_id}-si.layout.txt"
+        reading.write_bytes(b"Fixture SI reading\f")
+        layout.write_bytes(b"Fixture SI layout\f")
+        text_layers["sources"].append(
+            {
+                "source_id": f"{source_id}-si",
+                "pdf_name": f"{source_id}.pdf",
+                "pdf_sha256": si_descriptor["sha256"],
+                "page_count": si_descriptor["page_count"],
+                "reading_order_path": reading.name,
+                "reading_order_sha256": hashlib.sha256(reading.read_bytes()).hexdigest(),
+                "layout_path": layout.name,
+                "layout_sha256": hashlib.sha256(layout.read_bytes()).hexdigest(),
+            }
+        )
+    _write_json(project / "01_evidence/mineru/manifest.json", mineru)
+    _write_json(project / "01_evidence/parses/manifest.json", parses)
+    _write_json(
+        project / "01_evidence/text_layers/text_layers.manifest.json", text_layers
+    )
+
+
+def test_required_si_raw_authority_without_generic_sidecars_refuses_zero_write(
+    tmp_path: Path,
+) -> None:
+    project, _, _ = _legacy_three_paper_project(tmp_path)
+    _add_raw_required_si_authority_without_generic_sidecars(project)
+    before = _snapshot(project)
+
+    with pytest.raises(
+        DeliverableFirstMigrationError,
+        match="SI_GENERIC_BINDING_MISSING",
+    ):
+        migrate_legacy_three_paper_project(
+            project,
+            expected_source_project_id="case",
+            dry_run=True,
+        )
+
+    assert _snapshot(project) == before
+
+
+def test_required_si_malformed_counts_refuses_with_zero_write(tmp_path: Path) -> None:
+    project, _, _ = _legacy_three_paper_project(tmp_path)
+    _add_raw_required_si_authority_without_generic_sidecars(project)
+    manifest_path = project / "00_sources/input_provenance_manifest.json"
+    manifest = _read_json(manifest_path)
+    manifest["counts"] = "malformed"
+    body = {key: value for key, value in manifest.items() if key != "artifact_digest"}
+    manifest["artifact_digest"] = canonical_digest(body)
+    _write_json(manifest_path, manifest)
+    before = _snapshot(project)
+
+    with pytest.raises(
+        DeliverableFirstMigrationError,
+        match="SI_AUTHORITY_INVALID",
+    ):
+        migrate_legacy_three_paper_project(
+            project,
+            expected_source_project_id="case",
+            dry_run=True,
+        )
+
+    assert _snapshot(project) == before
+
+
+def test_required_si_generic_hash_provenance_mismatch_refuses_zero_write(
+    tmp_path: Path,
+) -> None:
+    project, _, _ = _legacy_three_paper_project(tmp_path)
+    _add_raw_required_si_authority_without_generic_sidecars(project)
+    _add_required_si_generic_sidecars(project)
+    manifest_path = project / "01_evidence/mineru/manifest.json"
+    manifest = _read_json(manifest_path)
+    si_row = next(
+        row
+        for row in manifest["completed"]
+        if row.get("relative_pdf_path", "").startswith("supplements/imported/")
+    )
+    si_row["source_pdf_sha256"] = "0" * 64
+    _write_json(manifest_path, manifest)
+    before = _snapshot(project)
+
+    with pytest.raises(
+        DeliverableFirstMigrationError,
+        match="SI_GENERIC_BINDING_MISSING",
+    ):
+        migrate_legacy_three_paper_project(
+            project,
+            expected_source_project_id="case",
+            dry_run=True,
+        )
+
+    assert _snapshot(project) == before
+
+
+def test_required_si_complete_binding_reaches_dry_run_ready_without_writes(
+    tmp_path: Path,
+) -> None:
+    project, _, _ = _legacy_three_paper_project(tmp_path)
+    _add_raw_required_si_authority_without_generic_sidecars(project)
+    _add_required_si_generic_sidecars(project)
+    before = _snapshot(project)
+
+    report = migrate_legacy_three_paper_project(
+        project,
+        expected_source_project_id="case",
+        dry_run=True,
+    )
+
+    assert report["status"] == "DRY_RUN_READY"
+    assert report["evidence_count"] == 9
+    assert _snapshot(project) == before
+
+    migrate_legacy_three_paper_project(
+        project,
+        expected_source_project_id="case",
+    )
+    receipt = _read_json(project / "00_sources/acquisition_final_receipt.json")
+    assert all(isinstance(row.get("si_pdf"), dict) for row in receipt["studies"])
+    for study_id, _, _, _ in STUDIES:
+        bundle = load_source_truth_bundle(project, study_id)
+        assert {row["document_role"] for row in bundle["sources"]} == {"MAIN", "SI"}
+        gate = _read_json(
+            project / f"01_evidence/source_truth/{study_id}/parse_quality.json"
+        )
+        assert gate["workflow_can_continue"] is True
+        assert not any(
+            issue["code"] == "supplement_missing"
+            for row in gate["objects"]
+            for issue in row["issues"]
+        )
+
+    receipt = _read_json(project / "00_sources/acquisition_final_receipt.json")
+    input_manifest = _read_json(project / "00_sources/input_provenance_manifest.json")
+    coverage = _read_json(project / "00_sources/source_coverage.json")
+    mineru = _read_json(project / "01_evidence/mineru/manifest.json")
+    text_layers = _read_json(
+        project / "01_evidence/text_layers/text_layers.manifest.json"
+    )
+    input_by_study = {row["study_id"]: row for row in input_manifest["studies"]}
+    coverage_by_study = {row["study_id"]: row for row in coverage["studies"]}
+    for study_id, source_id, _, _ in STUDIES:
+        receipt_row = next(row for row in receipt["studies"] if row["study_id"] == study_id)
+        si = input_by_study[study_id]["si"]
+        assert receipt_row["si_pdf"]["path"] == si["path"].removeprefix("00_sources/")
+        assert receipt_row["si_pdf"]["sha256"] == si["sha256"]
+        bundle = load_source_truth_bundle(project, study_id)
+        si_source = next(row for row in bundle["sources"] if row["document_role"] == "SI")
+        gate = _read_json(
+            project / f"01_evidence/source_truth/{study_id}/parse_quality.json"
+        )
+        assert input_by_study[study_id]["main_pdf"]["source_truth_bundle_digest"] == bundle["bundle_digest"]
+        assert input_by_study[study_id]["generic_parse"]["parse_gate_digest"] == gate["gate_digest"]
+        assert coverage_by_study[study_id]["generic_parse"]["parse_gate_digest"] == gate["gate_digest"]
+        assert si_source["pdf"]["sha256"] == si["sha256"]
+        generic = next(
+            row
+            for row in mineru["completed"]
+            if row.get("relative_pdf_path") == si["path"].removeprefix("00_sources/")
+        )
+        assert generic["source_pdf_sha256"] == si["sha256"]
+        assert any(
+            row["pdf_sha256"] == si["sha256"]
+            and row["source_id"] == si_source["source_id"]
+            for row in text_layers["sources"]
+        )

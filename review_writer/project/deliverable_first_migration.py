@@ -6,8 +6,10 @@ import copy
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -43,10 +45,24 @@ from .source_truth import (
 
 
 RECEIPT_PATH = Path("00_sources/acquisition_final_receipt.json")
+SOURCE_COVERAGE_PATH = Path("00_sources/source_coverage.json")
+INPUT_PROVENANCE_PATH = Path("00_sources/input_provenance_manifest.json")
+SI_REGISTRY_PATH = Path("00_sources/si_resource_registry.json")
+SI_ACQUISITION_PATH = Path(
+    "00_sources/supplements/source-bundle-2026-08-01/si_acquisition_manifest.json"
+)
+MANUAL_IMPORT_RECEIPT_PATH = Path("00_sources/manual_import_receipt.json")
+MINERU_MANIFEST_PATH = Path("01_evidence/mineru/manifest.json")
+PARSES_MANIFEST_PATH = Path("01_evidence/parses/manifest.json")
+TEXT_LAYERS_MANIFEST_PATH = Path(
+    "01_evidence/text_layers/text_layers.manifest.json"
+)
 DECISIONS_PATH = Path("01_evidence/paper_evidence_decisions.jsonl")
 PROJECTION_PATH = Path("01_evidence/paper_evidence_projection.jsonl")
 EXPECTED_STUDY_COUNT = 3
 EXPECTED_EVIDENCE_COUNT = 9
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+SAFE_ASSET_PART_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 LEGACY_CORPUS_MARKER = {
     "corpus_kind": "legacy_three_paper",
     "variable_n": False,
@@ -102,6 +118,508 @@ def _json_bytes(value: object) -> bytes:
         )
         + "\n"
     ).encode("utf-8")
+
+
+def _file_digest(path: Path, code: str) -> tuple[str, int]:
+    if path.is_symlink() or not path.is_file():
+        raise DeliverableFirstMigrationError(code)
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                size += len(chunk)
+                digest.update(chunk)
+    except OSError as exc:
+        raise DeliverableFirstMigrationError(code) from exc
+    return digest.hexdigest(), size
+
+
+def _project_file(
+    project: Path,
+    value: object,
+    *,
+    code: str,
+    allow_sources_prefix: bool = False,
+) -> tuple[Path, str]:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise DeliverableFirstMigrationError(code)
+    if "\\" in value or "\x00" in value or value.startswith("/"):
+        raise DeliverableFirstMigrationError(code)
+    parts = value.split("/")
+    if any(not part or part in {".", ".."} for part in parts):
+        raise DeliverableFirstMigrationError(code)
+    if value.startswith("00_sources/"):
+        relative = value
+    elif allow_sources_prefix and value.startswith("supplements/"):
+        relative = f"00_sources/{value}"
+    else:
+        raise DeliverableFirstMigrationError(code)
+    path = project.joinpath(*relative.split("/"))
+    try:
+        path.relative_to(project)
+    except ValueError as exc:
+        raise DeliverableFirstMigrationError(code) from exc
+    if path.is_symlink() or not path.is_file():
+        raise DeliverableFirstMigrationError(code)
+    return path, relative
+
+
+def _pdf_file_digest(path: Path, code: str) -> tuple[str, int]:
+    digest, size = _file_digest(path, code)
+    try:
+        with path.open("rb") as handle:
+            magic = handle.read(5)
+    except OSError as exc:
+        raise DeliverableFirstMigrationError(code) from exc
+    if magic != b"%PDF-":
+        raise DeliverableFirstMigrationError(code)
+    return digest, size
+
+
+def _require_sha256(value: object, code: str) -> str:
+    if not isinstance(value, str) or SHA256_RE.fullmatch(value) is None:
+        raise DeliverableFirstMigrationError(code)
+    return value
+
+
+def _canonical_manifest_digest(value: dict[str, Any], key: str, code: str) -> None:
+    digest = value.get(key)
+    body = {name: item for name, item in value.items() if name != key}
+    if not isinstance(digest, str) or digest != canonical_digest(body):
+        raise DeliverableFirstMigrationError(code)
+
+
+def _normalise_doi(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    result = value.strip().casefold()
+    return result or None
+
+
+def _index_study_rows(
+    value: object,
+    studies: list[str],
+    code: str,
+) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, list) or len(value) != len(studies):
+        raise DeliverableFirstMigrationError(code)
+    indexed: dict[str, dict[str, Any]] = {}
+    for row in value:
+        if not isinstance(row, dict):
+            raise DeliverableFirstMigrationError(code)
+        study_id = row.get("study_id")
+        if (
+            not isinstance(study_id, str)
+            or not study_id
+            or study_id in indexed
+        ):
+            raise DeliverableFirstMigrationError(code)
+        indexed[study_id] = row
+    if set(indexed) != set(studies):
+        raise DeliverableFirstMigrationError(code)
+    return indexed
+
+
+def _validate_si_generic_sidecars(
+    project: Path,
+    *,
+    canonical_pdf: str,
+    pdf_sha256: str,
+    page_count: int,
+) -> str:
+    expected_pdf = canonical_pdf.removeprefix("00_sources/")
+    mineru = _read_json(project / MINERU_MANIFEST_PATH, "SI_GENERIC_BINDING_MISSING")
+    completed = mineru.get("completed")
+    if not isinstance(completed, list):
+        raise DeliverableFirstMigrationError("SI_GENERIC_BINDING_MISSING")
+    matches = [
+        row
+        for row in completed
+        if isinstance(row, dict) and row.get("relative_pdf_path") == expected_pdf
+    ]
+    if len(matches) != 1:
+        raise DeliverableFirstMigrationError("SI_GENERIC_BINDING_MISSING")
+    row = matches[0]
+    slug = row.get("slug")
+    data_id = row.get("data_id")
+    if (
+        row.get("state") != "done"
+        or not isinstance(slug, str)
+        or not slug
+        or any(not SAFE_ASSET_PART_RE.fullmatch(part) for part in slug.split("/"))
+        or "/" in slug
+        or not isinstance(data_id, str)
+        or not data_id.strip()
+        or row.get("source_pdf_sha256") != pdf_sha256
+        or row.get("markdown_copy") != f"markdown/{slug}.md"
+    ):
+        raise DeliverableFirstMigrationError("SI_GENERIC_BINDING_MISSING")
+
+    expected_paths = (
+        Path("01_evidence/mineru/markdown") / f"{slug}.md",
+        Path("01_evidence/mineru/raw_zips") / f"{slug}.zip",
+        Path("01_evidence/parses/markdown") / f"{slug}.md",
+        Path("01_evidence/parses/extracted") / slug / "full.md",
+        Path("01_evidence/parses/extracted") / slug / "layout.json",
+    )
+    try:
+        for relative in expected_paths:
+            path = project / relative
+            if path.is_symlink() or not path.is_file():
+                raise DeliverableFirstMigrationError("SI_GENERIC_BINDING_MISSING")
+        if not zipfile.is_zipfile(project / expected_paths[1]):
+            raise DeliverableFirstMigrationError("SI_GENERIC_BINDING_MISSING")
+        canonical_markdown_sha, _ = _file_digest(
+            project / expected_paths[0], "SI_GENERIC_BINDING_MISSING"
+        )
+        full_markdown_sha, _ = _file_digest(
+            project / expected_paths[3], "SI_GENERIC_BINDING_MISSING"
+        )
+        parse_markdown_sha, _ = _file_digest(
+            project / expected_paths[2], "SI_GENERIC_BINDING_MISSING"
+        )
+        if canonical_markdown_sha != full_markdown_sha or canonical_markdown_sha != parse_markdown_sha:
+            raise DeliverableFirstMigrationError("SI_GENERIC_BINDING_MISSING")
+    except OSError as exc:
+        raise DeliverableFirstMigrationError("SI_GENERIC_BINDING_MISSING") from exc
+
+    extracted = project / Path("01_evidence/parses/extracted") / slug
+    content_lists = sorted(
+        path
+        for path in extracted.glob("*_content_list.json")
+        if not path.name.endswith("_content_list_v2.json")
+    )
+    content_lists_v2 = sorted(extracted.glob("*_content_list_v2.json"))
+    if (
+        len(content_lists) != 1
+        or len(content_lists_v2) != 1
+        or content_lists[0].is_symlink()
+        or content_lists_v2[0].is_symlink()
+    ):
+        raise DeliverableFirstMigrationError("SI_GENERIC_BINDING_MISSING")
+    try:
+        content_v2 = json.loads(content_lists_v2[0].read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise DeliverableFirstMigrationError("SI_GENERIC_BINDING_MISSING") from exc
+    if (
+        not isinstance(content_v2, list)
+        or len(content_v2) != page_count
+        or not all(
+            isinstance(page, list) and all(isinstance(item, dict) for item in page)
+            for page in content_v2
+        )
+    ):
+        raise DeliverableFirstMigrationError("SI_GENERIC_BINDING_MISSING")
+
+    parses = _read_json(project / PARSES_MANIFEST_PATH, "SI_GENERIC_BINDING_MISSING")
+    parse_completed = parses.get("completed")
+    if not isinstance(parse_completed, list):
+        raise DeliverableFirstMigrationError("SI_GENERIC_BINDING_MISSING")
+    parse_matches = [
+        item
+        for item in parse_completed
+        if isinstance(item, dict) and item.get("relative_pdf_path") == expected_pdf
+    ]
+    if (
+        len(parse_matches) != 1
+        or parse_matches[0].get("state") != "done"
+        or parse_matches[0].get("data_id") != data_id
+        or parse_matches[0].get("slug") != slug
+        or parse_matches[0].get("source_pdf_sha256") != pdf_sha256
+        or parse_matches[0].get("full_md") != f"extracted/{slug}/full.md"
+        or parse_matches[0].get("extracted_dir") != f"extracted/{slug}"
+        or parse_matches[0].get("markdown_copy") != f"markdown/{slug}.md"
+    ):
+        raise DeliverableFirstMigrationError("SI_GENERIC_BINDING_MISSING")
+    return slug
+
+
+def _validate_si_text_layer(
+    project: Path,
+    *,
+    pdf_sha256: str,
+    page_count: int,
+    pdf_name: str,
+    main_source_ids: set[str],
+) -> str:
+    manifest = _read_json(
+        project / TEXT_LAYERS_MANIFEST_PATH, "SI_TEXT_LAYER_BINDING_MISSING"
+    )
+    rows = manifest.get("sources")
+    if not isinstance(rows, list):
+        raise DeliverableFirstMigrationError("SI_TEXT_LAYER_BINDING_MISSING")
+    matches = [
+        row
+        for row in rows
+        if isinstance(row, dict) and row.get("pdf_sha256") == pdf_sha256
+    ]
+    if len(matches) != 1:
+        raise DeliverableFirstMigrationError("SI_TEXT_LAYER_BINDING_MISSING")
+    row = matches[0]
+    source_id = row.get("source_id")
+    if (
+        not isinstance(source_id, str)
+        or not source_id.strip()
+        or source_id in main_source_ids
+        or row.get("page_count") != page_count
+        or row.get("pdf_name") != pdf_name
+    ):
+        raise DeliverableFirstMigrationError("SI_TEXT_LAYER_BINDING_MISSING")
+    for path_key, hash_key in (
+        ("reading_order_path", "reading_order_sha256"),
+        ("layout_path", "layout_sha256"),
+    ):
+        value = row.get(path_key)
+        if (
+            not isinstance(value, str)
+            or not value
+            or "\\" in value
+            or value.startswith("/")
+            or any(part in {"", ".", ".."} for part in value.split("/"))
+        ):
+            raise DeliverableFirstMigrationError("SI_TEXT_LAYER_BINDING_MISSING")
+        path = project / Path("01_evidence/text_layers") / Path(value)
+        if path.is_symlink() or not path.is_file():
+            raise DeliverableFirstMigrationError("SI_TEXT_LAYER_BINDING_MISSING")
+        observed, _ = _file_digest(path, "SI_TEXT_LAYER_BINDING_MISSING")
+        if observed != _require_sha256(
+            row.get(hash_key), "SI_TEXT_LAYER_BINDING_MISSING"
+        ):
+            raise DeliverableFirstMigrationError("SI_TEXT_LAYER_BINDING_MISSING")
+    if row["reading_order_path"] == row["layout_path"]:
+        raise DeliverableFirstMigrationError("SI_TEXT_LAYER_BINDING_MISSING")
+    return source_id
+
+
+def _required_si_bindings(
+    project: Path,
+    *,
+    receipt: dict[str, Any],
+    studies: list[str],
+    bundles: dict[str, dict[str, Any]],
+    expected_source_project_id: str,
+    main_source_ids: set[str],
+) -> dict[str, dict[str, Any]]:
+    coverage = _read_json(project / SOURCE_COVERAGE_PATH, "SI_AUTHORITY_MISSING")
+    coverage_rows = coverage.get("studies")
+    if not isinstance(coverage_rows, list):
+        raise DeliverableFirstMigrationError("SI_AUTHORITY_INVALID")
+    coverage_by_study = {
+        row.get("study_id"): row
+        for row in coverage_rows
+        if isinstance(row, dict) and isinstance(row.get("study_id"), str)
+    }
+    required = [
+        study_id
+        for study_id in studies
+        if coverage_by_study.get(study_id, {}).get("si_policy") == "REQUIRED"
+    ]
+    if not required:
+        return {}
+    if sorted(required) != sorted(studies) or len(coverage_by_study) != len(studies):
+        raise DeliverableFirstMigrationError("SI_AUTHORITY_INVALID")
+
+    input_manifest = _read_json(
+        project / INPUT_PROVENANCE_PATH, "SI_AUTHORITY_MISSING"
+    )
+    counts = input_manifest.get("counts")
+    if (
+        input_manifest.get("schema_version") != "input-provenance-manifest.v1"
+        or input_manifest.get("project_id") != expected_source_project_id
+        or input_manifest.get("status") != "CURRENT"
+        or not isinstance(counts, dict)
+        or counts.get("si") != len(studies)
+    ):
+        raise DeliverableFirstMigrationError("SI_AUTHORITY_INVALID")
+    _canonical_manifest_digest(input_manifest, "artifact_digest", "SI_AUTHORITY_INVALID")
+    _require_sha256(input_manifest.get("manifest_digest"), "SI_AUTHORITY_INVALID")
+    manifest_by_study = _index_study_rows(
+        input_manifest.get("studies"), studies, "SI_AUTHORITY_INVALID"
+    )
+
+    registry = _read_json(project / SI_REGISTRY_PATH, "SI_AUTHORITY_MISSING")
+    if (
+        registry.get("schema_version") != "si-resource-registry.v1"
+        or registry.get("project_id") != expected_source_project_id
+        or registry.get("integration_status") != "CURRENT"
+        or registry.get("raw_scientific_authority") != "CANDIDATE_ONLY"
+        or registry.get("manifest_digest") != input_manifest.get("manifest_digest")
+    ):
+        raise DeliverableFirstMigrationError("SI_AUTHORITY_INVALID")
+    _canonical_manifest_digest(registry, "registry_digest", "SI_AUTHORITY_INVALID")
+    registry_by_study = _index_study_rows(
+        registry.get("resources"), studies, "SI_AUTHORITY_INVALID"
+    )
+
+    acquisition = _read_json(project / SI_ACQUISITION_PATH, "SI_AUTHORITY_MISSING")
+    if acquisition.get("schema_version") != "public-corpus-acquisition.v1":
+        raise DeliverableFirstMigrationError("SI_AUTHORITY_INVALID")
+    downloads = acquisition.get("downloads")
+    download_by_study = _index_study_rows(
+        downloads, studies, "SI_AUTHORITY_INVALID"
+    )
+
+    manual = _read_json(
+        project / MANUAL_IMPORT_RECEIPT_PATH, "SI_AUTHORITY_MISSING"
+    )
+    results = manual.get("results")
+    if not isinstance(results, list) or manual.get("unresolved") != []:
+        raise DeliverableFirstMigrationError("SI_AUTHORITY_INVALID")
+    manual_by_study = _index_study_rows(
+        results, studies, "SI_AUTHORITY_INVALID"
+    )
+    manifest_path = project / SI_ACQUISITION_PATH
+    if manual.get("manifest_sha256") != _file_digest(
+        manifest_path, "SI_AUTHORITY_INVALID"
+    )[0]:
+        raise DeliverableFirstMigrationError("SI_AUTHORITY_INVALID")
+
+    receipt_rows = _index_study_rows(
+        receipt.get("studies"), studies, "ACQUISITION_FINAL_RECEIPT_INVALID"
+    )
+    bindings: dict[str, dict[str, Any]] = {}
+    seen_download_ids: set[str] = set()
+    seen_source_ids: set[str] = set()
+    for study_id in studies:
+        input_row = manifest_by_study.get(study_id)
+        registry_row = registry_by_study.get(study_id)
+        download = download_by_study.get(study_id)
+        imported = manual_by_study.get(study_id)
+        receipt_row = receipt_rows.get(study_id)
+        if not all(isinstance(row, dict) for row in (input_row, registry_row, download, imported, receipt_row)):
+            raise DeliverableFirstMigrationError("SI_AUTHORITY_INVALID")
+        source_id = input_row.get("source_id")
+        si = input_row.get("si")
+        main = receipt_row.get("main_pdf")
+        bundle = bundles.get(study_id)
+        main_sources = [
+            source
+            for source in (bundle or {}).get("sources", [])
+            if isinstance(source, dict) and source.get("document_role") == "MAIN"
+        ]
+        input_main = input_row.get("main_pdf")
+        if (
+            not isinstance(source_id, str)
+            or SAFE_ASSET_PART_RE.fullmatch(source_id) is None
+            or source_id in seen_source_ids
+            or not isinstance(si, dict)
+            or not isinstance(main, dict)
+            or not isinstance(input_main, dict)
+            or len(main_sources) != 1
+            or receipt_row.get("source_id") != source_id
+            or main.get("sha256") != registry_row.get("main_pdf_sha256")
+            or input_main.get("sha256") != main.get("sha256")
+            or input_main.get("page_count") != main_sources[0].get("page_count")
+            or input_main.get("source_truth_bundle_digest")
+            != bundle.get("bundle_digest")
+            or main_sources[0].get("source_id") != source_id
+            or registry_row.get("source_id") != source_id
+            or registry_row.get("document_role") != "SI"
+            or registry_row.get("status") != "CURRENT"
+            or registry_row.get("authority") != "INPUT_PROVENANCE_ONLY"
+            or download.get("document_role") != "SI"
+            or imported.get("document_role") != "SI"
+            or imported.get("status") != "IMPORTED"
+        ):
+            raise DeliverableFirstMigrationError("SI_AUTHORITY_INVALID")
+        seen_source_ids.add(source_id)
+        canonical_path, canonical_relative = _project_file(
+            project,
+            si.get("path"),
+            code="SI_AUTHORITY_INVALID",
+        )
+        if not canonical_relative.startswith("00_sources/supplements/"):
+            raise DeliverableFirstMigrationError("SI_AUTHORITY_INVALID")
+        canonical_sha, canonical_size = _pdf_file_digest(
+            canonical_path, "SI_AUTHORITY_INVALID"
+        )
+        expected_sha = _require_sha256(si.get("sha256"), "SI_AUTHORITY_INVALID")
+        page_count = si.get("page_count")
+        size_bytes = si.get("size_bytes")
+        if (
+            canonical_sha != expected_sha
+            or canonical_size != size_bytes
+            or si.get("path") != canonical_relative
+            or not isinstance(page_count, int)
+            or isinstance(page_count, bool)
+            or page_count < 1
+            or si.get("status") != "current"
+            or input_main.get("sha256") != main.get("sha256")
+            or input_row.get("si", {}).get("sha256") != expected_sha
+            or input_row.get("si", {}).get("page_count") != page_count
+            or input_row.get("si", {}).get("size_bytes") != canonical_size
+            or registry_row.get("path") != canonical_relative
+            or registry_row.get("sha256") != expected_sha
+            or registry_row.get("size_bytes") != canonical_size
+            or registry_row.get("page_count") != page_count
+        ):
+            raise DeliverableFirstMigrationError("SI_AUTHORITY_INVALID")
+
+        target_path = download.get("target_path")
+        alias_path, alias_relative = _project_file(
+            project,
+            target_path,
+            code="SI_AUTHORITY_INVALID",
+            allow_sources_prefix=True,
+        )
+        alias_sha, alias_size = _pdf_file_digest(alias_path, "SI_AUTHORITY_INVALID")
+        download_id = download.get("download_id")
+        if (
+            not isinstance(download_id, str)
+            or not download_id
+            or download_id in seen_download_ids
+            or alias_relative == canonical_relative
+            or alias_sha != expected_sha
+            or alias_size != canonical_size
+            or download.get("expected_sha256") != expected_sha
+            or _normalise_doi(download.get("doi"))
+            != _normalise_doi(receipt_row.get("doi"))
+            or imported.get("download_id") != download_id
+            or imported.get("target_path") != alias_relative.removeprefix("00_sources/")
+            or imported.get("sha256") != expected_sha
+            or imported.get("size_bytes") != canonical_size
+        ):
+            raise DeliverableFirstMigrationError("SI_AUTHORITY_INVALID")
+        seen_download_ids.add(download_id)
+        if imported.get("expected_sha256") not in {None, expected_sha}:
+            raise DeliverableFirstMigrationError("SI_AUTHORITY_INVALID")
+
+        slug = _validate_si_generic_sidecars(
+            project,
+            canonical_pdf=canonical_relative,
+            pdf_sha256=expected_sha,
+            page_count=page_count,
+        )
+        text_source_id = _validate_si_text_layer(
+            project,
+            pdf_sha256=expected_sha,
+            page_count=page_count,
+            pdf_name=canonical_path.name,
+            main_source_ids=main_source_ids,
+        )
+        binding = {
+            "path": canonical_relative.removeprefix("00_sources/"),
+            "sha256": expected_sha,
+            "size_bytes": canonical_size,
+            "page_count": page_count,
+            "document_role": "SI",
+            "source_id": source_id,
+            "canonical_path": canonical_relative,
+            "alias_paths": [alias_relative],
+            "duplicate_paths": [alias_relative],
+            "download_id": download_id,
+            "generic_slug": slug,
+            "text_layer_source_id": text_source_id,
+        }
+        existing = receipt_row.get("si_pdf")
+        if existing is not None and (
+            not isinstance(existing, dict)
+            or any(existing.get(key) != binding.get(key) for key in ("path", "sha256", "size_bytes", "page_count"))
+        ):
+            raise DeliverableFirstMigrationError("SI_RECEIPT_BINDING_INVALID")
+        bindings[study_id] = binding
+    return bindings
 
 
 def _atomic_replace(project: Path, relative: Path, payload: bytes) -> None:
@@ -172,6 +690,8 @@ def _reconciliation_path(study_id: str) -> Path:
 def _affected_paths(studies: list[str]) -> tuple[Path, ...]:
     return (
         RECEIPT_PATH,
+        INPUT_PROVENANCE_PATH,
+        SOURCE_COVERAGE_PATH,
         DECISIONS_PATH,
         PROJECTION_PATH,
         *(_source_bundle_path(study_id) for study_id in studies),
@@ -453,6 +973,23 @@ def _static_chain(project: Path, *, expected_source_project_id: str) -> dict[str
                 )
         candidates[study_id] = _load_static_candidates(project, study_id)
 
+    main_source_ids = {
+        source.get("source_id")
+        for bundle in bundles.values()
+        for source in bundle.get("sources", [])
+        if isinstance(source, dict)
+        and source.get("document_role") == "MAIN"
+        and isinstance(source.get("source_id"), str)
+    }
+    si_bindings = _required_si_bindings(
+        project,
+        receipt=receipt,
+        studies=studies,
+        bundles=bundles,
+        expected_source_project_id=expected_source_project_id,
+        main_source_ids=main_source_ids,
+    )
+
     if sum(len(rows) for rows in candidates.values()) != EXPECTED_EVIDENCE_COUNT:
         raise DeliverableFirstMigrationError("STRICT_EVIDENCE_COUNT_INVALID")
     decisions = _latest_decisions(project)
@@ -470,6 +1007,7 @@ def _static_chain(project: Path, *, expected_source_project_id: str) -> dict[str
         "candidates": candidates,
         "decisions": decisions,
         "strict_rows": strict_rows,
+        "si_bindings": si_bindings,
     }
 
 
@@ -572,30 +1110,194 @@ def _candidate_payload(candidate: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _source_truth_main_semantics(bundle: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: copy.deepcopy(value)
+        for key, value in bundle.items()
+        if key not in {"project_id", "bundle_digest", "sources", "warnings"}
+    } | {
+        "sources": [
+            copy.deepcopy(source)
+            for source in bundle.get("sources", [])
+            if isinstance(source, dict) and source.get("document_role") == "MAIN"
+        ]
+    }
+
+
+def _validate_si_source_truth(
+    bundle: dict[str, Any],
+    *,
+    previous: dict[str, Any],
+    binding: dict[str, Any],
+) -> None:
+    if _source_truth_main_semantics(bundle) != _source_truth_main_semantics(previous):
+        raise DeliverableFirstMigrationError("SOURCE_TRUTH_SEMANTICS_CHANGED")
+    previous_warnings = previous.get("warnings")
+    current_warnings = bundle.get("warnings")
+    if (
+        not isinstance(previous_warnings, list)
+        or not isinstance(current_warnings, list)
+        or not set(previous_warnings).issubset(current_warnings)
+    ):
+        raise DeliverableFirstMigrationError("SOURCE_TRUTH_SEMANTICS_CHANGED")
+    sources = bundle.get("sources")
+    previous_sources = previous.get("sources")
+    if not isinstance(sources, list) or not isinstance(previous_sources, list):
+        raise DeliverableFirstMigrationError("SOURCE_TRUTH_REBUILD_FAILED")
+    si_sources = [
+        source
+        for source in sources
+        if isinstance(source, dict) and source.get("document_role") == "SI"
+    ]
+    previous_si_sources = [
+        source
+        for source in previous_sources
+        if isinstance(source, dict) and source.get("document_role") == "SI"
+    ]
+    if len(si_sources) != 1 or len(previous_si_sources) > 1:
+        raise DeliverableFirstMigrationError("SOURCE_TRUTH_SI_BINDING_INVALID")
+    source = si_sources[0]
+    pdf = source.get("pdf")
+    if (
+        source.get("source_id") != binding.get("text_layer_source_id")
+        or source.get("mineru_slug") != binding.get("generic_slug")
+        or not isinstance(pdf, dict)
+        or pdf.get("path") != f"00_sources/{binding['path']}"
+        or pdf.get("sha256") != binding.get("sha256")
+        or pdf.get("size_bytes") != binding.get("size_bytes")
+        or source.get("page_count") != binding.get("page_count")
+    ):
+        raise DeliverableFirstMigrationError("SOURCE_TRUTH_SI_BINDING_INVALID")
+    if previous_si_sources:
+        previous_source = previous_si_sources[0]
+        previous_pdf = previous_source.get("pdf")
+        if (
+            previous_source.get("source_id") != source.get("source_id")
+            or previous_source.get("mineru_slug") != source.get("mineru_slug")
+            or not isinstance(previous_pdf, dict)
+            or previous_pdf.get("path") != pdf.get("path")
+            or previous_pdf.get("sha256") != pdf.get("sha256")
+            or previous_pdf.get("size_bytes") != pdf.get("size_bytes")
+            or previous_source.get("page_count") != source.get("page_count")
+        ):
+            raise DeliverableFirstMigrationError("SOURCE_TRUTH_SI_BINDING_INVALID")
+
+
+def _refresh_si_currentness(
+    staging: Path,
+    *,
+    chain: dict[str, Any],
+    rebuilt_bundles: dict[str, dict[str, Any]],
+    rebuilt_gates: dict[str, dict[str, Any]],
+) -> None:
+    if not chain["si_bindings"]:
+        return
+    input_manifest = _read_json(
+        staging / INPUT_PROVENANCE_PATH, "SI_AUTHORITY_MISSING"
+    )
+    manifest_rows = input_manifest.get("studies")
+    if not isinstance(manifest_rows, list):
+        raise DeliverableFirstMigrationError("SI_AUTHORITY_INVALID")
+    for row in manifest_rows:
+        if not isinstance(row, dict):
+            raise DeliverableFirstMigrationError("SI_AUTHORITY_INVALID")
+        study_id = row.get("study_id")
+        if study_id not in chain["si_bindings"]:
+            continue
+        bundle = rebuilt_bundles.get(study_id)
+        gate = rebuilt_gates.get(study_id)
+        if not isinstance(bundle, dict) or not isinstance(gate, dict):
+            raise DeliverableFirstMigrationError("SI_CURRENTNESS_REFRESH_INVALID")
+        main = row.get("main_pdf")
+        generic = row.get("generic_parse")
+        if not isinstance(main, dict) or not isinstance(generic, dict):
+            raise DeliverableFirstMigrationError("SI_CURRENTNESS_REFRESH_INVALID")
+        main["source_truth_bundle_digest"] = bundle["bundle_digest"]
+        generic["source_truth_bundle_digest"] = bundle["bundle_digest"]
+        generic["parse_gate_digest"] = gate["gate_digest"]
+    input_manifest["artifact_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in input_manifest.items()
+            if key != "artifact_digest"
+        }
+    )
+    _atomic_replace(staging, INPUT_PROVENANCE_PATH, _json_bytes(input_manifest))
+
+    coverage_path = staging / SOURCE_COVERAGE_PATH
+    if not coverage_path.is_file() or coverage_path.is_symlink():
+        raise DeliverableFirstMigrationError("SI_CURRENTNESS_REFRESH_INVALID")
+    coverage = _read_json(coverage_path, "SI_CURRENTNESS_REFRESH_INVALID")
+    coverage_rows = coverage.get("studies")
+    if not isinstance(coverage_rows, list):
+        raise DeliverableFirstMigrationError("SI_CURRENTNESS_REFRESH_INVALID")
+    for row in coverage_rows:
+        if not isinstance(row, dict):
+            raise DeliverableFirstMigrationError("SI_CURRENTNESS_REFRESH_INVALID")
+        study_id = row.get("study_id")
+        if study_id not in chain["si_bindings"]:
+            continue
+        bundle = rebuilt_bundles[study_id]
+        gate = rebuilt_gates[study_id]
+        generic = row.get("generic_parse")
+        if generic is None:
+            generic = {}
+            row["generic_parse"] = generic
+        if not isinstance(generic, dict):
+            raise DeliverableFirstMigrationError("SI_CURRENTNESS_REFRESH_INVALID")
+        generic["status"] = "current"
+        generic["source_truth_bundle_digest"] = bundle["bundle_digest"]
+        generic["parse_gate_digest"] = gate["gate_digest"]
+    _atomic_replace(staging, SOURCE_COVERAGE_PATH, _json_bytes(coverage))
+
+
 def _rebuild_staging(staging: Path, chain: dict[str, Any]) -> dict[str, Any]:
     receipt = copy.deepcopy(chain["receipt"])
     receipt.update(LEGACY_CORPUS_MARKER)
+    for row in receipt.get("studies", []):
+        if not isinstance(row, dict):
+            raise DeliverableFirstMigrationError("ACQUISITION_FINAL_RECEIPT_INVALID")
+        binding = chain["si_bindings"].get(row.get("study_id"))
+        if binding is not None:
+            row["si_pdf"] = {
+                key: copy.deepcopy(value)
+                for key, value in binding.items()
+                if key
+                not in {
+                    "generic_slug",
+                    "text_layer_source_id",
+                }
+            }
     _atomic_replace(staging, RECEIPT_PATH, _json_bytes(receipt))
 
     rebuilt_bundles: dict[str, dict[str, Any]] = {}
+    rebuilt_gates: dict[str, dict[str, Any]] = {}
     for study_id in chain["studies"]:
         previous_bundle = chain["bundles"][study_id]
         try:
             bundle = write_source_truth_bundle(staging, study_id)
         except SourceTruthError as exc:
             raise DeliverableFirstMigrationError("SOURCE_TRUTH_REBUILD_FAILED") from exc
-        previous_semantics = {
-            key: value
-            for key, value in previous_bundle.items()
-            if key not in {"project_id", "bundle_digest"}
-        }
-        current_semantics = {
-            key: value
-            for key, value in bundle.items()
-            if key not in {"project_id", "bundle_digest"}
-        }
-        if previous_semantics != current_semantics:
-            raise DeliverableFirstMigrationError("SOURCE_TRUTH_SEMANTICS_CHANGED")
+        binding = chain["si_bindings"].get(study_id)
+        if binding is None:
+            previous_semantics = {
+                key: value
+                for key, value in previous_bundle.items()
+                if key not in {"project_id", "bundle_digest"}
+            }
+            current_semantics = {
+                key: value
+                for key, value in bundle.items()
+                if key not in {"project_id", "bundle_digest"}
+            }
+            if previous_semantics != current_semantics:
+                raise DeliverableFirstMigrationError("SOURCE_TRUTH_SEMANTICS_CHANGED")
+        else:
+            _validate_si_source_truth(
+                bundle,
+                previous=previous_bundle,
+                binding=binding,
+            )
         rebuilt_bundles[study_id] = bundle
         try:
             gate = write_parse_quality_gate(staging, study_id)
@@ -608,6 +1310,14 @@ def _rebuild_staging(staging: Path, chain: dict[str, Any]) -> dict[str, Any]:
                 _require_simulated_actor(
                     row["decision"], "LEGACY_PARSE_ACTOR_NOT_ELIGIBLE"
                 )
+        rebuilt_gates[study_id] = gate
+
+    _refresh_si_currentness(
+        staging,
+        chain=chain,
+        rebuilt_bundles=rebuilt_bundles,
+        rebuilt_gates=rebuilt_gates,
+    )
 
     # Source lookup is project-wide: every bundle must carry the target project
     # identity before any one Chemical state can be validated against the index.
