@@ -1,18 +1,23 @@
 # review-writer
 
 review-writer 是一个面向化学研究者的、本地优先、证据可追溯的综述工作台。
-当前收敛目标只有一件事：让用户提交一组已经选好的论文后，系统能清楚地说明
-哪些 MAIN、SI、Generic Parse 和 Chemical Parse 属于同一篇论文，哪些证据仍需
-人工判断，以及任何结果为什么被阻断。
+当前主入口先处理“输入是否可靠”这件事：让用户提交一组已经选好的论文后，系统
+能清楚地说明哪些 MAIN、SI、Generic Parse 和 Chemical Parse 属于同一篇论文，
+哪些输入仍需修复，以及任何结果为什么被阻断。
+
+当前主入口是仓库中的 `scripts/run_vertical_review.py`。QoderWork 目录和旧技能仍
+作为历史/备用兼容材料保留，但不是本版用户的启动入口。
 
 ## 现在用户能得到什么
 
-当前主入口支持一个权威的 `20–40` 篇语料项目：
+当前主入口支持一个权威的 `20–40` 篇语料项目。令论文总数为 `N`，其中
+`tier=core` 的核心论文数为 `K`：
 
 - 每篇论文必须同时提交 MAIN 和 SI，系统会复制并记录它们的 SHA-256；
 - Generic Parse 必须为 `2N` 份（每篇 MAIN 一份、SI 一份），不能用同名文件猜测归属；
 - 每篇论文会生成包含 MAIN/SI 的 Source Truth 和 Parse Quality 绑定；
-- 输入 provenance 会按实际 `N` 和核心论文数 `K` 计算数量，不再固定三篇或 309；
+- 输入 provenance 会按实际 `N` 和 `K` 计算数量，不再固定三篇或 309；
+- `preflight`/`import` 还会检查每篇论文的 Chemical ZIP；它是输入绑定，不是分子确认；
 - 缺文件、错 hash、跨论文复用、过期或不完整输入会在发布前失败，并尽量保持零写入；
 - Dashboard、Evidence、Synthesis、DOCX/PDF 只能消费 current 且有来源链的结果。
 
@@ -21,8 +26,22 @@ review-writer 是一个面向化学研究者的、本地优先、证据可追溯
 
 ## 用户最短流程
 
-在仓库根目录执行。真实论文、SI、Generic 输出、Chemical ZIP 和项目目录建议放在
-仓库之外。
+在仓库根目录执行。仓库只放代码和文档；真实论文、SI、Generic 输出、Chemical ZIP、
+请求 JSON 和项目目录放在仓库之外。例如：
+
+```text
+/data/review-writer/                    # 本仓库
+/data/review-inputs/
+├── requests/visible-light-review.json  # bootstrap 请求
+├── papers/study-001-main.pdf           # MAIN
+├── papers/study-001-si.pdf             # SI
+├── mineru/visible-light-review/        # 2N 个 Generic 输出
+├── chemical/study-001.zip              # 每篇 study 的 Chemical ZIP
+└── review-projects/                    # --review-root；命令创建项目子目录
+```
+
+上面的 `/data` 只是示意，请替换成自己的本地路径。`bootstrap-corpus` 会创建
+`review-projects/<project_id>/`，不要先手工复制旧项目到该目录。
 
 ### 1. 准备请求文件
 
@@ -66,13 +85,17 @@ python scripts/run_vertical_review.py bootstrap-corpus \
   --request /data/requests/visible-light-review.json
 ```
 
-用户变化：得到一个全新的、只含输入边界和来源记录的项目；旧项目状态不会被复制。
-如果项目 ID 已存在，命令会拒绝覆盖。
+用户变化：得到一个全新的、只含输入边界和来源记录的项目；旧项目的 Evidence、
+Synthesis、Manuscript 或 Release 状态不会被复制。项目中会出现
+`00_brief/`、`00_sources/papers/`、`00_sources/supplements/imported/`、
+`00_sources/acquisition_final_receipt.json` 和 `00_sources/source_coverage.json`。
+如果项目 ID 已存在，命令会拒绝覆盖；请修正请求后换一个新的 `project_id`。
 
 ### 3. 绑定 Generic Parse
 
-先对项目中 `00_sources/` 下的全部 MAIN/SI 运行已批准的 Generic/MinerU 流程，输出
-目录必须包含完整的 `manifest.json`、Markdown、extracted sidecar 和 raw ZIP。然后执行：
+先对项目中 `00_sources/` 下的全部 MAIN/SI 运行你所使用的 Generic/MinerU 流程，输出
+目录必须包含完整的 `manifest.json`、Markdown、extracted sidecar 和 raw ZIP。这个
+仓库命令只负责校验并绑定已有输出，不负责替你调用解析器或上传 PDF。然后执行：
 
 ```bash
 python scripts/run_vertical_review.py bind-generic-parse \
@@ -81,9 +104,10 @@ python scripts/run_vertical_review.py bind-generic-parse \
 ```
 
 用户变化：每个 study 会得到 MAIN 与 SI 两个不冲突的解析身份，并生成 Source Truth
-和 Parse Quality。变量语料必须绑定 `2N` 个 Generic 文档；任何缺失或错绑都会失败。
+和 Parse Quality。变量语料必须绑定 `2N` 个 Generic 文档；任何缺失、错绑、过期或
+hash 不匹配都会失败。
 
-### 4. 检查并发布输入 provenance
+### 4. 只读检查输入 provenance
 
 另准备一个输入 manifest。每个 study 需要声明 MAIN 页数、SI 原始文件及 hash、Chemical
 ZIP 及页数。详情见[用户使用说明](docs/用户使用说明.md)。先只读检查：
@@ -94,18 +118,35 @@ python scripts/run_vertical_review.py preflight-corpus-inputs \
   --manifest /data/requests/visible-light-inputs.json
 ```
 
-确认输出为 `status=ready_for_import` 后，才发布 provenance：
+用户变化：在写入正式 provenance 之前，先看到实际 `N`、`K`、MAIN/SI/Generic/Chemical
+的绑定数量和具体阻断原因。确认输出为 `status=ready_for_import` 后，才进入下一步。
+
+### 5. 发布输入 provenance
 
 ```bash
 python scripts/run_vertical_review.py import-corpus-inputs \
   --project /data/review-projects/visible-light-review \
   --manifest /data/requests/visible-light-inputs.json \
   --actor-type human_researcher \
-  --actor-label "肯恰大人"
+  --actor-label "my-researcher-label"
 ```
 
-这里的“发布”只表示输入绑定和 currentness 已记录，不表示 Chemical 分子已被研究者
-确认，也不把 `AI_PROVISIONAL` 变成 `CONFIRMED`。
+将 `my-researcher-label` 换成能识别本次操作的标签。这里的“发布”只表示输入绑定和
+currentness 已记录，不表示 Chemical 分子已被研究者确认，也不把 `AI_PROVISIONAL`
+变成 `CONFIRMED`。如果命令返回 `status=unchanged`，表示已有相同的 current provenance，
+不要为了改变文字而覆盖项目。
+
+### 6. 失败时先恢复输入，不重写项目
+
+- bootstrap 失败：修正请求、路径或 hash，使用新的 `project_id` 重试；不要覆盖已有目录。
+- Generic 绑定失败：修复外部 `manifest.json` 或输出文件，确认项目还没有
+  `01_evidence/` 后再重试；不要用 basename 猜归属。
+- preflight 失败：按错误代码修复对应 MAIN、SI、Generic 或 Chemical 输入，再重复只读
+  检查；这一步不会替你发布状态。
+- import 失败：保留错误报告，重新计算 hash 并再次 preflight；不要手改项目 JSON 或把
+  缺失项改成 `READY`。
+
+更多错误代码、恢复边界和科学状态见[用户使用说明](docs/用户使用说明.md)。
 
 ## 用户应如何理解结果
 
@@ -118,7 +159,8 @@ python scripts/run_vertical_review.py import-corpus-inputs \
 - 不开放式发现论文，不自动扩展语料，不默认联网或上传文件；
 - 不猜测 SMILES、机制或作者意图；
 - 不把 raw Chemical 候选、Dashboard 数字或历史报告当成科学确认；
-- 尚未宣称真实 `20–40` 篇运行成功、金标准通过、研究者授权或 DOCX/PDF 可发布；
+- 尚未宣称真实 `20–40` 篇运行成功、研究者确认、金标准通过、研究者授权、真实综述
+  完成或 DOCX/PDF 已生成/可发布；
 - 不在当前收敛中增加新 Provider、RAG、SaaS、多用户、数据库或通用设计系统。
 
 ## 文档入口
