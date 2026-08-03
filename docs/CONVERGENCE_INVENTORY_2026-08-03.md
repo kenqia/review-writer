@@ -10,7 +10,7 @@ branch=main
 head=ab3e76b7d040d6bb1e3178778d569e772aa96b8f
 relationship=main == origin/main
 local_untracked=docs/CONVERGENCE_2026-08-03.md; docs/superpowers/specs/
-local_tests=本次收敛冻结期间未运行
+local_tests=基线快照时未运行；后续基线 smoke/quality-check 均通过
 ```
 
 当前有 132 个本地 branch 和 118 个注册 worktree。branch 引用仍是恢复记录；
@@ -18,16 +18,18 @@ worktree 只是 checkout，不是独立的 Git 历史副本。
 
 ## 保留的 dirty worktree
 
-以下路径未移除，因为存在 tracked/untracked 修改，或是明确保留的临时 checkout：
+以下位置未移除，因为存在 tracked/untracked 修改，或是明确保留的临时 checkout。
+为保持仓库可移植，提交文档只记录相对角色，不写入本机绝对路径；实际恢复路径
+保留在当前会话的本地清单中：
 
-- `/home/kenqia/my_folder/review-writer`
-- `/home/kenqia/my_folder/review-writer-task1-empty-project-waiting`
-- `/home/kenqia/my_folder/review-writer/.worktrees/deliverable-first-rescue`
-- `/home/kenqia/my_folder/review-writer/.worktrees/e2r-dual-integration`
-- `/home/kenqia/my_folder/review-writer/.worktrees/provider-qualification`
-- `/home/kenqia/my_folder/review-writer/.worktrees/repair-scientific-schema-f002a`
-- `/home/kenqia/my_folder/review-writer/.worktrees/review-writer-next-phase-integration`
-- `/tmp/review-writer-repair-scientific-f003b-red`
+- `<WORKTREE_ROOT>/review-writer`
+- `<WORKTREE_ROOT>/review-writer-task1-empty-project-waiting`
+- `<WORKTREE_ROOT>/review-writer/.worktrees/deliverable-first-rescue`
+- `<WORKTREE_ROOT>/review-writer/.worktrees/e2r-dual-integration`
+- `<WORKTREE_ROOT>/review-writer/.worktrees/provider-qualification`
+- `<WORKTREE_ROOT>/review-writer/.worktrees/repair-scientific-schema-f002a`
+- `<WORKTREE_ROOT>/review-writer/.worktrees/review-writer-next-phase-integration`
+- `<TEMP_ROOT>/review-writer-repair-scientific-f003b-red`
 
 主 checkout 另有 97 个 ignored entry。ignored 不等于无价值，因此不纳入第一轮清理。
 

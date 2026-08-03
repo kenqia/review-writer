@@ -60,6 +60,16 @@ class M0ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractError, "NORMALIZED_SOURCE_PATH_DUPLICATE"):
             validate_manifest_inputs(bad, FIXTURE)
 
+        missing = json.loads(json.dumps(manifest))
+        missing["initial_source_inputs"][0]["relative_path"] = "syn100/missing.txt"
+        with self.assertRaisesRegex(ContractError, "SOURCE_INPUT_INVALID"):
+            validate_manifest_inputs(missing, FIXTURE)
+
+        missing_root = json.loads(json.dumps(manifest))
+        missing_root["paths"]["seed_source_root"] = "missing-inputs"
+        with self.assertRaisesRegex(ContractError, "SEED_SOURCE_ROOT_INVALID"):
+            validate_manifest_inputs(missing_root, FIXTURE)
+
     def test_cli_validate_and_status_report_source_hashes_and_closure(self) -> None:
         validate = subprocess.run(["python3", str(CLI), "validate", "--manifest", str(FIXTURE / "project.manifest.json")], cwd=ROOT, text=True, capture_output=True, check=False)
         self.assertEqual(validate.returncode, 0, validate.stderr)
@@ -71,6 +81,53 @@ class M0ContractTests(unittest.TestCase):
             status = subprocess.run(["python3", str(CLI), "status", "--manifest", str(FIXTURE / "project.manifest.json"), "--snapshot", str(snapshot)], cwd=ROOT, text=True, capture_output=True, check=False)
             self.assertEqual(status.returncode, 2)
             self.assertIn("CONFIG_SNAPSHOT_PACKAGE_REQUIRED", status.stderr)
+
+    def test_cli_init_creates_standard_project_without_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project_root = Path(tmp) / "my-review"
+            source = project_root / "inputs/papers/paper-1/main.txt"
+            source.parent.mkdir(parents=True)
+            source.write_text("user supplied source", encoding="utf-8")
+            command = [
+                sys.executable,
+                str(CLI),
+                "init",
+                "--project-root",
+                str(project_root),
+                "--project-id",
+                "my-review",
+                "--project-title",
+                "My local review",
+                "--goal",
+                "Compare the supplied evidence.",
+                "--scope",
+                "Use only the files in this project.",
+                "--source",
+                "P1_MAIN:P1:MAIN:paper-1/main.txt",
+            ]
+            initialized = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
+            self.assertEqual(initialized.returncode, 0, initialized.stderr)
+            report = json.loads(initialized.stdout)
+            self.assertEqual(report["status"], "INITIALIZED")
+            self.assertEqual(report["source_count"], 1)
+            manifest_path = project_root / "project.manifest.json"
+            self.assertTrue(manifest_path.is_file())
+            self.assertTrue((project_root / "outputs/project-state").is_dir())
+            self.assertTrue((project_root / "exports").is_dir())
+
+            validated = subprocess.run(
+                [sys.executable, str(CLI), "validate", "--manifest", str(manifest_path)],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(validated.returncode, 0, validated.stderr)
+            self.assertEqual(json.loads(validated.stdout)["status"], "VALID")
+
+            repeated = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
+            self.assertEqual(repeated.returncode, 2)
+            self.assertIn("PROJECT_MANIFEST_EXISTS", repeated.stderr)
 
     def test_strict_package_rejects_duplicate_identities_and_double_current_registration(self) -> None:
         _manifest, raw, package = self.adapter_package()

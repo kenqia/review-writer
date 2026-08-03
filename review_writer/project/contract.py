@@ -62,21 +62,32 @@ def validate_manifest_inputs(manifest: dict[str, Any], manifest_directory: Path)
     if adapter is not None and adapter not in PRODUCT_ADAPTER_IDS:
         _fail("ADAPTER_REF_INVALID", "adapter_ref is not a product-maintained closed ID")
     root_value = _portable_path(resolved["paths"]["seed_source_root"])
-    root = (Path(manifest_directory) / root_value).resolve(strict=True)
+    try:
+        root = (Path(manifest_directory) / root_value).resolve(strict=True)
+    except OSError as exc:
+        _fail("SEED_SOURCE_ROOT_INVALID", str(exc))
     if not root.is_dir():
         _fail("SEED_SOURCE_ROOT_INVALID", "seed source root is not a directory")
     source_ids: set[str] = set()
     papers: dict[str, list[dict[str, Any]]] = {}
     hashes: dict[str, str] = {}
+    relative_paths: list[str] = []
     for item in resolved["initial_source_inputs"]:
         source_id = item["source_id"]
         if source_id in source_ids:
             _fail("SOURCE_ID_DUPLICATE", "source_id must be unique")
         source_ids.add(source_id)
-        relative = _portable_path(item["relative_path"])
-        try: actual = validate_source_inputs(root, [entry["relative_path"] for entry in resolved["initial_source_inputs"][:len(source_ids)]])[-1]
-        except PathSafetyError as exc: _fail("NORMALIZED_SOURCE_PATH_DUPLICATE", str(exc))
-        hashes[source_id] = hashlib.sha256(actual.read_bytes()).hexdigest()
+        relative_paths.append(_portable_path(item["relative_path"]))
+    try:
+        actual_files = validate_source_inputs(root, relative_paths)
+    except PathSafetyError as exc:
+        code = "NORMALIZED_SOURCE_PATH_DUPLICATE" if "collision" in str(exc) else "SOURCE_INPUT_INVALID"
+        _fail(code, str(exc))
+    for item, actual in zip(resolved["initial_source_inputs"], actual_files):
+        try:
+            hashes[item["source_id"]] = hashlib.sha256(actual.read_bytes()).hexdigest()
+        except OSError as exc:
+            _fail("SOURCE_INPUT_UNREADABLE", str(exc))
         papers.setdefault(item["paper_id"], []).append(item)
     for paper_id, items in papers.items():
         mains = [item for item in items if item["document_role"] == "MAIN"]

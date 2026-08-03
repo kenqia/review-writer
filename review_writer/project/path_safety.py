@@ -19,12 +19,19 @@ def validate_relative_path(value: str) -> str:
     return "/".join(parts)
 
 def validate_source_file(root: Path, relative: str) -> Path:
-    relative = validate_relative_path(relative); root = root.resolve(strict=True)
+    relative = validate_relative_path(relative)
+    try:
+        root = root.resolve(strict=True)
+    except OSError as exc:
+        raise PathSafetyError("source root does not exist or cannot be resolved") from exc
     candidate = root
     for part in relative.split("/"):
         candidate = candidate / part
         if _is_reparse_component(candidate): raise PathSafetyError("source input component is reparse point")
-    actual = candidate.resolve(strict=True)
+    try:
+        actual = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise PathSafetyError("source input does not exist or cannot be resolved") from exc
     try: actual.relative_to(root)
     except ValueError as exc: raise PathSafetyError("reparse escape") from exc
     if not actual.is_file(): raise PathSafetyError("not ordinary file")

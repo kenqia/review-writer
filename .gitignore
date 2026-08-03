@@ -12,6 +12,7 @@
 !/AGENTS.md
 !/README.md
 !/Makefile
+!/requirements.txt
 !/requirements-ci.txt
 !/requirements-phase8.txt
 !/.env.example

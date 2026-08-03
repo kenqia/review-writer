@@ -1,0 +1,2 @@
+# M0 offline project contract
+jsonschema==4.25.0
