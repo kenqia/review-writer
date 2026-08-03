@@ -131,6 +131,13 @@ def _print_summary(payload: dict[str, Any], *, stream: Any = sys.stdout) -> None
     )
 
 
+def _print_command_result(
+    payload: dict[str, Any], *, success_statuses: set[str]
+) -> int:
+    _print_summary(payload)
+    return 0 if payload.get("status") in success_statuses else 3
+
+
 def _load_paper_evidence_input(path: Path) -> Any:
     if not path.is_file() or path.is_symlink():
         raise PaperEvidenceError("INPUT_INVALID")
@@ -1163,24 +1170,37 @@ def _run(args: argparse.Namespace) -> int:
     if args.command == "bootstrap-corpus":
         request = _load_json(args.request)
         project = bootstrap_corpus_project(args.review_root, request)
-        _print_summary({"command": args.command, "project_id": project.name, "source_count": len(request["sources"]), "status": "CREATED"})
-        return 0
+        return _print_command_result(
+            {
+                "command": args.command,
+                "project_id": project.name,
+                "source_count": len(request["sources"]),
+                "status": "CREATED",
+            },
+            success_statuses={"CREATED"},
+        )
     if args.command == "bind-generic-parse":
         result = bind_generic_parse_outputs(args.project, args.mineru_output)
-        _print_summary({"command": args.command, **result})
-        return 0
+        return _print_command_result(
+            {"command": args.command, **result},
+            success_statuses={"bound"},
+        )
     if args.command == "preflight-corpus-inputs":
         result = preflight_corpus_inputs(args.project, _load_json(args.manifest))
-        _print_summary({"command": args.command, **result})
-        return 0
+        return _print_command_result(
+            {"command": args.command, **result},
+            success_statuses={"ready_for_import"},
+        )
     if args.command == "import-corpus-inputs":
         result = import_corpus_inputs(
             args.project,
             _load_json(args.manifest),
             {"actor_type": args.actor_type, "actor_label": args.actor_label},
         )
-        _print_summary({"command": args.command, **result})
-        return 0
+        return _print_command_result(
+            {"command": args.command, **result},
+            success_statuses={"imported", "unchanged"},
+        )
     if args.command == "build-dual-source":
         study_ids = [args.study_id] if args.study_id else [row["study_id"] for row in project_dual_source_state(args.project)["studies"]]
         bindings = [write_dual_source_binding(args.project, study_id) for study_id in study_ids]
