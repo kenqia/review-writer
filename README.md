@@ -5,8 +5,9 @@ review-writer 是一个面向化学研究者的、本地优先、证据可追溯
 能清楚地说明哪些 MAIN、SI、Generic Parse 和 Chemical Parse 属于同一篇论文，
 哪些输入仍需修复，以及任何结果为什么被阻断。
 
-当前主入口是仓库中的 `scripts/run_vertical_review.py`。QoderWork 目录和旧技能仍
-作为历史/备用兼容材料保留，但不是本版用户的启动入口。
+当前主入口是仓库中的 `scripts/run_vertical_review.py`。本分支只发布用户需要的
+MVP 入口和运行时；开发轨迹、旧技能与历史资产不属于用户安装内容，保留在
+`core-development` 分支。
 
 ## 现在用户能得到什么
 
