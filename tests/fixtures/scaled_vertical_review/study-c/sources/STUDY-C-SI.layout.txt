@@ -1,1 +1,0 @@
-Study C supporting layer: predefined repeat procedure.

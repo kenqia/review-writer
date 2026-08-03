@@ -1,1 +1,0 @@
-The supporting layer records the predefined repeat procedure.

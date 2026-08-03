@@ -1,6 +1,0 @@
-Column one reports:
-The catalyst                    Figure 1
-afforded product 2a             CuSO4•5H2O
-in 91% yield.
-End of page one.Start of page two.
-Control material appears here.

@@ -1,1 +1,0 @@
-Study B supporting layer: predefined comparison procedure.
