@@ -6,7 +6,7 @@ MINERU_OUTPUT ?=
 MANIFEST ?=
 ACTOR_LABEL ?= 肯恰大人
 
-.PHONY: help cli start dashboard bootstrap bind preflight import
+.PHONY: help cli start dashboard bootstrap bind preflight import qoderwork-plugin
 
 help:
 	@echo "review-writer v0.1 用户入口"
@@ -43,3 +43,6 @@ import:
 	@test -n "$(PROJECT)" || (echo "请提供 PROJECT=projects/<project_id>"; exit 2)
 	@test -n "$(MANIFEST)" || (echo "请提供 MANIFEST=inputs/<manifest>.json"; exit 2)
 	$(PYTHON) scripts/run_vertical_review.py import-corpus-inputs --project "$(PROJECT)" --manifest "$(MANIFEST)" --actor-type human_researcher --actor-label "$(ACTOR_LABEL)"
+
+qoderwork-plugin:
+	$(PYTHON) scripts/build_qoderwork_plugin_zip.py --output build/review-writer-cn.qoder-plugin.zip

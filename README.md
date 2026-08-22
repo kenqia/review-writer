@@ -1,10 +1,37 @@
 # Review Writer
 
-Review Writer 是面向化学研究者的本地优先、证据可追溯综述工作台。研究者在 Codex
-中说明主题、明确项目目录和获授权的本地 PDF folder；Agent 负责调用本地工具，研究者
-只在 Dashboard 中阅读、判断、编辑、批准和导出。
+Review Writer 是面向化学研究者的本地优先、证据可追溯综述工作台。首选宿主是
+QoderWork CN：研究者用自然语言提供主题、明确项目目录和获授权的本地 PDF folder，宿主
+Agent 负责调用本地 adapter，研究者只在 Dashboard 中阅读、判断、编辑、批准和导出。
 
-## 研究者入口
+Codex 仍可作为兼容宿主使用同一项目 authority；两种宿主都不能创建第二套
+Source/Evidence、manuscript current/history 或 VersionContext。
+
+## QoderWork CN 入口（首选）
+
+QoderWork CN 的 Expert Kit 与 Skill 位于
+[`qoderwork/plugins/review-writer-cn/`](qoderwork/plugins/review-writer-cn/)。维护者可以运行：
+
+```bash
+make qoderwork-plugin
+```
+
+生成 `build/review-writer-cn.qoder-plugin.zip`，随后在 QoderWork CN 的
+`Extensions → Expert Kits` 上传。也可以直接安装其中的
+`skills/review-writer/SKILL.md`。用户只需告诉 QoderWork CN：
+
+```text
+请使用 Review Writer 创建或恢复综述。
+主题：<topic>
+项目目录：<explicit project root>
+获授权 PDF 文件夹：<authorized PDF folder>
+```
+
+Skill 会通过 `review_writer.agent.qoderwork_adapter` 启动或恢复项目，并在每个人工闸门返回
+Dashboard URL；用户不运行 CLI、curl、pytest、内部 generator 或手工 JSON。完整的官方依据、
+安装步骤和限制见 [`docs/qoderwork/QODERWORK_CN_ADAPTER.md`](docs/qoderwork/QODERWORK_CN_ADAPTER.md)。
+
+## Codex 兼容入口
 
 ### 前置条件
 
