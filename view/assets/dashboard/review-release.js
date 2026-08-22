@@ -53,5 +53,32 @@
     return {release_level: releaseLevel};
   }
 
-  return {buildExportRequest, deriveReleaseControls};
+  function projectRelease(value) {
+    const row = object(value);
+    const snapshot = object(row.release_snapshot);
+    const snapshotCurrent = snapshot.exists === true
+      && snapshot.matches_authoritative === true
+      && snapshot.integrity_valid === true;
+    const markdownExists = typeof row.final_draft_md === "string" && row.final_draft_md.trim() !== "";
+    const docxExists = row.final_draft_docx_exists === true || snapshot.docx_exists === true;
+    const sameVersion = snapshotCurrent && docxExists && markdownExists;
+    return {
+      snapshotExists: snapshot.exists === true,
+      snapshotCurrent,
+      markdownExists,
+      docxExists,
+      sameVersion,
+      manuscriptSource: row.manuscript_source === "release_snapshot" ? "release_snapshot" : "authoritative_manuscript",
+      currentLabel: sameVersion
+        ? "当前正文与发布快照、DOCX 同版本"
+        : snapshot.exists === true && !snapshotCurrent
+          ? "发布快照已过期，当前正文未同步"
+          : markdownExists
+            ? "当前权威正文已提供；同版本 DOCX 尚未确认"
+            : "当前权威正文未提供",
+      history: object(row.history),
+    };
+  }
+
+  return {buildExportRequest, deriveReleaseControls, projectRelease};
 }));

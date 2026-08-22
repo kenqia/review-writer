@@ -462,11 +462,31 @@ def register_comparison_protocol(project: Path, payload: object) -> dict[str, An
     _prepare_authoritative_questions(value)
     required = {"comparison_id", "comparison_objects", "axes", "normalization_rules", "missing_value_policy", "incomparability_rules", "counterevidence_rules", "claim_strength"}
     if not required.issubset(value): raise SynthesisError("COMPARISON_PROTOCOL_INVALID")
+    comparison_objects = value.get("comparison_objects")
+    if (
+        not isinstance(comparison_objects, list)
+        or any(not isinstance(item, str) for item in comparison_objects)
+        or len(comparison_objects) != len(set(comparison_objects))
+    ):
+        raise SynthesisError(
+            "COMPARISON_PROTOCOL_DUPLICATE"
+            if isinstance(comparison_objects, list)
+            and all(isinstance(item, str) for item in comparison_objects)
+            and len(comparison_objects) != len(set(comparison_objects))
+            else "COMPARISON_PROTOCOL_INVALID"
+        )
     try:
         evidence = paper_evidence_state(project)
     except PaperEvidenceError as exc:
         raise SynthesisError("PAPER_EVIDENCE_NOT_READY") from exc
-    value["paper_evidence_projection_digest"] = evidence.get("projection_digest")
+    current_evidence_digest = evidence.get("projection_digest")
+    supplied_evidence_digest = value.get("paper_evidence_projection_digest")
+    if (
+        supplied_evidence_digest is not None
+        and supplied_evidence_digest != current_evidence_digest
+    ):
+        raise SynthesisError("COMPARISON_PROTOCOL_STALE")
+    value["paper_evidence_projection_digest"] = current_evidence_digest
     value["protocol_digest"] = canonical_digest(_unsigned(value, "protocol_digest"))
     _validate(value, "comparison_protocol.v1.schema.json", "COMPARISON_PROTOCOL_INVALID")
     with project_write_lock(project): _write(project, PROTOCOL_PATH, value)

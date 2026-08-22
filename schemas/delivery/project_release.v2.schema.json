@@ -60,7 +60,7 @@
       "properties": {
         "schema_version": {"const": "review-writer-figure-validation.v2"},
         "release_level": {"enum": ["SELF_REVIEWED_DRAFT", "EXPERT_REVIEWED_RELEASE"]},
-        "source_figures": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+        "source_figures": {"type": "array", "items": {"type": "object"}},
         "human_synthesis_figures": {"type": "array", "items": {"type": "object"}},
         "required_attributions": {"type": "array", "items": {"type": "string", "minLength": 1}},
         "expected_media_sha256": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/sha256"}},

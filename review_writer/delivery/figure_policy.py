@@ -11,6 +11,12 @@ from typing import Any
 
 from PIL import Image, UnidentifiedImageError
 
+from review_writer.project.review_figures import (
+    ReviewFigureError,
+    validate_source_figure_target_binding,
+)
+from review_writer.project.source_truth import canonical_digest
+
 
 ORIGINAL_GENERATED = "ORIGINAL_GENERATED"
 LICENSED_SOURCE = "LICENSED_SOURCE"
@@ -68,16 +74,9 @@ class FigurePolicyError(ValueError):
 
 def _canonical_sha256(value: Any) -> str:
     try:
-        payload = json.dumps(
-            value,
-            ensure_ascii=False,
-            allow_nan=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
+        return canonical_digest(value)
     except (TypeError, ValueError) as exc:
         raise FigurePolicyError("FIGURE_POLICY_INVALID", "figure manifest must be finite JSON") from exc
-    return hashlib.sha256(payload).hexdigest()
 
 
 def _required_text(row: dict[str, Any], key: str) -> str:
@@ -387,8 +386,15 @@ def validate_new_route_figure_policy(
         for row in source_registry["figures"]
         if isinstance(row, dict) and row.get("selection_status") == "selected"
     ]
-    if not selected:
-        raise FigurePolicyError("FIGURE_POLICY_INVALID", "at least one source figure must be selected")
+    # A text-only source may legitimately have no extracted image assets.  A
+    # complete, manuscript-visible synthesis placeholder is still a real
+    # researcher-facing Figure deliverable for SELF_REVIEWED_DRAFT; expert
+    # release remains fail-closed below until a human figure is verified.
+    if not selected and not placeholders:
+        raise FigurePolicyError(
+            "FIGURE_POLICY_INVALID",
+            "at least one source figure or synthesis placeholder is required",
+        )
     if any(not isinstance(row, dict) for row in source_registry["figures"]):
         raise FigurePolicyError("FIGURE_POLICY_INVALID", "source figure entries must be objects")
     if release_level == "EXPERT_REVIEWED_RELEASE" and any(
@@ -419,14 +425,33 @@ def validate_new_route_figure_policy(
         if asset.is_symlink() or not resolved.is_file():
             raise FigurePolicyError("FIGURE_IMAGE_INVALID", "source figure must be a regular file")
         binding = _image_binding(resolved, asset_path)
-        if binding["content_sha256"] != row.get("asset_sha256"):
-            raise FigurePolicyError("FIGURE_IMAGE_INVALID", "source figure hash is stale")
         markdown_path = Path(os.path.relpath(resolved, project / "04_manuscript")).as_posix()
         expected_paths.add(markdown_path)
         _required_text(row, "caption")
         attribution = source_figure_attribution(row)
-        if attribution not in manuscript_markdown:
+        target_binding = row.get("target_binding")
+        if target_binding is not None:
+            try:
+                current_binding = validate_source_figure_target_binding(
+                    row,
+                    target_binding,
+                    manuscript_markdown,
+                    current_asset_sha256=binding["content_sha256"],
+                )
+            except ReviewFigureError as exc:
+                raise FigurePolicyError(
+                    "FIGURE_ATTRIBUTION_MISSING",
+                    "source figure target binding is missing or stale",
+                ) from exc
+            if attribution not in manuscript_markdown:
+                # The explicit source/evidence marker is the visible attribution
+                # anchor for repaired legacy text; no free-text attribution is
+                # synthesized or auto-placed by the release guard.
+                attribution = current_binding["marker"]
+        elif attribution not in manuscript_markdown:
             raise FigurePolicyError("FIGURE_ATTRIBUTION_MISSING", "source attribution is absent")
+        if binding["content_sha256"] != row.get("asset_sha256"):
+            raise FigurePolicyError("FIGURE_IMAGE_INVALID", "source figure hash is stale")
         if release_level == "EXPERT_REVIEWED_RELEASE":
             rights_status = row.get("rights_status")
             rights_license = row.get("rights_license")

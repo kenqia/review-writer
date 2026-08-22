@@ -369,6 +369,7 @@
       pdfLabel: stateLabel("pdf", pdfStatus),
       genericStatus,
       genericLabel: stateLabel("generic", genericStatus),
+      chemicalStatus,
       chemicalLabel: stateLabel("chemical", chemicalStatus),
       chemicalFacts,
       completionLabel: stateLabel("completion", completionStatus),
@@ -604,20 +605,29 @@
       ? projectedStudies.map(study => {
         const currentness = currentnessByStudy.get(study._studyId);
         if (!currentness) return study;
-        return {
+        const next = {
           ...study,
           siStatus: currentness.siStatus,
           siLabel: `SI ${stateLabel("generic", currentness.siStatus)}`,
           chemicalZipStatus: currentness.chemicalZipStatus,
           chemicalZipLabel: `Chemical ZIP ${stateLabel("chemical", currentness.chemicalZipStatus)}`,
         };
+        const target = studyTargetByModel.get(study);
+        if (target) studyTargetByModel.set(next, target);
+        return next;
       })
       : projectedStudies;
     const studies = !honestRoute || honestProgressive.availability === "available"
       ? projectedWithInputCurrentness
-      : projectedWithInputCurrentness.map(study => ({
+      : projectedWithInputCurrentness.map(study => {
+        // Keep the import affordance visible even before the first Chemical
+        // archive makes the Honest Progressive availability lane known.
+        // Counts and completion status below remain explicitly unknown.
+        const next = {
           ...study,
-          chemicalLabel: "Chemical Paper 待导入；状态未知",
+          chemicalLabel: study.chemicalLabel === stateLabel("chemical", "needs_import")
+            ? study.chemicalLabel
+            : "Chemical Paper 待导入；状态未知",
           chemicalFacts: ["待 Chemical Paper 导入；状态未知"],
           completionLabel: "Chemical Completion 状态未知",
           confirmedCount: null,
@@ -626,7 +636,11 @@
           coverageRatio: null,
           coverageThreshold: honestProgressive.coverageThreshold,
           uncertaintyStatement: honestProgressive.uncertaintyStatement,
-        }));
+        };
+        const target = studyTargetByModel.get(study);
+        if (target) studyTargetByModel.set(next, target);
+        return next;
+      });
     return {
       ...emptyModel(),
       contractValid: true,
@@ -1097,7 +1111,7 @@
 
   function appendImportControl(document, card, study, handlers) {
     const target = studyTargetByModel.get(study);
-    if (!target || !study.chemicalLabel.includes("待确认")) return;
+    if (!target || study.chemicalStatus !== "needs_import") return;
     const form = document.createElement("form");
     form.className = "dual-parse-import-form";
     const file = document.createElement("input");

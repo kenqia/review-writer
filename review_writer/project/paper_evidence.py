@@ -1219,10 +1219,12 @@ def _normalize_candidate(
     if payload.get("decision") is not None:
         raise PaperEvidenceError("PAPER_EVIDENCE_DECISION_FORBIDDEN")
     field_dependencies = _field_dependencies(payload.get("field_dependencies"))
-    dual_enabled = (
-        "field_dependencies" in payload
-        or (project / f"01_evidence/dual_source/{study_id}/binding.json").is_file()
-    )
+    # An explicit empty dependency list is the locator-only Evidence route.
+    # Keep it aligned with workflow_projection: only exact chemical fields or
+    # an existing dual-source binding may activate the chemical seam.
+    dual_enabled = bool(field_dependencies) or (
+        project / f"01_evidence/dual_source/{study_id}/binding.json"
+    ).is_file()
     dual_parse_bindings = (
         require_dual_evidence_ready(
             project,
@@ -1515,11 +1517,14 @@ def _normalize_decision_payload(
     actor_label = payload.get("actor_label", "local-researcher")
     bound_digests = payload.get("bound_parse_object_digests")
     if (
-        action not in DECISION_ACTIONS
-        or not isinstance(reason, str)
+        not isinstance(reason, str)
         or not reason.strip()
         or reason != reason.strip()
         or len(reason) > 2000
+    ):
+        raise PaperEvidenceError("EVIDENCE_DECISION_INVALID")
+    if (
+        action not in DECISION_ACTIONS
         or actor_type not in ACTOR_TYPES
         or not isinstance(actor_label, str)
         or not actor_label.strip()

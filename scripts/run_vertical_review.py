@@ -71,6 +71,34 @@ from review_writer.project.source_truth import (  # noqa: E402
     load_source_truth_bundle,
     write_source_truth_bundle,
 )
+from review_writer.project.synthesis import (  # noqa: E402
+    SynthesisError,
+    register_coverage_map,
+    register_comparison_protocol,
+    register_synthesis_candidates,
+)
+from review_writer.project.section_contract import (  # noqa: E402
+    SectionContractError,
+    register_section_contracts,
+)
+from review_writer.project.manuscript_v2 import (  # noqa: E402
+    ManuscriptV2Error,
+    generate_section_draft_v2,
+    register_section_draft,
+)
+from review_writer.agent.generator_runtime import (  # noqa: E402
+    GeneratorRuntimeError,
+    GeneratorSession,
+)
+from review_writer.agent.fresh_bootstrap import (  # noqa: E402
+    FreshAgentBootstrap,
+    FreshAgentBootstrapError,
+)
+from review_writer.project.review_figures import (  # noqa: E402
+    ReviewFigureError,
+    build_source_figure_registry,
+    register_synthesis_figure_placeholder,
+)
 from review_writer.project.dual_parse_bootstrap import (  # noqa: E402
     DualParseBootstrapError,
     bind_generic_parse_outputs,
@@ -1034,6 +1062,108 @@ def _parser() -> argparse.ArgumentParser:
         required=True,
     )
     corpus_import.add_argument("--actor-label", required=True)
+
+    paper_evidence_register = commands.add_parser(
+        "register-paper-evidence",
+        help="Register source-bound parsed evidence candidates for human review",
+    )
+    paper_evidence_register.add_argument("--project", type=Path, required=True)
+    paper_evidence_register.add_argument("--study-id", required=True)
+    paper_evidence_register.add_argument("--input", type=Path, required=True)
+
+    paper_evidence_record = commands.add_parser(
+        "record-paper-evidence",
+        help="Record a canonical paper-evidence decision",
+    )
+    paper_evidence_record.add_argument("--project", type=Path, required=True)
+    paper_evidence_record.add_argument("--input", type=Path, required=True)
+
+    paper_evidence_state = commands.add_parser(
+        "paper-evidence-state",
+        help="Read the canonical paper-evidence state without writing",
+    )
+    paper_evidence_state.add_argument("--project", type=Path, required=True)
+
+    comparison_protocol_register = commands.add_parser(
+        "register-comparison-protocol",
+        help="Register a source/evidence-bound comparison protocol for Dashboard review",
+    )
+    comparison_protocol_register.add_argument("--project", type=Path, required=True)
+    comparison_protocol_register.add_argument("--input", type=Path, required=True)
+
+    coverage_map_register = commands.add_parser(
+        "register-coverage-map",
+        help="Register the current protocol-bound coverage map for Dashboard review",
+    )
+    coverage_map_register.add_argument("--project", type=Path, required=True)
+    coverage_map_register.add_argument("--input", type=Path, required=True)
+
+    synthesis_register = commands.add_parser(
+        "register-synthesis-candidates",
+        help="Register current source/evidence-bound synthesis candidates for Dashboard review",
+    )
+    synthesis_register.add_argument("--project", type=Path, required=True)
+    synthesis_register.add_argument("--input", type=Path, required=True)
+
+    section_contract_register = commands.add_parser(
+        "register-section-contracts",
+        help="Register current synthesis-bound section contracts for Dashboard review",
+    )
+    section_contract_register.add_argument("--project", type=Path, required=True)
+    section_contract_register.add_argument("--input", type=Path, required=True)
+
+    section_draft_register = commands.add_parser(
+        "register-section-draft",
+        help="Register one current evidence-bound Agent section draft for Dashboard review",
+    )
+    section_draft_register.add_argument("--project", type=Path, required=True)
+    section_draft_register.add_argument("--input", type=Path, required=True)
+
+    section_draft_v2_register = commands.add_parser(
+        "generate-section-draft-v2",
+        help="Generate a current-approved section candidate without replacing researcher text",
+    )
+    section_draft_v2_register.add_argument("--project", type=Path, required=True)
+    section_draft_v2_register.add_argument("--input", type=Path, required=True)
+
+    generator_start = commands.add_parser(
+        "generator-start",
+        help="Start one restart-safe internal Generator Agent session",
+    )
+    generator_start.add_argument("--project", type=Path, required=True)
+    generator_start.add_argument("--input", type=Path, required=True)
+    generator_start.add_argument("--expected-revision", type=int)
+    generator_start.add_argument("--expected-head-id")
+
+    generator_continue = commands.add_parser(
+        "generator-continue",
+        help="Continue one internal Generator Agent session after Dashboard review",
+    )
+    generator_continue.add_argument("--project", type=Path, required=True)
+    generator_continue.add_argument("--session-id", required=True)
+    generator_continue.add_argument("--expected-revision", type=int)
+    generator_continue.add_argument("--expected-head-id")
+
+    fresh_agent_bootstrap = commands.add_parser(
+        "agent-bootstrap",
+        help="Agent-only fresh project bootstrap from one authorized local PDF folder",
+    )
+    fresh_agent_bootstrap.add_argument("--project", type=Path, required=True)
+    fresh_agent_bootstrap.add_argument("--topic", required=True)
+    fresh_agent_bootstrap.add_argument("--authorized-pdf-folder", type=Path, required=True)
+
+    figure_placeholder_register = commands.add_parser(
+        "register-synthesis-figure-placeholder",
+        help="Register a source-bound synthesis figure brief for Dashboard review",
+    )
+    figure_placeholder_register.add_argument("--project", type=Path, required=True)
+    figure_placeholder_register.add_argument("--input", type=Path, required=True)
+
+    source_figure_registry_build = commands.add_parser(
+        "build-source-figure-registry",
+        help="Build the canonical Source Figure registry from current Source Truth",
+    )
+    source_figure_registry_build.add_argument("--project", type=Path, required=True)
     return parser
 
 
@@ -1158,6 +1288,148 @@ def _run(args: argparse.Namespace) -> int:
                 "candidate_count": 1,
                 "reason_code": "MANUAL_PDF_EVIDENCE_REGISTERED",
                 "status": "NEEDS_REVIEW",
+            }
+        )
+        return 0
+    if args.command == "paper-evidence-state":
+        _print_summary(
+            {
+                "command": args.command,
+                **paper_evidence_state(args.project),
+            }
+        )
+        return 0
+    if args.command == "register-comparison-protocol":
+        protocol = register_comparison_protocol(
+            args.project,
+            _load_json(args.input),
+        )
+        _print_summary(
+            {
+                "command": args.command,
+                "comparison_id": protocol["comparison_id"],
+                "paper_evidence_projection_digest": protocol[
+                    "paper_evidence_projection_digest"
+                ],
+                "protocol_digest": protocol["protocol_digest"],
+                "status": "REGISTERED",
+            }
+        )
+        return 0
+    if args.command == "register-coverage-map":
+        coverage = register_coverage_map(
+            args.project,
+            _load_json(args.input),
+        )
+        _print_summary(
+            {
+                "command": args.command,
+                "comparison_id": coverage["comparison_id"],
+                "comparison_protocol_digest": coverage[
+                    "comparison_protocol_digest"
+                ],
+                "status": "REGISTERED",
+            }
+        )
+        return 0
+    if args.command == "register-synthesis-candidates":
+        result = register_synthesis_candidates(
+            args.project,
+            _load_json(args.input),
+        )
+        claims = result.get("claims", [])
+        _print_summary(
+            {
+                "claim_count": len(claims) if isinstance(claims, list) else 0,
+                "command": args.command,
+                "status": "REGISTERED",
+            }
+        )
+        return 0
+    if args.command == "register-section-contracts":
+        result = register_section_contracts(
+            args.project,
+            _load_json(args.input),
+        )
+        contracts = result.get("contracts", [])
+        _print_summary(
+            {
+                "command": args.command,
+                "contract_count": len(contracts) if isinstance(contracts, list) else 0,
+                "status": "REGISTERED",
+            }
+        )
+        return 0
+    if args.command == "register-section-draft":
+        result = register_section_draft(
+            args.project,
+            _load_json(args.input),
+        )
+        _print_summary(
+            {
+                "command": args.command,
+                "section_id": result.get("section_id"),
+                "status": "REGISTERED",
+            }
+        )
+        return 0
+    if args.command == "generate-section-draft-v2":
+        result = generate_section_draft_v2(
+            args.project,
+            _load_json(args.input),
+        )
+        _print_summary(
+            {
+                "command": args.command,
+                "section_id": result.get("section_id"),
+                "status": "REGISTERED",
+            }
+        )
+        return 0
+    if args.command == "generator-start":
+        result = GeneratorSession(args.project).start(
+            _load_json(args.input),
+            expected_revision=args.expected_revision,
+            expected_head_id=args.expected_head_id,
+        )
+        _print_summary({"command": args.command, **result})
+        return 0
+    if args.command == "generator-continue":
+        result = GeneratorSession(args.project).continue_session(
+            args.session_id,
+            expected_revision=args.expected_revision,
+            expected_head_id=args.expected_head_id,
+        )
+        _print_summary({"command": args.command, **result})
+        return 0
+    if args.command == "agent-bootstrap":
+        result = FreshAgentBootstrap(args.project).start(
+            topic=args.topic,
+            authorized_pdf_folder=args.authorized_pdf_folder,
+        )
+        _print_summary({"command": args.command, **result})
+        return 0
+    if args.command == "register-synthesis-figure-placeholder":
+        result = register_synthesis_figure_placeholder(
+            args.project,
+            _load_json(args.input),
+        )
+        _print_summary(
+            {
+                "command": args.command,
+                "placeholder_id": result.get("placeholder_id"),
+                "status": "REGISTERED",
+            }
+        )
+        return 0
+    if args.command == "build-source-figure-registry":
+        registry = build_source_figure_registry(args.project)
+        _print_summary(
+            {
+                "available_count": registry.get("available_count"),
+                "command": args.command,
+                "selected_count": registry.get("selected_count"),
+                "status": "REGISTERED",
             }
         )
         return 0
@@ -1317,6 +1589,68 @@ def main(argv: list[str] | None = None) -> int:
     except PaperEvidenceError as exc:
         _print_summary(
             {"error_code": exc.code, "status": "ERROR"},
+            stream=sys.stderr,
+        )
+        return 2
+    except SynthesisError as exc:
+        _print_summary(
+            {
+                "command": args.command,
+                "error_code": exc.code,
+                "status": "ERROR",
+            },
+            stream=sys.stderr,
+        )
+        return 2
+    except SectionContractError as exc:
+        _print_summary(
+            {
+                "command": args.command,
+                "error_code": exc.code,
+                "status": "ERROR",
+            },
+            stream=sys.stderr,
+        )
+        return 2
+    except ManuscriptV2Error as exc:
+        _print_summary(
+            {
+                "command": args.command,
+                "error_code": exc.code,
+                "status": "ERROR",
+            },
+            stream=sys.stderr,
+        )
+        return 2
+    except GeneratorRuntimeError as exc:
+        payload = {
+            "command": args.command,
+            "error_code": exc.code,
+            "status": "ERROR",
+            "write_mode": "NONE",
+        }
+        if exc.tool_code is not None:
+            payload["tool_error_code"] = exc.tool_code
+        _print_summary(payload, stream=sys.stderr)
+        return 2
+    except FreshAgentBootstrapError as exc:
+        payload = {
+            "command": args.command,
+            "error_code": exc.code,
+            "status": "ERROR",
+            "write_mode": exc.write_mode,
+        }
+        if exc.runtime_diagnostic is not None:
+            payload["runtime_diagnostic"] = exc.runtime_diagnostic
+        _print_summary(payload, stream=sys.stderr)
+        return 2
+    except ReviewFigureError as exc:
+        _print_summary(
+            {
+                "command": args.command,
+                "error_code": exc.code,
+                "status": "ERROR",
+            },
             stream=sys.stderr,
         )
         return 2

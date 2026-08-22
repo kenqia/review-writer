@@ -49,6 +49,20 @@
     return evaluationLabels[candidate] || researcherLabel(candidate, fallback);
   }
 
+  function booleanLabel(value) {
+    if (value === true) return "是";
+    if (value === false) return "否";
+    return "未提供";
+  }
+
+  function evaluationStateLabel(value) {
+    return ({
+      stale: "评估绑定已过期",
+      invalid: "评估数据无效",
+      unavailable: "评估数据不可用",
+    })[string(value)] || "评估数据未提供";
+  }
+
   function decisionActor(value) {
     const decision = object(value);
     const label = researcherLabel(decision.actor_label, "");
@@ -146,33 +160,63 @@
     const report = object(finalPayload.quality_report);
     const evaluation = object(finalPayload.evaluation || finalPayload.benchmark || report.evaluation);
     const source = object(evaluation.benchmark || evaluation);
-    const dimensions = array(source.rubric || source.dimensions || source.rationales).map((value, index) => {
+    const projectionStatus = string(source.status);
+    const benchmarkStatus = string(
+      source.benchmark_status || source.benchmarkStatus ||
+      (projectionStatus && projectionStatus !== "available" ? projectionStatus : ""),
+    );
+    const stale = ["stale", "invalid", "unavailable"].includes(projectionStatus)
+      || ["stale", "invalid", "unavailable"].includes(benchmarkStatus);
+    const releaseBindingValue = source.release_binding || source.releaseBinding
+      || evaluation.release_binding || evaluation.releaseBinding;
+    const releaseBinding = releaseBindingValue && typeof releaseBindingValue === "object"
+      && !Array.isArray(releaseBindingValue) ? releaseBindingValue : {};
+    const releaseBindingDigest = string(
+      releaseBinding.digest || releaseBinding.release_sha256
+      || releaseBinding.manuscript_sha256 || releaseBinding.chemical_paper_binding_digest,
+    );
+    const rawScore = source.score !== undefined ? source.score : source.total;
+    const dimensions = stale ? [] : array(source.rubric || source.dimensions || source.rationales).map((value, index) => {
       const row = object(value);
       return {
         name: researcherLabel(row.name || row.dimension || row.dimension_id, `评估维度 ${index + 1}`),
         score: finite(row.score) ? String(Number(row.score)) : "未提供",
+        maxScore: finite(row.max_score) ? String(Number(row.max_score)) : "未提供",
         rationale: researcherLabel(row.rationale || row.reason, "理由未提供"),
       };
     });
-    const hardFails = array(source.hard_fails || source.hardFails).map(item => evaluationFindingLabel(item, "Hard Fail 内容未提供"));
-    const issues = array(source.issues).map(item => {
+    const hardFails = stale ? [] : array(source.hard_fails || source.hardFails).map(item => evaluationFindingLabel(item, "Hard Fail 内容未提供"));
+    const issues = stale ? [] : array(source.issues).map(item => {
       const row = object(item);
       return evaluationFindingLabel(
         typeof item === "string" ? item : row.code || row.message,
         "问题内容未提供",
       );
     });
-    const available = finite(source.score) || dimensions.length > 0 || hardFails.length > 0 || issues.length > 0;
+    const available = !stale && (finite(rawScore) || dimensions.length > 0 || hardFails.length > 0 || issues.length > 0);
+    const disclaimer = string(source.disclaimer || evaluation.disclaimer || report.disclaimer);
     return {
       title: "发布评估",
       available,
-      status: available ? "评估数据已提供" : "评估数据未提供",
-      score: finite(source.score) ? String(Number(source.score)) : "未提供",
+      status: stale ? evaluationStateLabel(projectionStatus || benchmarkStatus) : available ? "评估数据已提供" : "评估数据未提供",
+      benchmarkStatus: benchmarkStatus || "未提供",
+      reasonCode: string(source.reason_code || source.reasonCode),
+      stale,
+      score: stale ? "未提供" : finite(rawScore) ? String(Number(rawScore)) : "未提供",
+      tier: stale ? "未提供" : string(source.tier) || "未提供",
       dimensions,
       hardFailsTitle: "Hard Fails",
       hardFails,
       issuesTitle: "待处理问题",
       issues,
+      expertReleaseReady: stale || typeof source.expert_release_ready !== "boolean"
+        ? null : source.expert_release_ready,
+      humanReviewRequired: stale || typeof source.human_review_required !== "boolean"
+        ? null : source.human_review_required,
+      disclaimer,
+      releaseBinding,
+      releaseBindingDigest: releaseBindingDigest || "未提供",
+      releaseBoundary: "仅供内部 benchmark 评估，不构成发布批准或 B2 通过。",
     };
   }
 
@@ -231,14 +275,24 @@
     appendText(document, evaluation, "strong", model.evaluation.status, "audit-state");
     if (model.evaluation.available) {
       appendText(document, evaluation, "p", `总分：${model.evaluation.score}`);
-      model.evaluation.dimensions.forEach(row => appendText(document, evaluation, "p", `${row.name} · ${row.score} · ${row.rationale}`));
+      appendText(document, evaluation, "p", `Tier：${model.evaluation.tier}`);
+      appendText(document, evaluation, "p", `Benchmark 状态：${model.evaluation.benchmarkStatus}`);
+      model.evaluation.dimensions.forEach(row => appendText(document, evaluation, "p", `${row.name} · ${row.score}/${row.maxScore} · ${row.rationale}`));
       appendText(document, evaluation, "h4", model.evaluation.hardFailsTitle);
       appendList(document, evaluation, model.evaluation.hardFails, "未报告 Hard Fails");
       appendText(document, evaluation, "h4", model.evaluation.issuesTitle);
       appendList(document, evaluation, model.evaluation.issues, "未报告待处理问题");
     } else {
-      appendText(document, evaluation, "p", "当前冻结 API 未返回 benchmark 分数、七维理由、Hard Fails 或问题清单。");
+      const staleMessage = model.evaluation.stale
+        ? `${model.evaluation.status}：${model.evaluation.reasonCode || "未提供原因"}；已 fail-closed，未显示旧分数或 rubric。`
+        : "当前冻结 API 未返回 benchmark 分数、七维理由、Hard Fails 或问题清单。";
+      appendText(document, evaluation, "p", staleMessage);
     }
+    appendText(document, evaluation, "p", `专家发布就绪（非发布批准）：${booleanLabel(model.evaluation.expertReleaseReady)}`);
+    appendText(document, evaluation, "p", `需要人工复核：${booleanLabel(model.evaluation.humanReviewRequired)}`);
+    appendText(document, evaluation, "p", `发布绑定摘要：${model.evaluation.releaseBindingDigest}`);
+    if (model.evaluation.disclaimer) appendText(document, evaluation, "p", `免责声明：${model.evaluation.disclaimer}`);
+    appendText(document, evaluation, "p", `发布边界：${model.evaluation.releaseBoundary}`, "audit-emphasis");
 
     const figures = document.createElement("section");
     figures.className = "audit-section";

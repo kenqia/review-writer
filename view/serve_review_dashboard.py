@@ -11,6 +11,7 @@ import os
 import posixpath
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,7 @@ import threading
 import unicodedata
 import zipfile
 from contextlib import contextmanager
+from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -39,14 +41,19 @@ from review_writer.project.vertical_review import (  # noqa: E402
     apply_risk_decisions,
     benchmark_metrics,
     confirm_review_brief,
+    initialize_review,
 )
 from review_writer.acquisition.manifest_identity import normalize_doi  # noqa: E402
 from review_writer.acquisition.manual_archive import (  # noqa: E402
     DEFAULT_MAX_ARCHIVE_BYTES,
+    DEFAULT_MAX_MEMBER_BYTES,
+    DEFAULT_MAX_MEMBERS,
+    DEFAULT_MAX_TOTAL_BYTES,
     ManualArchiveError,
     SOURCE_TRANSACTION_LOCK,
     import_manual_archive,
 )
+from review_writer.acquisition.public_corpus import _matches_format  # noqa: E402
 from review_writer.delivery.project_release import (  # noqa: E402
     PROJECT_RELEASE_LOCK,
     ProjectReleaseError,
@@ -85,6 +92,7 @@ from review_writer.project.parse_quality import (  # noqa: E402
     parse_decision_revision,
     parse_quality_state,
     project_parse_quality_state,
+    write_parse_quality_gate,
 )
 from review_writer.project.workflow_projection import (  # noqa: E402
     STAGE_PRESENTATION,
@@ -97,10 +105,12 @@ from review_writer.project.paper_evidence import (  # noqa: E402
 )
 from review_writer.project.synthesis import (  # noqa: E402
     SynthesisError,
+    _decision,
     apply_comparison_protocol_decision,
     apply_synthesis_decision,
     comparison_protocol_state,
     coverage_map_state,
+    register_comparison_protocol,
     synthesis_state,
 )
 from review_writer.project.section_contract import (  # noqa: E402
@@ -110,8 +120,14 @@ from review_writer.project.section_contract import (  # noqa: E402
 )
 from review_writer.project.review_figures import (  # noqa: E402
     ReviewFigureError,
+    current_manuscript_target_projection,
+    current_source_figure_asset_sha256,
     load_source_figure_registry,
+    source_figure_target_binding_status,
+    source_figure_target_options,
+    source_figure_workspace_revision,
     synthesis_figure_placeholders,
+    write_source_figure_selection,
 )
 from review_writer.project.manuscript_v2 import (  # noqa: E402
     ManuscriptV2Error,
@@ -123,12 +139,14 @@ from review_writer.project.source_truth import (  # noqa: E402
     SOURCE_TRUTH_ROOT,
     SourceTruthAssetSnapshot,
     SourceTruthError,
+    build_source_truth_bundle,
     canonical_digest,
     declared_study_ids,
     load_source_truth_bundle,
     project_source_binding,
     source_tier_authority,
     source_truth_asset_snapshot,
+    write_source_truth_bundle,
 )
 from review_writer.project.chemical_paper import (  # noqa: E402
     ChemicalPaperError,
@@ -148,6 +166,82 @@ from review_writer.delivery.dual_parse_release import (  # noqa: E402
     preflight_chemical_paper_import,
     refresh_dual_parse_derived_state,
 )
+from review_writer.product_foundation import ProductFoundationError, VersionContext  # noqa: E402
+from review_writer.product_foundation.project_root import (  # noqa: E402
+    resolve_project_root,
+    version_context_root,
+)
+
+
+WRITABLE = "WRITABLE"
+HISTORICAL_READ_ONLY = "HISTORICAL_READ_ONLY"
+_CHECKOUT_MARKERS = (".git", ".hg", ".svn", ".jj")
+
+
+class DashboardRuntimeIdentityError(RuntimeError):
+    """Dashboard code, assets, and imported delivery code are not one checkout."""
+
+    code = "DASHBOARD_RUNTIME_IDENTITY_INVALID"
+
+    def __init__(self, message: str) -> None:
+        super().__init__(f"{self.code}: {message}")
+
+
+@dataclass(frozen=True)
+class DashboardRuntimeContext:
+    review_root: Path
+    code_root: Path
+    asset_root: Path
+    mode: str
+    checkout_root: Path | None
+
+
+def _resolved_directory(path: Path, *, label: str) -> Path:
+    try:
+        resolved = Path(path).resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise DashboardRuntimeIdentityError(f"{label} is unavailable") from exc
+    if not resolved.is_dir():
+        raise DashboardRuntimeIdentityError(f"{label} must be a directory")
+    return resolved
+
+
+def _is_safe_checkout_marker(path: Path) -> bool:
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise DashboardRuntimeIdentityError("checkout marker inspection failed") from exc
+    return stat.S_ISDIR(mode) or stat.S_ISREG(mode)
+
+
+def nearest_checkout_boundary(path: Path) -> Path | None:
+    """Find the nearest checkout marker without reading marker contents."""
+    current = _resolved_directory(Path(path), label="checkout probe path")
+    while True:
+        if any(_is_safe_checkout_marker(current / marker) for marker in _CHECKOUT_MARKERS):
+            return current
+        parent = current.parent
+        if parent == current:
+            return None
+        current = parent
+
+
+def _imported_module_checkout_root(owner: object) -> Path:
+    module_name = getattr(owner, "__module__", None)
+    module = sys.modules.get(module_name) if isinstance(module_name, str) else None
+    origin = getattr(module, "__file__", None)
+    if not isinstance(origin, str) or not origin:
+        raise DashboardRuntimeIdentityError("imported delivery module has no file provenance")
+    origin_path = Path(origin).resolve(strict=True)
+    boundary = nearest_checkout_boundary(origin_path.parent)
+    if boundary is not None:
+        return boundary
+    try:
+        return origin_path.parents[2]
+    except IndexError as exc:
+        raise DashboardRuntimeIdentityError("imported delivery module checkout is unknown") from exc
 
 
 _RESEARCHER_SHA256_RE = re.compile(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{64}(?![0-9A-Fa-f])")
@@ -1111,8 +1205,63 @@ class WorkspaceStaleError(ValueError):
     """Optimistic-concurrency conflict for the evidence workspace."""
 
 
+class PublicProjectResumeError(ValueError):
+    """Safe, fail-closed error for the project-level resume adapter."""
+
+    def __init__(self, code: str, status: HTTPStatus, message: str) -> None:
+        self.code = code
+        self.status = status
+        super().__init__(message)
+
+
+class PublicProjectCreateError(ValueError):
+    """Safe, fail-closed error for the public blank-project entry."""
+
+    def __init__(self, code: str, status: HTTPStatus, message: str) -> None:
+        self.code = code
+        self.status = status
+        super().__init__(message)
+
+
+class PublicProjectHistoryError(ValueError):
+    def __init__(self, code: str, status: HTTPStatus, message: str) -> None:
+        self.code = code
+        self.status = status
+        super().__init__(message)
+
+
+class SourceArchivePreflightError(ValueError):
+    """A researcher archive cannot be safely promoted to a source record."""
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        status: HTTPStatus = HTTPStatus.UNPROCESSABLE_ENTITY,
+    ) -> None:
+        self.code = code
+        self.status = status
+        super().__init__(message)
+
+
+class PublicParseImportError(ValueError):
+    """A public source-bound manual parse cannot be safely published."""
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        status: HTTPStatus = HTTPStatus.UNPROCESSABLE_ENTITY,
+    ) -> None:
+        self.code = code
+        self.status = status
+        super().__init__(message)
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
+    runtime_context: DashboardRuntimeContext
     review_root: Path
+    asset_root: Path
     library_app_path: Path
     discovery_app_path: Path
     matrix_app_path: Path
@@ -1126,6 +1275,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: object) -> None:
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
 
+    def reject_historical_mutation(self) -> bool:
+        if self.runtime_context.mode != HISTORICAL_READ_ONLY:
+            return False
+        self.send_json(
+            {
+                "ok": False,
+                "error_code": HISTORICAL_READ_ONLY,
+                "message": "historical review root is read-only",
+            },
+            status=HTTPStatus.FORBIDDEN,
+        )
+        return True
+
     @property
     def metadata_dir(self) -> Path:
         return self.review_root / "review-library" / "metadata" / "papers"
@@ -1133,6 +1295,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
     @property
     def registry_path(self) -> Path:
         return self.review_root / "review-library" / "registry" / "papers.jsonl"
+
+    def _public_resume_seen(self) -> tuple[set[tuple[str, str, int, str]], Any]:
+        seen = getattr(self.server, "_public_resume_seen", None)
+        if not isinstance(seen, set):
+            seen = set()
+            setattr(self.server, "_public_resume_seen", seen)
+        lock = getattr(self.server, "_public_resume_lock", None)
+        if not hasattr(lock, "acquire") or not hasattr(lock, "release"):
+            lock = threading.Lock()
+            setattr(self.server, "_public_resume_lock", lock)
+        return seen, lock
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -1266,6 +1439,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
                 return
             self.handle_project_draft_get(project_id)
+        elif parsed.path.startswith("/api/project/") and parsed.path.endswith("/history"):
+            project_id = project_id_from_route(parsed.path, "history")
+            if project_id is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                return
+            self.handle_project_history_get(project_id)
         elif parsed.path.startswith("/api/project/"):
             parts = parsed.path.strip("/").split("/")
             if (
@@ -1357,6 +1536,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
     def do_PUT(self) -> None:
+        if self.reject_historical_mutation():
+            return
         parsed = urlparse(self.path)
         for action in ("chemical-completion", "parse-reconciliation"):
             if parsed.path.startswith("/api/project/") and parsed.path.endswith(
@@ -1420,6 +1601,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
     def do_PATCH(self) -> None:
+        if self.reject_historical_mutation():
+            return
         parsed = urlparse(self.path)
         for action in ("field", "elements"):
             suffix = f"/chemical-paper/{action}"
@@ -1434,7 +1617,29 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
     def do_POST(self) -> None:
+        if self.reject_historical_mutation():
+            return
         parsed = urlparse(self.path)
+        if parsed.path == "/api/projects":
+            self.handle_project_create_post()
+            return
+        for action in ("branch", "undo"):
+            suffix = f"/history/{action}"
+            if parsed.path.startswith("/api/project/") and parsed.path.endswith(suffix):
+                project_path = parsed.path[: -len(suffix)] + "/history"
+                project_id = project_id_from_route(project_path, "history")
+                if project_id is None:
+                    self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                    return
+                self.handle_project_history_post(project_id, action)
+                return
+        if parsed.path.startswith("/api/project/") and parsed.path.endswith("/resume"):
+            project_id = project_id_from_route(parsed.path, "resume")
+            if project_id is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                return
+            self.handle_project_resume_post(project_id)
+            return
         if parsed.path.startswith("/api/project/") and parsed.path.endswith(
             "/chemical-paper/preflight"
         ):
@@ -1482,6 +1687,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             replace = parse_qs(parsed.query).get("replace", [""])[0]
             self.handle_project_source_archive_post(project_id, replace=replace)
             return
+        if parsed.path.startswith("/api/project/") and parsed.path.endswith("/parse-import"):
+            project_id = project_id_from_route(parsed.path, "parse-import")
+            if project_id is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "project route not found")
+                return
+            self.handle_project_parse_import_post(project_id)
+            return
         if parsed.path.startswith("/api/project/") and parsed.path.endswith("/export-docx"):
             project_id = project_id_from_route(parsed.path, "export-docx")
             if project_id is None:
@@ -1497,8 +1709,34 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif code in {"CHEMICAL_ZIP_SIZE_INVALID", "ZIP_SIZE_LIMIT"}:
             status = HTTPStatus.REQUEST_ENTITY_TOO_LARGE
         elif code in {
+            "ZIP_INVALID",
+            "ZIP_DUPLICATE_ENTRY",
+            "ZIP_ENTRY_INVALID",
+            "ZIP_ENTRY_COUNT_LIMIT",
+            "ZIP_PATH_UNSAFE",
+            "ZIP_SYMLINK_UNSAFE",
+            "ZIP_ENCRYPTED",
+            "ZIP_NESTED_ARCHIVE",
+            "CHEMICAL_PAPER_JSON_INVALID",
+            "CHEMICAL_PAPER_FILE_SET_INVALID",
+            "CHEMICAL_PAPER_CONTRACT_MISSING",
+            "CHEMICAL_PAPER_MAIN_INVALID",
+            "CHEMICAL_PAPER_PAGE_COUNT_MISMATCH",
+            "CHEMICAL_PAPER_PAGE_INVALID",
+            "MOLECULE_INVALID",
+            "MOLECULE_ID_INVALID",
+            "MOLECULE_ID_DUPLICATE",
+            "MOLECULE_PAGE_INVALID",
+            "CHEMICAL_CONFIRM_REQUEST_INVALID",
+            "STUDY_ID_INVALID",
+            "PREFLIGHT_STAGING_INVALID",
+        }:
+            status = HTTPStatus.BAD_REQUEST
+        elif code in {
             "PREFLIGHT_EXPIRED",
+            "PREFLIGHT_TOKEN_INVALID",
             "PREFLIGHT_SOURCE_STALE",
+            "PREFLIGHT_SOURCE_AMBIGUOUS",
             "PREFLIGHT_STAGED_BYTES_STALE",
             "PREFLIGHT_STUDY_MISMATCH",
             "PREFLIGHT_ALREADY_CONFIRMED",
@@ -1681,7 +1919,62 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if length <= 0 or length > 16 * 1024:
                 raise ValueError("mapping body size is invalid")
             data = json.loads(self.rfile.read(length).decode("utf-8"))
-            if not isinstance(data, dict) or set(data) != {"member_id", "download_id"}:
+            if not isinstance(data, dict):
+                raise ValueError("mapping body is invalid")
+            blank_mapping_fields = {
+                "member_id",
+                "download_id",
+                "source_id",
+                "study_id",
+                "document_role",
+                "archive_sha256",
+            }
+            if set(data) == blank_mapping_fields:
+                if (
+                    not isinstance(data.get("member_id"), str)
+                    or not re.fullmatch(r"MEMBER-\d{4}", data["member_id"])
+                    or not isinstance(data.get("download_id"), str)
+                    or not re.fullmatch(r"UPLOAD-[0-9a-f]{20}", data["download_id"])
+                    or data.get("source_id") != data.get("download_id")
+                    or data.get("study_id") != data.get("download_id")
+                    or data.get("document_role") not in {"MAIN", "SI"}
+                    or not isinstance(data.get("archive_sha256"), str)
+                    or re.fullmatch(r"[0-9a-f]{64}", data["archive_sha256"]) is None
+                ):
+                    raise ValueError("blank source mapping identifiers are invalid")
+                try:
+                    with SOURCE_TRANSACTION_LOCK:
+                        archive_path = project / SOURCE_ARCHIVE_RELATIVE
+                        preflight = _source_archive_preflight(archive_path)
+                        member = preflight["member"]
+                        if (
+                            preflight["archive_sha256"] != data["archive_sha256"]
+                            or member.get("member_id") != data["member_id"]
+                            or member.get("download_id") != data["download_id"]
+                        ):
+                            raise SourceArchivePreflightError(
+                                "SOURCE_ARCHIVE_STALE",
+                                "来源压缩包在确认前发生变化，请重新读取来源清单。",
+                                HTTPStatus.CONFLICT,
+                            )
+                        result = _publish_manual_source_record(
+                            project,
+                            preflight,
+                            data["document_role"],
+                        )
+                except SourceArchivePreflightError as exc:
+                    self.send_json(
+                        {
+                            "status": "rejected",
+                            "error_code": exc.code,
+                            "message": str(exc),
+                        },
+                        status=exc.status,
+                    )
+                    return
+                self.send_json(result)
+                return
+            if set(data) != {"member_id", "download_id"}:
                 raise ValueError("mapping body is invalid")
             member_id = data.get("member_id")
             download_id = data.get("download_id")
@@ -1827,13 +2120,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if archive_path.exists() and not replacement_allowed:
                 self.send_error(HTTPStatus.CONFLICT, "a source archive is already awaiting processing")
                 return
-            archive_path.parent.mkdir(parents=True, exist_ok=True)
             temporary: Path | None = None
             try:
                 validate_project_path_components(project, (SOURCE_ARCHIVE_RELATIVE,))
                 with tempfile.NamedTemporaryFile(
                     mode="wb",
-                    dir=archive_path.parent,
+                    dir=project,
                     prefix=f".{archive_path.name}.",
                     suffix=".tmp",
                     delete=False,
@@ -1850,6 +2142,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     os.fsync(handle.fileno())
                 if not zipfile.is_zipfile(temporary):
                     raise ValueError("archive is not a valid ZIP")
+                _source_archive_preflight(temporary)
+                validate_project_path_components(project, (SOURCE_ARCHIVE_RELATIVE,))
+                archive_path.parent.mkdir(parents=True, exist_ok=True)
                 validate_project_path_components(project, (SOURCE_ARCHIVE_RELATIVE,))
                 os.replace(temporary, archive_path)
                 temporary = None
@@ -1862,6 +2157,87 @@ class DashboardHandler(BaseHTTPRequestHandler):
             {"status": "received", "message": "压缩包已接收，正在核验来源。"},
             status=HTTPStatus.CREATED,
         )
+
+    def handle_project_parse_import_post(self, project_id: str) -> None:
+        try:
+            project = project_dir(self.review_root, project_id)
+        except ValueError:
+            self.send_json(
+                {
+                    "status": "rejected",
+                    "error_code": "PROJECT_INVALID",
+                    "message": "项目不可用，解析未保存。",
+                },
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+        if not project.is_dir():
+            self.send_json(
+                {
+                    "status": "rejected",
+                    "error_code": "PROJECT_NOT_FOUND",
+                    "message": "项目不存在，解析未保存。",
+                },
+                status=HTTPStatus.NOT_FOUND,
+            )
+            return
+        try:
+            content_type = (
+                (self.headers.get("Content-Type") or "")
+                .split(";", 1)[0]
+                .strip()
+                .casefold()
+            )
+            raw_length = self.headers.get("Content-Length")
+            if (
+                content_type != "application/json"
+                or not isinstance(raw_length, str)
+                or re.fullmatch(r"[0-9]+", raw_length) is None
+            ):
+                raise PublicParseImportError(
+                    "PARSE_IMPORT_REQUEST_INVALID",
+                    "解析导入请求无效，项目未更改。",
+                    HTTPStatus.BAD_REQUEST,
+                )
+            length = int(raw_length)
+            if length <= 0 or length > 512 * 1024:
+                raise PublicParseImportError(
+                    "PARSE_IMPORT_REQUEST_INVALID",
+                    "解析文本超过当前入口限制，项目未更改。",
+                    HTTPStatus.BAD_REQUEST,
+                )
+            try:
+                data = json.loads(self.rfile.read(length).decode("utf-8"))
+            except (UnicodeError, json.JSONDecodeError) as exc:
+                raise PublicParseImportError(
+                    "PARSE_IMPORT_REQUEST_INVALID",
+                    "解析导入请求无效，项目未更改。",
+                    HTTPStatus.BAD_REQUEST,
+                ) from exc
+            with SOURCE_TRANSACTION_LOCK:
+                result = _publish_public_manual_parse(project, data)
+        except PublicParseImportError as exc:
+            self.send_json(
+                {
+                    "status": "rejected",
+                    "error_code": exc.code,
+                    "message": str(exc),
+                },
+                status=exc.status,
+            )
+            return
+        except (OSError, SourceTruthError, ParseQualityError) as exc:
+            code = getattr(exc, "code", "PARSE_IMPORT_FAILED")
+            self.send_json(
+                {
+                    "status": "rejected",
+                    "error_code": code,
+                    "message": "解析未生成，项目保持不变。",
+                },
+                status=HTTPStatus.UNPROCESSABLE_ENTITY,
+            )
+            return
+        self.send_json(result, status=HTTPStatus.CREATED)
 
     def handle_project_export_docx(self, project_id: str) -> None:
         raw_length = self.headers.get("Content-Length")
@@ -1958,6 +2334,389 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def handle_projects(self) -> None:
         self.send_json(list_review_projects(self.review_root))
+
+    def _history_context(self, project_id: str) -> VersionContext:
+        try:
+            project = project_dir(self.review_root, project_id)
+        except ValueError as exc:
+            raise PublicProjectHistoryError(
+                "HISTORY_PROJECT_INVALID",
+                HTTPStatus.BAD_REQUEST,
+                "history project is invalid",
+            ) from exc
+        if not project.is_dir():
+            raise PublicProjectHistoryError(
+                "HISTORY_PROJECT_MISSING",
+                HTTPStatus.NOT_FOUND,
+                "history project is unavailable",
+            )
+        try:
+            return VersionContext.load(project)
+        except ProductFoundationError as exc:
+            raise PublicProjectHistoryError(
+                exc.code,
+                HTTPStatus.CONFLICT,
+                "project version history is unavailable",
+            ) from exc
+
+    @staticmethod
+    def _history_payload(context: VersionContext) -> dict[str, Any]:
+        state = context.state()
+        current = context.view_version(state.current_version_id)
+        return {
+            "project_id": state.project_id,
+            "revision": state.revision,
+            "current": {
+                "version_id": current.version_id,
+                "branch_id": current.branch_id,
+                "snapshot_digest": current.snapshot_digest,
+            },
+            "history": [
+                {
+                    "version_id": view.version_id,
+                    "parent_version_id": view.parent_version_id,
+                    "branch_id": view.branch_id,
+                    "branch_name": view.branch_name,
+                    "snapshot_digest": view.snapshot_digest,
+                    "read_only": view.read_only,
+                    "can_write": view.can_write,
+                    "is_current": view.is_current,
+                    "is_active_head": view.is_active_head,
+                }
+                for view in context.history()
+            ],
+        }
+
+    def handle_project_history_get(self, project_id: str) -> None:
+        try:
+            payload = self._history_payload(self._history_context(project_id))
+        except PublicProjectHistoryError as exc:
+            self.send_json(
+                {"ok": False, "error_code": exc.code, "message": str(exc)},
+                status=exc.status,
+            )
+            return
+        self.send_json(payload)
+
+    def _history_request(self, expected_keys: set[str]) -> dict[str, Any]:
+        content_type = (
+            (self.headers.get("Content-Type") or "")
+            .split(";", 1)[0]
+            .strip()
+            .casefold()
+        )
+        raw_length = self.headers.get("Content-Length")
+        if content_type != "application/json" or not isinstance(raw_length, str) or not re.fullmatch(
+            r"[0-9]+", raw_length
+        ):
+            raise PublicProjectHistoryError(
+                "HISTORY_REQUEST_INVALID",
+                HTTPStatus.BAD_REQUEST,
+                "history request is invalid",
+            )
+        length = int(raw_length)
+        if length <= 0 or length > 64 * 1024:
+            raise PublicProjectHistoryError(
+                "HISTORY_REQUEST_INVALID",
+                HTTPStatus.BAD_REQUEST,
+                "history request is invalid",
+            )
+        try:
+            request = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise PublicProjectHistoryError(
+                "HISTORY_REQUEST_INVALID",
+                HTTPStatus.BAD_REQUEST,
+                "history request is invalid",
+            ) from exc
+        if not isinstance(request, dict) or set(request) != expected_keys:
+            raise PublicProjectHistoryError(
+                "HISTORY_REQUEST_INVALID",
+                HTTPStatus.BAD_REQUEST,
+                "history request is invalid",
+            )
+        return request
+
+    @staticmethod
+    def _history_request_is_valid(request: dict[str, Any], *, action: str) -> bool:
+        common = (
+            isinstance(request.get("confirm"), bool)
+            and request["confirm"] is True
+            and isinstance(request.get("expected_revision"), int)
+            and not isinstance(request["expected_revision"], bool)
+            and request["expected_revision"] >= 0
+        )
+        if not common:
+            return False
+        string_fields = (
+            ("source_version_id", "branch_id", "branch_name", "version_id")
+            if action == "branch"
+            else (
+                "target_version_id",
+                "branch_id",
+                "branch_name",
+                "version_id",
+                "expected_head_id",
+            )
+        )
+        if any(not isinstance(request.get(field), str) or not request[field] for field in string_fields):
+            return False
+        return action != "branch" or isinstance(request.get("activate"), bool)
+
+    def handle_project_history_post(self, project_id: str, action: str) -> None:
+        expected_keys = (
+            {
+                "source_version_id",
+                "branch_id",
+                "branch_name",
+                "version_id",
+                "activate",
+                "confirm",
+                "expected_revision",
+            }
+            if action == "branch"
+            else {
+                "target_version_id",
+                "branch_id",
+                "branch_name",
+                "version_id",
+                "expected_head_id",
+                "confirm",
+                "expected_revision",
+            }
+        )
+        try:
+            request = self._history_request(expected_keys)
+            if not self._history_request_is_valid(request, action=action):
+                raise PublicProjectHistoryError(
+                    "HISTORY_REQUEST_INVALID",
+                    HTTPStatus.BAD_REQUEST,
+                    "history request is invalid",
+                )
+            context = self._history_context(project_id)
+            if action == "branch":
+                context.branch_from(
+                    request["source_version_id"],
+                    branch_id=request["branch_id"],
+                    branch_name=request["branch_name"],
+                    version_id=request["version_id"],
+                    activate=request["activate"],
+                    confirm=True,
+                    expected_revision=request["expected_revision"],
+                )
+                result = "BRANCHED"
+            else:
+                context.rollback(
+                    request["target_version_id"],
+                    branch_id=request["branch_id"],
+                    branch_name=request["branch_name"],
+                    version_id=request["version_id"],
+                    expected_head_id=request["expected_head_id"],
+                    confirm=True,
+                    expected_revision=request["expected_revision"],
+                )
+                result = "UNDONE"
+            self.send_json(
+                {
+                    "result": result,
+                    "write_mode": "VERSION_CONTEXT",
+                    **self._history_payload(context),
+                }
+            )
+        except PublicProjectHistoryError as exc:
+            self.send_json(
+                {"ok": False, "error_code": exc.code, "message": str(exc)},
+                status=exc.status,
+            )
+        except ProductFoundationError as exc:
+            self.send_json(
+                {"ok": False, "error_code": exc.code, "message": "history mutation was rejected"},
+                status=HTTPStatus.CONFLICT,
+            )
+
+    def handle_project_create_post(self) -> None:
+        try:
+            content_type = (
+                (self.headers.get("Content-Type") or "")
+                .split(";", 1)[0]
+                .strip()
+                .casefold()
+            )
+            raw_length = self.headers.get("Content-Length")
+            if (
+                content_type != "application/json"
+                or not isinstance(raw_length, str)
+                or not re.fullmatch(r"[0-9]+", raw_length)
+            ):
+                raise PublicProjectCreateError(
+                    "PROJECT_CREATE_REQUEST_INVALID",
+                    HTTPStatus.BAD_REQUEST,
+                    "project creation request is invalid",
+                )
+            length = int(raw_length)
+            if length <= 0 or length > 64 * 1024:
+                raise PublicProjectCreateError(
+                    "PROJECT_CREATE_REQUEST_INVALID",
+                    HTTPStatus.BAD_REQUEST,
+                    "project creation request is invalid",
+                )
+            raw_body = self.rfile.read(length)
+            if len(raw_body) != length:
+                raise PublicProjectCreateError(
+                    "PROJECT_CREATE_REQUEST_INVALID",
+                    HTTPStatus.BAD_REQUEST,
+                    "project creation request is invalid",
+                )
+            try:
+                request = json.loads(raw_body.decode("utf-8"))
+            except (UnicodeError, json.JSONDecodeError) as exc:
+                raise PublicProjectCreateError(
+                    "PROJECT_CREATE_REQUEST_INVALID",
+                    HTTPStatus.BAD_REQUEST,
+                    "project creation request is invalid",
+                ) from exc
+            if (
+                not isinstance(request, dict)
+                or set(request) != {"project_id", "brief"}
+                or not isinstance(request.get("project_id"), str)
+                or not isinstance(request.get("brief"), dict)
+                or not isinstance(request["brief"].get("topic"), str)
+                or not request["brief"]["topic"].strip()
+                or not isinstance(request["brief"].get("review_question"), str)
+                or not request["brief"]["review_question"].strip()
+            ):
+                raise PublicProjectCreateError(
+                    "PROJECT_CREATE_REQUEST_INVALID",
+                    HTTPStatus.BAD_REQUEST,
+                    "project creation request is invalid",
+                )
+            try:
+                project = initialize_review(
+                    self.review_root,
+                    request["project_id"],
+                    request["brief"],
+                )
+            except VerticalReviewError as exc:
+                status = (
+                    HTTPStatus.CONFLICT
+                    if exc.code == "PROJECT_ALREADY_EXISTS"
+                    else HTTPStatus.BAD_REQUEST
+                )
+                raise PublicProjectCreateError(
+                    exc.code,
+                    status,
+                    "project creation was rejected",
+                ) from exc
+            except OSError as exc:
+                raise PublicProjectCreateError(
+                    "PROJECT_CREATE_WRITE_FAILED",
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    "project creation could not be persisted",
+                ) from exc
+            summary = project_summary(self.review_root, project.name)
+            if summary is None:
+                raise PublicProjectCreateError(
+                    "PROJECT_CREATE_RESULT_INVALID",
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    "project creation result is unavailable",
+                )
+        except PublicProjectCreateError as exc:
+            self.send_json(
+                {"ok": False, "error_code": exc.code, "message": str(exc)},
+                status=exc.status,
+            )
+            return
+        self.send_json(
+            {
+                "ok": True,
+                "project_id": project.name,
+                "status": "created",
+                "project": summary,
+                "next_action": {
+                    "project_id": project.name,
+                    "route": "/review",
+                },
+            },
+            status=HTTPStatus.CREATED,
+        )
+
+    def handle_project_resume_post(self, project_id: str) -> None:
+        try:
+            content_type = (
+                (self.headers.get("Content-Type") or "")
+                .split(";", 1)[0]
+                .strip()
+                .casefold()
+            )
+            raw_length = self.headers.get("Content-Length")
+            if content_type != "application/json" or not isinstance(raw_length, str) or not re.fullmatch(
+                r"[0-9]+", raw_length
+            ):
+                raise PublicProjectResumeError(
+                    "RESUME_REQUEST_INVALID",
+                    HTTPStatus.BAD_REQUEST,
+                    "resume request is invalid",
+                )
+            length = int(raw_length)
+            if length <= 0 or length > 64 * 1024:
+                raise PublicProjectResumeError(
+                    "RESUME_REQUEST_INVALID",
+                    HTTPStatus.BAD_REQUEST,
+                    "resume request is invalid",
+                )
+            try:
+                request = json.loads(self.rfile.read(length).decode("utf-8"))
+            except (UnicodeError, json.JSONDecodeError) as exc:
+                raise PublicProjectResumeError(
+                    "RESUME_REQUEST_INVALID",
+                    HTTPStatus.BAD_REQUEST,
+                    "resume request is invalid",
+                ) from exc
+            if not isinstance(request, dict) or set(request) not in (
+                {"expected_revision", "version_token"},
+                {"expected_revision", "node_digest", "version_token"},
+            ):
+                raise PublicProjectResumeError(
+                    "RESUME_REQUEST_INVALID",
+                    HTTPStatus.BAD_REQUEST,
+                    "resume request is invalid",
+                )
+            if (
+                not isinstance(request["expected_revision"], int)
+                or isinstance(request["expected_revision"], bool)
+                or request["expected_revision"] < 0
+                or not isinstance(request["version_token"], str)
+                or re.fullmatch(
+                    r"[A-Za-z0-9][A-Za-z0-9._:-]{0,511}", request["version_token"]
+                ) is None
+                or (
+                    "node_digest" in request
+                    and (
+                        not isinstance(request["node_digest"], str)
+                        or re.fullmatch(r"[0-9a-f]{64}", request["node_digest"]) is None
+                    )
+                )
+            ):
+                raise PublicProjectResumeError(
+                    "RESUME_REQUEST_INVALID",
+                    HTTPStatus.BAD_REQUEST,
+                    "resume request is invalid",
+                )
+            seen, seen_lock = self._public_resume_seen()
+            result = project_resume_payload(
+                self.review_root,
+                project_id,
+                request,
+                seen=seen,
+                seen_lock=seen_lock,
+            )
+        except PublicProjectResumeError as exc:
+            self.send_json(
+                {"ok": False, "error_code": exc.code, "message": str(exc)},
+                status=exc.status,
+            )
+            return
+        self.send_json(result)
 
     def handle_papers(self) -> None:
         papers = []
@@ -2474,11 +3233,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_file(image_path, content_type, extra_headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
     def handle_static_asset(self, path: str) -> None:
-        assets_root = Path(__file__).resolve().parent / "assets"
+        assets_root = self.asset_root
         rel = posixpath.normpath(unquote(path.removeprefix("/assets/"))).lstrip("/")
         candidate = (assets_root / rel).resolve()
         try:
-            candidate.relative_to(assets_root.resolve())
+            candidate.relative_to(assets_root)
         except ValueError:
             self.send_error(HTTPStatus.FORBIDDEN, "asset path outside assets root")
             return
@@ -2999,6 +3758,252 @@ def visible_text_list(value: Any) -> list[str]:
         return [item.strip() for item in value if isinstance(item, str) and item.strip()]
     text = visible_text(value)
     return [text] if text else []
+
+
+def _source_archive_member_parts(value: Any) -> tuple[str, ...] | None:
+    if not isinstance(value, str) or not value:
+        raise SourceArchivePreflightError(
+            "SOURCE_ARCHIVE_MEMBER_NAME_INVALID",
+            "来源压缩包包含不安全的文件名。",
+        )
+    normalized = unicodedata.normalize("NFKC", value)
+    if normalized.endswith("/"):
+        return None
+    if (
+        "\\" in normalized
+        or normalized.startswith("/")
+        or re.match(r"^[A-Za-z]:", normalized)
+        or "//" in normalized
+        or any(unicodedata.category(character) in {"Cc", "Cf"} for character in normalized)
+    ):
+        raise SourceArchivePreflightError(
+            "SOURCE_ARCHIVE_MEMBER_NAME_INVALID",
+            "来源压缩包包含不安全的文件名。",
+        )
+    parts = tuple(normalized.split("/"))
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        raise SourceArchivePreflightError(
+            "SOURCE_ARCHIVE_MEMBER_NAME_INVALID",
+            "来源压缩包包含不安全的文件名。",
+        )
+    return parts
+
+
+def _source_archive_file_digest(path: Path) -> tuple[str, int, os.stat_result]:
+    try:
+        initial = path.lstat()
+    except OSError as exc:
+        raise SourceArchivePreflightError(
+            "SOURCE_ARCHIVE_UNAVAILABLE",
+            "来源压缩包当前不可读取。",
+        ) from exc
+    if not stat.S_ISREG(initial.st_mode) or path.is_symlink():
+        raise SourceArchivePreflightError(
+            "SOURCE_ARCHIVE_UNAVAILABLE",
+            "来源压缩包当前不可读取。",
+        )
+    if initial.st_size > DEFAULT_MAX_ARCHIVE_BYTES:
+        raise SourceArchivePreflightError(
+            "SOURCE_ARCHIVE_TOO_LARGE",
+            "来源压缩包超过大小限制。",
+            HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+        )
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                size += len(chunk)
+                if size > DEFAULT_MAX_ARCHIVE_BYTES:
+                    raise SourceArchivePreflightError(
+                        "SOURCE_ARCHIVE_TOO_LARGE",
+                        "来源压缩包超过大小限制。",
+                        HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                    )
+                digest.update(chunk)
+    except SourceArchivePreflightError:
+        raise
+    except OSError as exc:
+        raise SourceArchivePreflightError(
+            "SOURCE_ARCHIVE_UNAVAILABLE",
+            "来源压缩包当前不可读取。",
+        ) from exc
+    try:
+        current = path.lstat()
+    except OSError as exc:
+        raise SourceArchivePreflightError(
+            "SOURCE_ARCHIVE_STALE",
+            "来源压缩包在核验期间发生变化，请重新上传。",
+        ) from exc
+    if (
+        not stat.S_ISREG(current.st_mode)
+        or path.is_symlink()
+        or size != initial.st_size
+        or current.st_mtime_ns != initial.st_mtime_ns
+        or current.st_ctime_ns != initial.st_ctime_ns
+    ):
+        raise SourceArchivePreflightError(
+            "SOURCE_ARCHIVE_STALE",
+            "来源压缩包在核验期间发生变化，请重新上传。",
+        )
+    return digest.hexdigest(), size, initial
+
+
+def _source_archive_preflight(archive_path: Path) -> dict[str, Any]:
+    archive_sha256, archive_size, initial = _source_archive_file_digest(archive_path)
+    members: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+    declared_total = 0
+    try:
+        with zipfile.ZipFile(archive_path, "r") as archive:
+            infos = archive.infolist()
+            if len(infos) > DEFAULT_MAX_MEMBERS:
+                raise SourceArchivePreflightError(
+                    "SOURCE_ARCHIVE_MEMBER_LIMIT",
+                    "来源压缩包包含过多文件。",
+                )
+            for info in infos:
+                parts = _source_archive_member_parts(info.filename)
+                if parts is None:
+                    continue
+                mode = (info.external_attr >> 16) & 0xFFFF
+                if stat.S_IFMT(mode) not in {0, stat.S_IFREG} or info.flag_bits & 0x1:
+                    raise SourceArchivePreflightError(
+                        "SOURCE_ARCHIVE_MEMBER_INVALID",
+                        "来源压缩包包含不受支持的文件成员。",
+                    )
+                normalized_name = "/".join(parts).casefold()
+                if normalized_name in seen_names:
+                    raise SourceArchivePreflightError(
+                        "SOURCE_ARCHIVE_MEMBER_DUPLICATE",
+                        "来源压缩包包含重复文件成员。",
+                    )
+                seen_names.add(normalized_name)
+                if info.file_size < 0 or info.file_size > DEFAULT_MAX_MEMBER_BYTES:
+                    raise SourceArchivePreflightError(
+                        "SOURCE_ARCHIVE_MEMBER_TOO_LARGE",
+                        "来源压缩包中的文件超过大小限制。",
+                    )
+                declared_total += info.file_size
+                if declared_total > DEFAULT_MAX_TOTAL_BYTES:
+                    raise SourceArchivePreflightError(
+                        "SOURCE_ARCHIVE_TOTAL_TOO_LARGE",
+                        "来源压缩包展开后超过大小限制。",
+                    )
+                if Path(parts[-1]).suffix.casefold() != ".pdf":
+                    raise SourceArchivePreflightError(
+                        "SOURCE_ARCHIVE_MEMBER_FORMAT_INVALID",
+                        "来源压缩包只能包含 PDF 文件。",
+                    )
+                with tempfile.TemporaryDirectory(prefix="review-writer-source-preflight-") as temporary_root:
+                    temporary_pdf = Path(temporary_root) / "member.pdf"
+                    digest = hashlib.sha256()
+                    actual_size = 0
+                    try:
+                        with archive.open(info, "r") as source, temporary_pdf.open("wb") as destination:
+                            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                                actual_size += len(chunk)
+                                if actual_size > DEFAULT_MAX_MEMBER_BYTES:
+                                    raise SourceArchivePreflightError(
+                                        "SOURCE_ARCHIVE_MEMBER_TOO_LARGE",
+                                        "来源压缩包中的文件超过大小限制。",
+                                    )
+                                destination.write(chunk)
+                                digest.update(chunk)
+                    except SourceArchivePreflightError:
+                        raise
+                    except (OSError, RuntimeError, EOFError, NotImplementedError) as exc:
+                        raise SourceArchivePreflightError(
+                            "SOURCE_ARCHIVE_MEMBER_INVALID",
+                            "来源压缩包中的文件无法读取。",
+                        ) from exc
+                    if actual_size != info.file_size or not _matches_format(temporary_pdf, "PDF"):
+                        raise SourceArchivePreflightError(
+                            "SOURCE_ARCHIVE_PDF_INVALID",
+                            "来源压缩包中的 PDF 未通过格式核验。",
+                        )
+                    members.append(
+                        {
+                            "member_id": f"MEMBER-{len(members) + 1:04d}",
+                            "member_display_name": parts[-1],
+                            "member_path": "/".join(parts),
+                            "sha256": digest.hexdigest(),
+                            "size_bytes": actual_size,
+                        }
+                    )
+    except SourceArchivePreflightError:
+        raise
+    except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile, RuntimeError, EOFError) as exc:
+        raise SourceArchivePreflightError(
+            "SOURCE_ARCHIVE_INVALID",
+            "来源压缩包未通过结构核验。",
+        ) from exc
+    try:
+        current = archive_path.lstat()
+    except OSError as exc:
+        raise SourceArchivePreflightError(
+            "SOURCE_ARCHIVE_STALE",
+            "来源压缩包在核验期间发生变化，请重新上传。",
+        ) from exc
+    if (
+        not stat.S_ISREG(current.st_mode)
+        or archive_path.is_symlink()
+        or current.st_size != initial.st_size
+        or current.st_mtime_ns != initial.st_mtime_ns
+        or current.st_ctime_ns != initial.st_ctime_ns
+    ):
+        raise SourceArchivePreflightError(
+            "SOURCE_ARCHIVE_STALE",
+            "来源压缩包在核验期间发生变化，请重新上传。",
+        )
+    if len(members) != 1:
+        raise SourceArchivePreflightError(
+            "SOURCE_ARCHIVE_MEMBER_MAPPING_REQUIRED",
+            "来源压缩包需要恰好一个可确认的 PDF 文件。",
+        )
+    member = members[0]
+    upload_id = f"UPLOAD-{member['sha256'][:20]}"
+    member.update(
+        {
+            "download_id": upload_id,
+            "source_id": upload_id,
+            "study_id": upload_id,
+            "safe_locator": f"00_sources/manual_upload/inbox/source_bundle.zip#{member['member_id']}",
+        }
+    )
+    return {
+        "status": "awaiting_confirmation",
+        "archive_sha256": archive_sha256,
+        "archive_size_bytes": archive_size,
+        "member": member,
+        "role_options": ["MAIN", "SI"],
+    }
+
+
+def _source_archive_preflight_payload(project: Path) -> dict[str, Any] | None:
+    archive_path = project / SOURCE_ARCHIVE_RELATIVE
+    if not project_regular_file_exists(project, SOURCE_ARCHIVE_RELATIVE):
+        return None
+    try:
+        archive_sha256, _, _ = _source_archive_file_digest(archive_path)
+    except SourceArchivePreflightError:
+        archive_sha256 = None
+    if archive_sha256 is not None:
+        final_receipt = read_json_if_exists(project / "00_sources/acquisition_final_receipt.json")
+        studies = final_receipt.get("studies") if isinstance(final_receipt, dict) else None
+        if isinstance(studies, list) and any(
+            isinstance(row, dict) and row.get("archive_sha256") == archive_sha256
+            for row in studies
+        ):
+            return None
+    try:
+        return _source_archive_preflight(archive_path)
+    except SourceArchivePreflightError as exc:
+        return {
+            "status": "invalid",
+            "reason_code": exc.code,
+            "message": str(exc),
+        }
 
 
 def _canonical_source_identifier(value: Any) -> str:
@@ -3780,6 +4785,621 @@ def _replace_json_pair(updates: list[tuple[Path, dict[str, Any]]]) -> None:
                 backup.unlink(missing_ok=True)
 
 
+def _manual_source_manifest(preflight: dict[str, Any], role: str) -> dict[str, Any]:
+    member = preflight.get("member") if isinstance(preflight, dict) else None
+    if not isinstance(member, dict) or role not in {"MAIN", "SI"}:
+        raise SourceArchivePreflightError(
+            "SOURCE_MAPPING_REQUEST_INVALID",
+            "来源确认请求无效。",
+            HTTPStatus.BAD_REQUEST,
+        )
+    download_id = member.get("download_id")
+    study_id = member.get("study_id")
+    if (
+        not isinstance(download_id, str)
+        or not re.fullmatch(r"UPLOAD-[0-9a-f]{20}", download_id)
+        or study_id != download_id
+        or not isinstance(member.get("sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", member["sha256"]) is None
+    ):
+        raise SourceArchivePreflightError(
+            "SOURCE_MAPPING_REQUEST_INVALID",
+            "来源确认请求无效。",
+            HTTPStatus.BAD_REQUEST,
+        )
+    return {
+        "schema_version": "public-corpus-acquisition.v1",
+        "downloads": [
+            {
+                "download_id": download_id,
+                "study_id": study_id,
+                "document_role": role,
+                "url": f"https://manual-upload.invalid/{download_id}.pdf",
+                "target_path": f"manual_upload/inbox/{download_id}.pdf",
+                "source_class": "RESEARCHER_MANUAL_UPLOAD",
+                "expected_format": "PDF",
+                "expected_sha256": member["sha256"],
+                "archive_names": [],
+            }
+        ],
+    }
+
+
+def _publish_manual_source_record(
+    project: Path,
+    preflight: dict[str, Any],
+    role: str,
+) -> dict[str, Any]:
+    manifest = _manual_source_manifest(preflight, role)
+    member = preflight["member"]
+    download_id = member["download_id"]
+    study_id = member["study_id"]
+    archive_path = project / SOURCE_ARCHIVE_RELATIVE
+    relative_paths = (
+        Path("00_discovery/acquisition_manifest.json"),
+        Path("00_sources/acquisition_receipt.json"),
+        Path("00_sources/acquisition_final_receipt.json"),
+        Path("00_sources/source_identity_audit.json"),
+        Path("00_sources/source_coverage.json"),
+        Path("00_discovery/candidate_pool.json"),
+        Path("00_sources/manual_import_receipt.json"),
+    )
+    validate_project_path_components(project, relative_paths)
+    if any(os.path.lexists(project / relative) for relative in relative_paths):
+        raise SourceArchivePreflightError(
+            "SOURCE_RECORD_EXISTS",
+            "当前项目已有来源记录，未覆盖现有来源。",
+            HTTPStatus.CONFLICT,
+        )
+    manifest_bytes = (
+        json.dumps(manifest, ensure_ascii=False, allow_nan=False, indent=2) + "\n"
+    ).encode("utf-8")
+    imported: dict[str, Any] | None = None
+    imported_status: str | None = None
+    target_path: Path | None = None
+    published = False
+    expected_pdf_sha256 = member["sha256"]
+    try:
+        with tempfile.TemporaryDirectory(prefix="review-writer-source-manifest-") as temporary_root:
+            temporary_manifest = Path(temporary_root) / "acquisition_manifest.json"
+            temporary_manifest.write_bytes(manifest_bytes)
+            try:
+                imported = import_manual_archive(
+                    temporary_manifest,
+                    archive_path,
+                    project / "00_sources",
+                    member_overrides={member["member_id"]: download_id},
+                )
+            except (ManualArchiveError, OSError, ValueError) as exc:
+                raise SourceArchivePreflightError(
+                    "SOURCE_ARCHIVE_IMPORT_INVALID",
+                    "来源压缩包未能生成可审计的来源记录。",
+                ) from exc
+        results = imported.get("results") if isinstance(imported, dict) else None
+        if not isinstance(results, list) or len(results) != 1 or not isinstance(results[0], dict):
+            raise SourceArchivePreflightError(
+                "SOURCE_ARCHIVE_IMPORT_INVALID",
+                "来源压缩包未能生成可审计的来源记录。",
+            )
+        result = results[0]
+        if result.get("status") not in {"IMPORTED", "VERIFIED_EXISTING"}:
+            raise SourceArchivePreflightError(
+                "SOURCE_ARCHIVE_IMPORT_INCOMPLETE",
+                "来源文件未通过当前来源核验。",
+            )
+        imported_status = result.get("status")
+        if result.get("sha256") != expected_pdf_sha256:
+            raise SourceArchivePreflightError(
+                "SOURCE_ARCHIVE_IMPORT_STALE",
+                "来源文件摘要与上传内容不一致，请重新上传。",
+            )
+        target_path = _acquisition_source_relative_path(result.get("target_path"))
+        if target_path is None:
+            raise SourceArchivePreflightError(
+                "SOURCE_ARCHIVE_IMPORT_INVALID",
+                "来源记录的安全定位不可用。",
+            )
+        descriptor = {
+            "path": target_path.relative_to(Path("00_sources")).as_posix(),
+            "sha256": result["sha256"],
+            "size_bytes": result["size_bytes"],
+        }
+        source_record = {
+            "study_id": study_id,
+            "source_id": member["source_id"],
+            "download_id": download_id,
+            "doi": None,
+            "title": None,
+            "tier": "core",
+            "document_role": role,
+            "status": "ACQUIRED",
+            "archive_sha256": preflight["archive_sha256"],
+            "source_sha256": descriptor["sha256"],
+        }
+        source_record["main_pdf" if role == "MAIN" else "si_pdf"] = descriptor
+        acquisition_receipt = {
+            "schema_version": "public-corpus-acquisition-receipt.v1",
+            "created_at": now_utc(),
+            "manifest_path": "acquisition_manifest.json",
+            "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+            "results": [result],
+            "counts": {result["status"]: 1},
+            "manual_queue_count": 0,
+            "policy": {
+                "public_direct_only": False,
+                "network_enabled": False,
+                "credentials_or_sessions_used": False,
+                "source_origin": "RESEARCHER_MANUAL_UPLOAD",
+            },
+        }
+        final_receipt = {
+            "schema_version": "acquisition-final-receipt.v1",
+            "source_origin": "RESEARCHER_MANUAL_UPLOAD",
+            "total_studies": 1,
+            "studies": [source_record],
+        }
+        identity_audit = {
+            "schema_version": "source-identity-audit.v1",
+            "results": [
+                {
+                    "candidate_id": study_id,
+                    "study_id": study_id,
+                    "source_id": member["source_id"],
+                    "document_role": role,
+                    "source_sha256": descriptor["sha256"],
+                    "verdict": "PASS",
+                    "source": "RESEARCHER_MANUAL_UPLOAD",
+                }
+            ],
+        }
+        coverage = {
+            "schema_version": "source-coverage.v1",
+            "studies": [
+                {
+                    "study_id": study_id,
+                    "available_roles": [role],
+                    "main_policy": "REQUIRED",
+                    "si_policy": "NOT_REQUIRED",
+                    "study_status": "READY" if role == "MAIN" else "PARTIAL",
+                }
+            ],
+        }
+        candidate_pool = {
+            "schema_version": "candidate-pool.v1",
+            "candidates": [
+                {
+                    "candidate_id": study_id,
+                    "study_id": study_id,
+                    "source_id": member["source_id"],
+                    "doi": None,
+                    "title": None,
+                    "tier": "core",
+                    "document_role": "MAIN",
+                }
+            ],
+        }
+        _replace_json_pair(
+            [
+                (project / "00_discovery/acquisition_manifest.json", manifest),
+                (project / "00_sources/acquisition_receipt.json", acquisition_receipt),
+                (project / "00_sources/acquisition_final_receipt.json", final_receipt),
+                (project / "00_sources/source_identity_audit.json", identity_audit),
+                (project / "00_sources/source_coverage.json", coverage),
+                (project / "00_discovery/candidate_pool.json", candidate_pool),
+            ]
+        )
+        published = True
+        return {
+            "status": "mapped",
+            "message": "文件归属已确认",
+        }
+    except SourceArchivePreflightError:
+        raise
+    except (OSError, ValueError, TypeError) as exc:
+        raise SourceArchivePreflightError(
+            "SOURCE_RECORD_WRITE_FAILED",
+            "来源记录未能安全写入；现有文件保持不变。",
+            HTTPStatus.INTERNAL_SERVER_ERROR,
+        ) from exc
+    finally:
+        if imported_status == "IMPORTED" and not published and target_path is not None:
+            target = project / target_path
+            try:
+                if target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest() == expected_pdf_sha256:
+                    target.unlink()
+            except OSError:
+                pass
+        if imported is not None and not published:
+            manual_receipt = project / "00_sources/manual_import_receipt.json"
+            try:
+                if manual_receipt.is_file():
+                    manual_receipt.unlink()
+            except OSError:
+                pass
+
+
+_PUBLIC_PARSE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,254}$")
+_PUBLIC_PARSE_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_PUBLIC_PARSE_MAX_MARKDOWN_BYTES = 480 * 1024
+_PUBLIC_PARSE_COMPONENTS = ("mineru", "parses", "text_layers", "source_truth")
+
+
+def _public_parse_json(path: Path, payload: dict[str, Any]) -> None:
+    _atomic_write_bytes(
+        path,
+        (json.dumps(payload, ensure_ascii=False, allow_nan=False, indent=2, sort_keys=True) + "\n").encode(
+            "utf-8"
+        ),
+    )
+
+
+def _public_parse_pdf_page_count(pdf_path: Path) -> int:
+    executable = shutil.which("pdfinfo")
+    if executable is None:
+        raise PublicParseImportError(
+            "PARSE_PDF_PAGE_COUNT_UNAVAILABLE",
+            "当前 PDF 无法形成可审计页数，项目未更改。",
+        )
+    try:
+        completed = subprocess.run(
+            [executable, "-enc", "UTF-8", str(pdf_path)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+            check=False,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise PublicParseImportError(
+            "PARSE_PDF_PAGE_COUNT_UNAVAILABLE",
+            "当前 PDF 无法形成可审计页数，项目未更改。",
+        ) from exc
+    if completed.returncode != 0:
+        raise PublicParseImportError(
+            "PARSE_PDF_CORRUPT",
+            "当前 PDF 未通过解析核验，项目未更改。",
+        )
+    match = re.search(r"(?im)^Pages:\s*(?P<count>[0-9]+)\s*$", completed.stdout or "")
+    if match is None:
+        raise PublicParseImportError(
+            "PARSE_PDF_PAGE_COUNT_UNAVAILABLE",
+            "当前 PDF 无法形成可审计页数，项目未更改。",
+        )
+    page_count = int(match.group("count"))
+    if page_count < 1 or page_count > 10_000:
+        raise PublicParseImportError(
+            "PARSE_PDF_PAGE_COUNT_INVALID",
+            "当前 PDF 页数不受支持，项目未更改。",
+        )
+    return page_count
+
+
+def _public_parse_current_main(
+    project: Path,
+    data: dict[str, Any],
+) -> tuple[str, str, str, Path, int]:
+    required = {"study_id", "source_id", "source_pdf_sha256", "markdown"}
+    if set(data) != required:
+        raise PublicParseImportError(
+            "PARSE_IMPORT_REQUEST_INVALID",
+            "解析导入请求无效，项目未更改。",
+            HTTPStatus.BAD_REQUEST,
+        )
+    study_id = data.get("study_id")
+    source_id = data.get("source_id")
+    source_pdf_sha256 = data.get("source_pdf_sha256")
+    markdown = data.get("markdown")
+    if (
+        not isinstance(study_id, str)
+        or _PUBLIC_PARSE_ID_RE.fullmatch(study_id) is None
+        or not isinstance(source_id, str)
+        or _PUBLIC_PARSE_ID_RE.fullmatch(source_id) is None
+        or not isinstance(source_pdf_sha256, str)
+        or _PUBLIC_PARSE_SHA256_RE.fullmatch(source_pdf_sha256) is None
+        or not isinstance(markdown, str)
+        or not markdown.strip()
+        or "\x00" in markdown
+        or len(markdown.encode("utf-8")) > _PUBLIC_PARSE_MAX_MARKDOWN_BYTES
+    ):
+        raise PublicParseImportError(
+            "PARSE_IMPORT_REQUEST_INVALID",
+            "解析文本或来源绑定无效，项目未更改。",
+            HTTPStatus.BAD_REQUEST,
+        )
+
+    evidence_root = project / "01_evidence"
+    if any(os.path.lexists(evidence_root / component) for component in _PUBLIC_PARSE_COMPONENTS):
+        raise PublicParseImportError(
+            "PARSE_IMPORT_ALREADY_EXISTS",
+            "当前项目已有解析记录，未覆盖现有来源。",
+            HTTPStatus.CONFLICT,
+        )
+    receipt = read_json_if_exists(project / "00_sources/acquisition_final_receipt.json")
+    studies = receipt.get("studies") if isinstance(receipt, dict) else None
+    if not isinstance(studies, list):
+        raise PublicParseImportError(
+            "SOURCE_RECORD_INVALID",
+            "当前来源记录不可用于解析导入，项目未更改。",
+        )
+    matches = [row for row in studies if isinstance(row, dict) and row.get("study_id") == study_id]
+    if len(matches) != 1:
+        raise PublicParseImportError(
+            "PARSE_IMPORT_STUDY_MISMATCH",
+            "解析导入未绑定到当前来源，项目未更改。",
+            HTTPStatus.CONFLICT,
+        )
+    study = matches[0]
+    main = study.get("main_pdf")
+    if (
+        not isinstance(main, dict)
+        or study.get("source_id") != source_id
+        or main.get("sha256") != source_pdf_sha256
+    ):
+        raise PublicParseImportError(
+            "PARSE_IMPORT_SOURCE_MISMATCH",
+            "解析导入未绑定到当前 PDF，项目未更改。",
+            HTTPStatus.CONFLICT,
+        )
+    relative = _acquisition_source_relative_path(main.get("path"))
+    if relative is None:
+        raise PublicParseImportError(
+            "SOURCE_RECORD_INVALID",
+            "当前来源定位不可用，项目未更改。",
+        )
+    try:
+        pdf_path = validate_project_file_path(project, relative, "SOURCE_PDF_UNAVAILABLE")
+        observed_size = pdf_path.stat().st_size
+        observed_digest = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
+    except (OSError, ValueError) as exc:
+        raise PublicParseImportError(
+            "PARSE_IMPORT_SOURCE_UNAVAILABLE",
+            "当前来源文件不可用，项目未更改。",
+            HTTPStatus.CONFLICT,
+        ) from exc
+    if observed_digest != source_pdf_sha256 or observed_digest != main.get("sha256") or (
+        isinstance(main.get("size_bytes"), int) and observed_size != main["size_bytes"]
+    ):
+        raise PublicParseImportError(
+            "PARSE_IMPORT_SOURCE_STALE",
+            "当前 PDF 已变化，请重新确认来源后再解析。",
+            HTTPStatus.CONFLICT,
+        )
+    if not _matches_format(pdf_path, "PDF"):
+        raise PublicParseImportError(
+            "PARSE_PDF_CORRUPT",
+            "当前 PDF 未通过解析核验，项目未更改。",
+        )
+    page_count = _public_parse_pdf_page_count(pdf_path)
+    return study_id, source_id, source_pdf_sha256, pdf_path, page_count
+
+
+def _publish_public_manual_parse(project: Path, data: object) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise PublicParseImportError(
+            "PARSE_IMPORT_REQUEST_INVALID",
+            "解析导入请求无效，项目未更改。",
+            HTTPStatus.BAD_REQUEST,
+        )
+    study_id, source_id, source_pdf_sha256, _, page_count = _public_parse_current_main(project, data)
+    markdown = data["markdown"]
+    slug = f"manual_{source_pdf_sha256[:20]}"
+    staging_parent = Path(tempfile.mkdtemp(prefix=f".{project.name}.manual-parse.", dir=project.parent))
+    staged_project = staging_parent / project.name
+    published = False
+    try:
+        shutil.copytree(project, staged_project, dirs_exist_ok=True, copy_function=shutil.copy2)
+        staged_evidence = staged_project / "01_evidence"
+        if any(os.path.lexists(staged_evidence / component) for component in _PUBLIC_PARSE_COMPONENTS):
+            raise PublicParseImportError(
+                "PARSE_IMPORT_ALREADY_EXISTS",
+                "当前项目已有解析记录，未覆盖现有来源。",
+                HTTPStatus.CONFLICT,
+            )
+        mineru_root = staged_evidence / "mineru"
+        parse_root = staged_evidence / "parses"
+        extracted = parse_root / "extracted" / slug
+        mineru_markdown = mineru_root / "markdown" / f"{slug}.md"
+        parse_markdown = parse_root / "markdown" / f"{slug}.md"
+        content_row = {
+            "type": "text",
+            "text": markdown,
+            "page_idx": 0,
+            "bbox": [0, 0, 612, 792],
+        }
+        content_v2 = [[content_row]] + [[] for _ in range(page_count - 1)]
+        reading_layer = markdown.rstrip() + "\n" + ("\f" * page_count)
+        layer_root = staged_evidence / "text_layers"
+        reading_path = layer_root / f"{source_id}.reading.txt"
+        layout_layer_path = layer_root / f"{source_id}.layout.txt"
+
+        _atomic_write_bytes(mineru_markdown, markdown.encode("utf-8"))
+        _atomic_write_bytes(parse_markdown, markdown.encode("utf-8"))
+        _atomic_write_bytes(extracted / "full.md", markdown.encode("utf-8"))
+        _public_parse_json(extracted / f"{slug}_content_list.json", [content_row])
+        _public_parse_json(extracted / f"{slug}_content_list_v2.json", content_v2)
+        _public_parse_json(
+            extracted / "layout.json",
+            {
+                "schema_version": "manual-parse-layout.v1",
+                "provenance": "MANUAL_IMPORT",
+                "page_count": page_count,
+            },
+        )
+        _atomic_write_bytes(reading_path, reading_layer.encode("utf-8"))
+        _atomic_write_bytes(layout_layer_path, reading_layer.encode("utf-8"))
+        _public_parse_json(
+            mineru_root / "manifest.json",
+            {
+                "schema_version": "mineru-parse-manifest.v1",
+                "settings": {
+                    "language": "en",
+                    "model_version": "vlm",
+                    "enable_formula": True,
+                    "enable_table": True,
+                    "ocr": False,
+                },
+                "completed_count": 1,
+                "failed_count": 0,
+                "completed": [
+                    {
+                        "slug": slug,
+                        "state": "done",
+                        "study_id": study_id,
+                        "source_id": source_id,
+                        "document_role": "MAIN",
+                        "relative_pdf_path": str(
+                            _receipt_source_relative_from_project(project, study_id)
+                        ),
+                        "source_pdf_sha256": source_pdf_sha256,
+                        "provenance": "MANUAL_IMPORT",
+                        "parse_status": "manual_import",
+                    }
+                ],
+                "failed": [],
+            },
+        )
+        _public_parse_json(
+            parse_root / "manifest.json",
+            {
+                "schema_version": "mineru-batch-parse.v1",
+                "settings": {
+                    "language": "en",
+                    "model_version": "vlm",
+                    "enable_formula": True,
+                    "enable_table": True,
+                    "ocr": False,
+                },
+                "completed_count": 1,
+                "failed_count": 0,
+                "completed": [
+                    {
+                        "slug": slug,
+                        "state": "done",
+                        "study_id": study_id,
+                        "source_id": source_id,
+                        "document_role": "MAIN",
+                        "relative_pdf_path": str(
+                            _receipt_source_relative_from_project(project, study_id)
+                        ),
+                        "source_pdf_sha256": source_pdf_sha256,
+                        "full_md": f"extracted/{slug}/full.md",
+                        "extracted_dir": f"extracted/{slug}",
+                        "provenance": "MANUAL_IMPORT",
+                        "parse_status": "manual_import",
+                    }
+                ],
+                "failed": [],
+            },
+        )
+        _public_parse_json(
+            layer_root / "text_layers.manifest.json",
+            {
+                "schema_version": "pdf-text-layers.v1",
+                "sources": [
+                    {
+                        "study_id": study_id,
+                        "source_id": source_id,
+                        "document_role": "MAIN",
+                        "pdf_name": f"{source_id}.pdf",
+                        "pdf_sha256": source_pdf_sha256,
+                        "page_count": page_count,
+                        "reading_order_path": reading_path.name,
+                        "reading_order_sha256": hashlib.sha256(reading_path.read_bytes()).hexdigest(),
+                        "reading_order_method": "manual-import-source-bound",
+                        "layout_path": layout_layer_path.name,
+                        "layout_sha256": hashlib.sha256(layout_layer_path.read_bytes()).hexdigest(),
+                        "layout_method": "manual-import-visual-locator-only",
+                    }
+                ],
+            },
+        )
+        bundle = write_source_truth_bundle(staged_project, study_id)
+        gate = write_parse_quality_gate(staged_project, study_id)
+        target = project / "01_evidence"
+        target_created = False
+        if os.path.lexists(target):
+            try:
+                target_stat = target.lstat()
+            except OSError as exc:
+                raise PublicParseImportError(
+                    "PARSE_IMPORT_TARGET_UNAVAILABLE",
+                    "解析发布位置不可用，项目未更改。",
+                ) from exc
+            if not stat.S_ISDIR(target_stat.st_mode) or target.is_symlink():
+                raise PublicParseImportError(
+                    "PARSE_IMPORT_TARGET_UNAVAILABLE",
+                    "解析发布位置不可用，项目未更改。",
+                )
+        else:
+            target.mkdir(parents=True, exist_ok=False)
+            target_created = True
+        moved_components: list[str] = []
+        try:
+            for component in _PUBLIC_PARSE_COMPONENTS:
+                source_component = staged_evidence / component
+                target_component = target / component
+                if os.path.lexists(target_component):
+                    raise PublicParseImportError(
+                        "PARSE_IMPORT_ALREADY_EXISTS",
+                        "当前项目已有解析记录，未覆盖现有来源。",
+                        HTTPStatus.CONFLICT,
+                    )
+                os.rename(source_component, target_component)
+                moved_components.append(component)
+        except BaseException:
+            for component in reversed(moved_components):
+                try:
+                    os.rename(target / component, staged_evidence / component)
+                except OSError:
+                    pass
+            if target_created:
+                try:
+                    target.rmdir()
+                except OSError:
+                    pass
+            raise
+        published = True
+        return {
+            "status": "imported",
+            "provenance": "MANUAL_IMPORT",
+            "parse_status": gate.get("status", "needs_review"),
+            "study_id": study_id,
+            "source_id": source_id,
+            "source_pdf_sha256": source_pdf_sha256,
+            "bundle_digest": bundle.get("bundle_digest"),
+            "gate_digest": gate.get("gate_digest"),
+        }
+    except PublicParseImportError:
+        raise
+    except (SourceTruthError, ParseQualityError):
+        raise
+    except (OSError, UnicodeError, ValueError, TypeError) as exc:
+        raise PublicParseImportError(
+            "PARSE_IMPORT_FAILED",
+            "解析未生成，项目保持不变。",
+            HTTPStatus.UNPROCESSABLE_ENTITY,
+        ) from exc
+    finally:
+        shutil.rmtree(staging_parent, ignore_errors=True)
+
+
+def _receipt_source_relative_from_project(project: Path, study_id: str) -> Path:
+    receipt = read_json_if_exists(project / "00_sources/acquisition_final_receipt.json")
+    studies = receipt.get("studies") if isinstance(receipt, dict) else None
+    matches = [row for row in studies or [] if isinstance(row, dict) and row.get("study_id") == study_id]
+    main = matches[0].get("main_pdf") if len(matches) == 1 else None
+    relative = _acquisition_source_relative_path(main.get("path") if isinstance(main, dict) else None)
+    if relative is None:
+        raise PublicParseImportError(
+            "SOURCE_RECORD_INVALID",
+            "当前来源定位不可用，项目未更改。",
+        )
+    return relative.relative_to(Path("00_sources"))
+
+
 def add_project_source_supplement(project: Path, data: Any) -> dict[str, Any]:
     with SOURCE_TRANSACTION_LOCK:
         return _add_project_source_supplement_unlocked(project, data)
@@ -3874,6 +5494,13 @@ def project_source_handoff_payload(review_root: Path, project_id: str) -> dict[s
         raise ValueError("project source list is unavailable")
     manifest = manifest or {}
     receipt = receipt or {}
+    final_receipt = read_json_if_exists(project / "00_sources/acquisition_final_receipt.json") or {}
+    final_studies = final_receipt.get("studies") if isinstance(final_receipt, dict) else []
+    final_by_study = {
+        visible_text(row.get("study_id")): row
+        for row in final_studies or []
+        if isinstance(row, dict) and visible_text(row.get("study_id"))
+    }
     downloads = manifest.get("downloads") if isinstance(manifest, dict) else []
     results = receipt.get("results") if isinstance(receipt, dict) else []
     if downloads is not None and not isinstance(downloads, list):
@@ -3905,21 +5532,74 @@ def project_source_handoff_payload(review_root: Path, project_id: str) -> dict[s
         zip(downloads, download_ids, study_ids, strict=True)
     ):
         result = result_by_id.get(download_id, {})
-        ready = visible_text(result.get("status")).upper() in SOURCE_ARCHIVE_SUCCESS_STATUSES
         role = visible_text(row.get("document_role")).upper() or "FULL TEXT"
         doi = normalize_doi(row.get("doi")) or ""
         citation = doi or study_id or f"研究 {index + 1}"
         landing_url = _safe_research_source_url(row.get("landing_page_url"))
         source_url = _safe_research_source_url(row.get("source_url") or row.get("url"))
+        source_record = final_by_study.get(study_id)
+        descriptor = (
+            source_record.get("main_pdf" if role == "MAIN" else "si_pdf")
+            if isinstance(source_record, dict)
+            else None
+        )
+        currentness = "unknown"
+        digest = None
+        if isinstance(descriptor, dict):
+            digest = descriptor.get("sha256")
+            relative = _acquisition_source_relative_path(descriptor.get("path"))
+            expected_size = descriptor.get("size_bytes")
+            if (
+                relative is not None
+                and isinstance(digest, str)
+                and re.fullmatch(r"[0-9a-f]{64}", digest)
+                and isinstance(expected_size, int)
+                and not isinstance(expected_size, bool)
+            ):
+                try:
+                    source_file = validate_project_file_path(
+                        project,
+                        relative,
+                        "PROJECT_SOURCE_INVALID",
+                    )
+                    observed = hashlib.sha256(source_file.read_bytes()).hexdigest()
+                    currentness = (
+                        "current"
+                        if observed == digest and source_file.stat().st_size == expected_size
+                        else "stale"
+                    )
+                except (OSError, ValueError):
+                    currentness = "stale"
+        ready = visible_text(result.get("status")).upper() in SOURCE_ARCHIVE_SUCCESS_STATUSES
+        if currentness == "stale":
+            ready = False
+        source_locator = ""
+        if ready and currentness in {"current", "unknown"}:
+            source_locator = (
+                f"/api/project/{quote(project_id, safe='')}/source?"
+                f"{urlencode({'source_id': download_id})}"
+            )
         sources.append(
             {
                 "download_id": download_id,
                 "study_id": study_id or doi,
+                "source_id": visible_text(source_record.get("source_id"))
+                if isinstance(source_record, dict)
+                else download_id,
                 "citation": citation,
                 "role": role,
-                "status": "已获得" if ready else "需要上传",
+                "status": "已获得" if ready else "需要复核" if currentness == "stale" else "需要上传",
                 "download_url": landing_url or source_url,
-                "message": "全文已就绪" if ready else f"请补充 {role} 文件",
+                "digest": digest,
+                "currentness": currentness,
+                "safe_locator": source_locator,
+                "message": (
+                    "全文已就绪，当前版本"
+                    if ready and currentness == "current"
+                    else "已登记，但当前文件与记录不一致"
+                    if currentness == "stale"
+                    else f"请补充 {role} 文件"
+                ),
             }
         )
     ready_count = sum(row["status"] == "已获得" for row in sources)
@@ -4003,6 +5683,7 @@ def project_source_handoff_payload(review_root: Path, project_id: str) -> dict[s
         "sources": sources,
         "supplements": supplements,
         "unresolved": unresolved,
+        "preflight": _source_archive_preflight_payload(project),
     }
 
 
@@ -4099,6 +5780,44 @@ def _parse_object_actions(status: str, review_state: str = "") -> list[str]:
     return []
 
 
+def _public_parse_binding_projection(
+    project: Path,
+    project_id: str,
+    study_id: str,
+    source_id: str,
+    source_pdf_sha256: str,
+    quality_status: str,
+) -> dict[str, Any]:
+    provenance = "CANONICAL_PARSE"
+    parse_status = "canonical"
+    manifest = read_json_if_exists(project / "01_evidence/mineru/manifest.json")
+    completed = manifest.get("completed") if isinstance(manifest, dict) else []
+    matches = [
+        row
+        for row in completed or []
+        if isinstance(row, dict)
+        and row.get("source_id") == source_id
+        and row.get("source_pdf_sha256") == source_pdf_sha256
+    ]
+    if len(matches) == 1:
+        candidate_provenance = visible_text(matches[0].get("provenance"))
+        candidate_status = visible_text(matches[0].get("parse_status"))
+        if candidate_provenance:
+            provenance = candidate_provenance
+        if candidate_status:
+            parse_status = candidate_status
+    return {
+        "study_id": study_id,
+        "source_id": source_id,
+        "source_pdf_sha256": source_pdf_sha256,
+        "provenance": provenance,
+        "parse_status": parse_status,
+        "currentness": "current",
+        "quality_status": quality_status,
+        "locator": f"/api/project/{quote(project_id, safe='')}/source/{quote(source_id, safe='')}/parsed-markdown",
+    }
+
+
 def project_parse_quality_payload(review_root: Path, project_id: str) -> dict[str, Any]:
     project = project_dir(review_root, project_id)
     state = project_parse_quality_state(project)
@@ -4133,6 +5852,14 @@ def project_parse_quality_payload(review_root: Path, project_id: str) -> dict[st
         page_count = primary.get("page_count")
         if not isinstance(page_count, int) or isinstance(page_count, bool) or page_count < 1:
             raise SourceTruthError("SOURCE_PAGE_COUNT_INVALID")
+        pdf_descriptor = primary.get("pdf")
+        source_pdf_sha256 = (
+            visible_text(pdf_descriptor.get("sha256"))
+            if isinstance(pdf_descriptor, dict)
+            else ""
+        )
+        if not _PUBLIC_PARSE_SHA256_RE.fullmatch(source_pdf_sha256):
+            raise SourceTruthError("SOURCE_PDF_HASH_INVALID")
         base_href = (
             f"/api/project/{quote(project_id, safe='')}/source/"
             f"{quote(source_id, safe='')}"
@@ -4278,6 +6005,14 @@ def project_parse_quality_payload(review_root: Path, project_id: str) -> dict[st
                 "pdf_page_count": page_count,
                 "markdown_href": f"{base_href}/parsed-markdown",
                 "workflow_can_continue": bool(gate.get("workflow_can_continue")),
+                "parse_binding": _public_parse_binding_projection(
+                    project,
+                    project_id,
+                    study_id,
+                    source_id,
+                    source_pdf_sha256,
+                    visible_text(gate.get("status")) or "needs_review",
+                ),
                 "last_decision_at": study_last_decision_at,
                 "repair_handoff": repair_handoff,
                 "objects": objects,
@@ -4532,6 +6267,61 @@ def _safe_evidence_row(project_id: str, row: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def project_source_pdf_descriptors_payload(
+    review_root: Path,
+    project_id: str,
+) -> dict[str, Any]:
+    project = project_dir(review_root, project_id)
+    items: list[dict[str, Any]] = []
+    try:
+        for study_id in declared_study_ids(project):
+            persisted = load_source_truth_bundle(project, study_id)
+            fresh = build_source_truth_bundle(project, study_id)
+            if persisted.get("bundle_digest") != fresh.get("bundle_digest"):
+                return {"status": "stale", "items": []}
+            sources = fresh.get("sources")
+            if not isinstance(sources, list):
+                raise SourceTruthError("SOURCE_TRUTH_SCHEMA_INVALID")
+            for source in sources:
+                if not isinstance(source, dict):
+                    raise SourceTruthError("SOURCE_TRUTH_SCHEMA_INVALID")
+                source_id = source.get("source_id")
+                document_role = source.get("document_role")
+                page_count = source.get("page_count")
+                pdf = source.get("pdf")
+                digest = pdf.get("sha256") if isinstance(pdf, dict) else None
+                if (
+                    not isinstance(source_id, str)
+                    or not source_id
+                    or not isinstance(document_role, str)
+                    or not document_role
+                    or not isinstance(page_count, int)
+                    or isinstance(page_count, bool)
+                    or page_count < 1
+                    or not isinstance(digest, str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                ):
+                    raise SourceTruthError("SOURCE_TRUTH_SCHEMA_INVALID")
+                items.append(
+                    {
+                        "source": source_id,
+                        "study": study_id,
+                        "role": document_role,
+                        "digest": digest,
+                        "page_count": page_count,
+                        "currentness": "current",
+                        "locator": (
+                            f"/api/project/{quote(project_id, safe='')}/source/"
+                            f"{quote(source_id, safe='')}/pdf"
+                        ),
+                    }
+                )
+    except (KeyError, OSError, SourceTruthError, TypeError, ValueError):
+        return {"status": "stale", "items": []}
+    items.sort(key=lambda row: (row["study"], row["role"], row["source"]))
+    return {"status": "current", "items": items}
+
+
 def project_paper_evidence_payload(review_root: Path, project_id: str) -> dict[str, Any]:
     project = project_dir(review_root, project_id)
     workflow = workflow_state(project)
@@ -4546,6 +6336,7 @@ def project_paper_evidence_payload(review_root: Path, project_id: str) -> dict[s
         "workflow_can_continue": bool(state.get("workflow_can_continue")),
         "summary": {key: state.get(key, 0) for key in ("study_count", "total_count", "approved_count", "needs_review_count", "stale_count", "rejected_count")},
         "items": items,
+        "source_pdf_descriptors": project_source_pdf_descriptors_payload(review_root, project_id),
     }
 
 
@@ -4623,6 +6414,10 @@ def project_review_figures_workspace_payload(review_root: Path, project_id: str)
     project = project_dir(review_root, project_id); workflow = workflow_state(project)
     if workflow.get("route") != "evidence-to-release.v1":
         return {"route": workflow.get("route", "legacy"), "status": "legacy", "source_figures": [], "placeholders": []}
+    manuscript = current_manuscript_target_projection(project)
+    manuscript_markdown = ""
+    if manuscript.get("sha256"):
+        manuscript_markdown = (project / "04_manuscript/manuscript.md").read_text(encoding="utf-8")
     registry_path = project / "03_figures/source_figure_registry.json"
     registry_status = "current"
     if not registry_path.is_file():
@@ -4676,7 +6471,7 @@ def project_review_figures_workspace_payload(review_root: Path, project_id: str)
     source_figures = []
     for row in registry.get("figures", []):
         if not isinstance(row, dict): continue
-        item = {key: row.get(key) for key in ("figure_id", "study_id", "source_id", "page", "figure_label", "caption", "evidence_ids", "selection_status")}
+        item = {key: row.get(key) for key in ("figure_id", "study_id", "source_id", "page", "figure_label", "caption", "evidence_ids", "selection_status", "asset_sha256", "target_binding")}
         publication = publication_by_study.get(visible_text(row.get("study_id")), {})
         item["publication_identity"] = publication
         attribution_parts = []
@@ -4712,7 +6507,33 @@ def project_review_figures_workspace_payload(review_root: Path, project_id: str)
                 else "Internal review only; publication reuse rights are not cleared."
             ),
         }
-        item["version_token"] = _workspace_token("review-figure", str(row.get("figure_id")), row.get("asset_sha256"))
+        current_asset_sha256 = None
+        if row.get("target_binding") is not None:
+            try:
+                current_asset_sha256 = current_source_figure_asset_sha256(project, row)
+            except ReviewFigureError:
+                current_asset_sha256 = ""
+        item["target_binding_status"] = (
+            source_figure_target_binding_status(
+                row,
+                manuscript_markdown,
+                current_asset_sha256=current_asset_sha256,
+            )
+            if manuscript_markdown
+            else "stale"
+            if row.get("target_binding") is not None
+            else "missing"
+        )
+        item["target_options"] = source_figure_target_options(
+            row, manuscript.get("sections", []) if isinstance(manuscript.get("sections"), list) else []
+        )
+        item["version_token"] = _workspace_token(
+            "review-figures",
+            str(row.get("figure_id")),
+            source_figure_workspace_revision(
+                registry, row, str(manuscript.get("sha256") or "")
+            ),
+        )
         item["image_url"] = f"/api/project/{quote(project_id, safe='')}/source-figure?figure_id={quote(str(row.get('figure_id')), safe='')}"
         fragments = row.get("fragments")
         item["fragment_urls"] = [
@@ -4758,6 +6579,7 @@ def project_review_figures_workspace_payload(review_root: Path, project_id: str)
         "route": "evidence-to-release.v1",
         "figure_policy": "source_figures_or_synthesis_placeholders_only",
         "status": registry_status,
+        "manuscript": manuscript,
         "source_figures": source_figures,
         "locator_gaps": locator_gaps,
         "placeholders": placeholders,
@@ -4785,6 +6607,32 @@ def _require_workspace_token(kind: str, identifier: str, value: object, payload:
         raise WorkspaceStaleError("WORKSPACE_STALE")
 
 
+def _snapshot_figure_transaction_file(path: Path) -> bytes | None:
+    if os.path.lexists(path) and (path.is_symlink() or not path.is_file()):
+        raise ReviewFigureError("FIGURE_STATE_INVALID")
+    return path.read_bytes() if path.is_file() else None
+
+
+def _restore_figure_transaction_file(path: Path, previous: bytes | None) -> None:
+    try:
+        if previous is None:
+            if not os.path.lexists(path):
+                return
+            if path.is_symlink() or not path.is_file():
+                raise ReviewFigureError("FIGURE_STATE_INVALID")
+            path.unlink()
+            return
+        if os.path.lexists(path) and (path.is_symlink() or not path.is_file()):
+            raise ReviewFigureError("FIGURE_STATE_INVALID")
+        if path.is_file() and path.read_bytes() == previous:
+            return
+        _atomic_write_bytes(path, previous)
+    except ReviewFigureError:
+        raise
+    except (OSError, UnicodeError) as exc:
+        raise ReviewFigureError("FIGURE_TRANSACTION_ROLLBACK_FAILED") from exc
+
+
 def write_project_workspace_decision(review_root: Path, project_id: str, kind: str, payload: object) -> dict[str, Any]:
     if not isinstance(payload, dict): raise ValueError("invalid workspace payload")
     project = project_dir(review_root, project_id)
@@ -4799,7 +6647,25 @@ def write_project_workspace_decision(review_root: Path, project_id: str, kind: s
     if kind == "comparison-protocol":
         state = comparison_protocol_state(project); value = state.get("value") if isinstance(state.get("value"), dict) else {}; identifier = str(value.get("comparison_id") or "protocol")
         _require_workspace_token(kind, identifier, value.get("protocol_digest"), payload)
-        apply_comparison_protocol_decision(project, {"action": payload.get("action"), "reason": payload.get("reason"), "actor_type": payload.get("actor_type", "human_researcher"), "actor_label": payload.get("actor_label", "local-researcher")})
+        decision_payload = {
+            "action": payload.get("action"),
+            "reason": payload.get("reason"),
+            "actor_type": payload.get("actor_type", "human_researcher"),
+            "actor_label": payload.get("actor_label", "local-researcher"),
+        }
+        # Validate the requested human action before any stale-binding rebuild.
+        # A changed Evidence projection must clear the old decision and remain
+        # fail-closed until the researcher approves the newly bound protocol.
+        _decision(decision_payload, str(value.get("protocol_digest")))
+        evidence_digest = paper_evidence_state(project).get("projection_digest")
+        if value.get("paper_evidence_projection_digest") != evidence_digest:
+            rebuilt = dict(value)
+            rebuilt["paper_evidence_projection_digest"] = evidence_digest
+            rebuilt["decision"] = None
+            rebuilt.pop("protocol_digest", None)
+            register_comparison_protocol(project, rebuilt)
+            return project_comparison_protocol_payload(review_root, project_id)
+        apply_comparison_protocol_decision(project, decision_payload)
         return project_comparison_protocol_payload(review_root, project_id)
     if kind == "synthesis":
         state = synthesis_state(project); sid = payload.get("synthesis_id"); row = next((r for r in state.get("rows", []) if r.get("synthesis_id") == sid), None)
@@ -4810,41 +6676,48 @@ def write_project_workspace_decision(review_root: Path, project_id: str, kind: s
     if kind == "section-contracts":
         state = section_contract_state(project); sid = payload.get("section_id"); row = next((r for r in state.get("rows", []) if r.get("section_id") == sid), None)
         if not isinstance(row, dict): raise SectionContractError("SECTION_ID_NOT_FOUND")
-        _require_workspace_token(kind, str(sid), row.get("contract_digest"), payload)
+        _require_workspace_token("section-contract", str(sid), row.get("contract_digest"), payload)
         apply_section_contract_decision(project, {"section_id": sid, "action": payload.get("action"), "reason": payload.get("reason"), "actor_type": payload.get("actor_type", "human_researcher"), "actor_label": payload.get("actor_label", "local-researcher")})
         return project_section_contracts_payload(review_root, project_id)
     if kind == "review-figures":
-        figure_id = payload.get("figure_id")
-        registry = load_source_figure_registry(project)
-        rows = registry.get("figures", []); row = next((r for r in rows if isinstance(r, dict) and r.get("figure_id") == figure_id), None)
-        if not isinstance(row, dict): raise ReviewFigureError("FIGURE_NOT_FOUND")
-        _require_workspace_token(kind, str(figure_id), row.get("asset_sha256"), payload)
-        status = payload.get("selection_status")
-        if status not in {"selected", "available", "rejected"}: raise ReviewFigureError("FIGURE_SELECTION_INVALID")
-        row["selection_status"] = status
-        registry["registry_digest"] = canonical_digest(
-            {
-                "source_truth_digest": registry.get("source_truth_digest"),
-                "content_list_v2_digest": registry.get("content_list_v2_digest"),
-                "chemical_paper_project_binding_digest": registry.get(
-                    "chemical_paper_project_binding_digest"
-                ),
-                "figures": registry.get("figures", []),
-                "locator_gaps": registry.get("locator_gaps", []),
-            }
+        manuscript_path = project / "04_manuscript/manuscript.md"
+        lineage_path = project / "04_manuscript/manuscript_lineage.v2.json"
+        registry_path = project / "03_figures/source_figure_registry.json"
+        refresh_lineage = any(
+            os.path.lexists(path) for path in (manuscript_path, lineage_path)
         )
-        target = project / "03_figures/source_figure_registry.json"
-        if target.is_symlink() or (target.exists() and not target.is_file()):
-            raise ReviewFigureError("FIGURE_STATE_INVALID")
-        fd, temporary = tempfile.mkstemp(prefix=".source_figure_registry.", suffix=".tmp", dir=target.parent)
+        transaction_paths = [registry_path]
+        if refresh_lineage:
+            transaction_paths.extend((manuscript_path, lineage_path))
+        previous = {
+            path: _snapshot_figure_transaction_file(path) for path in transaction_paths
+        }
+        kwargs = {
+            "figure_id": payload.get("figure_id"),
+            "selection_status": payload.get("selection_status"),
+            "version_token": payload.get("version_token", payload.get("token")),
+        }
+        if "target_binding" in payload:
+            kwargs["target_binding"] = payload.get("target_binding")
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(registry, handle, ensure_ascii=False, sort_keys=True, indent=2)
-                handle.write("\n"); handle.flush(); os.fsync(handle.fileno())
-            os.replace(temporary, target)
-        finally:
-            if os.path.exists(temporary): os.unlink(temporary)
-        return project_review_figures_workspace_payload(review_root, project_id)
+            with SOURCE_TRANSACTION_LOCK:
+                write_source_figure_selection(project, **kwargs)
+                if refresh_lineage:
+                    merge_authoritative_manuscript(project)
+                result = project_review_figures_workspace_payload(review_root, project_id)
+        except Exception as exc:
+            try:
+                for path, snapshot in previous.items():
+                    _restore_figure_transaction_file(path, snapshot)
+            except ReviewFigureError as rollback_error:
+                raise rollback_error from exc
+            if isinstance(exc, ReviewFigureError):
+                raise
+            code = getattr(exc, "code", None)
+            raise ReviewFigureError(
+                code if isinstance(code, str) and code else "FIGURE_LINEAGE_REFRESH_FAILED"
+            ) from exc
+        return result
     raise ValueError("unknown workspace")
 
 
@@ -5641,6 +7514,11 @@ def infer_project_topic(project: Path) -> str:
         brief = review_state.get("brief")
         if isinstance(brief, dict) and brief.get("topic"):
             return str(brief.get("topic"))
+        # Older data-ready producers persisted the authorized topic at the
+        # review-state root. Reuse that metadata; never infer a label from a path.
+        legacy_topic = review_state.get("topic")
+        if isinstance(legacy_topic, str) and legacy_topic.strip():
+            return legacy_topic
     discovery_candidates = read_json_if_exists(project / "00_discovery" / "discovery_candidates.json")
     if isinstance(discovery_candidates, dict) and discovery_candidates.get("topic"):
         return str(discovery_candidates.get("topic"))
@@ -5915,6 +7793,183 @@ def list_review_projects(review_root: Path) -> list[dict[str, Any]]:
 
 def project_summary(review_root: Path, project_id: str) -> dict[str, Any] | None:
     return next((p for p in list_review_projects(review_root) if p["project_id"] == project_id), None)
+
+
+def _resume_artifact_refs(project: Path, snapshot: object) -> list[dict[str, str]]:
+    if not isinstance(snapshot, dict) or snapshot.get("currentness") != "current":
+        raise PublicProjectResumeError(
+            "VERSION_CONTEXT_INVALID",
+            HTTPStatus.UNPROCESSABLE_ENTITY,
+            "current version context is invalid",
+        )
+    raw_refs = snapshot.get("artifact_refs")
+    if not isinstance(raw_refs, list) or not raw_refs:
+        raise PublicProjectResumeError(
+            "VERSION_CONTEXT_INVALID",
+            HTTPStatus.UNPROCESSABLE_ENTITY,
+            "current version context is invalid",
+        )
+
+    safe_refs: list[dict[str, str]] = []
+    for raw_ref in raw_refs:
+        if not isinstance(raw_ref, dict) or set(raw_ref) != {"path", "sha256"}:
+            raise PublicProjectResumeError(
+                "VERSION_CONTEXT_INVALID",
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                "current version context is invalid",
+            )
+        relative_text = raw_ref.get("path")
+        expected_digest = raw_ref.get("sha256")
+        if (
+            not isinstance(relative_text, str)
+            or not relative_text
+            or "\\" in relative_text
+            or PurePosixPath(relative_text).as_posix() != relative_text
+            or PureWindowsPath(relative_text).is_absolute()
+            or bool(PureWindowsPath(relative_text).drive)
+            or bool(PureWindowsPath(relative_text).root)
+            or any(part in {"", ".", ".."} for part in relative_text.split("/"))
+            or not isinstance(expected_digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", expected_digest) is None
+        ):
+            raise PublicProjectResumeError(
+                "VERSION_CONTEXT_INVALID",
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                "current version context is invalid",
+            )
+        relative = Path(*relative_text.split("/"))
+        try:
+            validate_project_path_components(project, (relative,))
+            artifact_path = project / relative
+            if not artifact_path.is_file():
+                raise OSError("artifact is missing")
+            resolved_artifact = artifact_path.resolve(strict=True)
+            resolved_artifact.relative_to(project.resolve(strict=True))
+            actual_digest = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+        except (OSError, ValueError, ProjectReleaseError) as exc:
+            raise PublicProjectResumeError(
+                "VERSION_CONFLICT",
+                HTTPStatus.CONFLICT,
+                "project artifacts are stale",
+            ) from exc
+        if actual_digest != expected_digest:
+            raise PublicProjectResumeError(
+                "VERSION_CONFLICT",
+                HTTPStatus.CONFLICT,
+                "project artifacts are stale",
+            )
+        safe_refs.append({"path": relative_text, "sha256": expected_digest})
+    return safe_refs
+
+
+def project_resume_payload(
+    review_root: Path,
+    project_id: str,
+    request: dict[str, Any],
+    *,
+    seen: set[tuple[str, str, int, str]],
+    seen_lock: Any,
+) -> dict[str, Any]:
+    try:
+        registered = project_summary(review_root, project_id)
+    except (OSError, TypeError, ValueError):
+        registered = None
+    if registered is None:
+        raise PublicProjectResumeError(
+            "PROJECT_NOT_FOUND",
+            HTTPStatus.NOT_FOUND,
+            "registered project was not found",
+        )
+
+    try:
+        project = resolve_project_root(project_dir(review_root, project_id))
+    except (OSError, ProductFoundationError, TypeError, ValueError) as exc:
+        raise PublicProjectResumeError(
+            "PROJECT_INVALID",
+            HTTPStatus.BAD_REQUEST,
+            "registered project is invalid",
+        ) from exc
+
+    state_path = version_context_root(project) / "current.json"
+    try:
+        validate_project_path_components(
+            project,
+            (
+                Path(".review-writer"),
+                Path(".review-writer/version_context"),
+                Path(".review-writer/version_context/current.json"),
+            ),
+        )
+    except (OSError, ProjectReleaseError) as exc:
+        raise PublicProjectResumeError(
+            "VERSION_CONTEXT_INVALID",
+            HTTPStatus.UNPROCESSABLE_ENTITY,
+            "authoritative current version is invalid",
+        ) from exc
+    if state_path.is_symlink() or not state_path.is_file():
+        raise PublicProjectResumeError(
+            "VERSION_CONTEXT_MISSING",
+            HTTPStatus.NOT_FOUND,
+            "authoritative current version is unavailable",
+        )
+    try:
+        context = VersionContext.load(project)
+        state = context.state()
+        current = context.view_version(state.current_version_id)
+    except (OSError, ProductFoundationError, TypeError, ValueError) as exc:
+        raise PublicProjectResumeError(
+            "VERSION_CONTEXT_INVALID",
+            HTTPStatus.UNPROCESSABLE_ENTITY,
+            "authoritative current version is invalid",
+        ) from exc
+
+    if state.project_id != project_id or not current.is_current or not current.is_active_head or not current.can_write:
+        raise PublicProjectResumeError(
+            "VERSION_CONTEXT_INVALID",
+            HTTPStatus.UNPROCESSABLE_ENTITY,
+            "authoritative current version is invalid",
+        )
+    stored_token = current.snapshot.get("version_token")
+    if not isinstance(stored_token, str) or re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._:-]{0,511}", stored_token
+    ) is None:
+        raise PublicProjectResumeError(
+            "VERSION_CONTEXT_INVALID",
+            HTTPStatus.UNPROCESSABLE_ENTITY,
+            "authoritative current version is invalid",
+        )
+    if (
+        request["expected_revision"] != state.revision
+        or (
+            request.get("node_digest") is not None
+            and request["node_digest"] != current.snapshot_digest
+        )
+        or request["version_token"] != stored_token
+    ):
+        raise PublicProjectResumeError(
+            "VERSION_CONFLICT",
+            HTTPStatus.CONFLICT,
+            "authoritative current version has changed",
+        )
+
+    safe_refs = _resume_artifact_refs(project, current.snapshot)
+    identity = (str(project), current.version_id, state.revision, current.snapshot_digest)
+    with seen_lock:
+        already_seen = identity in seen
+        seen.add(identity)
+    return {
+        "result": "UNCHANGED" if already_seen else "RESUMED",
+        "write_mode": "NONE",
+        "currentness": "current",
+        "version": {
+            "version_id": current.version_id,
+            "digest": current.snapshot_digest,
+            "version_token": request["version_token"],
+            "artifact_refs": safe_refs,
+        },
+        "revision": state.revision,
+        "next_action": {"project_id": project_id, "route": "/review"},
+    }
 
 
 def review_state_path(review_root: Path, project_id: str) -> Path:
@@ -6282,7 +8337,10 @@ def _write_new_route_draft_section(
         "actor_label",
     }:
         raise ValueError("new-route draft payload is invalid")
-    if data.get("actor_type") != "simulated_researcher_agent":
+    if data.get("actor_type") not in {
+        "human_researcher",
+        "simulated_researcher_agent",
+    }:
         raise ValueError("new-route dashboard actor is invalid")
     project = project_dir(review_root, project_id)
     with SOURCE_TRANSACTION_LOCK:
@@ -6821,20 +8879,18 @@ def _project_release_artifact_state(project: Path) -> dict[str, Any]:
         snapshot_path = project_path / snapshot_relative
         docx_path = project_path / docx_relative
         quality_path = project_path / quality_relative
-        authoritative_bytes = authoritative_path.read_bytes()
         markdown_exists = snapshot_path.is_file() and not snapshot_path.is_symlink()
-        snapshot_matches = bool(
+        release_binding_metadata_valid = bool(
             metadata_exists
             and markdown_exists
-            and snapshot_path.read_bytes() == authoritative_bytes
             and metadata.get("markdown_path") == snapshot_relative.as_posix()
             and metadata.get("docx_path") == docx_relative.as_posix()
         )
         quality_report = read_json_if_exists(quality_path)
         if not isinstance(quality_report, dict):
             quality_report = {}
-        integrity_valid = bool(
-            snapshot_matches
+        release_binding_current = bool(
+            release_binding_metadata_valid
             and docx_path.is_file()
             and not docx_path.is_symlink()
             and new_route_release_docx_is_current(docx_path)
@@ -6846,8 +8902,8 @@ def _project_release_artifact_state(project: Path) -> dict[str, Any]:
             "stage_path": project_path / "05_release",
             "quality_report": quality_report,
             "snapshot_exists": metadata_exists,
-            "snapshot_matches": snapshot_matches,
-            "integrity_valid": integrity_valid,
+            "snapshot_matches": release_binding_current,
+            "integrity_valid": release_binding_current,
         }
 
     canonical_authoritative_relative = Path("04_first_draft/first_draft.md")
@@ -7117,7 +9173,7 @@ def _body_with_preserved_claim_markers(visible_body: str, current_raw_body: str)
 
 def project_draft_payload(review_root: Path, project_id: str) -> dict[str, Any]:
     project = project_dir(review_root, project_id)
-    if workflow_state(project).get("route") == "evidence-to-release.v1":
+    if os.path.lexists(project / SOURCE_TRUTH_ROOT):
         return _new_route_draft_payload(review_root, project_id)
     stage_dir = project / "04_first_draft"
     project_relative = project.relative_to(Path(review_root).resolve())
@@ -7212,9 +9268,50 @@ def dashboard_assets(view_root: Path) -> tuple[Path, ...]:
     return tuple(paths)
 
 
-def run(args: argparse.Namespace) -> int:
-    review_root = Path(args.review_root).resolve()
-    view_root = Path(__file__).resolve().parent
+def configure_runtime(
+    review_root: Path,
+    *,
+    code_root: Path = REPO_ROOT,
+    asset_root: Path | None = None,
+) -> DashboardRuntimeContext:
+    """Bind one process-local root/code/assets context before serving requests."""
+    configured_code_root = _resolved_directory(Path(code_root), label="configured code root")
+    script_code_root = _resolved_directory(REPO_ROOT, label="Dashboard script code root")
+    if configured_code_root != script_code_root:
+        raise DashboardRuntimeIdentityError("configured code root differs from Dashboard script checkout")
+
+    delivery_roots = {
+        _imported_module_checkout_root(build_project_release),
+        _imported_module_checkout_root(_image_binding),
+    }
+    if delivery_roots != {configured_code_root}:
+        raise DashboardRuntimeIdentityError("imported delivery code differs from Dashboard script checkout")
+
+    configured_asset_root = _resolved_directory(
+        Path(asset_root) if asset_root is not None else configured_code_root / "view" / "assets",
+        label="configured Dashboard asset root",
+    )
+    expected_asset_root = _resolved_directory(
+        configured_code_root / "view" / "assets",
+        label="Dashboard asset root",
+    )
+    if configured_asset_root != expected_asset_root:
+        raise DashboardRuntimeIdentityError("configured Dashboard assets differ from script checkout")
+
+    configured_review_root = _resolved_directory(Path(review_root), label="configured review root")
+    checkout_root = nearest_checkout_boundary(configured_review_root)
+    mode = (
+        HISTORICAL_READ_ONLY
+        if checkout_root is not None and checkout_root != configured_code_root
+        else WRITABLE
+    )
+    context = DashboardRuntimeContext(
+        review_root=configured_review_root,
+        code_root=configured_code_root,
+        asset_root=configured_asset_root,
+        mode=mode,
+        checkout_root=checkout_root,
+    )
     (
         library_app_path,
         discovery_app_path,
@@ -7225,8 +9322,10 @@ def run(args: argparse.Namespace) -> int:
         draft_app_path,
         final_app_path,
         review_app_path,
-    ) = dashboard_assets(view_root)
-    DashboardHandler.review_root = review_root
+    ) = dashboard_assets(configured_asset_root.parent)
+    DashboardHandler.runtime_context = context
+    DashboardHandler.review_root = context.review_root
+    DashboardHandler.asset_root = context.asset_root
     DashboardHandler.library_app_path = library_app_path
     DashboardHandler.discovery_app_path = discovery_app_path
     DashboardHandler.matrix_app_path = matrix_app_path
@@ -7236,6 +9335,11 @@ def run(args: argparse.Namespace) -> int:
     DashboardHandler.draft_app_path = draft_app_path
     DashboardHandler.final_app_path = final_app_path
     DashboardHandler.review_app_path = review_app_path
+    return context
+
+
+def run(args: argparse.Namespace) -> int:
+    configure_runtime(Path(args.review_root))
     server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
     print(f"Serving dashboard at http://{args.host}:{args.port}")
     print("Press Ctrl+C to stop.")

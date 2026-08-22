@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Review Writer · E2E Acceptance Journey</title>
+  <style>
+    :root {
+      --ink: #f1f3ec;
+      --muted: #8e9c94;
+      --muted-2: #66736c;
+      --canvas: #17211f;
+      --canvas-2: #1c2926;
+      --panel: #22312d;
+      --panel-2: #293b35;
+      --paper: #f5f1e8;
+      --paper-ink: #18221f;
+      --line: rgba(215, 225, 216, .13);
+      --mint: #bfe5ce;
+      --mint-strong: #6ee0aa;
+      --lime: #d9f15b;
+      --coral: #ff8b75;
+      --coral-bg: rgba(255, 139, 117, .12);
+      --blue: #a7cced;
+      --shadow: 0 24px 70px rgba(3, 10, 8, .32);
+      --display: Georgia, 'Times New Roman', serif;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --body: 'Avenir Next', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { background: var(--canvas); }
+    body { margin: 0; min-width: 320px; background:
+      radial-gradient(circle at 12% 0%, rgba(96, 158, 131, .16), transparent 30rem),
+      radial-gradient(circle at 100% 20%, rgba(199, 220, 111, .07), transparent 25rem),
+      var(--canvas); color: var(--ink); font-family: var(--body); }
+    button { font: inherit; }
+    button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--lime); outline-offset: 3px; }
+
+    .shell { width: min(1480px, calc(100% - 44px)); margin: 0 auto; padding: 34px 0 42px; }
+    .topbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 28px; margin-bottom: 30px; }
+    .kicker { color: var(--lime); font: 700 10px/1.2 var(--mono); letter-spacing: .19em; text-transform: uppercase; }
+    h1 { margin: 10px 0 12px; font: 400 clamp(34px, 4.2vw, 68px)/.98 var(--display); letter-spacing: -.05em; max-width: 850px; }
+    .intro { margin: 0; max-width: 760px; color: var(--muted); font-size: 14px; line-height: 1.7; }
+    .top-status { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; max-width: 390px; }
+    .status-pill { border: 1px solid var(--line); border-radius: 999px; padding: 9px 11px; color: var(--muted); font: 700 10px var(--mono); letter-spacing: .08em; white-space: nowrap; }
+    .status-pill.live { color: var(--lime); border-color: rgba(217, 241, 91, .36); background: rgba(217, 241, 91, .06); }
+
+    .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 24px; }
+    .metric { min-height: 86px; padding: 15px 17px; border: 1px solid var(--line); background: rgba(34, 49, 45, .72); border-radius: 15px; }
+    .metric-label { color: var(--muted-2); font: 700 9px var(--mono); letter-spacing: .16em; text-transform: uppercase; }
+    .metric-value { margin-top: 10px; color: var(--paper); font: 700 18px var(--mono); letter-spacing: -.03em; }
+    .metric-value.mint { color: var(--mint-strong); }
+    .metric-value.lime { color: var(--lime); }
+    .metric-value.coral { color: var(--coral); }
+
+    .workspace { display: grid; grid-template-columns: 218px minmax(0, 1fr) 300px; gap: 14px; align-items: start; }
+    .rail, .event-panel { border: 1px solid var(--line); background: rgba(27, 40, 37, .8); border-radius: 18px; box-shadow: var(--shadow); }
+    .rail { padding: 15px 12px 13px; position: sticky; top: 16px; }
+    .rail-head { padding: 4px 6px 14px; color: var(--muted-2); font: 700 9px var(--mono); letter-spacing: .17em; text-transform: uppercase; }
+    .stage { position: relative; display: flex; gap: 10px; width: 100%; padding: 11px 7px; border: 0; border-radius: 12px; background: transparent; color: var(--muted); text-align: left; cursor: pointer; transition: .22s ease; }
+    .stage:hover { background: rgba(255,255,255,.05); color: var(--ink); }
+    .stage.current { background: rgba(191,229,206,.1); color: var(--paper); }
+    .stage.done { color: var(--mint-strong); }
+    .stage-dot { flex: 0 0 17px; height: 17px; margin-top: 1px; border: 1px solid currentColor; border-radius: 50%; position: relative; }
+    .stage.done .stage-dot:after { content: '✓'; position: absolute; inset: -1px 0 0; text-align: center; font: 700 11px/17px var(--mono); }
+    .stage.current .stage-dot { border-color: var(--lime); box-shadow: 0 0 0 4px rgba(217,241,91,.09); color: var(--lime); }
+    .stage-label { font-size: 12px; line-height: 1.25; }
+    .stage-index { display: block; margin-top: 4px; color: var(--muted-2); font: 9px var(--mono); }
+    .rail-rule { height: 1px; margin: 10px 6px; background: var(--line); }
+    .rail-legend { padding: 4px 6px; color: var(--muted-2); font-size: 10px; line-height: 1.65; }
+
+    .stage-panel { min-width: 0; }
+    .story-card { position: relative; min-height: 432px; padding: 29px 32px 25px; overflow: hidden; border-radius: 20px; background: var(--paper); color: var(--paper-ink); box-shadow: var(--shadow); }
+    .story-card:before { content: ''; position: absolute; width: 390px; height: 390px; right: -170px; top: -210px; border: 1px solid rgba(24,34,31,.12); border-radius: 50%; box-shadow: 0 0 0 30px rgba(24,34,31,.025), 0 0 0 60px rgba(24,34,31,.02); }
+    .story-meta { position: relative; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 26px; }
+    .actor { padding: 7px 9px; border-radius: 5px; background: var(--paper-ink); color: var(--lime); font: 700 10px var(--mono); letter-spacing: .08em; }
+    .phase { color: #66736c; font: 700 10px var(--mono); letter-spacing: .14em; text-transform: uppercase; }
+    .step-count { margin-left: auto; color: #829188; font: 700 11px var(--mono); }
+    .story-kicker { position: relative; margin-bottom: 10px; color: #60816f; font: 700 10px var(--mono); letter-spacing: .18em; text-transform: uppercase; }
+    .story-title { position: relative; max-width: 740px; margin: 0; font: 400 clamp(31px, 3.7vw, 59px)/.99 var(--display); letter-spacing: -.055em; }
+    .story-body { position: relative; max-width: 720px; margin: 18px 0 28px; color: #53635b; font-size: 15px; line-height: 1.72; }
+    .story-bottom { position: relative; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; max-width: 780px; }
+    .fact { padding: 12px 13px; border: 1px solid rgba(24,34,31,.12); border-radius: 10px; background: rgba(255,255,255,.45); }
+    .fact-label { display: block; margin-bottom: 7px; color: #8a9990; font: 700 9px var(--mono); letter-spacing: .15em; text-transform: uppercase; }
+    .fact-value { display: block; color: #203229; font: 600 12px/1.4 var(--mono); }
+    .fact-value.guard { color: #47725b; }
+    .fact-value.warn { color: #aa5b48; }
+    .story-status { position: relative; display: inline-flex; align-items: center; gap: 7px; margin-top: 18px; padding: 8px 11px; border-radius: 99px; background: #e3efe4; color: #47725b; font: 700 10px var(--mono); letter-spacing: .08em; }
+    .story-status:before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 4px rgba(71,114,91,.13); }
+    .story-status.human { background: #eff5c6; color: #6e771c; }
+    .story-status.fail { background: #fee3dd; color: #a84735; }
+
+    .lineage { margin: 14px 0; padding: 20px 20px 17px; border: 1px solid var(--line); border-radius: 18px; background: rgba(34, 49, 45, .76); overflow: hidden; }
+    .lineage-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+    .lineage-title { color: var(--paper); font: 400 22px var(--display); }
+    .lineage-caption { color: var(--muted-2); font: 10px var(--mono); }
+    .river { position: relative; display: flex; justify-content: space-between; gap: 12px; padding: 11px 0 3px; min-width: 720px; }
+    .river-track { position: absolute; top: 22px; left: 12px; right: 12px; height: 2px; background: #42564e; }
+    .river-track:after { content: ''; position: absolute; inset: 0 33% 0 0; background: linear-gradient(90deg, var(--mint-strong), var(--lime)); box-shadow: 0 0 14px rgba(217,241,91,.42); transition: width .55s ease; }
+    .river-node { position: relative; z-index: 1; min-width: 70px; max-width: 98px; color: var(--muted-2); text-align: center; font: 9px/1.35 var(--mono); cursor: pointer; }
+    .river-bullet { width: 22px; height: 22px; margin: 0 auto 8px; border: 2px solid #52665d; border-radius: 50%; background: var(--canvas-2); transition: .25s ease; }
+    .river-node.reached { color: var(--mint); }
+    .river-node.reached .river-bullet { border-color: var(--mint-strong); background: #315a48; box-shadow: 0 0 0 5px rgba(110,224,170,.08); }
+    .river-node.current { color: var(--lime); }
+    .river-node.current .river-bullet { border-color: var(--lime); background: #4d5b26; box-shadow: 0 0 0 5px rgba(217,241,91,.12), 0 0 20px rgba(217,241,91,.18); }
+    .river-node.error { color: var(--coral); }
+    .river-node.error .river-bullet { border-color: var(--coral); background: #633d38; }
+    .lineage-scroll { overflow-x: auto; scrollbar-width: thin; scrollbar-color: #465b51 transparent; }
+
+    .event-panel { padding: 17px 15px; min-height: 618px; }
+    .event-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 3px 5px 13px; border-bottom: 1px solid var(--line); }
+    .event-title { font: 400 22px var(--display); }
+    .event-count { color: var(--muted-2); font: 10px var(--mono); }
+    .event-list { display: grid; gap: 8px; padding-top: 13px; }
+    .event { position: relative; padding: 11px 11px 11px 14px; border: 1px solid var(--line); border-radius: 11px; background: rgba(255,255,255,.028); animation: rise .35s both; }
+    .event:before { content: ''; position: absolute; top: 12px; bottom: 12px; left: 0; width: 3px; border-radius: 0 5px 5px 0; background: var(--mint-strong); }
+    .event.human:before { background: var(--lime); }
+    .event.fail { border-color: rgba(255,139,117,.36); background: var(--coral-bg); }
+    .event.fail:before { background: var(--coral); }
+    .event-top { display: flex; justify-content: space-between; gap: 6px; color: var(--muted-2); font: 9px var(--mono); }
+    .event-actor { color: var(--mint); }
+    .event.human .event-actor { color: var(--lime); }
+    .event.fail .event-actor { color: var(--coral); }
+    .event-text { margin-top: 7px; color: #d5ded7; font-size: 11px; line-height: 1.45; }
+    .empty { padding: 22px 6px; color: var(--muted-2); font: 11px/1.6 var(--mono); }
+    .event-note { margin-top: 18px; padding: 12px 12px 12px 14px; border: 1px dashed rgba(217,241,91,.3); border-radius: 10px; color: #b8c8b8; font-size: 11px; line-height: 1.55; }
+    .event-note strong { color: var(--lime); font: 700 10px var(--mono); letter-spacing: .1em; }
+
+    .alert { display: none; align-items: flex-start; gap: 12px; margin: 14px 0 0; padding: 15px 17px; border: 1px solid rgba(255,139,117,.45); border-radius: 15px; background: var(--coral-bg); color: #ffd8cf; }
+    .alert.show { display: flex; animation: rise .3s both; }
+    .alert-mark { flex: 0 0 25px; width: 25px; height: 25px; border: 1px solid var(--coral); border-radius: 50%; color: var(--coral); font: 700 15px/23px var(--mono); text-align: center; }
+    .alert strong { display: block; color: var(--coral); font: 700 11px var(--mono); letter-spacing: .1em; }
+    .alert p { margin: 5px 0 0; font-size: 12px; line-height: 1.55; }
+
+    .controls { position: sticky; z-index: 4; bottom: 15px; display: flex; align-items: center; gap: 9px; margin-top: 18px; padding: 11px; border: 1px solid rgba(217,241,91,.2); border-radius: 16px; background: rgba(25, 38, 34, .94); box-shadow: 0 16px 40px rgba(0,0,0,.25); backdrop-filter: blur(13px); }
+    .control { border: 1px solid var(--line); border-radius: 9px; padding: 11px 13px; background: rgba(255,255,255,.04); color: var(--paper); font: 700 10px var(--mono); letter-spacing: .08em; cursor: pointer; transition: .2s ease; }
+    .control:hover { border-color: rgba(217,241,91,.48); background: rgba(217,241,91,.08); color: var(--lime); }
+    .control.primary { border-color: var(--lime); background: var(--lime); color: #213025; }
+    .control.primary:hover { background: #e5f97d; color: #17211f; }
+    .control.danger { border-color: rgba(255,139,117,.5); color: var(--coral); }
+    .control.danger:hover { background: var(--coral-bg); }
+    .control:disabled { opacity: .38; cursor: not-allowed; }
+    .control-spacer { flex: 1; }
+    .keyboard-hint { color: var(--muted-2); font: 10px var(--mono); }
+    .footer-note { margin-top: 15px; color: var(--muted-2); font: 10px/1.6 var(--mono); text-align: center; }
+
+    @keyframes rise { from { opacity: 0; transform: translateY(9px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
+    .pulse { animation: pulse 1.2s ease-in-out 2; }
+    @media (prefers-reduced-motion: reduce) { *, *:before, *:after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .01ms !important; } }
+    @media (max-width: 1120px) { .workspace { grid-template-columns: 184px minmax(0, 1fr); } .event-panel { grid-column: 1 / -1; min-height: 0; } .event-list { grid-template-columns: repeat(3, 1fr); } .event-note { display: none; } }
+    @media (max-width: 820px) { .shell { width: min(100% - 26px, 680px); padding-top: 24px; } .topbar { display: block; } .top-status { justify-content: flex-start; margin-top: 18px; } .metrics { grid-template-columns: repeat(2, 1fr); } .workspace { display: block; } .rail { position: static; display: grid; grid-template-columns: repeat(2, 1fr); gap: 3px; margin-bottom: 13px; } .rail-head, .rail-rule, .rail-legend { grid-column: 1 / -1; } .story-card { min-height: 0; padding: 24px 21px; } .story-bottom { grid-template-columns: 1fr; } .event-panel { margin-top: 13px; } .event-list { grid-template-columns: 1fr 1fr; } .controls { flex-wrap: wrap; } .control-spacer, .keyboard-hint { display: none; } }
+    @media (max-width: 520px) { .metrics { gap: 7px; } .metric { min-height: 75px; padding: 12px; } .metric-value { font-size: 14px; } .event-list { grid-template-columns: 1fr; } .control { flex: 1 1 calc(50% - 9px); } .control.danger { flex-basis: 100%; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <div class="kicker">Review-writer / E2E experience</div>
+        <h1>一条能被人类<br>按住暂停的证据旅程</h1>
+        <p class="intro">从全新项目到 HUMAN_ACCEPTANCE：Agent 负责确定性推进，Dashboard 把决定权留给研究者。每一个 current、revision、artifact hash 与 stale 闸门，都沿着同一条 authority 线被看见。</p>
+      </div>
+      <div class="top-status" aria-label="demo status">
+        <span class="status-pill live">LOCAL / DETERMINISTIC</span>
+        <span class="status-pill">HUMAN-GATED</span>
+        <span class="status-pill">NO PROMOTE / B2</span>
+      </div>
+    </header>
+
+    <section class="metrics" aria-label="project metrics">
+      <div class="metric"><div class="metric-label">Project</div><div id="metric-project" class="metric-value">NEW / UNNAMED</div></div>
+      <div class="metric"><div class="metric-label">Canonical current</div><div id="metric-current" class="metric-value mint">—</div></div>
+      <div class="metric"><div class="metric-label">Revision</div><div id="metric-revision" class="metric-value">r00</div></div>
+      <div class="metric"><div class="metric-label">Release</div><div id="metric-release" class="metric-value">NOT YET</div></div>
+    </section>
+
+    <section class="workspace">
+      <nav class="rail" aria-label="journey stages">
+        <div class="rail-head">Journey map / 07 gates</div>
+        <div id="stage-list"></div>
+        <div class="rail-rule"></div>
+        <div class="rail-legend">Mint = persisted<br>Lime = researcher action<br>Coral = fail-closed</div>
+      </nav>
+
+      <div class="stage-panel">
+        <article id="story-card" class="story-card" aria-live="polite">
+          <div class="story-meta"><span id="story-actor" class="actor">AGENT</span><span id="story-phase" class="phase">INITIALIZE</span><span id="story-count" class="step-count">01 / 16</span></div>
+          <div id="story-kicker" class="story-kicker">Canonical project / fresh folder</div>
+          <h2 id="story-title" class="story-title">读取唯一 current</h2>
+          <p id="story-body" class="story-body">Agent 从全新项目文件夹开始，读取唯一 canonical project/current，确认没有第二套状态机或隐形工作区。</p>
+          <div class="story-bottom">
+            <div class="fact"><span class="fact-label">Write set</span><span id="story-write" class="fact-value">project/manifest.v1 · current pointer</span></div>
+            <div class="fact"><span class="fact-label">Guard</span><span id="story-guard" class="fact-value guard">pointer-last · exact authority</span></div>
+          </div>
+          <div id="story-status" class="story-status">AGENT ACTION / READY</div>
+        </article>
+
+        <div id="alert" class="alert" role="status" aria-live="assertive">
+          <div class="alert-mark">!</div>
+          <div><strong>FAIL-CLOSED / 409 / ZERO-WRITE</strong><p id="alert-copy">旧 current 保持不变。</p></div>
+        </div>
+
+        <section class="lineage" aria-label="version lineage">
+          <div class="lineage-head"><div class="lineage-title">同一条 lineage，所有版本都可追溯</div><div class="lineage-caption">ARTIFACT-FIRST · POINTER-LAST</div></div>
+          <div class="lineage-scroll"><div id="river" class="river"></div></div>
+        </section>
+      </div>
+
+      <aside class="event-panel" aria-label="event log">
+        <div class="event-head"><div class="event-title">Evidence feed</div><div id="event-count" class="event-count">0 EVENTS</div></div>
+        <div id="event-list" class="event-list"><div class="empty">播放旅程后，这里会出现每一次 Agent 写入、Dashboard 决定与保护闸门。</div></div>
+        <div class="event-note"><strong>THIS IS A STORYBOARD</strong><br>动画的 PASS 只表示叙事状态已到达，不等于真实 PUBLIC_E2E、scientific validity 或生产发布。</div>
+      </aside>
+    </section>
+
+    <div class="controls" aria-label="journey controls">
+      <button id="play-btn" class="control primary" type="button" onclick="togglePlay()">▶ PLAY JOURNEY</button>
+      <button id="back-btn" class="control" type="button" onclick="prevStep()">← BACK</button>
+      <button id="next-btn" class="control" type="button" onclick="nextStep()">NEXT →</button>
+      <button class="control" type="button" onclick="resetJourney()">RESET</button>
+      <span class="control-spacer"></span>
+      <button class="control danger" type="button" onclick="triggerStale()">TRIGGER STALE 409</button>
+      <span class="keyboard-hint">SPACE · ← → · R</span>
+    </div>
+    <p class="footer-note">体验顺序：Source/PDF → identity/binding → Source Truth/Parse/Chemical → Evidence/Matrix/Gap → 人类回合 → v2 → release → cold restart → HUMAN_ACCEPTANCE</p>
+  </main>
+
+  <script>
+    const STAGES = [
+      { label: '初始化', index: '01', from: 0, to: 1 },
+      { label: '来源绑定', index: '02', from: 2, to: 4 },
+      { label: '证据审核', index: '03', from: 5, to: 6 },
+      { label: 'Draft v1', index: '04', from: 7, to: 7 },
+      { label: '用户回合', index: '05', from: 8, to: 8 },
+      { label: 'v2 / Release', index: '06', from: 9, to: 13 },
+      { label: '恢复 / 验收', index: '07', from: 14, to: 15 }
+    ];
+
+    const NODES = [
+      { id: 'source', label: 'SOURCE / PDF', at: 2 },
+      { id: 'binding', label: 'IDENTITY + BINDING', at: 4 },
+      { id: 'evidence', label: 'EVIDENCE MATRIX', at: 5 },
+      { id: 'v1', label: 'DRAFT v1', at: 7 },
+      { id: 'edit', label: 'USER EDITED', at: 8 },
+      { id: 'v2', label: 'DRAFT v2', at: 9 },
+      { id: 'release1', label: 'RELEASE 01', at: 10 },
+      { id: 'stale', label: 'STALE', at: 11, error: true },
+      { id: 'release2', label: 'REGENERATE', at: 12 },
+      { id: 'acceptance', label: 'HUMAN ACCEPTANCE', at: 15 }
+    ];
+
+    const STEPS = [
+      { phase: 'INITIALIZE', actor: 'AGENT', kicker: 'Canonical project / fresh folder', title: '读取唯一 current', body: 'Agent 从全新项目文件夹开始，读取唯一 canonical project/current，确认没有第二套状态机或隐形工作区。', write: 'project/manifest.v1 · current pointer', guard: 'pointer-last · exact authority', status: 'AGENT ACTION / READY', kind: 'pass', event: 'Canonical project/current 已定位；新项目保持空白且可写。' },
+      { phase: 'INITIALIZE', actor: 'AGENT', kicker: 'Topic / Review Questions', title: 'Topic 与 RQ 进入同一 authority', body: 'Topic 与 Review Questions 被写入项目 authority，后续 Source、Evidence、Draft、Figure、Quality 都只从这里读取。', write: 'topic.json · review_questions.json', guard: 'one project / one authority', status: 'PERSISTED / REVISION r01', kind: 'pass', event: 'Topic/RQ 写入 canonical project；current → project-init。' },
+      { phase: 'SOURCE BINDING', actor: 'RESEARCHER', kicker: 'Source / PDF intake', title: '用户添加 MAIN 与 SI', body: '研究者把论文 PDF 放入项目，系统记录 MAIN、SI、来源身份与 digest。这里是研究者提供事实的入口，不由 Agent 猜测缺失来源。', write: 'source archive · MAIN.pdf · SI.pdf', guard: 'wrong-source → HOLD', status: 'HUMAN HANDOFF / SOURCE INPUT', kind: 'human', event: 'Dashboard 收到 MAIN/SI；等待来源身份确认。' },
+      { phase: 'SOURCE BINDING', actor: 'AGENT', kicker: 'Identity / binding', title: '把身份绑定写成证据', body: 'Agent 读取用户确认的映射，建立 MAIN/SI/identity/binding；任何 digest mismatch、wrong-source 或 wrong-role 都停止在第一处断点。', write: 'source_truth · identity_binding.v1', guard: 'digest + role + locator required', status: 'BOUND / FAIL-CLOSED READY', kind: 'pass', event: 'MAIN、SI、identity、binding 已落到同一 project authority。' },
+      { phase: 'SOURCE BINDING', actor: 'AGENT', kicker: 'Source Truth / Parse / Chemical', title: 'Source Truth 到 Chemical 全部入库', body: '解析质量、来源真相与化学候选按同一 source identity 写入。候选仍然是 AI_PROVISIONAL，不能在这里自动变成科学结论。', write: 'parse_quality.json · chemical_candidates', guard: 'corrupt / stale / missing digest → HOLD', status: 'PERSISTED / SAME AUTHORITY', kind: 'pass', event: 'Source Truth / Parse / Chemical 写入完成；旧 current 未覆盖。' },
+      { phase: 'EVIDENCE REVIEW', actor: 'AGENT', kicker: 'Evidence / Matrix / Gap', title: '生成 Evidence、Matrix、Gap candidates', body: 'Agent 只生成候选：哪些证据可能回答哪个 RQ，哪些地方存在 GAP。它把不确定性呈现出来，而不是替研究者批准。', write: 'evidence_candidates · matrix · gaps', guard: 'no auto PROMOTE / no B2', status: 'CANDIDATES / HUMAN REVIEW NEXT', kind: 'pass', event: 'Evidence/Matrix/Gap candidates 生成；状态保持 AI_PROVISIONAL。' },
+      { phase: 'EVIDENCE REVIEW', actor: 'RESEARCHER', kicker: 'Dashboard / human decision', title: '研究者批准、拒绝或补充理由', body: 'Dashboard 只作为人类审核面。研究者决定哪些证据可用、哪些 Gap 保留，并写下理由；这些决定会成为 Agent 下一轮的 canonical 输入。', write: 'decision records · rationale', guard: 'no decision → no v1', status: 'HUMAN GATE / DECISION REQUIRED', kind: 'human', event: '研究者确认候选与理由；Agent 获得可消费的 decision records。' },
+      { phase: 'DRAFT v1', actor: 'AGENT', kicker: 'Draft / Figure / Quality', title: '生成 v1，但永远不可回写覆盖', body: 'Agent 根据已批准决定生成 Draft/Figure/Quality v1。v1 是 immutable/read-only snapshot，任何后续用户修改都必须另建输入记录。', write: 'draft.v1 · figures.v1 · quality.v1', guard: 'v1 = immutable / read-only', status: 'VERSION NODE / IMMUTABLE / READ-ONLY', kind: 'pass', event: 'Draft/Figure/Quality v1 写成 immutable version node。' },
+      { phase: 'USER ROUND', actor: 'RESEARCHER', kicker: 'Dashboard / user edits', title: '用户编辑成为 canonical input', body: '研究者在 Dashboard 修改正文、图注或理由。编辑内容进入 canonical lineage，Agent 不得用“继续”覆盖它。', write: 'user_edit.v1 · rationale.v1', guard: 'user edit > generated draft', status: 'HUMAN GATE / CANONICAL INPUT', kind: 'human', event: '用户编辑保存；v1 仍 read-only，新增 USER_EDITED 节点。' },
+      { phase: 'V2 / RELEASE', actor: 'AGENT', kicker: 'Codex / continue', title: '读取同一 current，生成 v2', body: '用户回到 Codex 说“继续”。Agent 读取同一 project/current、revision、决定与用户编辑，生成新的 v2/version node。', write: 'draft.v2 · figures.v2 · quality.v2', guard: 'revision must match · artifact-first', status: 'CURRENT → v2 / REVISION r07', kind: 'pass', event: 'Agent 消费 USER_EDITED；v2 写入后 pointer-last 成为新 current。' },
+      { phase: 'V2 / RELEASE', actor: 'AGENT', kicker: 'Release / Markdown + DOCX', title: '同一 authoritative version 导出双格式', body: 'Markdown 与 DOCX 都从同一 manuscript/version 导出，绑定 lineage、artifact hashes 和 currentness。只生成 DOCX 不算完成。', write: 'release-01.md · release-01.docx', guard: 'same source · hash + currentness', status: 'RELEASE / FRESH', kind: 'pass', event: 'Markdown + DOCX 来自同一 v2；release-01 标记 fresh。' },
+      { phase: 'V2 / RELEASE', actor: 'AGENT', kicker: 'Release invalidation', title: 'Draft / Figure / Quality 变化，旧 release 失效', body: '一旦稿件、图或质量状态变化，旧 release 变成 stale；旧下载被拒绝，但旧版本与 lineage 仍然可以追溯。', write: 'release-01 → stale', guard: 'stale download → reject', status: 'STALE / DOWNLOAD BLOCKED', kind: 'fail', event: 'release-01 被标记 STALE；旧下载拒绝，旧 artifact 仍可追溯。' },
+      { phase: 'V2 / RELEASE', actor: 'AGENT', kicker: 'Regenerate / pointer-last', title: 'Regenerate 生成新 release', body: 'Regenerate 从同一 authoritative manuscript 产生 release-02；新 artifact 先落盘，current pointer 最后更新，旧 release 不被删除。', write: 'release-02.md · release-02.docx', guard: 'artifact-first · old release traceable', status: 'RELEASE / REGENERATED', kind: 'pass', event: 'release-02 fresh；release-01 stale 但仍在 lineage 中。' },
+      { phase: 'RECOVERY / ACCEPTANCE', actor: 'SYSTEM', kicker: 'Cold restart / kill + restart', title: '重启后恢复同一 current/history', body: '进程被 kill 后重新启动，Agent 与 Dashboard 都从 durable authority 恢复相同的 current、revision、决定与用户编辑，并继续未完成阶段。', write: 'replay current · history · decisions', guard: 'corrupt → fail-closed / old current safe', status: 'RECOVERED / SAME CURRENT', kind: 'pass', event: 'cold restart 完成；current=v2，history 与 decisions 完整恢复。' },
+      { phase: 'RECOVERY / ACCEPTANCE', actor: 'RESEARCHER', kicker: 'Final confirmation / boundary', title: '只有真实用户确认，才叫 HUMAN_ACCEPTANCE', body: '研究者真实执行完整流程并明确确认。动画不会替人类做科学判断，也不会自动 PROMOTE/B2；没有确认就停在 handoff。', write: 'human acceptance record', guard: 'no human confirmation → no acceptance', status: 'HUMAN ACCEPTANCE / EXPLICIT ONLY', kind: 'human', event: '研究者明确确认完整旅程；HUMAN_ACCEPTANCE 点亮。' }
+    ];
+
+    const state = { index: 0, events: [], playing: false, timer: null, error: null };
+    const $ = (id) => document.getElementById(id);
+
+    function derived() {
+      const i = state.index;
+      return {
+        project: i === 0 ? 'NEW / UNNAMED' : 'ALLENE-REVIEW / P01',
+        current: i >= 9 ? 'DRAFT v2' : i >= 7 ? 'DRAFT v1' : i >= 1 ? 'PROJECT INIT' : '—',
+        revision: i === 0 ? 0 : i < 2 ? 1 : i < 5 ? 4 : i < 6 ? 5 : i < 7 ? 6 : i === 7 ? 7 : i === 8 ? 8 : i < 11 ? 9 : i === 11 ? 10 : i === 12 ? 11 : i < 15 ? 12 : 13,
+        release: i >= 12 ? 'REL-02 / FRESH' : i === 11 ? 'REL-01 / STALE' : i === 10 ? 'REL-01 / FRESH' : 'NOT YET'
+      };
+    }
+
+    function renderStages() {
+      const i = state.index;
+      $('stage-list').innerHTML = STAGES.map((stage) => {
+        const done = i > stage.to;
+        const current = i >= stage.from && i <= stage.to;
+        return `<button class="stage ${done ? 'done' : ''} ${current ? 'current' : ''}" type="button" onclick="jumpTo(${stage.from})" aria-label="跳转到${stage.label}">
+          <span class="stage-dot"></span><span class="stage-label">${stage.label}<span class="stage-index">GATE ${stage.index}</span></span>
+        </button>`;
+      }).join('');
+    }
+
+    function renderStory() {
+      const step = STEPS[state.index];
+      const card = $('story-card');
+      $('story-actor').textContent = step.actor;
+      $('story-phase').textContent = step.phase;
+      $('story-count').textContent = `${String(state.index + 1).padStart(2, '0')} / ${STEPS.length}`;
+      $('story-kicker').textContent = step.kicker;
+      $('story-title').textContent = step.title;
+      $('story-body').textContent = step.body;
+      $('story-write').textContent = step.write;
+      $('story-guard').textContent = step.guard;
+      $('story-guard').className = `fact-value ${step.kind === 'fail' ? 'warn' : 'guard'}`;
+      $('story-status').textContent = step.status;
+      $('story-status').className = `story-status ${step.kind === 'human' ? 'human' : ''} ${step.kind === 'fail' ? 'fail' : ''}`;
+      card.classList.remove('pulse');
+      void card.offsetWidth;
+      card.classList.add('pulse');
+    }
+
+    function renderMetrics() {
+      const d = derived();
+      $('metric-project').textContent = d.project;
+      $('metric-current').textContent = d.current;
+      $('metric-revision').textContent = `r${String(d.revision).padStart(2, '0')}`;
+      $('metric-release').textContent = d.release;
+      $('metric-current').className = `metric-value ${d.current === 'DRAFT v2' ? 'lime' : 'mint'}`;
+      $('metric-release').className = `metric-value ${d.release.includes('STALE') ? 'coral' : d.release.includes('FRESH') ? 'mint' : ''}`;
+    }
+
+    function renderRiver() {
+      const i = state.index;
+      const reachedCount = NODES.filter((n) => i >= n.at).length;
+      const percentage = Math.max(0, Math.min(100, ((reachedCount - 1) / (NODES.length - 1)) * 100));
+      $('river').innerHTML = `<div class="river-track" style="--river-progress:${percentage}%"><style>.river-track:after{width:var(--river-progress)}</style></div>` + NODES.map((node) => {
+        const reached = i >= node.at;
+        const current = i === node.at;
+        const error = node.error && reached;
+        return `<div class="river-node ${reached ? 'reached' : ''} ${current ? 'current' : ''} ${error ? 'error' : ''}" title="${node.label}"><div class="river-bullet"></div><span>${node.label}</span></div>`;
+      }).join('');
+    }
+
+    function renderEvents() {
+      const list = $('event-list');
+      $('event-count').textContent = `${state.events.length} EVENTS`;
+      if (!state.events.length) {
+        list.innerHTML = '<div class="empty">播放旅程后，这里会出现每一次 Agent 写入、Dashboard 决定与保护闸门。</div>';
+        return;
+      }
+      list.innerHTML = state.events.slice().reverse().map((event, position) => `<div class="event ${event.kind === 'human' ? 'human' : ''} ${event.kind === 'fail' ? 'fail' : ''}" style="animation-delay:${position * 35}ms"><div class="event-top"><span class="event-actor">${event.actor}</span><span>${event.step}</span></div><div class="event-text">${event.text}</div></div>`).join('');
+    }
+
+    function renderAlert() {
+      const alert = $('alert');
+      if (!state.error) { alert.classList.remove('show'); return; }
+      $('alert-copy').textContent = state.error;
+      alert.classList.remove('show');
+      void alert.offsetWidth;
+      alert.classList.add('show');
+    }
+
+    function renderControls() {
+      $('back-btn').disabled = state.index === 0;
+      $('next-btn').disabled = state.index === STEPS.length - 1;
+      $('play-btn').textContent = state.playing ? 'Ⅱ PAUSE JOURNEY' : state.index === STEPS.length - 1 ? '✓ JOURNEY COMPLETE' : '▶ PLAY JOURNEY';
+      $('play-btn').disabled = state.index === STEPS.length - 1;
+    }
+
+    function render() { renderStages(); renderStory(); renderMetrics(); renderRiver(); renderEvents(); renderAlert(); renderControls(); }
+
+    function record(step, kindOverride) {
+      state.events.push({ actor: step.actor, step: `STEP ${String(state.index + 1).padStart(2, '0')}`, text: step.event, kind: kindOverride || step.kind });
+    }
+
+    function nextStep() {
+      if (state.index >= STEPS.length - 1) { stopPlaying(); return; }
+      state.error = null;
+      state.index += 1;
+      record(STEPS[state.index]);
+      render();
+      if (state.index >= STEPS.length - 1) stopPlaying();
+    }
+
+    function prevStep() {
+      stopPlaying();
+      if (state.index === 0) return;
+      state.index -= 1;
+      state.error = null;
+      state.events = state.events.slice(0, Math.max(0, state.index));
+      render();
+    }
+
+    function jumpTo(target) {
+      stopPlaying();
+      const next = Math.max(0, Math.min(STEPS.length - 1, target));
+      state.index = next;
+      state.error = null;
+      state.events = STEPS.slice(1, next + 1).map((step, offset) => ({ actor: step.actor, step: `STEP ${String(offset + 2).padStart(2, '0')}`, text: step.event, kind: step.kind }));
+      render();
+    }
+
+    function stopPlaying() { state.playing = false; if (state.timer) { clearInterval(state.timer); state.timer = null; } renderControls(); }
+
+    function togglePlay() {
+      if (state.index >= STEPS.length - 1) return;
+      state.playing = !state.playing;
+      if (state.playing) {
+        state.timer = setInterval(nextStep, 2700);
+      } else {
+        clearInterval(state.timer); state.timer = null;
+      }
+      renderControls();
+    }
+
+    function resetJourney() { stopPlaying(); state.index = 0; state.events = []; state.error = null; render(); }
+
+    function triggerStale() {
+      stopPlaying();
+      const d = derived();
+      state.error = `收到旧 revision r${String(Math.max(1, d.revision - 1)).padStart(2, '0')} 的写入请求；canonical current=${d.current} / r${String(d.revision).padStart(2, '0')} 保持不变。旧 release 仍可追溯，但下载被拒绝。`;
+      state.events.push({ actor: 'GUARD', step: 'FAIL-CLOSED', text: '409 VERSION_CONFLICT · zero-write；没有覆盖 current、revision 或用户编辑。', kind: 'fail' });
+      render();
+      $('alert').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    document.addEventListener('keydown', (event) => {
+      if (event.target && ['INPUT', 'TEXTAREA'].includes(event.target.tagName)) return;
+      if (event.code === 'Space') { event.preventDefault(); togglePlay(); }
+      if (event.key === 'ArrowRight') nextStep();
+      if (event.key === 'ArrowLeft') prevStep();
+      if (event.key.toLowerCase() === 'r') resetJourney();
+    });
+
+    render();
+  </script>
+</body>
+</html>

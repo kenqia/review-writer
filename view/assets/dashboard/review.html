@@ -14,6 +14,19 @@
   <link rel="stylesheet" href="/assets/dashboard/review-dual-parse.css">
 </head>
 <body class="page-review">
+  <nav class="nav" aria-label="Research workflow">
+    <div class="nav-title">Review Writer Dashboard</div>
+    <div class="nav-right">
+      <a href="/library">Library</a>
+      <a href="/discovery">Discovery</a>
+      <a href="/matrix">Matrix</a>
+      <a href="/blueprint">Blueprint</a>
+      <a href="/sections">Sections</a>
+      <a href="/figures">Figures</a>
+      <a href="/draft">Draft</a>
+      <a href="/final">Final</a>
+    </div>
+  </nav>
   <a class="skip-link" href="#primary-workspace">跳到主要工作区</a>
   <main id="primary-workspace" class="review-shell">
     <header class="review-masthead">
@@ -44,18 +57,96 @@
     <section id="empty-project-workspace" class="manuscript-empty" aria-labelledby="empty-project-heading">
       <p class="section-label">QoderWork research review</p>
       <h2 id="empty-project-heading">请选择项目开始审查</h2>
-      <p>请先在 QoderWork CN 中创建科研综述任务，再从上方项目列表明确选择后读取项目。</p>
+      <p>先创建一个空白综述项目，填写 Topic 和研究问题，再按当前唯一下一动作补充来源。</p>
+      <form id="blank-project-form" class="blank-project-form">
+        <label>项目 ID
+          <input id="blank-project-id" name="project_id" type="text" required pattern="[A-Za-z0-9][A-Za-z0-9._\-]*" autocomplete="off" placeholder="my-review-project">
+        </label>
+        <label>Topic
+      <input id="blank-project-topic" name="topic" type="text" required autocomplete="off" placeholder="例如：一个明确的综述主题">
+        </label>
+        <label>研究问题
+          <textarea id="blank-project-question" name="review_question" required rows="3" placeholder="这篇综述要回答什么问题？"></textarea>
+        </label>
+        <button type="submit">创建空白综述项目</button>
+        <p id="blank-project-message" role="status" aria-live="polite"></p>
+      </form>
       <p id="project-waiting-message" role="status" aria-live="polite">正在检查可用项目…</p>
     </section>
 
     <nav id="workspace-switcher" class="workspace-switcher" aria-label="项目工作区" hidden>
       <button type="button" data-workspace="cockpit" aria-pressed="true" aria-controls="cockpit-workspace">
-        项目驾驶舱
+        工作台概览
       </button>
       <button type="button" data-workspace="manuscript" aria-pressed="false" aria-controls="manuscript-workspace">
         正文工作室
       </button>
     </nav>
+
+    <nav id="research-workflow-static" class="research-workflow-static" aria-label="Research workflow" hidden>
+      <a href="/review">Scope</a>
+      <a href="/library">Corpus</a>
+      <a href="/review#evidence">Evidence</a>
+      <a href="/matrix">Matrix</a>
+      <a href="/draft">Draft</a>
+      <a href="/figures">Figures</a>
+      <a href="/final">Release</a>
+    </nav>
+
+    <section id="research-workbench-overview" class="research-workbench-overview" aria-labelledby="research-workbench-heading" hidden>
+      <header class="research-workbench-heading">
+        <div>
+          <p class="section-label">Current project</p>
+          <h2 id="research-workbench-heading">研究工作台概览</h2>
+          <p id="overview-scope-line" class="research-workbench-lede">正在读取当前项目范围。</p>
+        </div>
+        <span id="overview-status" class="rw-status rw-status-pending" role="status" aria-live="polite"><span aria-hidden="true">○</span> 待读取</span>
+      </header>
+      <div class="research-workbench-facts" aria-label="当前项目事实">
+        <article>
+          <span class="overview-label">研究范围</span>
+          <strong id="overview-scope">—</strong>
+        </article>
+        <article>
+          <span class="overview-label">语料覆盖</span>
+          <strong id="overview-corpus">—</strong>
+        </article>
+        <article>
+          <span class="overview-label">发布状态</span>
+          <strong id="overview-release">—</strong>
+        </article>
+      </div>
+      <div class="research-workbench-grid">
+        <section class="research-workbench-card" aria-labelledby="overview-gaps-heading">
+          <p class="section-label">Needs attention</p>
+          <h3 id="overview-gaps-heading">主要缺口</h3>
+          <ul id="overview-gaps"></ul>
+        </section>
+        <section class="research-workbench-card" aria-labelledby="overview-next-heading">
+          <p class="section-label">Next action</p>
+          <h3 id="overview-next-heading">唯一下一动作</h3>
+          <p id="overview-next-action" class="overview-next-action">—</p>
+        </section>
+      </div>
+      <section id="resume-hold" class="resume-hold" aria-labelledby="resume-hold-heading" role="status">
+        <div>
+          <p class="section-label">Resume</p>
+          <h3 id="resume-hold-heading">Resume 暂缓</h3>
+          <p>当前公开页面没有 project-scoped VersionContext layout；不会伪造恢复成功。</p>
+        </div>
+        <span class="rw-status rw-status-warn"><span aria-hidden="true">!</span> HOLD</span>
+      </section>
+      <section id="evidence" class="overview-evidence" aria-labelledby="overview-evidence-heading">
+        <header>
+          <div>
+            <p class="section-label">Evidence</p>
+            <h3 id="overview-evidence-heading">当前证据记录</h3>
+          </div>
+          <span id="overview-evidence-count" class="overview-count" aria-live="polite">—</span>
+        </header>
+        <div id="overview-evidence-list" class="overview-evidence-list" aria-live="polite"></div>
+      </section>
+    </section>
 
     <section id="cockpit-workspace" class="product-workspace" aria-labelledby="cockpit-heading" hidden>
       <div class="cockpit-layout">
@@ -90,7 +181,7 @@
         <div class="cockpit-main">
           <header class="workspace-heading">
             <div>
-              <p class="section-label">Research cockpit</p>
+              <p class="section-label">Research overview</p>
               <h2>证据进度与下一步</h2>
             </div>
             <p id="cockpit-stage-summary" class="workspace-summary">—</p>
@@ -114,6 +205,11 @@
             </div>
             <p class="stage-task-lead">请准备一个包含待补论文 MAIN/SI 的 PDF ZIP。上传成功后立即开始核验。</p>
             <div id="source-list" class="source-list"></div>
+            <div id="source-preflight" class="source-preflight" hidden>
+              <p class="section-label">Source preflight</p>
+              <p>上传内容已通过文件级核验；请确认来源身份和文献角色后写入当前来源记录。</p>
+              <div id="source-preflight-list" class="source-list"></div>
+            </div>
             <form id="source-supplement-form" class="source-supplement-form">
               <div>
                 <p class="section-label">Researcher additions</p>
@@ -191,6 +287,20 @@
             </div>
             <p id="processing-blocker" class="processing-blocker" hidden></p>
             <ol id="processing-stage-list" class="processing-stage-list"></ol>
+            <section class="parse-import-card" aria-labelledby="parse-import-heading">
+              <p class="section-label">Source-bound parse import</p>
+              <h4 id="parse-import-heading">提交当前 PDF 的解析文本</h4>
+              <p>仅接受当前 MAIN PDF 的用户提供文本；系统会生成可审计的 Source Truth 与解析质量记录。文本不会替代原始 PDF 的科学仲裁。</p>
+              <p id="parse-import-binding" class="parse-import-binding" role="status" aria-live="polite">正在读取当前来源绑定。</p>
+              <p id="parse-import-quality" class="parse-import-binding" role="status" aria-live="polite">Parse Quality：等待来源解析。</p>
+              <form id="parse-import-form">
+                <label for="parse-import-markdown">解析文本</label>
+                <textarea id="parse-import-markdown" name="markdown" rows="8" maxlength="491520" required placeholder="# Section\n\nPaste the source-bound parse text here."></textarea>
+                <button id="parse-import-submit" class="stage-primary-action" type="submit">生成 Source Truth 并进入解析核对</button>
+              </form>
+              <p id="parse-import-message" class="inline-message" role="status" aria-live="polite"></p>
+            </section>
+            <div id="processing-source-list" class="processing-source-list"></div>
             <div id="processing-study-list" class="processing-study-list"></div>
           </section>
 
@@ -203,6 +313,19 @@
               <strong id="parse-quality-count">—</strong>
             </div>
             <p class="stage-task-lead">先对照原始论文确认正文、图表、公式与参考文献是否可靠，再决定哪些部分可以进入候选证据提取。</p>
+            <p id="parse-quality-binding" class="parse-quality-binding" role="status" aria-live="polite">当前解析来源绑定读取中。</p>
+            <aside id="parse-quality-parser" class="parse-quality-next-action parse-quality-parser-warning" aria-labelledby="parse-quality-parser-heading" role="status" hidden>
+              <div>
+                <p class="section-label">Parser provenance</p>
+                <strong id="parse-quality-parser-heading">当前解析器需要核对</strong>
+                <span id="parser-guide"></span>
+              </div>
+              <dl>
+                <div><dt>解析模式</dt><dd id="parser-mode">—</dd></div>
+                <div><dt>解析后端</dt><dd id="parser-backend">—</dd></div>
+                <div><dt>回退原因</dt><dd id="parser-fallback">—</dd></div>
+              </dl>
+            </aside>
             <section id="parse-quality-next-action" class="parse-quality-next-action" aria-labelledby="parse-quality-next-action-label">
               <div>
                 <p class="section-label">Authoritative next action</p>
@@ -253,8 +376,10 @@
               <div><p class="section-label">Evidence centre</p><h3 id="evidence-workspace-heading">证据与综合判断工作台</h3></div>
               <span id="evidence-workspace-status" class="state-badge" role="status" aria-live="polite">读取中</span>
             </header>
-            <p id="evidence-workspace-message" class="stage-task-lead" role="status" aria-live="polite">只显示当前新路线的可审查内容。</p>
-            <div id="evidence-workspace-root"></div>
+            <p id="evidence-workspace-message" class="stage-task-lead" role="status" aria-live="polite">只显示当前 canonical 记录；当前性、支持 / 反驳 / 缺口 / 冲突 / 待核对均以真实状态为准。</p>
+            <div id="canonical-evidence-records" aria-label="Canonical Evidence records">
+              <div id="evidence-workspace-root"></div>
+            </div>
             <div id="synthesis-workspace-root"></div>
           </section>
 
@@ -332,6 +457,35 @@
             </header>
             <div id="review-audit-root" class="review-audit-grid" aria-live="polite"></div>
           </section>
+
+          <section id="history-panel" class="stage-task-panel" hidden aria-labelledby="history-heading">
+            <header class="stage-task-heading">
+              <div>
+                <p class="section-label">Version history</p>
+                <h3 id="history-heading">版本历史</h3>
+              </div>
+              <strong id="history-current">—</strong>
+            </header>
+            <div id="history-list" class="source-list" aria-live="polite"></div>
+            <form id="history-branch-form" class="source-supplement-form">
+              <label>起始版本<input id="history-branch-source" name="source_version_id" required></label>
+              <label>分支 ID<input id="history-branch-id" name="branch_id" required></label>
+              <label>分支名称<input id="history-branch-name" name="branch_name" required></label>
+              <label>新版本 ID<input id="history-branch-version" name="version_id" required></label>
+              <label><input id="history-branch-activate" name="activate" type="checkbox" checked> 切换到新分支</label>
+              <label><input id="history-branch-confirm" name="confirm" type="checkbox" required> 确认创建分支</label>
+              <button class="quiet-action" type="submit">创建分支</button>
+            </form>
+            <form id="history-undo-form" class="source-supplement-form">
+              <label>回退目标<input id="history-undo-target" name="target_version_id" required></label>
+              <label>新分支 ID<input id="history-undo-branch-id" name="branch_id" required></label>
+              <label>新分支名称<input id="history-undo-branch-name" name="branch_name" required></label>
+              <label>新版本 ID<input id="history-undo-version" name="version_id" required></label>
+              <label><input id="history-undo-confirm" name="confirm" type="checkbox" required> 确认创建回退分支</label>
+              <button class="quiet-action" type="submit">回退到版本</button>
+            </form>
+            <p id="history-message" class="inline-message" role="status" aria-live="polite"></p>
+          </section>
         </div>
 
         <aside class="context-column" aria-labelledby="context-heading">
@@ -348,8 +502,8 @@
       <section id="manuscript-empty" class="manuscript-empty" hidden>
         <p class="section-label">Authoritative manuscript</p>
         <h2>当前还没有综述正文</h2>
-        <p>项目仍处于证据复核阶段。工作台不会用占位内容伪装正文；请按照驾驶舱中的建议继续推进。</p>
-        <button type="button" data-workspace="cockpit">返回项目驾驶舱</button>
+        <p>项目仍处于证据复核阶段。工作台不会用占位内容伪装正文；请按照当前唯一下一动作继续推进。</p>
+        <button type="button" data-workspace="cockpit">返回工作台概览</button>
       </section>
 
       <div id="manuscript-layout" class="manuscript-layout">
@@ -451,6 +605,7 @@
     <p id="workbench-message" class="workbench-message" role="status" aria-live="polite"></p>
   </main>
 
+  <script src="/assets/dashboard/review-ui.js"></script>
   <script src="/assets/dashboard/review-manuscript.js"></script>
   <script src="/assets/dashboard/review-release.js"></script>
   <script src="/assets/dashboard/review-audit.js"></script>
@@ -508,12 +663,13 @@
     let manuscriptSynthesisPayload = {items:[]};
     let reviewFigurePayload = {source_figures:[], placeholders:[]};
     let comparisonProtocolPayload = {status:'unavailable', protocol:{}};
+    let historyPayload = {history:[], current:null, revision:null};
     let finalPayload = {final_draft_docx_exists:false, final_draft_docx_path:''};
-    let sourcePayload = {counts:{total:0,ready:0,missing:0}, sources:[], supplements:[], unresolved:[], upload_required:false};
+    let sourcePayload = {counts:{total:0,ready:0,missing:0}, sources:[], supplements:[], unresolved:[], upload_required:false, preflight:null};
     let chemicalPaperPayload = {status:'unavailable', studies:[]};
     let dualParseModel = ReviewDualParseUI.projectionModel({schema_version:'dual-parse-projection.v2',status:'unavailable'});
     let progressPayload = {active_stage:'sources', stages:[], studies:[], blocker:'', recommended_next:'', release_capabilities:{internal_draft_export_ready:false,verified_release_ready:false}};
-    let parseQualityPayload = {status:'unavailable', workflow_can_continue:false, summary:{}, studies:[]};
+    let parseQualityPayload = {status:'unavailable', workflow_can_continue:false, summary:{}, studies:[], parser:{}};
     let parseQualityBusy = new Set();
     let parseQualityDirty = new Set();
     let activeParseStudyId = '';
@@ -530,6 +686,7 @@
     let projectsRefreshController = null;
     let projectsRefreshBusy = false;
     let sourceUploadBusy = false;
+    let parseImportBusy = false;
     let chemicalPaperBusy = false;
     let dualParseBusy = false;
     let sourceSupplementBusy = false;
@@ -551,6 +708,23 @@
 
     async function optionalPayload(url, fallback) {
       try { return await getPayload(url); } catch (error) { return fallback; }
+    }
+
+    function projectIdFromLocation() {
+      return window.ReviewPresentation?.projectIdFromLocation?.()
+        || String(new URLSearchParams(window.location.search).get('project_id') || '').trim();
+    }
+
+    function setProjectIdInLocation(value) {
+      if (window.ReviewPresentation?.setProjectIdInLocation) {
+        return window.ReviewPresentation.setProjectIdInLocation(value);
+      }
+      const url = new URL(window.location.href);
+      const projectValue = String(value || '').trim();
+      if (projectValue) url.searchParams.set('project_id', projectValue);
+      else url.searchParams.delete('project_id');
+      window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+      return projectValue;
     }
 
     function clear(node) {
@@ -586,7 +760,7 @@
     }
 
     function parseQualityWorkspaceAvailable() {
-      return Boolean((parseQualityPayload.studies || []).length) || parseQualityPayload.status === 'needs_attention';
+      return Boolean((parseQualityPayload.studies || []).length);
     }
 
     function parseQualityGateActive() {
@@ -623,6 +797,12 @@
       document.querySelectorAll('#source-unresolved-list select, #source-unresolved-list button').forEach(control => {
         control.disabled = busy || sourceMappingBusy;
       });
+      document.querySelectorAll('#source-preflight-list select, #source-preflight-list button').forEach(control => {
+        control.disabled = busy || sourceMappingBusy;
+      });
+      document.querySelectorAll('#parse-import-form textarea, #parse-import-form button').forEach(control => {
+        control.disabled = busy || parseImportBusy;
+      });
       document.querySelectorAll('#risk-stage-panel input, #risk-stage-panel button').forEach(control => {
         control.disabled = busy;
       });
@@ -656,6 +836,7 @@
 
     function setEmptyProjectWorkspace(empty) {
       $('empty-project-workspace').hidden = !empty;
+      $('research-workbench-overview').hidden = empty;
       $('project-tools').hidden = empty;
       $('project-state-line').hidden = empty;
       $('workspace-switcher').hidden = empty;
@@ -739,6 +920,107 @@
       manuscriptButton.disabled = parseGateActive;
       manuscriptButton.setAttribute('aria-disabled', String(parseGateActive));
       manuscriptButton.title = parseGateActive ? '完成解析核对后进入正文工作室' : '';
+    }
+
+    function overviewStatus(value) {
+      return typeof window.ReviewPresentation?.humanStatus === 'function'
+        ? window.ReviewPresentation.humanStatus(value)
+        : (String(value || 'pending').replaceAll('_', ' ') || '待核对');
+    }
+
+    function overviewRiskLabel(value) {
+      return ({
+        AI_PROVISIONAL:'Agent 候选，待研究者核对',
+        GAP:'证据缺口',
+        CONFLICT:'冲突待核对',
+        NON_COMPARABLE:'当前不可比',
+        SUPPORT:'支持',
+        REFUTE:'反驳',
+        PENDING:'待处理',
+      }[value] || value || '状态待核对');
+    }
+
+    function renderResearchWorkbenchOverview() {
+      const root = $('research-workbench-overview');
+      if (!root) return;
+      root.hidden = !projectId;
+      if (!projectId) return;
+      const brief = projectState.brief || {};
+      const evidenceRows = Array.isArray(manuscriptEvidencePayload.items)
+        ? manuscriptEvidencePayload.items : [];
+      const sourceIds = [...new Set(evidenceRows.map(row => row.source_id).filter(Boolean))];
+      const studyIds = [...new Set(evidenceRows.map(row => row.study_id).filter(Boolean))];
+      const scope = brief.review_question || brief.topic || finalPayload.topic
+        || projectState.summary?.topic || '研究范围未提供';
+      const snapshot = finalPayload.release_snapshot || {};
+      const releaseLabel = snapshot.exists
+        ? snapshot.matches_authoritative && snapshot.integrity_valid
+          ? '发布快照与当前正文一致'
+          : '发布快照已过期，需重新生成'
+        : '尚未生成发布快照';
+      const rawStatus = snapshot.exists && snapshot.matches_authoritative
+        ? 'approved' : projectState.status || finalPayload.release_status || 'pending';
+      const statusNode = $('overview-status');
+      const statusWarning = snapshot.exists && !snapshot.matches_authoritative;
+      statusNode.className = `rw-status ${statusWarning ? 'rw-status-warn' : rawStatus === 'approved' ? 'rw-status-ok' : 'rw-status-pending'}`;
+      statusNode.innerHTML = `<span aria-hidden="true">${statusWarning ? '!' : rawStatus === 'approved' ? '✓' : '○'}</span> ${overviewStatus(statusWarning ? 'stale' : rawStatus)}`;
+      $('overview-scope-line').textContent = scope;
+      $('overview-scope').textContent = brief.review_question || brief.topic || '项目范围未提供';
+      $('overview-corpus').textContent = `${studyIds.length} 个研究 · ${sourceIds.length} 个来源 · ${evidenceRows.length} 条证据记录`;
+      $('overview-release').textContent = releaseLabel;
+
+      const gaps = [];
+      if (!evidenceRows.length) gaps.push('当前没有可显示的 canonical Evidence 记录。');
+      const descriptorStatus = manuscriptEvidencePayload.source_pdf_descriptors?.status;
+      if (descriptorStatus === 'stale') gaps.push('来源 PDF 描述已过期，需重新核对来源绑定。');
+      const coverage = manuscriptSynthesisPayload.coverage || {};
+      if (coverage.status && coverage.status !== 'approved' && coverage.status !== 'complete') {
+        gaps.push('Evidence 到比较判断的覆盖尚未完成。');
+      }
+      if (!snapshot.exists || !snapshot.matches_authoritative) gaps.push('当前正文尚无同版本的发布快照。');
+      const gapList = $('overview-gaps');
+      clear(gapList);
+      if (!gaps.length) gaps.push('当前投影没有额外缺口；仍需研究者逐项核对。');
+      gaps.forEach(value => gapList.append(textElement('li', '', value)));
+      const next = progressPayload.unique_next_action || progressPayload.recommended_next
+        || projectState.next_action || (gaps[0] || '核对当前研究证据');
+      $('overview-next-action').textContent = next;
+
+      const listNode = $('overview-evidence-list');
+      clear(listNode);
+      $('overview-evidence-count').textContent = `${evidenceRows.length} 条`;
+      if (!evidenceRows.length) {
+        listNode.append(textElement('p', 'overview-empty', '当前项目尚无可显示的证据记录；不会用占位内容代替原文。'));
+        return;
+      }
+      evidenceRows.forEach((item, index) => {
+        const card = document.createElement('article');
+        card.className = 'overview-evidence-card';
+        const heading = document.createElement('header');
+        heading.append(textElement('strong', '', item.statement || `证据记录 ${index + 1}`));
+        heading.append(textElement('span', 'overview-evidence-status', overviewStatus(item.status)));
+        card.append(heading);
+        const locator = item.locator || {};
+        const identity = [item.study_id, item.source_id].filter(Boolean).join(' · ') || '研究来源待提供';
+        card.append(textElement('p', 'overview-evidence-meta', `${identity} · ${locator.section_or_item || '定位待提供'} · 第 ${locator.page || '未知'} 页`));
+        if (locator.exact_quote || item.statement) card.append(textElement('blockquote', '', locator.exact_quote || item.statement));
+        const tags = [...new Set([...(item.risk_classes || []), item.status || 'pending'])].filter(Boolean);
+        card.append(textElement('p', 'overview-evidence-meta', tags.map(overviewRiskLabel).join(' · ')));
+        if (item.decision) {
+          const actor = typeof window.ReviewPresentation?.humanActor === 'function'
+            ? window.ReviewPresentation.humanActor(item.decision) : '决定者待提供';
+          card.append(textElement('p', 'overview-evidence-decision', `${actor} · ${item.decision.reason || '理由未提供'}`));
+        }
+        const links = document.createElement('div');
+        links.className = 'overview-evidence-links';
+        [[item.pdf_page_url, '打开原论文页'], [item.parsed_text_url, '打开解析文本']].forEach(([href, label]) => {
+          if (!href) return;
+          const link = document.createElement('a');
+          link.href = href; link.target = '_blank'; link.rel = 'noopener'; link.textContent = label; links.append(link);
+        });
+        if (links.childElementCount) card.append(links);
+        listNode.append(card);
+      });
     }
 
     function renderStages() {
@@ -1075,7 +1357,13 @@
         $('source-list').append(row);
       });
       if (!(sourcePayload.sources || []).length) {
-        $('source-list').append(textElement('p', 'context-empty', '后台正在建立来源清单。'));
+        $('source-list').append(textElement(
+          'p',
+          'context-empty',
+          progressPayload.archive_received
+            ? '上传已接收，等待来源清单核验。'
+            : '当前项目还没有来源清单，请上传一个 PDF ZIP。',
+        ));
       }
       clear($('source-supplement-list'));
       (sourcePayload.supplements || []).forEach(source => {
@@ -1114,13 +1402,110 @@
         row.append(copy, select, button);
         $('source-unresolved-list').append(row);
       });
+      const preflight = sourcePayload.preflight;
+      const preflightPanel = $('source-preflight');
+      const preflightList = $('source-preflight-list');
+      clear(preflightList);
+      preflightPanel.hidden = !preflight;
+      if (preflight?.status === 'awaiting_confirmation') {
+        const member = preflight.member || {};
+        const row = document.createElement('article');
+        row.className = 'source-row missing';
+        const copy = document.createElement('div');
+        copy.append(textElement('strong', '', member.source_id || '待确认来源身份'));
+        copy.append(textElement(
+          'span',
+          '',
+          `${member.member_display_name || 'PDF'} · ${member.member_id || '待确认成员'} · SHA-256 ${member.sha256 || '未知'} · ${member.size_bytes || 0} bytes`,
+        ));
+        const select = document.createElement('select');
+        select.setAttribute('aria-label', '确认来源角色');
+        (preflight.role_options || ['MAIN', 'SI']).forEach(role => {
+          const option = document.createElement('option');
+          option.value = role;
+          option.textContent = role === 'MAIN' ? 'MAIN · 主文献全文' : 'SI · 补充信息';
+          option.selected = role === 'MAIN';
+          select.append(option);
+        });
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'stage-primary-action';
+        button.textContent = '确认来源并进入解析';
+        button.addEventListener('click', () => submitSourcePreflight(member, select.value, preflight.archive_sha256));
+        row.append(copy, select, button);
+        preflightList.append(row);
+      } else if (preflight?.status === 'invalid') {
+        preflightList.append(textElement(
+          'p',
+          'processing-blocker',
+          `${preflight.reason_code || 'SOURCE_ARCHIVE_INVALID'} · ${preflight.message || '来源压缩包未通过核验。'}`,
+        ));
+      }
       renderChemicalPaper();
+    }
+
+    async function submitManualParseImport(event) {
+      event.preventDefault();
+      if (parseImportBusy || projectLoadBusy || !projectId) return;
+      const source = (sourcePayload.sources || []).find(row => (
+        String(row.role || '').toUpperCase() === 'MAIN'
+        && row.currentness === 'current'
+        && row.source_id
+        && row.study_id
+        && row.digest
+      ));
+      const markdown = $('parse-import-markdown').value;
+      if (!source) {
+        $('parse-import-message').textContent = '当前没有可用的 MAIN 来源绑定；请先重新读取来源状态。';
+        return;
+      }
+      if (!markdown.trim()) {
+        $('parse-import-message').textContent = '请先提供解析文本；项目未更改。';
+        return;
+      }
+      parseImportBusy = true;
+      applyWorkbenchBusyState(true);
+      $('parse-import-message').textContent = '正在生成 source-bound 解析记录…';
+      try {
+        const response = await fetch(`/api/project/${encodeURIComponent(projectId)}/parse-import`, {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({
+            study_id:source.study_id,
+            source_id:source.source_id,
+            source_pdf_sha256:source.digest,
+            markdown,
+          }),
+        });
+        let body = {};
+        try { body = await response.json(); } catch (_) { body = {}; }
+        if (!response.ok) {
+          $('parse-import-message').textContent = body.message || '解析未生成；项目保持不变。';
+          return;
+        }
+        $('parse-import-message').textContent = 'Source Truth 已生成，正在进入解析质量核对。';
+        $('parse-import-markdown').value = '';
+        await loadProject();
+      } catch (_) {
+        $('parse-import-message').textContent = '解析导入请求失败；项目保持不变，请重试。';
+      } finally {
+        parseImportBusy = false;
+        applyWorkbenchBusyState(editorBusy || projectLoadBusy);
+      }
     }
 
     function renderProcessingStage() {
       $('processing-next').textContent = progressPayload.recommended_next || '继续处理当前科学阶段';
       $('processing-blocker').hidden = !progressPayload.blocker;
       $('processing-blocker').textContent = progressPayload.blocker || '';
+      const parseReady = parseQualityPayload.workflow_can_continue === true;
+      const parseQualityStatus = parseReady
+        ? 'current · 可继续到后续 gate'
+        : parseQualityPayload.status === 'needs_attention'
+          ? 'needs_attention · Evidence 保持锁定'
+          : 'review_required · 等待解析核对';
+      $('parse-import-quality').textContent = `Parse Quality：${parseQualityStatus}`;
+      $('parse-import-form').hidden = progressPayload.route === 'evidence-to-release.v1' && parseReady;
       clear($('processing-stage-list'));
       (progressPayload.stages || []).forEach(stage => {
         const item = document.createElement('li');
@@ -1130,6 +1515,34 @@
           complete:'已完成', active:'正在处理', blocked:'需要处理', pending:'待开始'
         }[stage.status] || '待开始'));
         $('processing-stage-list').append(item);
+      });
+      clear($('processing-source-list'));
+      const currentSources = (sourcePayload.sources || []).filter(source => source.source_id || source.digest);
+      const mainSource = currentSources.find(source => String(source.role || '').toUpperCase() === 'MAIN');
+      $('parse-import-binding').textContent = mainSource?.source_id
+        ? `当前 MAIN：${mainSource.source_id} · PDF SHA-256 ${mainSource.digest || '未知'} · locator=${mainSource.safe_locator || '不可用'} · currentness=${mainSource.currentness || 'unknown'}`
+        : '当前没有可用的 MAIN 来源绑定。';
+      if (currentSources.length) {
+        $('processing-source-list').append(textElement('p', 'section-label', '当前来源记录'));
+      }
+      currentSources.forEach(source => {
+        const row = document.createElement('article');
+        row.className = 'source-row ready';
+        row.append(textElement('strong', '', source.source_id || source.download_id || 'Source record'));
+        row.append(textElement(
+          'span',
+          '',
+          `${source.role || '未知角色'} · ${source.currentness || 'currentness unknown'} · SHA-256 ${source.digest || '未知'} · ${source.message || source.status || ''}`,
+        ));
+        if (source.safe_locator) {
+          const link = document.createElement('a');
+          link.href = source.safe_locator;
+          link.target = '_blank';
+          link.rel = 'noopener';
+          link.textContent = '打开当前 PDF ↗';
+          row.append(link);
+        }
+        $('processing-source-list').append(row);
       });
       clear($('processing-study-list'));
       (progressPayload.studies || []).forEach((study, index) => {
@@ -1181,6 +1594,25 @@
       else $('parse-quality-preview').removeAttribute('src');
     }
 
+    function renderParseQualityParser() {
+      const parser = parseQualityPayload.parser && typeof parseQualityPayload.parser === 'object'
+        ? parseQualityPayload.parser
+        : {};
+      const mode = String(parser.parser_mode || parser.mode || '').trim();
+      const backend = String(parser.backend || parser.parser_backend || parser.parser_tool || parser.tool || '').trim();
+      const fallbackReason = String(parser.fallback_reason || parser.fallback || '').trim();
+      const guide = String(parser.guide || '').trim();
+      const fallback = mode.toUpperCase() === 'FALLBACK' || Boolean(fallbackReason);
+      $('parser-mode').textContent = mode || '未提供';
+      $('parser-backend').textContent = backend || '未提供';
+      $('parser-fallback').textContent = fallbackReason || (fallback ? '未提供' : '无（主解析路径）');
+      $('parser-guide').textContent = guide || (fallback
+        ? '当前结果来自回退解析；请重点对照原始 PDF 核对表格、公式、图注与参考文献，必要时重新解析。'
+        : '解析器来源已展示；仍需对照原始 PDF 完成 Parse Quality 人工核对。');
+      $('parse-quality-parser').hidden = !mode && !backend && !fallbackReason;
+      renderParseQualityStage();
+    }
+
     function renderParseQualityStage() {
       const studies = parseQualityPayload.studies || [];
       const summary = parseQualityPayload.summary || {};
@@ -1222,6 +1654,10 @@
       }
       $('parse-quality-study-title').textContent = study?.label || '解析检查尚未就绪';
       $('parse-quality-study-status').textContent = study ? parseStudyState(study) : '等待检查';
+      const binding = study?.parse_binding;
+      $('parse-quality-binding').textContent = binding?.source_id
+        ? `来源绑定：${binding.source_id} · PDF SHA-256 ${binding.source_pdf_sha256 || '未知'} · ${binding.provenance || 'CANONICAL_PARSE'} · currentness=${binding.currentness || 'unknown'} · quality=${binding.quality_status || 'needs_review'}`
+        : '当前解析来源绑定读取中。';
       clear($('parse-quality-object-list'));
       if (!study) {
         $('parse-quality-object-list').append(textElement('p', 'context-empty', '解析检查正在生成；当前不会进入证据提取。'));
@@ -1618,8 +2054,13 @@
       const awaitingBrief = projectState.status === 'AWAITING_BRIEF_CONFIRMATION';
       const hasSourceQueue = Boolean((sourcePayload.sources || []).length);
       const needsSourceUpload = hasSourceQueue && sourcePayload.upload_required && !progressPayload.archive_received;
+      const sourceIntegrityNeedsAttention = hasSourceQueue
+        && (sourcePayload.sources || []).some(source => source.status !== '已获得');
       const sourceBlocked = progressPayload.active_stage === 'sources' && Boolean(progressPayload.blocker);
-      const showSource = !awaitingBrief && (needsSourceUpload || sourceBlocked);
+      const sourceHandoffNeeded = progressPayload.active_stage === 'sources' && (
+        !hasSourceQueue || needsSourceUpload || sourceIntegrityNeedsAttention
+      );
+      const showSource = !awaitingBrief && (sourceHandoffNeeded || sourceBlocked);
       const parseWorkspaceAvailable = parseQualityWorkspaceAvailable();
       const showParseQuality = !awaitingBrief && !showSource && parseWorkspaceAvailable && (
         progressPayload.active_stage === 'parsing'
@@ -1627,17 +2068,30 @@
       );
       const showRisk = !awaitingBrief && !showSource && !showParseQuality && progressPayload.active_stage === 'risk' && Boolean((riskPayload.targets || []).length) && !draftPayload.available;
       const evidenceRoute = progressPayload.route === 'evidence-to-release.v1';
-      const showProcessing = !evidenceRoute && !awaitingBrief && !showSource && !showParseQuality && !showRisk && !draftPayload.available;
+      const evidenceRouteProcessing = evidenceRoute && [
+        'parsing', 'chemical_import', 'chemical_completion', 'reconciliation'
+      ].includes(progressPayload.active_stage);
+      const showProcessing = (!evidenceRoute || evidenceRouteProcessing)
+        && !awaitingBrief && !showSource && !showParseQuality && !showRisk && !draftPayload.available;
       $('brief-stage-panel').hidden = !awaitingBrief;
       $('source-stage-panel').hidden = !showSource;
       $('processing-stage-panel').hidden = !showProcessing;
       $('parse-quality-stage-panel').hidden = !showParseQuality;
       $('risk-stage-panel').hidden = !showRisk;
       $('cockpit-overview').hidden = awaitingBrief || showSource || showParseQuality || showRisk || showProcessing;
+      document.body.dataset.reviewStage = showParseQuality
+        ? 'parse-quality'
+        : showSource
+        ? 'source'
+        : showRisk
+        ? 'risk'
+        : showProcessing
+        ? 'processing'
+        : 'overview';
       renderBriefStage();
       renderSourceStage();
       renderProcessingStage();
-      if (showParseQuality) renderParseQualityStage();
+      if (showParseQuality) renderParseQualityParser();
       renderRiskPacket();
     }
 
@@ -1664,6 +2118,8 @@
       renderStageWorkspace();
       renderDualParse();
       renderReviewAudit();
+      renderHistory();
+      renderResearchWorkbenchOverview();
     }
 
     function renderReviewAudit() {
@@ -1679,6 +2135,89 @@
         progress:progressPayload,
         final:finalPayload,
       });
+    }
+
+    function renderHistory() {
+      const panel = $('history-panel');
+      const current = historyPayload?.current;
+      const rows = Array.isArray(historyPayload?.history) ? historyPayload.history : [];
+      const currentRow = rows.find(row => row.is_current);
+      panel.hidden = !current || !rows.length;
+      if (panel.hidden) return;
+      $('history-current').textContent = `${current.version_id} · r${historyPayload.revision}`;
+      clear($('history-list'));
+      rows.forEach(row => {
+        const item = document.createElement('article');
+        item.className = 'source-card';
+        item.append(textElement('strong', '', `${row.version_id} · ${row.branch_name}`));
+        item.append(textElement('p', '', `parent=${row.parent_version_id || '—'} · ${row.can_write ? '当前可写' : '只读历史'}`));
+        if (!row.can_write) {
+          const branch = document.createElement('button');
+          branch.type = 'button';
+          branch.className = 'quiet-action';
+          branch.textContent = '从此版本分支';
+          branch.addEventListener('click', () => {
+            $('history-branch-source').value = row.version_id;
+            $('history-branch-id').focus();
+          });
+          item.append(branch);
+        }
+        $('history-list').append(item);
+      });
+      $('history-branch-source').value ||= current.version_id;
+      $('history-undo-target').value ||= currentRow?.parent_version_id || current.version_id;
+      $('history-branch-id').value ||= `branch-r${historyPayload.revision}`;
+      $('history-branch-version').value ||= `branch-v${historyPayload.revision}`;
+      $('history-undo-branch-id').value ||= `rollback-r${historyPayload.revision}`;
+      $('history-undo-version').value ||= `rollback-v${historyPayload.revision}`;
+      $('history-branch-name').value ||= `Branch from ${$('history-branch-source').value}`;
+      $('history-undo-branch-name').value ||= `Rollback from ${current.version_id}`;
+    }
+
+    async function submitHistoryAction(event, action) {
+      event.preventDefault();
+      if (!projectId || !historyPayload?.current) return;
+      const form = event.currentTarget;
+      const submittedProjectId = projectId;
+      const values = new FormData(form);
+      const confirm = values.get('confirm') === 'on';
+      if (!confirm) {
+        $('history-message').textContent = '请明确确认后再提交。';
+        return;
+      }
+      const payload = action === 'branch'
+        ? {
+          source_version_id: String(values.get('source_version_id') || ''),
+          branch_id: String(values.get('branch_id') || ''),
+          branch_name: String(values.get('branch_name') || ''),
+          version_id: String(values.get('version_id') || ''),
+          activate: values.get('activate') === 'on',
+          confirm: true,
+          expected_revision: historyPayload.revision,
+        }
+        : {
+          target_version_id: String(values.get('target_version_id') || ''),
+          branch_id: String(values.get('branch_id') || ''),
+          branch_name: String(values.get('branch_name') || ''),
+          version_id: String(values.get('version_id') || ''),
+          expected_head_id: historyPayload.current.version_id,
+          confirm: true,
+          expected_revision: historyPayload.revision,
+        };
+      try {
+        const result = await getPayload(
+          `/api/project/${encodeURIComponent(submittedProjectId)}/history/${action}`,
+          {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)},
+        );
+        if (projectId !== submittedProjectId) return;
+        historyPayload = result;
+        form.reset();
+        $('history-message').textContent = action === 'branch' ? '已创建分支。' : '已创建回退分支。';
+        renderHistory();
+        await loadProject();
+      } catch (_) {
+        if (projectId === submittedProjectId) $('history-message').textContent = '版本操作未保存；请重新读取当前版本。';
+      }
     }
 
     function sectionLineage(sectionId) {
@@ -2347,6 +2886,46 @@
       }
     }
 
+    async function submitSourcePreflight(member, role, archiveSha256) {
+      if (
+        sourceMappingBusy
+        || projectLoadBusy
+        || !projectId
+        || !member?.member_id
+        || !member?.download_id
+        || !member?.source_id
+        || !member?.study_id
+        || !archiveSha256
+        || !role
+      ) return;
+      sourceMappingBusy = true;
+      applyWorkbenchBusyState(true);
+      $('source-mapping-message').textContent = '正在确认来源身份和角色…';
+      try {
+        await getPayload(`/api/project/${encodeURIComponent(projectId)}/source-mapping`, {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({
+            member_id:member.member_id,
+            download_id:member.download_id,
+            source_id:member.source_id,
+            study_id:member.study_id,
+            document_role:role,
+            archive_sha256:archiveSha256,
+          }),
+        });
+        $('source-mapping-message').textContent = '来源记录已确认，正在进入解析阶段。';
+        await loadProject();
+      } catch (error) {
+        $('source-mapping-message').textContent = error.status === 409
+          ? '来源在确认前发生变化，请重新读取来源清单。'
+          : '来源未能确认；现有来源记录保持不变。';
+      } finally {
+        sourceMappingBusy = false;
+        applyWorkbenchBusyState(editorBusy || projectLoadBusy);
+      }
+    }
+
     async function submitSourceMapping(memberId, downloadId) {
       if (sourceMappingBusy || projectLoadBusy || !projectId || !memberId || !downloadId) return;
       sourceMappingBusy = true;
@@ -2389,6 +2968,40 @@
       }
     }
 
+    async function createBlankProject(event) {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const submit = form.querySelector('button[type="submit"]');
+      const message = $('blank-project-message');
+      const projectIdValue = $('blank-project-id').value.trim();
+      const topicValue = $('blank-project-topic').value.trim();
+      const questionValue = $('blank-project-question').value.trim();
+      if (!projectIdValue || !topicValue || !questionValue) {
+        message.textContent = '请填写项目 ID、Topic 和研究问题。';
+        return;
+      }
+      submit.disabled = true;
+      message.textContent = '正在创建空白项目…';
+      try {
+        const created = await getPayload('/api/projects', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({
+            project_id:projectIdValue,
+            brief:{topic:topicValue,review_question:questionValue},
+          }),
+        });
+        projectId = created.project_id;
+        message.textContent = '空白项目已创建，正在打开研究简报。';
+        await refreshProjects();
+        await loadProject();
+      } catch (_) {
+        message.textContent = '项目未创建；请检查项目 ID 是否已存在，并保留当前空态。';
+      } finally {
+        submit.disabled = false;
+      }
+    }
+
     async function loadProject() {
       const requestedProjectId = projectId;
       if (!requestedProjectId) return 'empty';
@@ -2405,34 +3018,78 @@
       renderDualParse();
       const encoded = encodeURIComponent(requestedProjectId);
       try {
+        const nextProjectState = await getPayload(`/api/project/${encoded}/review-state`);
+        const canonicalRoute = nextProjectState.route === 'evidence-to-release.v1';
+        const awaitingBrief = nextProjectState.status === 'AWAITING_BRIEF_CONFIRMATION';
+        const currentStage = nextProjectState.current_stage || '';
+        const stageDataReady = !['review_brief', 'ready_for_discovery', 'sources', 'parsing'].includes(currentStage);
+        const finalDataReady = ['final', 'complete'].includes(currentStage)
+          || Boolean(nextProjectState.draft?.final_draft_exists || nextProjectState.draft?.docx_exists);
+        const legacyCockpit = canonicalRoute
+          ? Promise.resolve({metrics:{}, mode_coverage:[]})
+          : getPayload(`/api/project/${encoded}/cockpit`);
+        const legacySources = getPayload(`/api/project/${encoded}/sources`);
+        const fallbackProgress = {
+          route: nextProjectState.route || 'review-state.v1',
+          active_stage: nextProjectState.current_stage || 'review',
+          status: nextProjectState.status || 'in_progress',
+          stages: [],
+          studies: [],
+          blocker: (nextProjectState.blockers || [])[0] || '',
+          recommended_next: nextProjectState.next_action || '核对当前研究证据',
+          unique_next_action: nextProjectState.next_action || '核对当前研究证据',
+          release_capabilities: {internal_draft_export_ready:false, verified_release_ready:false},
+        };
+        const legacyEvidence = canonicalRoute
+          ? Promise.resolve({cards:[]})
+          : optionalPayload(`/api/project/${encoded}/evidence`, {cards:[]});
+        const legacyRisk = canonicalRoute
+          ? Promise.resolve({targets:[]})
+          : optionalPayload(`/api/project/${encoded}/risk-packet`, {targets:[]});
+        const legacyFigures = canonicalRoute
+          ? Promise.resolve({figures:[],summary:{total:0,placeholders:0}})
+          : optionalPayload(`/api/project/${encoded}/figures`, {figures:[],summary:{total:0,placeholders:0}});
+        const legacyProgress = optionalPayload(`/api/project/${encoded}/progress`, fallbackProgress);
         const projectPayloads = await Promise.all([
-          getPayload(`/api/project/${encoded}/review-state`),
-          getPayload(`/api/project/${encoded}/cockpit`),
+          Promise.resolve(nextProjectState),
+          legacyCockpit,
           getPayload(`/api/project/${encoded}/draft`),
-          optionalPayload(`/api/project/${encoded}/evidence`, {cards:[]}),
-          optionalPayload(`/api/project/${encoded}/risk-packet`, {targets:[]}),
-          getPayload(`/api/project/${encoded}/sources`),
-          getPayload(`/api/project/${encoded}/progress`),
+          legacyEvidence,
+          legacyRisk,
+          legacySources,
+          legacyProgress,
           optionalPayload(`/api/project/${encoded}/parse-quality`, {status:'unavailable',workflow_can_continue:false,summary:{},studies:[]}),
-          optionalPayload(`/api/project/${encoded}/figures`, {figures:[],summary:{total:0,placeholders:0}}),
-          optionalPayload(`/api/project/${encoded}/final`, {final_draft_docx_exists:false,final_draft_docx_path:''}),
+          legacyFigures,
+          awaitingBrief || !finalDataReady
+            ? Promise.resolve({final_draft_docx_exists:false,final_draft_docx_path:''})
+            : optionalPayload(`/api/project/${encoded}/final`, {final_draft_docx_exists:false,final_draft_docx_path:''}),
           optionalPayload(`/api/project/${encoded}/paper-evidence`, {items:[]}),
           optionalPayload(`/api/project/${encoded}/synthesis`, {items:[]}),
           optionalPayload(`/api/project/${encoded}/review-figures`, {source_figures:[],placeholders:[]}),
           optionalPayload(`/api/project/${encoded}/comparison-protocol`, {status:'unavailable',protocol:{}}),
-          optionalPayload(ReviewChemicalPaperUI.routes(requestedProjectId).read, {}),
-          ReviewDualParseUI.load(requestedProjectId, fetch),
+          awaitingBrief || !stageDataReady
+            ? Promise.resolve({})
+            : optionalPayload(ReviewChemicalPaperUI.routes(requestedProjectId).read, {}),
+          awaitingBrief || !stageDataReady
+            ? Promise.resolve(ReviewDualParseUI.projectionModel({
+              schema_version:'dual-parse-projection.v2',
+              status:'unavailable',
+              next_action:{label:'等待研究范围确认',description:'确认综述简报后才读取解析状态。'},
+            }))
+            : ReviewDualParseUI.load(requestedProjectId, fetch),
+          optionalPayload(`/api/project/${encoded}/history`, {history:[],current:null,revision:null}),
         ]);
-        const [nextProjectState, nextCockpitPayload, nextDraftPayload, nextEvidencePayload, nextRiskPayload, nextSourcePayload, nextProgressPayload, nextParseQualityPayload, nextFigurePayload, nextFinalPayload] = projectPayloads;
+        const [loadedProjectState, nextCockpitPayload, nextDraftPayload, nextEvidencePayload, nextRiskPayload, nextSourcePayload, nextProgressPayload, nextParseQualityPayload, nextFigurePayload, nextFinalPayload] = projectPayloads;
         const [nextManuscriptEvidencePayload, nextManuscriptSynthesisPayload, nextReviewFigurePayload] = projectPayloads.slice(10);
         const nextComparisonProtocolPayload = projectPayloads[13];
         const nextChemicalPaperPayload = projectPayloads[14];
         const nextDualParseModel = projectPayloads[15];
+        const nextHistoryPayload = projectPayloads[16];
         if (
           generation !== projectLoadGeneration
           || projectId !== requestedProjectId
         ) return 'stale';
-        projectState = nextProjectState;
+        projectState = loadedProjectState;
         cockpitPayload = nextCockpitPayload;
         draftPayload = nextDraftPayload;
         evidencePayload = nextEvidencePayload;
@@ -2450,6 +3107,7 @@
         comparisonProtocolPayload = nextComparisonProtocolPayload;
         chemicalPaperPayload = nextChemicalPaperPayload;
         dualParseModel = nextDualParseModel;
+        historyPayload = nextHistoryPayload;
         editorDirty = false;
         riskDecisionDirty = false;
         parseQualityDirty.clear();
@@ -2483,6 +3141,7 @@
       projectsRefreshBusy = true;
       try {
         projects = await getPayload('/api/projects');
+        const requestedProjectId = projectIdFromLocation();
         const choices = projectSelection.replace(projects);
         clear($('project'));
         const placeholder = document.createElement('option');
@@ -2508,6 +3167,14 @@
           $('project-waiting-message').textContent = '尚无可用项目，请先在 QoderWork CN 中创建任务。';
           $('workbench-message').textContent = '';
           return 'empty';
+        }
+        const requestedOptionKey = projectSelection.getOptionKey(requestedProjectId);
+        if (!projectId && requestedOptionKey) {
+          projectId = requestedProjectId;
+          $('project').value = requestedOptionKey;
+          const loadResult = await loadProject();
+          $('project').dispatchEvent(new Event('change', {bubbles:true}));
+          return loadResult;
         }
         const currentOptionKey = projectSelection.getOptionKey(projectId);
         if (projectId && currentOptionKey) {
@@ -2567,6 +3234,7 @@
       }
       activeParseStudyId = '';
       projectId = nextProjectId;
+      setProjectIdInLocation(projectId);
       try {
         const loadResult = await loadProject();
         if (loadResult === 'stale') return 'stale';
@@ -2574,6 +3242,7 @@
       } catch (error) {
         if (projectId === nextProjectId) {
           projectId = '';
+          setProjectIdInLocation('');
           projectLoadGeneration += 1;
           progressCapabilityProjectId = '';
           progressCapabilityGeneration = -1;
@@ -2606,10 +3275,12 @@
       });
     });
     $('project').addEventListener('change', selectProject);
+    $('blank-project-form').addEventListener('submit', createBlankProject);
     $('confirm-brief').addEventListener('click', confirmBrief);
     $('confirm-brief-primary').addEventListener('click', confirmBrief);
     $('source-supplement-form').addEventListener('submit', submitSourceSupplement);
     $('source-archive-input').addEventListener('change', event => uploadSourceArchive(event.target.files?.[0]));
+    $('parse-import-form').addEventListener('submit', submitManualParseImport);
     $('source-drop-zone').addEventListener('dragover', event => {
       event.preventDefault();
       $('source-drop-zone').classList.add('dragging');
@@ -2636,6 +3307,8 @@
     });
     $('export-docx').addEventListener('click', exportDocx);
     $('export-verified-release').addEventListener('click', exportVerifiedRelease);
+    $('history-branch-form').addEventListener('submit', event => submitHistoryAction(event, 'branch'));
+    $('history-undo-form').addEventListener('submit', event => submitHistoryAction(event, 'undo'));
     $('save-section').addEventListener('click', () => saveDraftBody($('section-editor').value));
     $('approve-high-risk-edit').addEventListener('click', () => saveDraftBody($('section-editor').value));
     $('reload-conflicted-section').addEventListener('click', () => resolveManuscriptConflict(false));

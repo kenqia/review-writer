@@ -108,6 +108,41 @@ def _non_exact_evidence_route_allowed(value: dict[str, Any]) -> bool:
     )
 
 
+def _non_exact_candidate_only(project: Path, declared: list[str]) -> bool:
+    """Return whether every registered candidate is explicitly locator-only.
+
+    Core/background sources normally enter the chemical dual route.  A native
+    Agent may, however, register a source-bound Evidence candidate that does
+    not request molecule/SMILES/molblock fields.  In that case the candidate
+    is intentionally limited to original-PDF locators and must be allowed to
+    reach the ordinary Evidence review gate without fabricating a Chemical
+    Paper import.  Missing candidates remain blocked so the existing
+    chemical-import preflight is still the first action for exact work.
+    """
+    if not declared:
+        return False
+    seen = False
+    for study_id in declared:
+        path = project / "01_evidence" / study_id / "paper_evidence_candidates.json"
+        if not path.is_file() or path.is_symlink():
+            return False
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return False
+        rows = value.get("candidates") if isinstance(value, dict) else value
+        if not isinstance(rows, list) or not rows:
+            return False
+        seen = True
+        for row in rows:
+            if not isinstance(row, dict):
+                return False
+            dependencies = row.get("field_dependencies", [])
+            if not isinstance(dependencies, list) or dependencies:
+                return False
+    return seen
+
+
 def _finalize(state: dict[str, Any]) -> dict[str, Any]:
     state["workflow_digest"] = canonical_digest(state)
     return state
@@ -277,6 +312,8 @@ def _new_route_state(
                 study_source_tier(project, study_id) in {"core", "background"}
                 for study_id in declared
             )
+            if tiered_dual_route and _non_exact_candidate_only(project, declared):
+                tiered_dual_route = False
         except SourceTruthError:
             tiered_dual_route = False
     dual_route = tiered_dual_route or (

@@ -18,6 +18,19 @@
     "chemical_paper_import_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "evidence_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
     "selection_status": {"enum": ["selected", "available", "rejected"]},
+    "target_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["figure_id", "asset_sha256", "manuscript_sha256", "section_id", "marker", "occurrence"],
+      "properties": {
+        "figure_id": {"type": "string", "minLength": 1},
+        "asset_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "manuscript_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "section_id": {"type": "string", "minLength": 1},
+        "marker": {"type": "string", "pattern": "^(?:\\[(?:source|evidence):[A-Za-z0-9._:-]+\\]|<!--\\s*(?:source|evidence)\\s*:[A-Za-z0-9._:-]+\\s*-->)$"},
+        "occurrence": {"type": "integer", "minimum": 1}
+      }
+    },
     "fragments": {
       "type": "array",
       "minItems": 1,

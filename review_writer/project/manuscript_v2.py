@@ -400,6 +400,71 @@ def register_section_draft(project: Path, payload: object) -> dict[str, Any]:
     return copy.deepcopy(row)
 
 
+def generate_section_draft_v2(project: Path, payload: object) -> dict[str, Any]:
+    """Generate a new review candidate from the current approved section.
+
+    The Agent supplies only an additional, marker-bound candidate paragraph.
+    The approved researcher body and heading are read from the canonical draft
+    row and retained verbatim before the candidate is returned to Dashboard
+    review.  This reuses the existing section-draft state and does not create a
+    second history or current store.
+    """
+    root = _root(project)
+    if not isinstance(payload, dict) or set(payload) != {
+        "section_id",
+        "body",
+        "content_agent_result_digest",
+    }:
+        raise ManuscriptV2Error("SECTION_DRAFT_V2_INVALID")
+    section_id = _identifier(payload.get("section_id"), "SECTION_ID_INVALID")
+    addition = payload.get("body")
+    if not isinstance(addition, str) or not addition.strip():
+        raise ManuscriptV2Error("SECTION_DRAFT_V2_INVALID")
+    generation_digest = _digest(
+        payload.get("content_agent_result_digest"),
+        "CONTENT_AGENT_RESULT_DIGEST_REQUIRED",
+    )
+    with project_write_lock(root):
+        evidence, synthesis, contracts = _states(root)
+        rows = _read_jsonl(root)
+        prior = next((row for row in rows if row.get("section_id") == section_id), None)
+        if prior is None:
+            raise ManuscriptV2Error("SECTION_DRAFT_NOT_FOUND")
+        if prior.get("status") != "approved" or not isinstance(prior.get("decision"), dict):
+            raise ManuscriptV2Error("SECTION_DRAFT_BASE_NOT_APPROVED")
+        if not _draft_is_current(prior, evidence, synthesis, contracts):
+            raise ManuscriptV2Error("SECTION_DRAFT_STALE")
+        decision = prior["decision"]
+        if (
+            decision.get("action") != "approve"
+            or decision.get("bound_object_digest") != prior.get("draft_digest")
+            or decision.get("upstream_digest") != _upstream_digest(evidence, synthesis, contracts)
+        ):
+            raise ManuscriptV2Error("SECTION_DRAFT_STALE")
+
+        combined_body = f"{str(prior.get('body') or '').rstrip()}\n\n{addition.strip()}"
+        bindings, high_risk = _claim_bindings(combined_body, evidence, synthesis)
+        row = copy.deepcopy(prior)
+        row["body"] = combined_body
+        row["generation_content_agent_result_digest"] = generation_digest
+        row["claim_bindings"] = bindings
+        row["high_risk_reasons"] = high_risk
+        row["parent_draft_digest"] = prior.get("draft_digest")
+        row["parent_approval_digest"] = canonical_digest(decision)
+        row["decision"] = None
+        row["status"] = "needs_human_edit" if high_risk else "needs_review"
+        row["draft_digest"] = _draft_digest(row)
+        replacement = [
+            row if item.get("section_id") == section_id else item
+            for item in rows
+        ]
+        try:
+            _atomic_bytes(root, DRAFTS_PATH, _jsonl_bytes(replacement))
+        except PaperEvidenceStoreError as exc:
+            raise ManuscriptV2Error(exc.code) from exc
+    return copy.deepcopy(row)
+
+
 def _actor(value: object) -> tuple[str, str]:
     if not isinstance(value, dict):
         raise ManuscriptV2Error("ACTOR_REQUIRED")

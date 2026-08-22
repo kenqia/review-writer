@@ -47,11 +47,65 @@
       ].filter(Boolean).join(" · ");
     }).filter(Boolean).join("；") || "尚未安排图位";
   }
+  function targetOptionValue(option) { return `${option.marker}\u0000${option.occurrence}`; }
+  function appendFigureTargetControls(parent, item, figures) {
+    const manuscript = figures.manuscript || {};
+    const sections = Array.isArray(manuscript.sections) ? manuscript.sections : [];
+    const options = Array.isArray(item.target_options) ? item.target_options : [];
+    const panel = document.createElement("div"); panel.className = "figure-target-binding";
+    panel.append(text("strong", "修复图件归属"));
+    panel.append(text("p", item.target_binding_status === "current" ? "当前归属已绑定；如正文变化需重新显式选择。" : "请选择当前 manuscript section 与已有 source/evidence marker；系统不会自动放置。", "evidence-meta"));
+    const sectionLabel = document.createElement("label"); sectionLabel.textContent = "Manuscript section ";
+    const sectionSelect = document.createElement("select"); sectionSelect.setAttribute("aria-label", "Manuscript section");
+    const sectionPlaceholder = document.createElement("option"); sectionPlaceholder.value = ""; sectionPlaceholder.textContent = "请选择 section"; sectionSelect.append(sectionPlaceholder);
+    sections.forEach(section => { const option = document.createElement("option"); option.value = section.section_id; option.textContent = section.heading ? `${section.heading} (${section.section_id})` : section.section_id; sectionSelect.append(option); });
+    sectionLabel.append(sectionSelect);
+    const markerLabel = document.createElement("label"); markerLabel.textContent = " Marker / occurrence ";
+    const markerSelect = document.createElement("select"); markerSelect.setAttribute("aria-label", "Source or evidence marker"); markerLabel.append(markerSelect);
+    const saveButton = document.createElement("button"); saveButton.type = "button"; saveButton.textContent = "保存图件归属";
+    const message = text("p", "", "workspace-error");
+    const current = item.target_binding_status === "current" && item.target_binding ? item.target_binding : null;
+    function refreshMarkers() {
+      markerSelect.replaceChildren();
+      const placeholder = document.createElement("option"); placeholder.value = ""; placeholder.textContent = "请选择 marker"; markerSelect.append(placeholder);
+      const eligible = options.filter(option => option.section_id === sectionSelect.value);
+      eligible.forEach(option => { const entry = document.createElement("option"); entry.value = targetOptionValue(option); entry.textContent = `${option.marker} · occurrence ${option.occurrence}`; markerSelect.append(entry); });
+      if (current && current.section_id === sectionSelect.value) markerSelect.value = targetOptionValue(current);
+      saveButton.disabled = !sectionSelect.value || !markerSelect.value;
+    }
+    sectionSelect.addEventListener("change", refreshMarkers);
+    markerSelect.addEventListener("change", () => { saveButton.disabled = !sectionSelect.value || !markerSelect.value; });
+    if (current) sectionSelect.value = current.section_id;
+    refreshMarkers();
+    saveButton.addEventListener("click", () => {
+      const selected = options.find(option => option.section_id === sectionSelect.value && targetOptionValue(option) === markerSelect.value);
+      if (!selected) { message.textContent = "请显式选择有效的 section 与 marker。"; return; }
+      decide("review-figures", {
+        ...item,
+        selection_status: "selected",
+        target_binding: {
+          figure_id: item.figure_id,
+          asset_sha256: item.asset_sha256,
+          manuscript_sha256: manuscript.sha256,
+          section_id: selected.section_id,
+          marker: selected.marker,
+          occurrence: selected.occurrence,
+        },
+      });
+    });
+    panel.append(sectionLabel, markerLabel, saveButton, message);
+    parent.append(panel);
+  }
   function render(protocol, synthesis, contracts, figures) {
     root.replaceChildren();
-    if (protocol.route !== "evidence-to-release.v1") return;
+    if (protocol.route !== "evidence-to-release.v1") {
+      root.append(text("p", "综合判断将在 Paper Evidence 完成人工核对后显示。", "workspace-empty"));
+      return;
+    }
     const protocolPanel = section("Comparison Protocol");
     const p = protocol.protocol || {};
+    const protocolNeedsReapproval = Boolean(p.decision)
+      && (protocol.status === "needs_review" || protocol.status === "stale");
     protocolPanel.append(text("p", `比较对象：${(p.comparison_objects || []).length} 项已批准研究`));
     protocolPanel.append(text("p", `比较轴：${(p.axes || []).join("、") || "—"}`));
     protocolPanel.append(text("p", `归一化规则：${visibleList(p.normalization_rules) || "—"}`));
@@ -60,8 +114,8 @@
     protocolPanel.append(text("p", `反证规则：${visibleList(p.counterevidence_rules) || "—"}`));
     protocolPanel.append(text("p", `结论强度：${p.claim_strength || "—"}`));
     if (p.decision) protocolPanel.append(text("p", decisionLine(p.decision), "decision-line"));
-    if (!p.decision) {
-      const protocolButton = document.createElement("button"); protocolButton.type = "button"; protocolButton.textContent = "批准比较协议"; protocolButton.disabled = !protocol.evidence_ready;
+    if (!p.decision || protocolNeedsReapproval) {
+      const protocolButton = document.createElement("button"); protocolButton.type = "button"; protocolButton.textContent = protocolNeedsReapproval ? "重新批准比较协议" : "批准比较协议"; protocolButton.disabled = !protocol.evidence_ready;
       if (!protocol.evidence_ready) protocolButton.title = "先完成 Paper Evidence 审查";
       protocolButton.addEventListener("click", () => decide("comparison-protocol", {version_token: p.version_token})); protocolPanel.append(protocolButton);
     }
@@ -103,7 +157,7 @@
       previews.forEach((url, index) => { const preview = document.createElement("img"); preview.src = url; preview.alt = `${item.caption || item.figure_label || "原论文图片"} · 图块 ${index + 1}`; preview.loading = "lazy"; preview.className = "source-figure-preview"; details.append(preview); });
       const links = document.createElement("div"); links.className = "figure-links";
       [[item.image_url, "新标签查看原图"], [item.pdf_page_url, "打开论文页"]].forEach(([href, label]) => { if (!href) return; const link = document.createElement("a"); link.href = href; link.target = "_blank"; link.rel = "noopener"; link.textContent = label; links.append(link); });
-      details.append(links); row.append(details);
+      details.append(links); appendFigureTargetControls(details, item, figures); row.append(details);
       const button = document.createElement("button"); button.type = "button"; button.textContent = item.selection_status === "selected" ? "取消选择" : "选择原图";
       button.addEventListener("click", () => decide("review-figures", {...item, selection_status: item.selection_status === "selected" ? "available" : "selected"})); row.append(button); figurePanel.append(row);
     });
@@ -112,12 +166,12 @@
     root.append(protocolPanel, coveragePanel, claimPanel, contractPanel, figurePanel);
   }
   async function decide(kind, item) {
-    if (busy) return; busy = true; const reason = window.prompt("请记录这项决定的理由", item.decision?.reason || "研究者核对后决定");
-    if (!reason) { busy = false; return; }
+    if (busy) return; busy = true; const reason = kind === "review-figures" ? "" : window.prompt("请记录这项决定的理由", item.decision?.reason || "研究者核对后决定");
+    if (kind !== "review-figures" && !reason) { busy = false; return; }
     const body = kind === "comparison-protocol"
       ? {action:"approve", reason, version_token:item.version_token}
       : kind === "review-figures"
-        ? {figure_id:item.figure_id, selection_status:item.selection_status, version_token:item.version_token}
+        ? {figure_id:item.figure_id, selection_status:item.selection_status, version_token:item.version_token, ...(item.target_binding ? {target_binding:item.target_binding} : {})}
         : {[kind === "synthesis" ? "synthesis_id" : "section_id"]: item[kind === "synthesis" ? "synthesis_id" : "section_id"], action:"approve", reason, version_token:item.version_token};
     if (kind !== "review-figures") Object.assign(body, window.reviewDecisionActor());
     try {
@@ -127,5 +181,7 @@
       );
     } finally { busy = false; }
   }
-  projectSelect.addEventListener("change", coordinator.projectChanged); document.addEventListener("DOMContentLoaded", coordinator.refresh);
+  projectSelect.addEventListener("change", coordinator.projectChanged);
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", coordinator.refresh);
+  else coordinator.refresh();
 }());

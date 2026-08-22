@@ -82,3 +82,4 @@
 /skills/mineru-precise-parse-review-writer/config/mineru_api_token.txt
 /skills/mineru-precise-parse-review-writer/config/*token*
 !/skills/mineru-precise-parse-review-writer/config/mineru_api_token.example.txt
+.gstack/

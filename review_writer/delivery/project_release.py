@@ -303,16 +303,9 @@ def _sha256_bytes(payload: bytes) -> str:
 
 def _canonical_sha256(value: Any) -> str:
     try:
-        payload = json.dumps(
-            value,
-            ensure_ascii=False,
-            allow_nan=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
+        return canonical_digest(value)
     except (TypeError, ValueError) as exc:
         raise ProjectReleaseError("RELEASE_STATE_INVALID", "release state must be finite JSON") from exc
-    return _sha256_bytes(payload)
 
 
 def is_reparse_component(path: Path) -> bool:

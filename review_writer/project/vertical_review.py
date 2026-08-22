@@ -13,6 +13,8 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
+from review_writer.product_foundation import ProductFoundationError, VersionContext
+
 
 PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 RISK_LEVELS = frozenset({"R0", "R1", "R2", "R3"})
@@ -341,6 +343,29 @@ def initialize_review(review_root: Path, project_id: str, brief: dict) -> Path:
         else:
             _write_json(path, expected)
     _write_json(state_path, state)
+    initial_artifact = Path("01_evidence/evidence_cards.jsonl")
+    try:
+        VersionContext.create(
+            {
+                "currentness": "current",
+                "version_token": "project-initial-v1",
+                "artifact_refs": [
+                    {
+                        "path": initial_artifact.as_posix(),
+                        "sha256": hashlib.sha256(
+                            (project / initial_artifact).read_bytes()
+                        ).hexdigest(),
+                    }
+                ],
+            },
+            project_id=project_id,
+            version_id="v1",
+            branch_id="main",
+            branch_name="Main",
+            project_root=project,
+        )
+    except ProductFoundationError as exc:
+        _fail("VERSION_CONTEXT_INITIALIZATION_FAILED", str(exc))
     return project
 
 

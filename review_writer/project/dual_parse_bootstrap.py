@@ -19,7 +19,11 @@ from review_writer.project.input_provenance import (
     validate_corpus_study_count,
 )
 from review_writer.project.parse_quality import ParseQualityError, write_parse_quality_gate
-from review_writer.project.source_truth import SourceTruthError, write_source_truth_bundle
+from review_writer.project.source_truth import (
+    SourceTruthError,
+    canonical_digest,
+    write_source_truth_bundle,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -64,14 +68,7 @@ def _sha256(path: Path) -> str:
 
 
 def _canonical_digest(value: object) -> str:
-    payload = json.dumps(
-        value,
-        ensure_ascii=False,
-        allow_nan=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+    return canonical_digest(value)
 
 
 def _lexical_absolute(path: Path) -> Path:

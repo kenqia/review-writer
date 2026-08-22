@@ -42,17 +42,29 @@
     };
   }
 
+  function sectionId(value) {
+    return section(value).section_id;
+  }
+
   function evidence(value) {
     const row = value && typeof value === "object" ? value : {};
+    const locator = row.locator && typeof row.locator === "object" ? row.locator : {};
     return {
       evidence_id: string(row.evidence_id),
+      study_id: string(row.study_id),
+      source_id: string(row.source_id),
       statement: string(row.statement),
       epistemic_type: string(row.epistemic_type),
-      locator_label: string(row.locator_label || row.locator?.section_or_item),
-      exact_quote: string(row.exact_quote || row.locator?.exact_quote),
+      locator_label: string(row.locator_label || locator.section_or_item || locator.figure_or_table),
+      locator_page: string(row.locator_page || locator.page),
+      currentness: string(row.currentness || row.status),
+      exact_quote: string(row.exact_quote || locator.exact_quote),
       pdf_page_url: url(row.pdf_page_url),
       parsed_text_url: url(row.parsed_text_url),
       risk_classes: array(row.risk_classes).map(string).filter(Boolean),
+      status: string(row.status),
+      reason: string(row.reason || row.reason_code),
+      decision: decision(row.decision),
     };
   }
 
@@ -138,5 +150,5 @@
     return {evidence: visibleEvidence, synthesis: visibleSynthesis, source_figures: visibleFigures};
   }
 
-  return {buildEditRequest, contextForSection, projectManuscript, saveEdit};
+  return {buildEditRequest, contextForSection, projectManuscript, saveEdit, sectionId};
 }));

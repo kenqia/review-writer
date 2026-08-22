@@ -1,9 +1,10 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
+  <link rel="icon" href="data:,">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Review First Draft</title>
+  <title>Draft · 研究正文</title>
   <style>
     :root {
       --ink: #1f2024;
@@ -228,6 +229,7 @@
     .message.show { display: block; }
   </style>
   <link rel="stylesheet" href="/assets/dashboard/review-ui.css">
+  <link rel="stylesheet" href="/assets/dashboard/review-manuscript.css">
 </head>
 <body>
   <nav class="nav">
@@ -235,16 +237,7 @@
     <div class="nav-center">
       <select id="projectSelect" class="project-select"></select>
     </div>
-    <div class="nav-right">
-      <a href="/library">Library</a>
-      <a href="/discovery">Discovery</a>
-      <a href="/matrix">Matrix</a>
-      <a href="/blueprint">Blueprint</a>
-      <a href="/sections">Sections</a>
-      <a href="/figures">Figures</a>
-      <a class="active" href="/draft">Draft</a>
-      <a href="/final">Final</a>
-    </div>
+    <div class="nav-right" aria-hidden="true"></div>
   </nav>
   <main class="app">
     <section class="panel">
@@ -270,9 +263,18 @@
         <button class="tab" data-tab="issues">Issues</button>
       </div>
       <div class="detail-body">
-        <div id="preview" class="draft-view"></div>
+        <div id="research-manuscript-reader" class="draft-view manuscript-reader" tabindex="0" aria-label="研究正文阅读区"></div>
         <div id="edit" style="display:none; height:100%">
-          <textarea id="sectionEditor" class="editor" spellcheck="false" aria-label="Selected section body"></textarea>
+          <div class="editor-intro">
+            <p class="section-label">HUMAN_ACTION</p>
+            <p>正文保持阅读优先；保存前请展开修改理由，说明本次研究者编辑。</p>
+          </div>
+          <textarea id="research-section-editor" class="editor" spellcheck="false" aria-label="Selected section body"></textarea>
+          <details id="edit-reason-disclosure" class="edit-reason">
+            <summary>记录修改理由（保存所需）</summary>
+            <label for="editReason">修改理由</label>
+            <textarea id="editReason" rows="3" aria-label="正文修改理由" placeholder="说明为何修改当前正文，以及核对了哪些证据。"></textarea>
+          </details>
         </div>
         <div id="report" class="markdown" style="display:none"></div>
         <div id="issues" class="markdown" style="display:none"></div>
@@ -285,15 +287,22 @@
       </div>
       <div class="side-body">
         <div id="summaryBox"></div>
+        <section class="draft-context" aria-labelledby="draft-context-heading">
+          <p class="section-label">Evidence context</p>
+          <h3 id="draft-context-heading">本节关联记录</h3>
+          <div id="draftContext" aria-live="polite"></div>
+        </section>
       </div>
     </section>
   </main>
   <div id="message" class="message"></div>
   <script src="/assets/dashboard/review-ui.js"></script>
+  <script src="/assets/dashboard/review-manuscript.js"></script>
   <script>
     let projects = [];
     let selectedProject = '';
     let payload = null;
+    let contextPayload = {evidence: {items: []}, synthesis: {items: []}, figures: {source_figures: []}};
     let selectedSectionId = '';
     const els = {
       projectSelect: document.getElementById('projectSelect'),
@@ -301,14 +310,37 @@
       leftList: document.getElementById('leftList'),
       detailTitle: document.getElementById('detailTitle'),
       detailMeta: document.getElementById('detailMeta'),
-      preview: document.getElementById('preview'),
-      sectionEditor: document.getElementById('sectionEditor'),
+      preview: document.getElementById('research-manuscript-reader'),
+      sectionEditor: document.getElementById('research-section-editor'),
+      editReason: document.getElementById('editReason'),
+      reasonDisclosure: document.getElementById('edit-reason-disclosure'),
       report: document.getElementById('report'),
       issues: document.getElementById('issues'),
       summaryBox: document.getElementById('summaryBox'),
       message: document.getElementById('message')
     };
     function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c])); }
+    function projectIdFromLocation() {
+      return window.ReviewPresentation?.projectIdFromLocation?.()
+        || String(new URLSearchParams(window.location.search).get('project_id') || '').trim();
+    }
+    function setProjectIdInLocation(value) {
+      if (window.ReviewPresentation?.setProjectIdInLocation) {
+        return window.ReviewPresentation.setProjectIdInLocation(value);
+      }
+      const url = new URL(window.location.href);
+      const projectValue = String(value || '').trim();
+      if (projectValue) url.searchParams.set('project_id', projectValue);
+      else url.searchParams.delete('project_id');
+      window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+      return projectValue;
+    }
+    function textElement(tag, className, value) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      node.textContent = value == null || value === '' ? '—' : String(value);
+      return node;
+    }
     function msg(text) { els.message.textContent = text; els.message.classList.add('show'); setTimeout(() => els.message.classList.remove('show'), 2600); }
     function simpleMathToHtml(expr) {
       let s = String(expr ?? '');
@@ -357,20 +389,41 @@
         [...node.attributes].forEach(attr => {
           const name = attr.name.toLowerCase();
           if (!['colspan', 'rowspan', 'open', 'class', 'src', 'alt'].includes(name)) node.removeAttribute(attr.name);
-          if (name === 'src' && !String(attr.value || '').startsWith('/file?')) node.removeAttribute(attr.name);
+          if (name === 'src' && !/^\/(?:file\?|api\/)/.test(String(attr.value || ''))) node.removeAttribute(attr.name);
         });
         [...node.childNodes].forEach(walk);
       };
       [...template.content.childNodes].forEach(walk);
       return template.innerHTML;
     }
-    function fileUrlForMarkdownPath(path, baseDir = '') {
+    function canonicalFigureUrl(alt = '') {
+      const wanted = String(alt || '').trim().toLowerCase();
+      return (contextPayload.figures?.source_figures || []).find(item =>
+        [item.caption, item.figure_label, item.title].filter(Boolean).some(label => String(label).trim().toLowerCase() === wanted)
+      )?.image_url || '';
+    }
+    function fileUrlForMarkdownPath(path, baseDir = '', alt = '') {
       const raw = String(path || '').trim();
       if (!raw) return '';
+      const canonical = canonicalFigureUrl(alt);
+      if (canonical) return canonical;
       if (/^https?:\/\//i.test(raw)) return raw;
+      if (raw.includes('..')) return '';
       if (raw.startsWith('/')) return `/file?path=${encodeURIComponent(raw)}`;
       const base = String(baseDir || payload?.paths?.first_draft_base_dir || payload?.paths?.stage_dir || '').replace(/\/+$/, '');
       return `/file?path=${encodeURIComponent(base ? `${base}/${raw}` : raw)}`;
+    }
+    function figureMarkup(alt, path, baseDir = '') {
+      const src = fileUrlForMarkdownPath(path, baseDir, alt);
+      return src
+        ? `<img alt="${esc(alt)}" src="${esc(src)}">`
+        : `<span class="figure-placeholder">图件来源待核对：${esc(alt || '未命名图件')}</span>`;
+    }
+    function sectionId(section) {
+      return ReviewManuscriptUI.sectionId(section);
+    }
+    function humanStatus(value) {
+      return window.ReviewPresentation?.humanStatus?.(value) || String(value || '待核对').replaceAll('_', ' ');
     }
     function renderMarkdown(md, baseDir = '') {
       const blocks = [];
@@ -383,8 +436,7 @@
       text = text.replace(/<details[\s\S]*?<\/details>/gi, match => stash(`<div class="raw-block">${match}</div>`));
       text = text.replace(/<table[\s\S]*?<\/table>/gi, match => stash(match));
       text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, path) => {
-        const src = fileUrlForMarkdownPath(path, baseDir);
-        return stash(`<img alt="${esc(alt)}" src="${src}">`);
+        return stash(figureMarkup(alt, path, baseDir));
       });
       const html = text.split(/\n{2,}/).map(rawBlock => {
         const block = rawBlock.trim();
@@ -406,8 +458,12 @@
       projects = await (await fetch('/api/projects')).json();
       els.projectSelect.innerHTML = projects.map(p => `<option value="${esc(p.project_id)}">${esc(p.project_id)}</option>`).join('');
       if (projects.length) {
-        selectedProject = projects[0].project_id;
+        const requestedProjectId = projectIdFromLocation();
+        selectedProject = projects.some(project => project.project_id === requestedProjectId)
+          ? requestedProjectId
+          : projects[0].project_id;
         els.projectSelect.value = selectedProject;
+        setProjectIdInLocation(selectedProject);
         await loadProject(selectedProject);
       } else {
         els.projectInfo.textContent = 'No review projects found.';
@@ -415,10 +471,20 @@
     }
     async function loadProject(projectId) {
       selectedProject = projectId;
-      payload = await (await fetch(`/api/project/${encodeURIComponent(projectId)}/draft`)).json();
+      const encoded = encodeURIComponent(projectId);
+      const read = (suffix, fallback) => fetch(`/api/project/${encoded}/${suffix}`).then(response => response.ok ? response.json() : fallback).catch(() => fallback);
+      const [draft, evidence, synthesis, figures] = await Promise.all([
+        read('draft', {route: 'unavailable', sections: []}),
+        read('paper-evidence', {items: []}),
+        read('synthesis', {items: []}),
+        read('review-figures', {source_figures: []}),
+      ]);
+      payload = {...draft, ...ReviewManuscriptUI.projectManuscript(draft)};
+      contextPayload = {evidence, synthesis, figures};
       const sections = payload.sections || [];
-      if (!sections.some(section => section.id === selectedSectionId)) selectedSectionId = sections[0]?.id || '';
-      els.sectionEditor.value = sections.find(section => section.id === selectedSectionId)?.body || '';
+      if (!sections.some(section => sectionId(section) === selectedSectionId)) selectedSectionId = sectionId(sections[0]);
+      els.sectionEditor.value = sections.find(section => sectionId(section) === selectedSectionId)?.body || '';
+      els.editReason.value = sections.find(section => sectionId(section) === selectedSectionId)?.decision?.reason || '';
       renderLeft();
       renderSummary();
       renderCurrent();
@@ -426,77 +492,134 @@
     function renderLeft() {
       const sections = payload.sections || [];
       els.leftList.innerHTML = sections.map(section => `
-        <button class="item ${selectedSectionId===section.id?'active':''}" data-id="${esc(section.id)}">
+        <button class="item ${selectedSectionId===sectionId(section)?'active':''}" data-id="${esc(sectionId(section))}">
           <div class="item-title">${esc(section.heading)}</div>
-          <div class="item-meta">Level ${esc(section.level)} · editable manuscript section</div>
-          ${payload?.summary?.has_figure_redraw ? '<span class="pill">source-bound figures</span>' : ''}
+          <div class="item-meta">${esc(humanStatus(section.status))} · canonical section</div>
+          ${section.reason ? `<span class="pill warn">${esc(humanStatus(section.reason))}</span>` : ''}
         </button>
       `).join('');
-      els.projectInfo.textContent = `${selectedProject} · ${payload?.topic || ''}`;
+      els.projectInfo.textContent = `${selectedProject} · ${payload?.route === 'evidence-to-release.v1' ? '当前 canonical manuscript' : '正文数据待核对'}`;
     }
     function renderSummary() {
-      const s = payload?.summary || {};
-      const redrawn = payload?.redrawn_figures || [];
+      const sections = payload?.sections || [];
+      const pending = sections.filter(section => ['needs_human_edit', 'needs_review', 'stale'].includes(section.status)).length;
       els.summaryBox.innerHTML = `
         <div class="field"><div class="label">Project</div><div class="value">${esc(selectedProject)}</div></div>
-        <div class="field"><div class="label">Topic</div><div class="value">${esc(payload?.topic || '')}</div></div>
-        <div class="field"><div class="label">Stage Status</div><div class="value">
-          <span class="pill">discovery=${esc(s.discovery_status || 'pending')}</span>
-          <span class="pill">matrix=${esc(Boolean(s.has_matrix_outline))}</span>
-          <span class="pill">sections=${esc(Boolean(s.has_section_drafting))}</span>
-          <span class="pill">redraw=${esc(Boolean(s.has_figure_redraw))}</span>
-          <span class="pill">draft=${esc(Boolean(s.has_first_draft))}</span>
-        </div></div>
-        <div class="field"><div class="label">Redrawn Figures</div><div class="value">${esc(redrawn.length)}</div></div>
-        <div class="field"><div class="label">Manuscript Source</div><div class="value">Authoritative project manuscript</div></div>
+        <div class="field"><div class="label">当前正文状态</div><div class="value">${esc(humanStatus(payload?.status))}</div></div>
+        <div class="field"><div class="label">章节</div><div class="value">${sections.length} 个 canonical sections</div></div>
+        <div class="field"><div class="label">待研究者核对</div><div class="value">${pending} 个章节</div></div>
+        <div class="field"><div class="label">写入说明</div><div class="value">HUMAN_ACTION：页面由研究者决定是否保存；Agent 代理动作仅在决定记录中明确显示。</div></div>
       `;
     }
+    function renderContext(section) {
+      const target = document.getElementById('draftContext');
+      target.replaceChildren();
+      const context = ReviewManuscriptUI.contextForSection({
+        route: payload?.route,
+        sections: [section],
+        evidence: contextPayload.evidence?.items,
+        synthesis: contextPayload.synthesis?.items,
+        source_figures: contextPayload.figures?.source_figures,
+      }, section);
+      const rows = [
+        ...context.evidence.map(item => ({kind: 'Evidence', title: item.statement, meta: [item.study_id, item.source_id, item.locator_label, item.locator_page && `第 ${item.locator_page} 页`, humanStatus(item.status)].filter(Boolean).join(' · '), quote: item.exact_quote})),
+        ...context.synthesis.map(item => ({kind: 'Synthesis', title: item.proposition, meta: [item.comparison_axis, item.applicability_boundary, item.uncertainty].filter(Boolean).join(' · ')})),
+        ...context.source_figures.map(item => ({kind: 'Figure', title: item.title, meta: item.page_label || item.caption})),
+      ];
+      if (!rows.length) {
+        target.append(textElement('p', 'context-empty', '本节暂无已绑定的 Evidence、综合判断或原论文图件。'));
+        return;
+      }
+      rows.forEach(row => {
+        const card = document.createElement('article');
+        card.className = 'draft-context-record';
+        card.append(textElement('span', 'context-kind', row.kind));
+        card.append(textElement('strong', '', row.title || '记录待核对'));
+        card.append(textElement('span', '', row.meta || '定位与当前性待核对'));
+        if (row.quote) card.append(textElement('blockquote', '', `原文：${row.quote}`));
+        target.append(card);
+      });
+    }
     function renderCurrent() {
-      const section = (payload.sections || []).find(row => row.id === selectedSectionId);
+      const section = (payload.sections || []).find(row => sectionId(row) === selectedSectionId);
       if (!section) return;
       els.detailTitle.textContent = section.heading;
-      els.detailMeta.textContent = `Level ${section.level} · authoritative manuscript section`;
-      els.preview.innerHTML = renderMarkdown(`${'#'.repeat(section.level)} ${section.heading}\n\n${section.body || ''}`, payload?.paths?.first_draft_base_dir || payload?.paths?.stage_dir || '');
+      els.detailMeta.textContent = `${humanStatus(section.status)} · canonical section · 点击正文段落进入编辑`;
+      const heading = section.heading ? `## ${section.heading}\n\n` : '';
+      els.preview.innerHTML = section.body
+        ? renderMarkdown(`${heading}${section.body}`, payload?.paths?.first_draft_base_dir || payload?.paths?.stage_dir || '')
+        : '<p class="reading-empty">当前章节正文尚未提供；不会用占位内容代替正文。</p>';
       els.report.innerHTML = renderMarkdown(payload?.merge_report_md || '', payload?.paths?.stage_dir || '');
       els.issues.innerHTML = renderMarkdown(payload?.remaining_issues_md || '', payload?.paths?.stage_dir || '');
+      renderContext(section);
     }
     async function saveDraft() {
       if (!selectedProject) return;
-      const res = await fetch(`/api/project/${encodeURIComponent(selectedProject)}/draft`, {
-        method: 'PUT',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({
-          section_id:selectedSectionId,
-          body:els.sectionEditor.value,
-          manuscript_version:payload.manuscript_version
-        })
-      });
-      if (!res.ok) { msg(await res.text()); return; }
-      msg('Draft saved');
+      const section = (payload.sections || []).find(row => sectionId(row) === selectedSectionId);
+      if (!section) return;
+      let result;
+      if (payload.route === 'evidence-to-release.v1') {
+        const reason = els.editReason.value.trim();
+        if (!reason) {
+          els.reasonDisclosure.open = true;
+          els.editReason.focus();
+          msg('请记录修改理由后再保存。');
+          return;
+        }
+        result = await ReviewManuscriptUI.saveEdit({
+          request: fetch,
+          url: `/api/project/${encodeURIComponent(selectedProject)}/draft`,
+          payload: ReviewManuscriptUI.buildEditRequest(section, els.sectionEditor.value, reason),
+          onConflict: () => msg('正文已有更新；请重新读取后再保存。'),
+        });
+        if (result.status === 'conflict') return;
+        if (result.status !== 'saved') { msg(`保存失败（HTTP ${result.httpStatus || 'unknown'}）。`); return; }
+      } else {
+        const res = await fetch(`/api/project/${encodeURIComponent(selectedProject)}/draft`, {
+          method: 'PUT',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({section_id:selectedSectionId,body:els.sectionEditor.value,manuscript_version:payload.manuscript_version})
+        });
+        if (!res.ok) { msg(await res.text()); return; }
+        result = {status: 'saved'};
+      }
+      msg(result.payload?.needs_evidence_review ? '已保存，等待证据复核。' : '已保存当前章节。');
       await loadProject(selectedProject);
     }
-    document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => {
-      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-      tab.classList.add('active');
-      const map = {preview:'preview', edit:'edit', report:'report', issues:'issues'};
+    function showTab(name) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+      const map = {preview:'research-manuscript-reader', edit:'edit', report:'report', issues:'issues'};
       for (const id of Object.values(map)) document.getElementById(id).style.display = 'none';
-      document.getElementById(map[tab.dataset.tab]).style.display = 'block';
+      document.getElementById(map[name]).style.display = 'block';
+      if (name === 'edit') els.sectionEditor.focus();
       renderCurrent();
+    }
+    document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => {
+      showTab(tab.dataset.tab);
     }));
+    els.preview.addEventListener('click', event => {
+      if (event.target.closest('a, img, details, summary')) return;
+      showTab('edit');
+    });
     els.leftList.addEventListener('click', e => {
       const item = e.target.closest('[data-id]');
       if (!item) return;
       selectedSectionId = item.dataset.id;
-      els.sectionEditor.value = (payload.sections || []).find(section => section.id === selectedSectionId)?.body || '';
+      const section = (payload.sections || []).find(row => sectionId(row) === selectedSectionId);
+      els.sectionEditor.value = section?.body || '';
+      els.editReason.value = section?.decision?.reason || '';
       renderLeft();
       renderCurrent();
     });
     els.sectionEditor.addEventListener('input', () => {
-      const section = (payload?.sections || []).find(row => row.id === selectedSectionId);
+      const section = (payload?.sections || []).find(row => sectionId(row) === selectedSectionId);
       if (section) section.body = els.sectionEditor.value;
       renderCurrent();
     });
-    els.projectSelect.addEventListener('change', e => loadProject(e.target.value));
+    els.projectSelect.addEventListener('change', e => {
+      setProjectIdInLocation(e.target.value);
+      loadProject(e.target.value);
+    });
     document.getElementById('reloadBtn').addEventListener('click', () => selectedProject && loadProject(selectedProject));
     document.getElementById('saveBtn').addEventListener('click', saveDraft);
     loadProjects().catch(err => msg(err.message));

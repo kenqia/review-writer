@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <link rel="icon" href="data:,">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Review Library Audit</title>
   <style>
@@ -221,6 +222,17 @@
       max-height: 38%;
       overflow: auto;
     }
+    .parse-quality-entry {
+      margin: 12px 15px;
+      padding: 12px;
+      border: 1px solid var(--accent-2);
+      border-radius: 8px;
+      background: #fff8ed;
+    }
+    .parse-quality-entry[hidden] { display: none; }
+    .parse-quality-entry h3 { margin: 0 0 6px; font-size: 15px; }
+    .parse-quality-entry p { margin: 0 0 9px; color: var(--muted); font-size: 13px; line-height: 1.4; }
+    .parse-quality-entry-link { color: var(--accent); font-weight: 700; }
     .field { margin-bottom: 12px; }
     .label {
       font-size: 11px;
@@ -326,10 +338,19 @@
         </div>
       </div>
       <div id="metaSummary" class="meta-summary"></div>
-      <div class="editor-wrap">
-        <div class="editor-label">Editable JSON source of truth</div>
-        <textarea id="jsonEditor" spellcheck="false"></textarea>
-      </div>
+      <section id="parse-quality-entry" class="parse-quality-entry" hidden aria-labelledby="parse-quality-entry-heading">
+        <div class="label">来源与证据 / Parse Quality</div>
+        <h3 id="parse-quality-entry-heading">解析质量需要核对</h3>
+        <p id="parse-quality-entry-copy" role="status" aria-live="polite"></p>
+        <a id="parse-quality-entry-link" class="parse-quality-entry-link" href="/review#evidence">进入解析质量核对</a>
+      </section>
+      <details class="technical-details">
+        <summary>技术详情</summary>
+        <div class="editor-wrap">
+          <div class="editor-label">原始元数据（修改前请核对）</div>
+          <textarea id="jsonEditor" spellcheck="false"></textarea>
+        </div>
+      </details>
     </section>
   </main>
   <div id="message" class="message"></div>
@@ -346,6 +367,9 @@
       markdown: document.getElementById('markdown'),
       jsonEditor: document.getElementById('jsonEditor'),
       metaSummary: document.getElementById('metaSummary'),
+      parseQualityEntry: document.getElementById('parse-quality-entry'),
+      parseQualityEntryCopy: document.getElementById('parse-quality-entry-copy'),
+      parseQualityEntryLink: document.getElementById('parse-quality-entry-link'),
       message: document.getElementById('message')
     };
     function field(meta, key, fallback = '') {
@@ -355,12 +379,52 @@
     }
     async function loadProjects() {
       const projects = await (await fetch('/api/projects')).json();
-      els.globalProjectSelect.innerHTML = ['<option value="">Select review project</option>'].concat(projects.map(p => `<option value="${escapeHtml(p.project_id)}">${escapeHtml(p.project_id)}</option>`)).join('');
+      const requestedProjectId = window.ReviewPresentation?.projectIdFromLocation() || '';
+      els.globalProjectSelect.replaceChildren();
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = 'Select review project';
+      els.globalProjectSelect.append(placeholder);
+      projects.forEach(p => {
+        const option = document.createElement('option');
+        option.value = p.project_id;
+        option.textContent = p.visible_label || p.topic || p.project_id;
+        option.disabled = p.selectable !== true;
+        els.globalProjectSelect.append(option);
+      });
+      const selectedProject = projects.find(p => p.project_id === requestedProjectId && p.selectable === true);
+      if (selectedProject) els.globalProjectSelect.value = requestedProjectId;
+      await loadParseQualityEntry(requestedProjectId);
     }
     function showMessage(text) {
       els.message.textContent = text;
       els.message.classList.add('show');
       setTimeout(() => els.message.classList.remove('show'), 2800);
+    }
+    async function loadParseQualityEntry(projectId) {
+      els.parseQualityEntry.hidden = true;
+      const value = String(projectId || '').trim();
+      if (!value) return;
+      try {
+        const response = await fetch(`/api/project/${encodeURIComponent(value)}/parse-quality`);
+        if (!response.ok) return;
+        const payload = await response.json();
+        const actionable = payload?.status === 'needs_review'
+          || payload?.status === 'needs_attention'
+          || (Array.isArray(payload?.studies) && payload.studies.some(study =>
+            Array.isArray(study?.objects) && study.objects.some(object => Array.isArray(object?.actions) && object.actions.length),
+          ));
+        if (!actionable) return;
+        const count = Number(payload?.summary?.needs_review) || 0;
+        els.parseQualityEntryCopy.textContent = count
+          ? `当前有 ${count} 项解析对象需要对照原始 PDF 作出决定。`
+          : '当前解析记录需要研究者核对后才能继续证据流程。';
+        els.parseQualityEntryLink.href = window.ReviewPresentation?.projectHref?.('/review#evidence', value)
+          || `/review?project_id=${encodeURIComponent(value)}#evidence`;
+        els.parseQualityEntry.hidden = false;
+      } catch (_) {
+        els.parseQualityEntry.hidden = true;
+      }
     }
     function escapeHtml(s) {
       return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
@@ -517,7 +581,7 @@
     document.getElementById('reloadBtn').addEventListener('click', () => selected && selectPaper(selected));
     document.getElementById('reviewBtn').addEventListener('click', markReviewed);
     els.globalProjectSelect.addEventListener('change', e => {
-      if (e.target.value) window.location.href = `/discovery?project=${encodeURIComponent(e.target.value)}`;
+      if (e.target.value) window.location.href = `/discovery?project_id=${encodeURIComponent(e.target.value)}`;
     });
     Promise.all([loadProjects(), loadPapers()]).catch(err => showMessage(err.message));
   </script>

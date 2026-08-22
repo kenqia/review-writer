@@ -16,6 +16,23 @@
   };
   const list = value => Array.isArray(value) && value.length ? value.join("、") : "—";
   const label = (value, fallback) => window.ReviewAuditUI.researcherLabel(value, fallback);
+  const humanStatus = value => window.ReviewPresentation?.humanStatus?.(value)
+    || window.ReviewAuditUI.humanStatus(value)
+    || "待核对";
+  const stateLabels = {
+    SUPPORT: "支持",
+    SUPPORTED: "支持",
+    REFUTE: "反驳",
+    REFUTED: "反驳",
+    GAP: "证据缺口",
+    CONFLICT: "存在冲突",
+    PENDING: "待核对",
+    NEEDS_REVIEW: "待核对",
+    needs_review: "待核对",
+    approved: "已核对",
+    rejected: "已拒绝",
+    stale: "来源已过期",
+  };
   const epistemicLabels = {
     experimental_observation: "实验观察",
     author_interpretation: "作者解释",
@@ -36,16 +53,41 @@
     onLoadError: error => showEvidenceState(error.message, "workspace-error"),
   });
 
-  function showEvidenceState(value, className) {
+  function showEvidenceState(value, className, statusText, messageText) {
     root.replaceChildren(text("p", value, className));
     shell.hidden = false;
-    status.textContent = className === "workspace-error" ? "Paper Evidence 暂不可用" : "正在读取 Paper Evidence";
-    message.textContent = className === "workspace-error" ? value : "切换项目后正在读取当前证据。";
+    status.textContent = statusText || (className === "workspace-error" ? "Paper Evidence 暂不可用" : "正在读取 Paper Evidence");
+    message.textContent = messageText || (className === "workspace-error" ? value : "切换项目后正在读取当前证据。");
+  }
+
+  function evidenceState(item) {
+    const values = [item.verdict, item.status, item.reason_code, ...(item.risk_classes || [])]
+      .filter(value => typeof value === "string");
+    const matched = values.find(value => stateLabels[value] || stateLabels[value.toUpperCase()]);
+    return matched ? (stateLabels[matched] || stateLabels[matched.toUpperCase()]) : humanStatus(item.status);
+  }
+
+  function currentness(item, payload) {
+    if (typeof item.currentness === "string" && item.currentness.trim()) return item.currentness;
+    if (item.status === "stale") return "来源已过期";
+    const descriptorStatus = payload.source_pdf_descriptors?.status;
+    if (descriptorStatus === "current") return "来源描述当前";
+    if (descriptorStatus === "stale") return "来源描述已过期";
+    return "当前性未提供";
   }
 
   function render(payload) {
     root.replaceChildren();
-    shell.hidden = payload.route !== "evidence-to-release.v1";
+    if (payload.route !== "evidence-to-release.v1") {
+      showEvidenceState(
+        "尚未生成 Paper Evidence；来源准备完成后，研究者可在此逐项核对。",
+        "workspace-empty",
+        "等待来源与证据",
+        "当前项目尚未进入 Evidence 阶段；不会显示内部处理面板。",
+      );
+      return;
+    }
+    shell.hidden = false;
     const legacyRisk = document.getElementById("risk-stage-panel");
     if (legacyRisk && payload.route === "evidence-to-release.v1") legacyRisk.hidden = true;
     if (shell.hidden) return;
@@ -57,12 +99,16 @@
     items.forEach((item, index) => {
       const card = document.createElement("article"); card.className = "evidence-card";
       const heading = document.createElement("header");
-      heading.append(text("strong", item.statement), text("span", window.ReviewAuditUI.humanStatus(item.status), "workspace-status")); card.append(heading);
+      const statusNode = text("span", evidenceState(item), "workspace-status");
+      statusNode.title = item.status || item.reason_code || "canonical status";
+      heading.append(text("strong", item.statement), statusNode); card.append(heading);
       const studyLabel = label(item.study_label || item.citation || item.title, `研究 ${index + 1}`);
-      card.append(text("p", `${studyLabel} · ${epistemicLabels[item.epistemic_type] || "证据"} · 第 ${item.locator?.page || "?"} 页`, "evidence-meta"));
-      card.append(text("p", `条件：${list(item.reported_conditions)}；定量结果：${list(item.quantitative_results)}`));
-      card.append(text("p", `机制证据等级：${item.mechanism_grade ? "已记录" : "未提供"}；科学风险：${(item.risk_classes || []).length} 类`));
+      card.append(text("p", `研究：${studyLabel} · 来源：${item.source_id || "未提供"}`, "evidence-meta"));
+      card.append(text("p", `证据类型：${epistemicLabels[item.epistemic_type] || "证据"} · 定位：${item.locator?.section_or_item || item.locator?.figure_or_table || "未提供"} · 第 ${item.locator?.page || "?"} 页`, "evidence-meta"));
+      card.append(text("p", `当前性：${currentness(item, payload)} · 状态：${evidenceState(item)}`, "evidence-meta"));
+      card.append(text("p", `证据标记：${(item.risk_classes || []).map(value => stateLabels[value] || label(value, "研究风险")).join("、") || "未提供"}`));
       if (item.locator?.exact_quote) card.append(text("blockquote", item.locator.exact_quote));
+      else card.append(text("p", "原文摘录：未提供", "evidence-meta"));
       if (item.decision) {
         const actor = {actor_type:item.decision.actor_type, actor_label:item.decision.actor_label};
         card.append(text("p", `${window.ReviewAuditUI.humanStatus(item.decision.action)} · ${window.ReviewAuditUI.decisionActor(actor)} · ${label(item.decision.reason, "理由未提供")}`, "decision-line"));
@@ -91,5 +137,6 @@
   }
 
   projectSelect.addEventListener("change", coordinator.projectChanged);
-  document.addEventListener("DOMContentLoaded", coordinator.refresh);
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", coordinator.refresh);
+  else coordinator.refresh();
 }());
